@@ -15,12 +15,9 @@ ln -snf "/usr/share/zoneinfo/$TZ" /etc/localtime
 echo "$TZ" > /etc/timezone
 dpkg-reconfigure -f noninteractive tzdata
 
-# 2. 验证 CRON_SCHEDULE
-if [ -z "${CRON_SCHEDULE:-}" ]; then
-  echo "错误: 未设置 CRON_SCHEDULE 环境变量。" >&2
-  echo "请设置 CRON_SCHEDULE (例如，\"0 2 * * *\")." >&2
-  exit 1
-fi
+# 2. 定时任务默认值；后续可在 Web 后台修改并即时重载 cron
+: "${CRON_SCHEDULE:=0 7 * * *}"
+export CRON_SCHEDULE
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. Accounts: generate accounts.json from ACCOUNT_N_* env vars
@@ -356,28 +353,11 @@ fi
 
 # 设置 cron 任务
 if [ -f "/etc/cron.d/microsoft-rewards-cron.template" ]; then
-    # 替换模板中的占位符
-    CRON_SCHEDULE_ESCAPED=$(echo "$CRON_SCHEDULE" | sed 's/\*/\\*/g')
-    echo "DEBUG: CRON_SCHEDULE_ESCAPED=$CRON_SCHEDULE_ESCAPED"
-    echo "DEBUG: TZ=$TZ"
-    echo "DEBUG: Before sed - template content:"
-    cat /etc/cron.d/microsoft-rewards-cron.template
-    sed -i "s|\${CRON_SCHEDULE}|$CRON_SCHEDULE_ESCAPED|g" /etc/cron.d/microsoft-rewards-cron.template || true
-    sed -i "s|\${TZ}|$TZ|g" /etc/cron.d/microsoft-rewards-cron.template || true
-    echo "DEBUG: After sed - template content:"
-    cat /etc/cron.d/microsoft-rewards-cron.template
+    echo "正在配置 cron 任务..."
+    "$SCRIPT_DIR/scripts/docker/schedule.sh" apply "$CRON_SCHEDULE"
 
-    # 启用 cron 任务
-    cp /etc/cron.d/microsoft-rewards-cron.template /etc/cron.d/microsoft-rewards-cron
-    chmod 0644 /etc/cron.d/microsoft-rewards-cron
-
-    # 启动 cron 服务
-    echo "正在启动 cron 服务..."
-    service cron start
-
-    # 检查 cron 服务状态
     if service cron status; then
-        echo "Cron 服务启动成功"
+        echo "Cron 服务已运行"
     else
         echo "警告: Cron 服务启动失败"
     fi

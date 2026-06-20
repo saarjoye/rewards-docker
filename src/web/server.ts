@@ -1,4 +1,5 @@
 import crypto from 'crypto'
+import { spawn, spawnSync } from 'child_process'
 import fs from 'fs'
 import http, { IncomingMessage, ServerResponse } from 'http'
 import path from 'path'
@@ -44,10 +45,27 @@ interface PublicAccount {
     }
 }
 
+interface ScheduleFile {
+    schedule: string
+    timezone: string
+    updatedAt: string
+}
+
+interface RunState {
+    running: boolean
+    pid?: number
+    startedAt?: string
+    finishedAt?: string
+    exitCode?: number | null
+    lastMessage: string
+}
+
 const runtimeRoot = path.resolve(__dirname, '..')
+const appRoot = path.resolve(__dirname, '..', '..')
 const authFile = path.join(runtimeRoot, 'web-auth.json')
 const accountsFile = path.join(runtimeRoot, 'accounts.json')
 const configFile = path.join(runtimeRoot, 'config.json')
+const scheduleFile = path.join(runtimeRoot, 'config', 'schedule.json')
 const configExampleFile = path.join(runtimeRoot, 'config.example.json')
 const configExampleFallbacks = [
     configExampleFile,
@@ -55,6 +73,7 @@ const configExampleFallbacks = [
     path.resolve(process.cwd(), 'config.example.json')
 ]
 const sessions = new Map<string, SessionData>()
+let runState: RunState = { running: false, lastMessage: '暂无手动运行记录' }
 const SESSION_COOKIE = 'mrs_session'
 const SESSION_TTL_MS = 1000 * 60 * 60 * 12
 const MAX_BODY_BYTES = 1024 * 1024
@@ -89,6 +108,90 @@ function readJsonFile<T>(file: string, fallback: T): T {
 function writeJsonFile(file: string, data: unknown): void {
     fs.mkdirSync(path.dirname(file), { recursive: true })
     fs.writeFileSync(file, `${JSON.stringify(data, null, 4)}\n`, 'utf8')
+}
+
+function currentSchedule(): ScheduleFile {
+    const fallback = process.env.CRON_SCHEDULE ?? '0 7 * * *'
+    const saved = readJsonFile<Partial<ScheduleFile> | null>(scheduleFile, null)
+    return {
+        schedule: typeof saved?.schedule === 'string' && saved.schedule ? saved.schedule : fallback,
+        timezone: typeof saved?.timezone === 'string' && saved.timezone ? saved.timezone : process.env.TZ ?? 'UTC',
+        updatedAt: typeof saved?.updatedAt === 'string' ? saved.updatedAt : ''
+    }
+}
+
+function validateCronSchedule(schedule: string): void {
+    const trimmed = schedule.trim().replace(/\s+/g, ' ')
+    if (trimmed.split(' ').length !== 5) {
+        throw new Error('定时表达式必须是 5 段，例如 0 7 * * *')
+    }
+    if (/(^|\s)(@|[A-Za-z]|;|&&|\|\||`|\$|\(|\)|<|>)/.test(trimmed)) {
+        throw new Error('定时表达式包含不支持的字符')
+    }
+}
+
+function saveSchedule(schedule: string): ScheduleFile {
+    const trimmed = schedule.trim().replace(/\s+/g, ' ')
+    validateCronSchedule(trimmed)
+
+    const script = path.join(appRoot, 'scripts', 'docker', 'schedule.sh')
+    if (process.platform === 'linux' && fs.existsSync(script) && fs.existsSync('/etc/cron.d/microsoft-rewards-cron.template')) {
+        const result = spawnSync('bash', [script, 'apply', trimmed], {
+            cwd: appRoot,
+            env: { ...process.env, CRON_SCHEDULE: trimmed, TZ: process.env.TZ ?? 'UTC' },
+            encoding: 'utf8'
+        })
+        if (result.status !== 0) {
+            throw new Error(result.stderr.trim() || result.stdout.trim() || '更新 cron 失败')
+        }
+    }
+
+    const next = {
+        schedule: trimmed,
+        timezone: process.env.TZ ?? 'UTC',
+        updatedAt: new Date().toISOString()
+    }
+    writeJsonFile(scheduleFile, next)
+    process.env.CRON_SCHEDULE = trimmed
+    return next
+}
+
+function runOnce(): RunState {
+    if (runState.running) {
+        return runState
+    }
+
+    const script = path.join(appRoot, 'scripts', 'docker', 'run_daily.sh')
+    if (!fs.existsSync(script)) {
+        throw new Error('找不到运行脚本 scripts/docker/run_daily.sh')
+    }
+
+    const child = spawn('bash', [script], {
+        cwd: appRoot,
+        detached: true,
+        stdio: 'ignore',
+        env: { ...process.env, SKIP_RANDOM_SLEEP: 'true' }
+    })
+
+    runState = {
+        running: true,
+        pid: child.pid,
+        startedAt: new Date().toISOString(),
+        exitCode: null,
+        lastMessage: `手动运行已启动，PID ${child.pid}`
+    }
+
+    child.on('exit', code => {
+        runState = {
+            ...runState,
+            running: false,
+            finishedAt: new Date().toISOString(),
+            exitCode: code,
+            lastMessage: code === 0 ? '手动运行已完成' : `手动运行结束，退出码 ${code}`
+        }
+    })
+    child.unref()
+    return runState
 }
 
 function hashPassword(password: string, salt = crypto.randomBytes(16).toString('hex')): AuthFile {
@@ -488,12 +591,41 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
                 workersEnabled,
                 clusters: config.clusters,
                 headless: config.headless,
-                schedule: process.env.CRON_SCHEDULE ?? 'manual',
+                schedule: currentSchedule().schedule,
                 lastRun: readLastRunSummary()
             },
             accounts: accounts.map(sanitizeAccount),
-            config: publicConfig(config)
+            config: publicConfig(config),
+            schedule: currentSchedule(),
+            runState
         })
+        return
+    }
+
+    if (url.pathname === '/api/run' && req.method === 'POST') {
+        try {
+            sendJson(res, 200, { ok: true, runState: runOnce() })
+        } catch (error) {
+            sendJson(res, 400, {
+                error: 'RUN_FAILED',
+                message: error instanceof Error ? error.message : String(error)
+            })
+        }
+        return
+    }
+
+    if (url.pathname === '/api/schedule' && req.method === 'POST') {
+        const body = (await readBody(req)) as Record<string, unknown>
+        const schedule = String(body.schedule ?? '')
+        try {
+            const next = saveSchedule(schedule)
+            sendJson(res, 200, { ok: true, schedule: next })
+        } catch (error) {
+            sendJson(res, 400, {
+                error: 'INVALID_SCHEDULE',
+                message: error instanceof Error ? error.message : String(error)
+            })
+        }
         return
     }
 
@@ -740,11 +872,23 @@ function settingsItems(){
   return '<div class="settings-list">'
     + setting('Headless', String(c.headless))
     + setting('Workers', state.stats.workersEnabled + ' enabled')
-    + setting('Cron', state.stats.schedule)
+    + setting('Cron', state.schedule.schedule)
     + setting('Debug Logs', String(c.debugLogs))
     + '</div>';
 }
 function setting(name,value){return '<div class="setting-item"><span>'+esc(name)+'</span><strong>'+esc(value)+'</strong></div>'}
+function runControls(){
+  const r = state.runState;
+  return '<section class="card section"><div class="toolbar"><div><h2>运行控制</h2><p class="section-note">立即执行会跳过随机休眠，并使用任务锁避免和定时任务并发。</p></div><button id="runOnceBtn" class="primary-btn" '+(r.running?'disabled':'')+'>立即执行一次</button></div><div class="settings-list">'
+    + setting('运行状态', r.running ? '运行中' : '空闲')
+    + setting('最近消息', r.lastMessage || '-')
+    + setting('当前定时', state.schedule.schedule)
+    + setting('时区', state.schedule.timezone)
+    + '</div></section>';
+}
+function scheduleForm(){
+  return '<form id="scheduleForm" class="card section"><h2>定时设置</h2><p class="section-note">填写 5 段 cron 表达式，保存后容器内 cron 会即时重载。例：0 7 * * *</p><div class="form-grid"><div class="field"><label>CRON_SCHEDULE</label><input name="schedule" value="'+esc(state.schedule.schedule)+'" placeholder="0 7 * * *"></div><div class="field"><label>时区</label><input value="'+esc(state.schedule.timezone)+'" disabled></div></div><div class="modal-actions"><button class="primary-btn">保存定时</button></div></form>';
+}
 function renderDashboard(){
   const s = state.stats;
   el('dashboard').innerHTML = '<div class="content-grid">'
@@ -754,12 +898,14 @@ function renderDashboard(){
     + metric('今日状态', s.lastRun === '暂无本地日志' ? '待运行' : '有记录', '默认等待计划触发', '◷')
     + metric('安全项', '4', '敏感字段不下发前端', '◇')
     + '</div>'
+    + runControls()
     + '<div class="split-grid"><section class="card section"><div class="toolbar"><div><h2>账号设置</h2><p class="section-note">密码、TOTP 与代理密码保存后不在页面回显。</p></div><button class="primary-btn" onclick="openAccount()">新增账号</button></div>'+accountTable(3)+'</section>'
     + '<section class="card section"><h2>任务配置</h2><p class="section-note">常用任务开关与执行参数。</p><form id="dashboardTaskForm" class="switch-row">'+taskToggles(3)+'<div class="modal-actions"><button class="primary-btn">保存配置</button></div></form></section></div>'
     + '<div class="bottom-grid"><section class="card section"><h2>运行日志</h2><p class="section-note">仅展示脱敏后的最近事件。</p><div class="log-box">'+esc(s.lastRun)+'</div></section>'
     + '<section class="card section"><h2>系统设置</h2><p class="section-note">运行方式、并发与调试开关。</p>'+settingsItems()+'</section></div>'
     + '</div>';
   document.querySelector('#dashboardTaskForm')?.addEventListener('submit', saveConfig);
+  document.querySelector('#runOnceBtn')?.addEventListener('click', runOnceNow);
 }
 function renderAccounts(){
   el('accounts').innerHTML = '<div class="content-grid"><section class="card section"><div class="toolbar"><div><h2>账号设置</h2><p class="section-note">列表只展示脱敏邮箱和配置状态。</p></div><button class="primary-btn" onclick="openAccount()">新增账号</button></div>'+accountTable()+'</section></div>';
@@ -800,8 +946,9 @@ window.deleteAccount = async function(id){
 }
 function renderTasks(){
   const c = state.config;
-  el('tasks').innerHTML = '<div class="content-grid"><section class="card section"><h2>任务配置</h2><p class="section-note">保存后会写入本地配置文件。</p><form id="taskForm"><div class="switch-row">'+taskToggles()+'</div><div class="form-grid" style="margin-top:16px">'+field('clusters','集群数',c.clusters,'number')+field('globalTimeout','全局超时',c.globalTimeout)+field('searchDelayMin','搜索最小延迟',c.searchSettings.searchDelay.min)+field('searchDelayMax','搜索最大延迟',c.searchSettings.searchDelay.max)+field('readDelayMin','阅读最小延迟',c.searchSettings.readDelay.min)+field('readDelayMax','阅读最大延迟',c.searchSettings.readDelay.max)+'</div><div class="modal-actions"><button class="primary-btn">保存配置</button></div></form></section></div>';
+  el('tasks').innerHTML = '<div class="content-grid">'+scheduleForm()+'<section class="card section"><h2>任务配置</h2><p class="section-note">保存后会写入本地配置文件。</p><form id="taskForm"><div class="switch-row">'+taskToggles()+'</div><div class="form-grid" style="margin-top:16px">'+field('clusters','集群数',c.clusters,'number')+field('globalTimeout','全局超时',c.globalTimeout)+field('searchDelayMin','搜索最小延迟',c.searchSettings.searchDelay.min)+field('searchDelayMax','搜索最大延迟',c.searchSettings.searchDelay.max)+field('readDelayMin','阅读最小延迟',c.searchSettings.readDelay.min)+field('readDelayMax','阅读最大延迟',c.searchSettings.readDelay.max)+'</div><div class="modal-actions"><button class="primary-btn">保存配置</button></div></form></section></div>';
   document.querySelector('#taskForm').addEventListener('submit', saveConfig);
+  document.querySelector('#tasks #scheduleForm').addEventListener('submit', saveSchedule);
 }
 async function saveConfig(event){
   event.preventDefault();
@@ -815,8 +962,20 @@ async function saveConfig(event){
   await api('/api/config', {method:'POST', body:JSON.stringify(data)});
   await loadState(); switchView('tasks');
 }
+async function runOnceNow(){
+  await api('/api/run', {method:'POST', body:'{}'});
+  await loadState();
+  switchView('dashboard');
+}
+async function saveSchedule(event){
+  event.preventDefault();
+  const data = Object.fromEntries(new FormData(event.target).entries());
+  await api('/api/schedule', {method:'POST', body:JSON.stringify(data)});
+  await loadState();
+  switchView('tasks');
+}
 function renderLogs(){ el('logs').innerHTML = '<div class="content-grid"><section class="card section"><h2>运行日志</h2><p class="section-note">Cookie、Token、密码与完整邮箱不会在前端日志中显示。</p><div class="log-box">'+esc(state.stats.lastRun)+'</div></section></div>'; }
-function renderSystem(){ el('system').innerHTML = '<div class="content-grid"><section class="card section"><h2>系统设置</h2><p class="section-note">基础运行环境信息。</p>'+settingsItems()+'<div class="table-wrap" style="margin-top:18px"><table class="table"><tr><th>运行目录</th><td>'+esc(state.runtime.root)+'</td></tr><tr><th>Node 环境</th><td>'+esc(state.runtime.nodeEnv)+'</td></tr><tr><th>Web 端口</th><td>'+esc(state.runtime.webPort)+'</td></tr></table></div></section></div>'; }
+function renderSystem(){ el('system').innerHTML = '<div class="content-grid">'+scheduleForm()+'<section class="card section"><h2>系统设置</h2><p class="section-note">基础运行环境信息。</p>'+settingsItems()+'<div class="table-wrap" style="margin-top:18px"><table class="table"><tr><th>运行目录</th><td>'+esc(state.runtime.root)+'</td></tr><tr><th>Node 环境</th><td>'+esc(state.runtime.nodeEnv)+'</td></tr><tr><th>Web 端口</th><td>'+esc(state.runtime.webPort)+'</td></tr></table></div></section></div>'; document.querySelector('#system #scheduleForm').addEventListener('submit', saveSchedule); }
 loadState().catch(err => alert(err.message));`
 }
 
