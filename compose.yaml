@@ -1,0 +1,83 @@
+services:
+    microsoft-rewards-script:
+        image: ghcr.io/saarjoye/rewards-docker:latest
+        container_name: microsoft-rewards-script
+        restart: unless-stopped
+        ports:
+            - "${WEB_UI_PORT:-3000}:3000"
+        volumes:
+            - ./config:/usr/src/microsoft-rewards-script/dist/config
+            - ./sessions:/usr/src/microsoft-rewards-script/dist/browser/sessions
+            - ./logs:/usr/src/microsoft-rewards-script/logs
+        environment:
+            TZ: "Asia/Shanghai"
+            NODE_ENV: "production"
+            WEB_UI_HOST: "0.0.0.0"
+            WEB_UI_PORT: "3000"
+            WEB_ADMIN_USER: ${WEB_ADMIN_USER:-}
+            WEB_ADMIN_PASSWORD: ${WEB_ADMIN_PASSWORD:-}
+
+            CRON_SCHEDULE: "0 7 * * *"
+            RUN_ON_START: "false"
+            SKIP_RANDOM_SLEEP: "false"
+            # MIN_SLEEP_MINUTES: "5"
+            # MAX_SLEEP_MINUTES: "50"
+            # STUCK_PROCESS_TIMEOUT_HOURS: "8"
+
+            # Microsoft account credentials are now managed in the Web backend.
+            # Keep ACCOUNT_N_* disabled unless you need one-time environment import compatibility.
+            # ACCOUNT_1_EMAIL: ${ACCOUNT_1_EMAIL}
+            # ACCOUNT_1_PASSWORD: ${ACCOUNT_1_PASSWORD}
+            # ACCOUNT_1_TOTP_SECRET: ${ACCOUNT_1_TOTP_SECRET}
+            # ACCOUNT_1_RECOVERY_EMAIL: ${ACCOUNT_1_RECOVERY_EMAIL}
+            # ACCOUNT_1_GEO_LOCALE: ${ACCOUNT_1_GEO_LOCALE}
+            # ACCOUNT_1_LANG_CODE: ${ACCOUNT_1_LANG_CODE}
+            # ACCOUNT_1_PROXY_AXIOS: ${ACCOUNT_1_PROXY_AXIOS}
+            # ACCOUNT_1_PROXY_URL: ${ACCOUNT_1_PROXY_URL}
+            # ACCOUNT_1_PROXY_PORT: ${ACCOUNT_1_PROXY_PORT}
+            # ACCOUNT_1_PROXY_USERNAME: ${ACCOUNT_1_PROXY_USERNAME}
+            # ACCOUNT_1_PROXY_PASSWORD: ${ACCOUNT_1_PROXY_PASSWORD}
+
+            # General config overrides
+            # CONFIG_CLUSTERS: "1"
+            # CONFIG_DEBUG_LOGS: "false"
+            # CONFIG_ERROR_DIAGNOSTICS: "false"
+            # CONFIG_GLOBAL_TIMEOUT: "50sec"
+
+            # Search behaviour
+            # CONFIG_SEARCH_DELAY_MIN: "6min"
+            # CONFIG_SEARCH_DELAY_MAX: "12min"
+            # CONFIG_SEARCH_READ_DELAY_MIN: "6min"
+            # CONFIG_SEARCH_READ_DELAY_MAX: "11min"
+
+            # PushPlus webhook
+            # CONFIG_PUSHPLUS_ENABLED: "true"
+            # CONFIG_PUSHPLUS_TOKEN: ""
+
+            # Discord webhook
+            # CONFIG_DISCORD_ENABLED: "true"
+            # CONFIG_DISCORD_URL: "https://discord.com/api/webhooks/..."
+
+            # ntfy webhook
+            # CONFIG_NTFY_ENABLED: "true"
+            # CONFIG_NTFY_URL: "https://ntfy.sh"
+            # CONFIG_NTFY_TOPIC: "my-rewards-alerts"
+            # CONFIG_NTFY_TOKEN: ""
+            # CONFIG_NTFY_TITLE: "Microsoft-Rewards-Script"
+            # CONFIG_NTFY_PRIORITY: "3"
+
+        healthcheck:
+            test:
+                [
+                    "CMD",
+                    "node",
+                    "-e",
+                    "require('http').get('http://127.0.0.1:3000/api/bootstrap', r => process.exit(r.statusCode < 500 ? 0 : 1)).on('error', () => process.exit(1))"
+                ]
+            interval: 60s
+            timeout: 10s
+            retries: 3
+            start_period: 30s
+
+        security_opt:
+            - no-new-privileges:true

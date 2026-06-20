@@ -1,0 +1,80 @@
+{
+    "compilerOptions": {
+        /* 访问 https://aka.ms/tsconfig.json 了解更多关于此文件的信息 */
+        /* 基本选项 */
+        "target": "ES2020", /* 指定ECMAScript目标版本：'ES3'（默认）、'ES5'、'ES2015'、'ES2016'、'ES2017'、'ES2018'、'ES2019'、'ES2020'、'ES2021'或'ESNEXT'。 */
+        "module": "commonjs", /* 指定模块代码生成方式：'none'、'commonjs'、'amd'、'system'、'umd'、'es2015'、'es2020'或'ESNext'。 */
+        // "lib": [], /* 指定编译时要包含的库文件。 */
+        // "allowJs": true,                             /* 允许编译JavaScript文件。 */
+        // "checkJs": true,                             /* 报告.js文件中的错误。 */
+        // "jsx": "preserve",                           /* 指定JSX代码生成方式：'preserve'、'react-native'、'react'、'react-jsx'或'react-jsxdev'。 */
+        "declaration": true, /* 生成相应的'.d.ts'文件。 */
+        "declarationMap": true, /* 为每个相应的'.d.ts'文件生成源映射。 */
+        "sourceMap": true, /* 生成相应的'.map'文件。 */
+        // "outFile": "./",                             /* 将输出连接并发射到单个文件。 */
+        "outDir": "./dist", /* 将输出结构重定向到该目录。 */
+        "rootDir": "./src", /* 指定输入文件的根目录。用于通过--outDir控制输出目录结构。 */
+        // "composite": true,                           /* 启用项目编译 */
+        // "tsBuildInfoFile": "./",                     /* 指定存储增量编译信息的文件 */
+        // "removeComments": true,                      /* 不将注释发射到输出。 */
+        // "noEmit": true,                              /* 不发射输出。 */
+        // "importHelpers": true,                       /* 从'tslib'导入发射助手。 */
+        // "downlevelIteration": true,                  /* 当目标为'ES5'或'ES3'时，为'for-of'、展开和解构提供对可迭代对象的完全支持。 */
+        // "isolatedModules": true,                     /* 将每个文件作为单独的模块进行转译（类似于'ts.transpileModule'）。 */
+        /* 严格类型检查选项 */
+        "strict": true, /* 启用所有严格类型检查选项。 */
+        "noImplicitAny": true, /* 对具有隐含'any'类型的表达式和声明引发错误。 */
+        "strictNullChecks": true, /* 启用严格的null检查。 */
+        "strictFunctionTypes": true, /* 启用函数类型的严格检查。 */
+        // "strictBindCallApply": true,                 /* 启用对函数的'strict'、'bind'、'call'和'apply'方法的严格检查。 */
+        // "strictPropertyInitialization": true,        /* 启用类中属性初始化的严格检查。 */
+        "noImplicitThis": true, /* 对具有隐含'any'类型的'this'表达式引发错误。 */
+        "alwaysStrict": true, /* 在严格模式下解析并为每个源文件发射"use strict"。 */
+        /* 其他检查 */
+        "noUnusedLocals": false, /* 报告未使用的局部变量的错误。 */
+        // "noUnusedParameters": true,                  /* 报告未使用的参数的错误。 */
+        "noImplicitReturns": true, /* 当函数中并非所有代码路径都返回值时报告错误。 */
+        "noFallthroughCasesInSwitch": true, /* 报告switch语句中的贯穿情况错误。 */
+        "noUncheckedIndexedAccess": true, /* 在索引签名结果中包含'undefined' */
+        "noImplicitOverride": true, /* 确保派生类中的重写成员标记有'override'修饰符。 */
+        // "noPropertyAccessFromIndexSignature": true,  /* 要求索引签名中的未声明属性使用元素访问。 */
+        /* 模块解析选项 */
+        "moduleResolution": "bundler", /* 指定模块解析策略：'node'、'node16'、'nodenext'、'bundler'或'classic'（TypeScript 1.6之前）。 */
+        "types": [
+            "node"
+        ],
+        /* 显式指定 typeRoots，确保在完整安装前不会自动检测失败的环境下也能解析类型 */
+        "typeRoots": [
+            "./node_modules/@types"
+        ],
+        // "baseUrl": "./",                             /* 解析非绝对模块名称的基本目录。 */
+        // "paths": {},                                 /* 一系列条目，用于将导入重新映射到相对于'baseUrl'的查找位置。 */
+        // "rootDirs": [],                              /* 根文件夹列表，其组合内容表示运行时项目的结构。 */
+        // "allowSyntheticDefaultImports": true,        /* 允许从没有默认导出的模块进行默认导入。这不影响代码发射，只影响类型检查。 */
+        "esModuleInterop": true, /* 通过为所有导入创建命名空间对象，启用CommonJS和ES模块之间的发射互操作性。隐含'allowSyntheticDefaultImports'。 */
+        // "preserveSymlinks": true,                    /* 不解析符号链接的真实路径。 */
+        // "allowUmdGlobalAccess": true,                /* 允许从模块访问UMD全局变量。 */
+        /* 源映射选项 */
+        // "sourceRoot": "",                            /* 指定调试器应定位TypeScript文件的位置，而不是源位置。 */
+        // "mapRoot": "",                               /* 指定调试器应定位映射文件的位置，而不是生成的位置。 */
+        // "inlineSourceMap": true,                     /* 发射单个带有源映射的文件，而不是有单独的文件。 */
+        // "inlineSources": true,                       /* 在单个文件中发射源以及源映射；需要设置'--inlineSourceMap'或'--sourceMap'。 */
+        /* 实验性选项 */
+        // "experimentalDecorators": true,              /* 启用对ES7装饰器的实验性支持。 */
+        // "emitDecoratorMetadata": true,               /* 启用对发射装饰器类型元数据的实验性支持。 */
+        /* 高级选项 */
+        "skipLibCheck": true, /* 跳过声明文件的类型检查。 */
+        "forceConsistentCasingInFileNames": true, /* 禁止对同一文件使用不一致的大小写引用。 */
+        "resolveJsonModule": true
+    },
+    "include": [
+        "src/**/*.ts",
+        "src/accounts.json",
+        "src/config.json",
+        "src/functions/bing-search-activity-queries.json",
+        "src/functions/search-queries.json"
+    ],
+    "exclude": [
+        "node_modules"
+    ]
+}

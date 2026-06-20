@@ -1,0 +1,40 @@
+[
+    {
+        "email": "email_1",
+        "password": "password_1",
+        "totpSecret": "",
+        "recoveryEmail": "",
+        "geoLocale": "auto",
+        "langCode": "zh",
+        "proxy": {
+            "proxyAxios": false,
+            "url": "",
+            "port": 0,
+            "username": "",
+            "password": ""
+        },
+        "saveFingerprint": {
+            "mobile": true,
+            "desktop": true
+        }
+    },
+    {
+        "email": "email_2",
+        "password": "password_2",
+        "totpSecret": "",
+        "recoveryEmail": "",
+        "geoLocale": "auto",
+        "langCode": "zh",
+        "proxy": {
+            "proxyAxios": false,
+            "url": "",
+            "port": 0,
+            "username": "",
+            "password": ""
+        },
+        "saveFingerprint": {
+            "mobile": true,
+            "desktop": true
+        }
+    }
+]

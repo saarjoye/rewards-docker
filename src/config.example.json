@@ -1,0 +1,96 @@
+{
+    "baseURL": "https://rewards.bing.com",
+    "sessionPath": "sessions",
+    "headless": false,
+    "clusters": 1,
+    "errorDiagnostics": false,
+    "ensureStreakProtection": true,
+    "workers": {
+        "doDailySet": true,
+        "doClaimBonusPoints": true,
+        "doSpecialPromotions": true,
+        "doMorePromotions": true,
+        "doPunchCards": true,
+        "doAppPromotions": true,
+        "doDesktopSearch": true,
+        "doMobileSearch": true,
+        "doDailyCheckIn": true,
+        "doReadToEarn": true
+    },
+    "searchOnBingLocalQueries": false,
+    "globalTimeout": "50sec",
+    "searchSettings": {
+        "scrollRandomResults": true,
+        "clickRandomResults": true,
+        "parallelSearching": false,
+        "queryEngines": [
+            "china",
+            "local"
+        ],
+        "searchResultVisitTime": "20sec",
+        "searchDelay": {
+            "min": "6min",
+            "max": "12min"
+        },
+        "readDelay": {
+            "min": "6min",
+            "max": "11min"
+        },
+        "chinaApi": {
+            "appkey": ""
+        }
+    },
+    "debugLogs": true,
+    "consoleLogFilter": {
+        "enabled": false,
+        "mode": "whitelist",
+        "levels": [
+            "error",
+            "warn"
+        ],
+        "keywords": [
+            "starting account"
+        ],
+        "regexPatterns": []
+    },
+    "proxy": {
+        "queryEngine": false
+    },
+    "webhook": {
+        "discord": {
+            "enabled": false,
+            "url": ""
+        },
+        "ntfy": {
+            "enabled": false,
+            "url": "",
+            "topic": "",
+            "token": "",
+            "title": "Microsoft-Rewards-Script",
+            "tags": [
+                "bot",
+                "notify"
+            ],
+            "priority": 3
+        },
+        "pushplus": {
+            "enabled": false,
+            "token": "",
+            "title": "Microsoft-Rewards-Script",
+            "template": "txt"
+        },
+        "webhookLogFilter": {
+            "enabled": false,
+            "mode": "whitelist",
+            "levels": [
+                "error"
+            ],
+            "keywords": [
+                "starting account",
+                "select number",
+                "collected"
+            ],
+            "regexPatterns": []
+        }
+    }
+}
