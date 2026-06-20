@@ -6,11 +6,12 @@ import path from 'path'
 import { URL } from 'url'
 
 import pkg from '../../package.json'
-import { ConfigSchema, AccountSchema } from '../util/Validator'
+import { ConfigSchema, AccountSchema, validateConfig } from '../util/Validator'
 import type { Account } from '../interface/Account'
-import type { Config, ConfigWorkers } from '../interface/Config'
+import type { Config, ConfigWorkers, WebhookWeComConfig } from '../interface/Config'
 import { accountProgressHash, readTaskProgressFile } from '../util/TaskProgressStore'
 import { readAccountStatusFile, updateAccountStatus, type AccountStatusState } from '../util/AccountStatusStore'
+import { diagnoseWeCom, testWeCom } from '../logging/WeCom'
 
 type JsonValue = Record<string, unknown> | unknown[] | string | number | boolean | null
 
@@ -90,7 +91,20 @@ interface TaskProgressItem {
 interface AccountTaskProgress {
     key: string
     accountLabel: string
+    initialPoints: number
+    currentPoints: number
+    finalPoints: number
     items: TaskProgressItem[]
+}
+
+interface PublicWeComConfig {
+    enabled: boolean
+    corpId: string
+    agentId: string
+    hasCorpSecret: boolean
+    toUser: string
+    proxyMode: 'direct' | 'qinglong'
+    proxyBaseUrl: string
 }
 
 interface RawLogLine {
@@ -516,11 +530,24 @@ function saveAccounts(accounts: Account[]): void {
 
 function loadConfig(): Config {
     const raw = readJsonFile<unknown>(configFile, {})
-    return ConfigSchema.parse(raw)
+    return validateConfig(raw)
 }
 
 function saveConfig(config: Config): void {
     writeJsonFile(configFile, ConfigSchema.parse(config))
+}
+
+function publicWeComConfig(config: Config): PublicWeComConfig {
+    const wecom = config.webhook.wecom
+    return {
+        enabled: Boolean(wecom?.enabled),
+        corpId: wecom?.corpId ?? '',
+        agentId: String(wecom?.agentId ?? ''),
+        hasCorpSecret: Boolean(wecom?.corpSecret),
+        toUser: wecom?.toUser ?? '',
+        proxyMode: wecom?.proxyMode === 'qinglong' ? 'qinglong' : 'direct',
+        proxyBaseUrl: wecom?.proxyBaseUrl ?? ''
+    }
 }
 
 function publicConfig(config: Config): Pick<
@@ -553,6 +580,20 @@ function publicConfig(config: Config): Pick<
             searchDelay: config.searchSettings.searchDelay,
             readDelay: config.searchSettings.readDelay
         }
+    }
+}
+
+function wecomFromPayload(input: Record<string, unknown>, existing?: WebhookWeComConfig): WebhookWeComConfig {
+    const corpSecretInput = typeof input.corpSecret === 'string' ? input.corpSecret : ''
+    const proxyMode = input.proxyMode === 'qinglong' ? 'qinglong' : 'direct'
+    return {
+        enabled: Boolean(input.enabled),
+        corpId: String(input.corpId ?? existing?.corpId ?? '').trim(),
+        agentId: String(input.agentId ?? existing?.agentId ?? '').trim(),
+        corpSecret: corpSecretInput.trim().length > 0 ? corpSecretInput.trim() : existing?.corpSecret ?? '',
+        toUser: String(input.toUser ?? existing?.toUser ?? '').trim(),
+        proxyMode,
+        proxyBaseUrl: String(input.proxyBaseUrl ?? existing?.proxyBaseUrl ?? '').trim()
     }
 }
 
@@ -799,6 +840,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
             accounts: accounts.map(sanitizeAccount),
             taskProgress: parseTaskProgress(accounts),
             config: publicConfig(config),
+            wecom: publicWeComConfig(config),
             schedule: currentSchedule(),
             runState
         })
@@ -886,6 +928,81 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
         const next = safeConfigPatch(config, body)
         saveConfig(next)
         sendJson(res, 200, { ok: true, config: publicConfig(next) })
+        return
+    }
+
+    if (url.pathname === '/api/wecom' && req.method === 'POST') {
+        const body = (await readBody(req)) as Record<string, unknown>
+        const config = loadConfig()
+        const next: Config = {
+            ...config,
+            webhook: {
+                ...config.webhook,
+                wecom: wecomFromPayload(body, config.webhook.wecom)
+            }
+        }
+        saveConfig(next)
+        sendJson(res, 200, { ok: true, wecom: publicWeComConfig(next) })
+        return
+    }
+
+    if (url.pathname === '/api/wecom/test' && req.method === 'POST') {
+        const config = loadConfig()
+        const wecom = config.webhook.wecom
+        if (!wecom) {
+            sendJson(res, 400, { error: 'WECOM_NOT_CONFIGURED', message: '企业微信推送未配置' })
+            return
+        }
+        try {
+            await testWeCom(wecom)
+            sendJson(res, 200, { ok: true, message: '测试推送已发送' })
+        } catch (error) {
+            sendJson(res, 400, {
+                error: 'WECOM_TEST_FAILED',
+                message: error instanceof Error ? error.message : String(error)
+            })
+        }
+        return
+    }
+
+    if (url.pathname === '/api/wecom/diagnose' && req.method === 'POST') {
+        const config = loadConfig()
+        const wecom = config.webhook.wecom
+        if (!wecom) {
+            sendJson(res, 400, { error: 'WECOM_NOT_CONFIGURED', message: '企业微信推送未配置' })
+            return
+        }
+        try {
+            const result = await diagnoseWeCom(wecom)
+            sendJson(res, 200, { ok: result.ok, message: result.message })
+        } catch (error) {
+            sendJson(res, 400, {
+                error: 'WECOM_DIAGNOSE_FAILED',
+                message: error instanceof Error ? error.message : String(error)
+            })
+        }
+        return
+    }
+
+    if (url.pathname === '/api/wecom/clear' && req.method === 'POST') {
+        const config = loadConfig()
+        const next: Config = {
+            ...config,
+            webhook: {
+                ...config.webhook,
+                wecom: {
+                    enabled: false,
+                    corpId: '',
+                    agentId: '',
+                    corpSecret: '',
+                    toUser: '',
+                    proxyMode: 'direct',
+                    proxyBaseUrl: ''
+                }
+            }
+        }
+        saveConfig(next)
+        sendJson(res, 200, { ok: true, wecom: publicWeComConfig(next) })
         return
     }
 
@@ -981,6 +1098,9 @@ function parseTaskProgress(accounts: Account[], lines = readRecentLogLines()): A
         const progress: AccountTaskProgress = {
             key: `account-${index + 1}`,
             accountLabel: `账号 ${index + 1} · ${label || '未填写邮箱'}`,
+            initialPoints: 0,
+            currentPoints: 0,
+            finalPoints: 0,
             items: defaultTaskItems()
         }
         byEmail.set(emailKey(account.email), progress)
@@ -1077,6 +1197,9 @@ function readStoredTaskProgress(accounts: Account[]): AccountTaskProgress[] {
         return {
             key: `account-${index + 1}`,
             accountLabel: `账号 ${index + 1} · ${label || '未填写邮箱'}`,
+            initialPoints: saved?.initialPoints ?? 0,
+            currentPoints: saved?.currentPoints ?? saved?.finalPoints ?? 0,
+            finalPoints: saved?.finalPoints ?? saved?.currentPoints ?? 0,
             items
         }
     })
@@ -1172,6 +1295,7 @@ function appHtml(): string {
       <button class="nav-item active" data-view="dashboard"><span class="nav-icon">⌂</span>仪表盘</button>
       <button class="nav-item" data-view="accounts"><span class="nav-icon">◎</span>账号设置</button>
       <button class="nav-item" data-view="tasks"><span class="nav-icon">☷</span>任务配置</button>
+      <button class="nav-item" data-view="wecom"><span class="nav-icon">✉</span>企业微信推送</button>
       <button class="nav-item" data-view="system"><span class="nav-icon">⚙</span>系统设置</button>
     </nav>
     <section class="sidebar-note">
@@ -1187,6 +1311,7 @@ function appHtml(): string {
     <section id="dashboard" class="view active"></section>
     <section id="accounts" class="view"></section>
     <section id="tasks" class="view"></section>
+    <section id="wecom" class="view"></section>
     <section id="system" class="view"></section>
   </main>
 </div>
@@ -1201,15 +1326,15 @@ function baseCss(): string {
 :root{--bg:#eaf6f3;--bg-strong:#d9f0ec;--surface:#fff;--surface-soft:#f7fbfa;--line:#d7e5e1;--teal:#0f8f85;--teal-dark:#08746d;--teal-soft:#ddf3ef;--text:#17211f;--sub:#64736f;--muted:#91a19d;--danger:#b54646;--amber:#a96516;--blue:#2f6fed;--shadow:0 18px 42px rgba(15,63,58,.13)}
 *{box-sizing:border-box}body{margin:0;font-family:Inter,Segoe UI,Arial,"Microsoft YaHei",sans-serif;color:var(--text);background:var(--bg)}button,input,select{font:inherit}button{cursor:pointer}button:disabled{cursor:not-allowed;opacity:.65}
 .login-body{min-height:100vh;overflow:hidden;background:var(--bg)}.login-shell{min-height:100vh;position:relative;display:grid;place-items:center;padding:28px}.signin-shell{border-top:10px solid var(--teal)}.auth-shape{position:absolute;background:var(--bg-strong);border-radius:48px;pointer-events:none}.auth-shape-a{width:520px;height:520px;right:8vw;top:12vh}.auth-shape-b{width:420px;height:300px;left:-160px;bottom:-80px}.setup-shell .auth-shape-a{right:18vw;top:-110px}.setup-shell .auth-shape-b{left:-150px;bottom:-100px}.login-panel{position:relative;width:min(576px,calc(100vw - 36px));background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:48px 54px 40px;box-shadow:var(--shadow)}.signin-shell .login-panel{width:min(520px,calc(100vw - 36px));padding:46px 48px 36px}.brand-lock{display:flex;align-items:center;gap:14px;margin-bottom:28px}.brand-lock strong{display:block;font-size:15px;font-weight:800;line-height:1.2}.brand-lock span{display:block;margin-top:4px;color:var(--muted);font:12px/1.2 "Geist Mono",Consolas,monospace}.brand-mark{width:44px;height:44px;border-radius:8px;background:var(--teal);display:grid;place-items:center;color:#fff;font:800 14px/1 "Geist Mono",Consolas,monospace}.login-panel h1{margin:0;font-size:36px;line-height:1.15;font-weight:800;letter-spacing:0}.auth-hint{margin:12px 0 34px;color:var(--sub);font-size:15px;line-height:1.55}.login-form{display:grid;gap:18px}.auth-field{display:grid;gap:10px;font-size:13px;font-weight:700;color:var(--sub)}.auth-field input{height:54px;width:100%;border:1px solid var(--line);border-radius:8px;background:var(--surface-soft);padding:0 18px;color:var(--text);outline:none}.auth-field input:focus,.field input:focus,.field select:focus{border-color:var(--teal);box-shadow:0 0 0 3px rgba(15,143,133,.1)}.primary-btn{height:44px;border:0;border-radius:8px;background:var(--teal);color:#fff;font-weight:800;padding:0 18px;display:inline-flex;align-items:center;justify-content:center;gap:8px}.wide-btn{height:54px;width:100%;margin-top:2px}.form-message{min-height:18px;margin:0;color:var(--danger);font-size:13px}.security-note{margin-top:16px;padding:14px 16px 14px 44px;position:relative;background:var(--surface-soft);border:1px solid var(--line);border-radius:8px;color:var(--sub);font-size:13px;line-height:1.4}.security-note:before{content:"✓";position:absolute;left:16px;top:14px;width:18px;height:18px;border-radius:50%;display:grid;place-items:center;background:var(--teal-soft);color:var(--teal);font-size:12px;font-weight:800}
-.app{display:grid;grid-template-columns:272px minmax(0,1fr);min-height:100vh;background:var(--bg)}.sidebar{background:var(--surface);border-right:1px solid var(--line);padding:28px 22px;display:flex;flex-direction:column;gap:24px}.logo-row{display:flex;align-items:center;gap:12px;min-width:0}.logo-row strong{display:block;font-size:14px;font-weight:800;line-height:1.2}.logo-row span{display:block;margin-top:4px;color:var(--muted);font:12px/1.2 "Geist Mono",Consolas,monospace}.sidebar nav{display:grid;gap:12px}.nav-item{height:44px;border:0;border-radius:8px;background:transparent;display:flex;align-items:center;gap:12px;padding:0 14px;color:var(--sub);font-size:14px;font-weight:700;text-align:left}.nav-item.active{background:var(--teal-soft);color:var(--teal-dark);font-weight:800}.nav-icon{width:18px;height:18px;display:grid;place-items:center;color:inherit}.sidebar-note{margin-top:auto;border:1px solid var(--line);background:var(--surface-soft);border-radius:8px;padding:16px}.sidebar-note strong{font-size:13px}.sidebar-note p{margin:8px 0 0;color:var(--sub);font-size:12px;line-height:1.45}.main{min-width:0}.topbar{height:118px;display:flex;align-items:center;justify-content:space-between;padding:34px 46px 22px}.topbar h1{font-size:32px;line-height:1.1;margin:0 0 10px;font-weight:800}.topbar p{margin:0;color:var(--sub);font-size:14px}.top-actions{display:flex;align-items:center;gap:10px}.user-badge,.env-pill{height:36px;display:inline-flex;align-items:center;border-radius:8px;border:1px solid var(--line);background:var(--surface);padding:0 12px;color:var(--text);font-size:13px;font-weight:800}.env-pill{color:var(--sub);font:12px/1 "Geist Mono",Consolas,monospace}.icon-btn,.ghost-btn,.small-btn,.danger-btn{height:36px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--sub);padding:0 12px}.icon-btn{width:36px;padding:0}.danger-btn{color:var(--danger)}.view{display:none}.view.active{display:block}.content-grid{padding:0 46px 46px;display:grid;gap:24px}.metrics{display:grid;grid-template-columns:repeat(4,minmax(180px,1fr));gap:16px}.card{background:var(--surface);border:1px solid var(--line);border-radius:8px}.metric{min-height:132px;padding:22px;display:grid;grid-template-columns:44px 1fr;gap:16px;align-items:start}.metric-icon{width:42px;height:42px;border-radius:8px;background:var(--teal-soft);display:grid;place-items:center;color:var(--teal);font-weight:900}.metric small{display:block;color:var(--sub);font-size:13px}.metric strong{display:block;margin:8px 0 10px;font:800 28px/1 "Geist Mono",Consolas,monospace;color:var(--text)}.split-grid{display:grid;grid-template-columns:minmax(0,1fr) 474px;gap:24px}.bottom-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(360px,1fr);gap:24px}.section{padding:22px 26px}.section h2{font-size:20px;margin:0;color:var(--text)}.section-note{margin:8px 0 18px;color:var(--sub);font-size:13px;line-height:1.45}.toolbar{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:18px}.table-wrap{overflow:auto}.table{width:100%;border-collapse:collapse;min-width:820px}.table th,.table td{border-bottom:1px solid var(--line);padding:14px 12px;text-align:left;font-size:13px;white-space:nowrap}.table th{background:var(--surface-soft);color:var(--sub);font-weight:800}.pill,.status-pill{display:inline-flex;align-items:center;border-radius:999px;padding:4px 10px;background:var(--teal-soft);color:var(--teal-dark);font-weight:800;font-size:12px}.status-pill.state-unknown{background:#eef3f1;color:var(--sub)}.status-pill.state-checking,.status-pill.state-running{background:#e8f0ff;color:var(--blue)}.status-pill.state-valid,.status-pill.state-success{background:var(--teal-soft);color:var(--teal-dark)}.status-pill.state-error{background:#ffeceb;color:var(--danger)}.account-status{display:grid;gap:5px}.account-status small{color:var(--sub);font-size:12px;max-width:260px;overflow:hidden;text-overflow:ellipsis}.form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.field{display:grid;gap:7px}.field label{font-size:12px;color:var(--sub);font-weight:800}.field input,.field select{height:40px;border:1px solid var(--line);border-radius:8px;padding:0 10px;background:#fff;color:var(--text);outline:none}.switch-row{display:grid;gap:10px}.toggle{min-height:54px;display:flex;justify-content:space-between;align-items:center;gap:14px;padding:14px 16px;border:1px solid var(--line);border-radius:8px;background:#fff;font-weight:700}.toggle input{width:44px;height:24px;accent-color:var(--teal)}.log-box{white-space:pre-wrap;background:var(--surface-soft);color:var(--text);padding:18px;border-radius:8px;height:320px;overflow-x:hidden;overflow-y:auto;overflow-wrap:anywhere;word-break:break-word;max-width:100%;line-height:1.65;border:1px solid var(--line);font-family:"Geist Mono",Consolas,monospace;font-size:13px}.progress-list{display:grid;gap:14px}.progress-account{border:1px solid var(--line);border-radius:8px;background:var(--surface-soft);padding:16px}.progress-account h3{margin:0 0 12px;font-size:15px}.progress-items{display:grid;gap:10px}.progress-row{display:grid;grid-template-columns:110px minmax(90px,1fr) 130px 80px;gap:12px;align-items:center;font-size:13px}.progress-row strong{font-size:13px}.progress-bar{height:8px;border-radius:99px;background:#e2eeeb;overflow:hidden}.progress-fill{height:100%;background:var(--teal);border-radius:99px}.progress-points{color:var(--teal-dark);font-weight:800}.progress-status{color:var(--sub);font-size:12px}.settings-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.setting-item{border:1px solid var(--line);border-radius:8px;background:var(--surface-soft);padding:16px}.setting-item span{display:block;color:var(--sub);font-size:12px;font-weight:800}.setting-item strong{display:block;margin-top:8px;color:var(--teal-dark);font:800 13px/1.3 "Geist Mono",Consolas,monospace;word-break:break-word}.modal{position:fixed;inset:0;background:rgba(10,31,28,.46);display:grid;place-items:center;padding:24px;z-index:20}.modal.hidden{display:none}.modal-card{width:min(760px,100%);max-height:calc(100vh - 48px);overflow:auto;background:#fff;border-radius:8px;padding:24px;box-shadow:0 24px 70px rgba(5,34,30,.22)}.modal-card h2{margin:0 0 18px}.modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px}.empty-state{padding:30px;text-align:center;color:var(--sub);background:var(--surface-soft);border:1px dashed var(--line);border-radius:8px}@media(max-width:1180px){.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.split-grid,.bottom-grid{grid-template-columns:1fr}}@media(max-width:820px){.app{grid-template-columns:1fr}.sidebar{position:static;padding:18px}.sidebar nav{grid-template-columns:repeat(2,minmax(0,1fr))}.sidebar-note{display:none}.topbar{height:auto;padding:22px;align-items:flex-start;gap:16px;flex-direction:column}.content-grid{padding:0 18px 28px}.metrics,.form-grid,.settings-list{grid-template-columns:1fr}.progress-row{grid-template-columns:1fr}.login-panel,.signin-shell .login-panel{padding:32px 24px}.auth-shape{display:none}}`
+.app{display:grid;grid-template-columns:272px minmax(0,1fr);min-height:100vh;background:var(--bg)}.sidebar{background:var(--surface);border-right:1px solid var(--line);padding:28px 22px;display:flex;flex-direction:column;gap:24px}.logo-row{display:flex;align-items:center;gap:12px;min-width:0}.logo-row strong{display:block;font-size:14px;font-weight:800;line-height:1.2}.logo-row span{display:block;margin-top:4px;color:var(--muted);font:12px/1.2 "Geist Mono",Consolas,monospace}.sidebar nav{display:grid;gap:12px}.nav-item{height:44px;border:0;border-radius:8px;background:transparent;display:flex;align-items:center;gap:12px;padding:0 14px;color:var(--sub);font-size:14px;font-weight:700;text-align:left}.nav-item.active{background:var(--teal-soft);color:var(--teal-dark);font-weight:800}.nav-icon{width:18px;height:18px;display:grid;place-items:center;color:inherit}.sidebar-note{margin-top:auto;border:1px solid var(--line);background:var(--surface-soft);border-radius:8px;padding:16px}.sidebar-note strong{font-size:13px}.sidebar-note p{margin:8px 0 0;color:var(--sub);font-size:12px;line-height:1.45}.main{min-width:0}.topbar{height:118px;display:flex;align-items:center;justify-content:space-between;padding:34px 46px 22px}.topbar h1{font-size:32px;line-height:1.1;margin:0 0 10px;font-weight:800}.topbar p{margin:0;color:var(--sub);font-size:14px}.top-actions{display:flex;align-items:center;gap:10px}.user-badge,.env-pill{height:36px;display:inline-flex;align-items:center;border-radius:8px;border:1px solid var(--line);background:var(--surface);padding:0 12px;color:var(--text);font-size:13px;font-weight:800}.env-pill{color:var(--sub);font:12px/1 "Geist Mono",Consolas,monospace}.icon-btn,.ghost-btn,.small-btn,.danger-btn{height:36px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--sub);padding:0 12px}.icon-btn{width:36px;padding:0}.danger-btn{color:var(--danger)}.view{display:none}.view.active{display:block}.content-grid{padding:0 46px 46px;display:grid;gap:24px}.metrics{display:grid;grid-template-columns:repeat(4,minmax(180px,1fr));gap:16px}.card{background:var(--surface);border:1px solid var(--line);border-radius:8px}.metric{min-height:132px;padding:22px;display:grid;grid-template-columns:44px 1fr;gap:16px;align-items:start}.metric-icon{width:42px;height:42px;border-radius:8px;background:var(--teal-soft);display:grid;place-items:center;color:var(--teal);font-weight:900}.metric small{display:block;color:var(--sub);font-size:13px}.metric strong{display:block;margin:8px 0 10px;font:800 28px/1 "Geist Mono",Consolas,monospace;color:var(--text)}.split-grid{display:grid;grid-template-columns:minmax(0,1fr) 474px;gap:24px}.bottom-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(360px,1fr);gap:24px}.section{padding:22px 26px}.section h2{font-size:20px;margin:0;color:var(--text)}.section-note{margin:8px 0 18px;color:var(--sub);font-size:13px;line-height:1.45}.toolbar{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:18px}.table-wrap{overflow:auto}.table{width:100%;border-collapse:collapse;min-width:820px}.table th,.table td{border-bottom:1px solid var(--line);padding:14px 12px;text-align:left;font-size:13px;white-space:nowrap}.table th{background:var(--surface-soft);color:var(--sub);font-weight:800}.pill,.status-pill{display:inline-flex;align-items:center;border-radius:999px;padding:4px 10px;background:var(--teal-soft);color:var(--teal-dark);font-weight:800;font-size:12px}.status-pill.state-unknown{background:#eef3f1;color:var(--sub)}.status-pill.state-checking,.status-pill.state-running{background:#e8f0ff;color:var(--blue)}.status-pill.state-valid,.status-pill.state-success{background:var(--teal-soft);color:var(--teal-dark)}.status-pill.state-error{background:#ffeceb;color:var(--danger)}.account-status{display:grid;gap:5px}.account-status small{color:var(--sub);font-size:12px;max-width:260px;overflow:hidden;text-overflow:ellipsis}.form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.field{display:grid;gap:7px}.field label{font-size:12px;color:var(--sub);font-weight:800}.field input,.field select{height:40px;border:1px solid var(--line);border-radius:8px;padding:0 10px;background:#fff;color:var(--text);outline:none}.switch-row{display:grid;gap:10px}.toggle{min-height:54px;display:flex;justify-content:space-between;align-items:center;gap:14px;padding:14px 16px;border:1px solid var(--line);border-radius:8px;background:#fff;font-weight:700}.toggle input{width:44px;height:24px;accent-color:var(--teal)}.log-box{white-space:pre-wrap;background:var(--surface-soft);color:var(--text);padding:18px;border-radius:8px;height:320px;overflow-x:hidden;overflow-y:auto;overflow-wrap:anywhere;word-break:break-word;max-width:100%;line-height:1.65;border:1px solid var(--line);font-family:"Geist Mono",Consolas,monospace;font-size:13px}.progress-list{display:grid;gap:14px}.progress-account{border:1px solid var(--line);border-radius:8px;background:var(--surface-soft);padding:16px}.progress-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}.progress-heading h3{margin:0;font-size:15px}.progress-heading span{color:var(--teal-dark);font-weight:800;font-size:13px;text-align:right}.progress-items{display:grid;gap:10px}.progress-row{display:grid;grid-template-columns:110px minmax(90px,1fr) 130px 100px;gap:12px;align-items:center;font-size:13px}.progress-row strong{font-size:13px}.progress-bar{height:8px;border-radius:99px;background:#e2eeeb;overflow:hidden}.progress-fill{height:100%;background:var(--teal);border-radius:99px}.progress-points{color:var(--teal-dark);font-weight:800}.progress-status{color:var(--sub);font-size:12px}.settings-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.setting-item{border:1px solid var(--line);border-radius:8px;background:var(--surface-soft);padding:16px}.setting-item span{display:block;color:var(--sub);font-size:12px;font-weight:800}.setting-item strong{display:block;margin-top:8px;color:var(--teal-dark);font:800 13px/1.3 "Geist Mono",Consolas,monospace;word-break:break-word}.modal{position:fixed;inset:0;background:rgba(10,31,28,.46);display:grid;place-items:center;padding:24px;z-index:20}.modal.hidden{display:none}.modal-card{width:min(760px,100%);max-height:calc(100vh - 48px);overflow:auto;background:#fff;border-radius:8px;padding:24px;box-shadow:0 24px 70px rgba(5,34,30,.22)}.modal-card h2{margin:0 0 18px}.modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px}.empty-state{padding:30px;text-align:center;color:var(--sub);background:var(--surface-soft);border:1px dashed var(--line);border-radius:8px}@media(max-width:1180px){.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.split-grid,.bottom-grid{grid-template-columns:1fr}}@media(max-width:820px){.app{grid-template-columns:1fr}.sidebar{position:static;padding:18px}.sidebar nav{grid-template-columns:repeat(2,minmax(0,1fr))}.sidebar-note{display:none}.topbar{height:auto;padding:22px;align-items:flex-start;gap:16px;flex-direction:column}.content-grid{padding:0 18px 28px}.metrics,.form-grid,.settings-list{grid-template-columns:1fr}.progress-row{grid-template-columns:1fr}.progress-heading{display:grid}.progress-heading span{text-align:left}.login-panel,.signin-shell .login-panel{padding:32px 24px}.auth-shape{display:none}}`
 }
 
 function clientJs(): string {
     return `
 let state = null;
 let pollTimer = null;
-const views = ['dashboard','accounts','tasks','system'];
-const titles = {dashboard:'仪表盘',accounts:'账号设置',tasks:'任务配置',system:'系统设置'};
+const views = ['dashboard','accounts','tasks','wecom','system'];
+const titles = {dashboard:'仪表盘',accounts:'账号设置',tasks:'任务配置',wecom:'企业微信推送',system:'系统设置'};
 const workerLabels = {
   doDailySet:'每日任务', doClaimBonusPoints:'领取奖励积分', doSpecialPromotions:'特殊活动',
   doMorePromotions:'更多推广', doPunchCards:'打卡活动', doAppPromotions:'App 活动',
@@ -1220,6 +1345,7 @@ const subtitles = {
   dashboard:'查看运行概况，维护账号、任务与系统参数。',
   accounts:'维护 Microsoft 账号，敏感字段保存后不在页面回显。',
   tasks:'调整任务开关、并发与延迟参数。',
+  wecom:'配置企业微信应用推送，账号完成后立即发送任务摘要。',
   system:'查看本地运行环境与基础设置。'
 };
 async function api(path, options = {}) {
@@ -1251,7 +1377,7 @@ document.querySelectorAll('.nav-item').forEach(btn => btn.addEventListener('clic
 el('logoutBtn').addEventListener('click', async () => { await api('/api/logout', {method:'POST', body:'{}'}); location.reload(); });
 function renderAll(){
   el('userBadge').textContent = state.user.username;
-  renderDashboard(); renderAccounts(); renderTasks(); renderSystem();
+  renderDashboard(); renderAccounts(); renderTasks(); renderWeCom(); renderSystem();
 }
 function metric(name,value,sub,icon){return '<article class="card metric"><div class="metric-icon">'+icon+'</div><div><small>'+name+'</small><strong>'+value+'</strong><small>'+sub+'</small></div></article>'}
 function safeStateClass(value){return String(value || 'unknown').replace(/[^a-z-]/g, '') || 'unknown'}
@@ -1281,17 +1407,23 @@ function settingsItems(){
     + '</div>';
 }
 function setting(name,value){return '<div class="setting-item"><span>'+esc(name)+'</span><strong>'+esc(value)+'</strong></div>'}
+function currentPointsLabel(group){
+  const current = Number(group.currentPoints || group.finalPoints || 0);
+  const initial = Number(group.initialPoints || 0);
+  const delta = current - initial;
+  return current > 0 || initial > 0 ? '当前总积分 '+current+(delta ? '，今日 '+(delta > 0 ? '+' : '')+delta : '') : '当前总积分未获取';
+}
 function progressRow(item){
   const total = Number(item.total || 0);
   const completed = Number(item.completed || 0);
-  const gained = Number(item.gained || completed || 0);
+  const gained = Number(item.gained || 0);
   const percent = total > 0 ? Math.max(0, Math.min(100, Math.round(completed / total * 100))) : (completed > 0 ? 100 : 0);
   return '<div class="progress-row"><strong>'+esc(item.label)+'</strong><div><div class="progress-bar"><div class="progress-fill" style="width:'+percent+'%"></div></div></div><span>'+completed+'/'+total+'</span><span class="progress-points">今日增加'+gained+'分</span></div>';
 }
 function taskProgress(){
   const groups = Array.isArray(state.taskProgress) ? state.taskProgress : [];
   if (!groups.length) return '<div class="empty-state">暂无账号任务进度</div>';
-  return '<div class="progress-list">'+groups.map(group => '<article class="progress-account"><h3>'+esc(group.accountLabel)+'</h3><div class="progress-items">'+group.items.map(progressRow).join('')+'</div></article>').join('')+'</div>';
+  return '<div class="progress-list">'+groups.map(group => '<article class="progress-account"><div class="progress-heading"><h3>'+esc(group.accountLabel)+'</h3><span>'+esc(currentPointsLabel(group))+'</span></div><div class="progress-items">'+group.items.map(progressRow).join('')+'</div></article>').join('')+'</div>';
 }
 function runControls(){
   const r = state.runState;
@@ -1368,6 +1500,32 @@ function renderTasks(){
   document.querySelector('#taskForm').addEventListener('submit', saveConfig);
   document.querySelector('#tasks #scheduleForm').addEventListener('submit', saveSchedule);
 }
+function renderWeCom(){
+  const w = state.wecom || {};
+  const secretHint = w.hasCorpSecret ? '已配置，不回显；填写新值会覆盖' : '请输入企业微信应用 Secret';
+  el('wecom').innerHTML = '<div class="content-grid">'
+    + '<div class="metrics">'
+    + metric('推送状态', w.enabled ? '已启用' : '未启用', w.hasCorpSecret ? '密钥已保存' : '缺少 corpsecret', '✉')
+    + metric('最近测试', '手动触发', '点击测试推送后查看企业微信', '✓')
+    + metric('反代模式', w.proxyMode === 'qinglong' ? '青龙反代' : '直连', w.proxyBaseUrl || 'qyapi.weixin.qq.com', '↔')
+    + metric('失败通知', '日志脱敏', '不会显示 token 或 secret', '◇')
+    + '</div>'
+    + '<section class="card section"><div class="toolbar"><div><h2>企业微信推送</h2><p class="section-note">账号任务完成后立即推送该账号的任务明细、任务前总积分、任务后总积分和本次增加积分。</p></div><div class="top-actions"><button id="wecomDiagnoseBtn" class="ghost-btn">网络诊断</button><button id="wecomTestBtn" class="ghost-btn">测试推送</button><button id="wecomClearBtn" class="danger-btn">清空配置</button></div></div>'
+    + '<form id="wecomForm"><div class="switch-row"><label class="toggle"><span>启用企业微信推送</span><input type="checkbox" name="enabled" '+(w.enabled?'checked':'')+'></label></div>'
+    + '<div class="form-grid" style="margin-top:16px">'
+    + field('corpId','corpid',w.corpId || '')
+    + field('agentId','agentid',w.agentId || '')
+    + field('corpSecret','corpsecret','', 'password', secretHint)
+    + field('toUser','touser',w.toUser || '@all')
+    + '<div class="field"><label>代理模式</label><select name="proxyMode"><option value="direct" '+(w.proxyMode !== 'qinglong'?'selected':'')+'>直连</option><option value="qinglong" '+(w.proxyMode === 'qinglong'?'selected':'')+'>青龙反代</option></select></div>'
+    + field('proxyBaseUrl','API 代理地址',w.proxyBaseUrl || '', 'text', '例如 https://example.com')
+    + '</div><p id="wecomMessage" class="form-message" aria-live="polite"></p><div class="modal-actions"><button class="primary-btn">保存配置</button></div></form></section>'
+    + '</div>';
+  document.querySelector('#wecomForm').addEventListener('submit', saveWeCom);
+  document.querySelector('#wecomDiagnoseBtn').addEventListener('click', diagnoseWeComPush);
+  document.querySelector('#wecomTestBtn').addEventListener('click', testWeComPush);
+  document.querySelector('#wecomClearBtn').addEventListener('click', clearWeCom);
+}
 async function saveConfig(event){
   event.preventDefault();
   const form = event.target;
@@ -1379,6 +1537,39 @@ async function saveConfig(event){
   data.clusters = Number(data.clusters || 1);
   await api('/api/config', {method:'POST', body:JSON.stringify(data)});
   await loadState(); switchView('tasks');
+}
+async function saveWeCom(event){
+  event.preventDefault();
+  const data = Object.fromEntries(new FormData(event.target).entries());
+  data.enabled = Boolean(event.target.elements.enabled.checked);
+  const result = await api('/api/wecom', {method:'POST', body:JSON.stringify(data)});
+  el('wecomMessage').textContent = '已保存企业微信配置';
+  await loadState(); switchView('wecom');
+}
+async function testWeComPush(){
+  const message = el('wecomMessage');
+  message.textContent = '正在发送测试推送...';
+  try {
+    const result = await api('/api/wecom/test', {method:'POST', body:'{}'});
+    message.textContent = result.message || '测试推送已发送';
+  } catch (error) {
+    message.textContent = error.message;
+  }
+}
+async function diagnoseWeComPush(){
+  const message = el('wecomMessage');
+  message.textContent = '正在进行网络诊断...';
+  try {
+    const result = await api('/api/wecom/diagnose', {method:'POST', body:'{}'});
+    message.textContent = result.message || '网络诊断完成';
+  } catch (error) {
+    message.textContent = error.message;
+  }
+}
+async function clearWeCom(){
+  if (!confirm('确认清空企业微信推送配置？')) return;
+  await api('/api/wecom/clear', {method:'POST', body:'{}'});
+  await loadState(); switchView('wecom');
 }
 async function runOnceNow(){
   await api('/api/run', {method:'POST', body:'{}'});

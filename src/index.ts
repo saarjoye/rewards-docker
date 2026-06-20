@@ -24,10 +24,11 @@ import AxiosClient from './util/Axios'
 import { sendDiscord, flushDiscordQueue } from './logging/Discord'
 import { sendNtfy, flushNtfyQueue } from './logging/Ntfy'
 import { sendPushPlus, flushPushPlusQueue } from './logging/PushPlus'
+import { sendWeCom, flushWeComQueue } from './logging/WeCom'
 import type { DashboardData } from './interface/DashboardData'
 import type { AppDashboardData } from './interface/AppDashBoardData'
 import { PanelFlyoutData } from './interface/PanelFlyoutData'
-import { updateAccountTaskProgress, updateTaskProgress } from './util/TaskProgressStore'
+import { updateAccountPointTotals, updateAccountTaskProgress, updateTaskProgress } from './util/TaskProgressStore'
 import { updateAccountStatus } from './util/AccountStatusStore'
 interface ExecutionContext {
     isMobile: boolean
@@ -44,9 +45,19 @@ interface AccountStats {
     initialPoints: number
     finalPoints: number
     collectedPoints: number
+    taskSummary: AccountTaskSummary[]
     duration: number
     success: boolean
     error?: string
+}
+
+interface AccountTaskSummary {
+    key: 'daily' | 'mobile' | 'desktop' | 'other'
+    label: string
+    completed?: number
+    total?: number
+    gained: number
+    status: string
 }
 
 const executionContext = new AsyncLocalStorage<ExecutionContext>()
@@ -60,7 +71,12 @@ export function getCurrentContext(): ExecutionContext {
 }
 
 async function flushAllWebhooks(timeoutMs = 5000): Promise<void> {
-    await Promise.allSettled([flushDiscordQueue(timeoutMs), flushNtfyQueue(timeoutMs), flushPushPlusQueue(timeoutMs)])
+    await Promise.allSettled([
+        flushDiscordQueue(timeoutMs),
+        flushNtfyQueue(timeoutMs),
+        flushPushPlusQueue(timeoutMs),
+        flushWeComQueue(timeoutMs)
+    ])
 }
 
 interface UserData {
@@ -171,6 +187,45 @@ export class MicrosoftRewardsBot {
         }
 
         return lines.join('\n')
+    }
+
+    private buildWeComAccountMessage(stat: AccountStats): string {
+        const timestamp = new Date().toLocaleString()
+        const status = stat.success ? '完成' : '失败'
+        const duration = Number.isFinite(stat.duration) ? stat.duration.toFixed(1) : String(stat.duration)
+        const lines: string[] = [
+            `Microsoft Rewards 账号任务${status}`,
+            `时间：${timestamp}`,
+            `账号：${stat.email}`,
+            `任务前总积分：${stat.initialPoints}`,
+            `任务后总积分：${stat.finalPoints}`,
+            `本次总增加：${stat.collectedPoints}`,
+            `耗时：${duration} 秒`
+        ]
+
+        if (stat.taskSummary.length > 0) {
+            lines.push('')
+            lines.push('任务明细：')
+            for (const task of stat.taskSummary) {
+                const progress =
+                    task.total !== undefined && task.completed !== undefined ? ` | 进度 ${task.completed}/${task.total}` : ''
+                lines.push(`- ${task.label}：+${task.gained} 分${progress} | ${task.status}`)
+            }
+        }
+
+        if (stat.error) {
+            lines.push('')
+            lines.push(`错误：${stat.error}`)
+        }
+
+        return lines.join('\n')
+    }
+
+    private async sendWeComAccountSummary(stat: AccountStats): Promise<void> {
+        const wecom = this.config?.webhook?.wecom
+        if (!wecom?.enabled) return
+
+        await sendWeCom(wecom, this.buildWeComAccountMessage(stat))
     }
 
     private async sendPushPlusSummary(
@@ -371,9 +426,14 @@ export class MicrosoftRewardsBot {
 
                 this.axios = new AxiosClient(account.proxy)
 
-                const result: { initialPoints: number; collectedPoints: number } | undefined = await this.Main(
-                    account
-                ).catch(error => {
+                const result:
+                    | {
+                          initialPoints: number
+                          finalPoints: number
+                          collectedPoints: number
+                          taskSummary: AccountTaskSummary[]
+                      }
+                    | undefined = await this.Main(account).catch(error => {
                     void this.logger.error(
                         true,
                         'FLOW',
@@ -387,31 +447,27 @@ export class MicrosoftRewardsBot {
                 if (result) {
                     const collectedPoints = result.collectedPoints ?? 0
                     const accountInitialPoints = result.initialPoints ?? 0
-                    const accountFinalPoints = accountInitialPoints + collectedPoints
+                    const accountFinalPoints = result.finalPoints ?? accountInitialPoints + collectedPoints
                     const statusMessage =
                         process.env.ACCOUNT_STATUS_CHECK_ONLY === 'true'
                             ? '账号状态检测通过'
                             : `任务已完成，今日增加 ${collectedPoints} 分`
-                    updateTaskProgress(accountEmail, 'daily', {
-                        completed: collectedPoints,
-                        total: collectedPoints,
-                        gained: collectedPoints,
-                        status: '已完成'
-                    })
                     updateAccountStatus(accountEmail, {
                         state: 'success',
                         stage: process.env.ACCOUNT_STATUS_CHECK_ONLY === 'true' ? 'status-check' : 'account-end',
                         lastMessage: statusMessage
                     })
 
-                    accountStats.push({
+                    const stat: AccountStats = {
                         email: accountEmail,
                         initialPoints: accountInitialPoints,
                         finalPoints: accountFinalPoints,
                         collectedPoints: collectedPoints,
+                        taskSummary: result.taskSummary,
                         duration: parseFloat(durationSeconds),
                         success: true
-                    })
+                    }
+                    accountStats.push(stat)
 
                     this.logger.info(
                         'main',
@@ -419,6 +475,7 @@ export class MicrosoftRewardsBot {
                         `已完成账户: ${accountEmail} | 总计: +${collectedPoints} | 原始: ${accountInitialPoints} → 新值: ${accountFinalPoints} | 持续时间: ${durationSeconds}秒`,
                         'green'
                     )
+                    await this.sendWeComAccountSummary(stat)
                 } else {
                     updateAccountStatus(accountEmail, {
                         state: 'error',
@@ -426,15 +483,18 @@ export class MicrosoftRewardsBot {
                         lastMessage: '账号流程失败，请查看运行日志',
                         error: '流程失败'
                     })
-                    accountStats.push({
+                    const stat: AccountStats = {
                         email: accountEmail,
                         initialPoints: 0,
                         finalPoints: 0,
                         collectedPoints: 0,
+                        taskSummary: [],
                         duration: parseFloat(durationSeconds),
                         success: false,
                         error: '流程失败'
-                    })
+                    }
+                    accountStats.push(stat)
+                    await this.sendWeComAccountSummary(stat)
                 }
             } catch (error) {
                 const durationSeconds = ((Date.now() - accountStartTime) / 1000).toFixed(1)
@@ -451,15 +511,18 @@ export class MicrosoftRewardsBot {
                     `${accountEmail}: ${message}`
                 )
 
-                accountStats.push({
+                const stat: AccountStats = {
                     email: accountEmail,
                     initialPoints: 0,
                     finalPoints: 0,
                     collectedPoints: 0,
+                    taskSummary: [],
                     duration: parseFloat(durationSeconds),
                     success: false,
                     error: message
-                })
+                }
+                accountStats.push(stat)
+                await this.sendWeComAccountSummary(stat)
             }
         }
 
@@ -486,7 +549,12 @@ export class MicrosoftRewardsBot {
         return accountStats
     }
 
-    async Main(account: Account): Promise<{ initialPoints: number; collectedPoints: number }> {
+    async Main(account: Account): Promise<{
+        initialPoints: number
+        finalPoints: number
+        collectedPoints: number
+        taskSummary: AccountTaskSummary[]
+    }> {
         const accountEmail = account.email
         this.logger.info('main', 'FLOW', `开始为 ${accountEmail} 创建会话`)
 
@@ -549,6 +617,13 @@ export class MicrosoftRewardsBot {
                 this.userData.initialPoints = data.userStatus.availablePoints
                 this.userData.currentPoints = data.userStatus.availablePoints
                 const initialPoints = this.userData.initialPoints ?? 0
+                const taskSummary: AccountTaskSummary[] = []
+                let dailyGainedPoints = 0
+                updateAccountPointTotals(accountEmail, {
+                    initialPoints,
+                    currentPoints: initialPoints,
+                    finalPoints: initialPoints
+                })
                 updateAccountStatus(accountEmail, {
                     state: 'running',
                     stage: 'dashboard',
@@ -562,7 +637,7 @@ export class MicrosoftRewardsBot {
                     mobile: {
                         completed: initialMobileProgress,
                         total: initialMobileSearch?.pointProgressMax ?? 0,
-                        gained: initialMobileProgress,
+                        gained: 0,
                         status:
                             initialMobileSearch && initialMobileSearch.pointProgress < initialMobileSearch.pointProgressMax
                                 ? '进行中'
@@ -571,7 +646,7 @@ export class MicrosoftRewardsBot {
                     desktop: {
                         completed: initialPcProgress,
                         total: initialPcSearch?.pointProgressMax ?? 0,
-                        gained: initialPcProgress,
+                        gained: 0,
                         status:
                             initialPcSearch && initialPcSearch.pointProgress < initialPcSearch.pointProgressMax
                                 ? '进行中'
@@ -601,25 +676,84 @@ export class MicrosoftRewardsBot {
                     this.logger.info('main', 'ACCOUNT-CHECK', `账号状态检测通过 | ${accountEmail}`)
                     return {
                         initialPoints,
-                        collectedPoints: 0
+                        finalPoints: initialPoints,
+                        collectedPoints: 0,
+                        taskSummary: [
+                            {
+                                key: 'other',
+                                label: '账号状态检测',
+                                gained: 0,
+                                status: '通过'
+                            }
+                        ]
                     }
+                }
+
+                const getLatestPoints = async (fallback: number): Promise<number> => {
+                    try {
+                        return await this.browser.func.getCurrentPoints()
+                    } catch {
+                        return fallback
+                    }
+                }
+                const runPointTask = async (label: string, fn: () => Promise<void>): Promise<void> => {
+                    const before = Number(this.userData.currentPoints ?? initialPoints)
+                    await fn()
+                    const after = await getLatestPoints(before)
+                    const gained = Math.max(0, after - before)
+                    this.userData.currentPoints = after
+                    dailyGainedPoints += gained
+                    taskSummary.push({
+                        key: 'daily',
+                        label,
+                        gained,
+                        status: '已完成'
+                    })
+                    updateTaskProgress(accountEmail, 'daily', {
+                        completed: dailyGainedPoints,
+                        total: dailyGainedPoints,
+                        gained: dailyGainedPoints,
+                        status: '进行中'
+                    })
+                    updateAccountPointTotals(accountEmail, { currentPoints: after, finalPoints: after })
                 }
 
                 // Ensure streak protection is true if enabled
                 if (this.config.ensureStreakProtection) {
-                    await this.activities.doStreakProtection()
+                    await runPointTask('连击保护', async () => this.activities.doStreakProtection())
                 }
-                if (this.config.workers.doClaimBonusPoints) await this.workers.doClaimBonusPoints(data)
-                if (this.config.workers.doAppPromotions) await this.workers.doAppPromotions(appData)
-                if (this.config.workers.doDailySet) await this.workers.doDailySet(data, this.mainMobilePage)
-                if (this.config.workers.doSpecialPromotions) await this.workers.doSpecialPromotions(data)
-                if (this.config.workers.doMorePromotions) await this.workers.doMorePromotions(data, this.mainMobilePage)
-                if (this.config.workers.doDailyCheckIn) await this.activities.doDailyCheckIn()
-                if (this.config.workers.doReadToEarn) await this.activities.doReadToEarn()
-                if (this.config.workers.doPunchCards) await this.workers.doPunchCards(data, this.mainMobilePage)
+                if (this.config.workers.doClaimBonusPoints) {
+                    await runPointTask('领取奖励积分', async () => this.workers.doClaimBonusPoints(data))
+                }
+                if (this.config.workers.doAppPromotions) {
+                    await runPointTask('App 活动', async () => this.workers.doAppPromotions(appData))
+                }
+                if (this.config.workers.doDailySet) {
+                    await runPointTask('每日任务', async () => this.workers.doDailySet(data, this.mainMobilePage))
+                }
+                if (this.config.workers.doSpecialPromotions) {
+                    await runPointTask('特殊活动', async () => this.workers.doSpecialPromotions(data))
+                }
+                if (this.config.workers.doMorePromotions) {
+                    await runPointTask('更多推广', async () =>
+                        this.workers.doMorePromotions(data, this.mainMobilePage)
+                    )
+                }
+                if (this.config.workers.doDailyCheckIn) {
+                    await runPointTask('每日签到', async () => this.activities.doDailyCheckIn())
+                }
+                if (this.config.workers.doReadToEarn) {
+                    await runPointTask('阅读赚取', async () => this.activities.doReadToEarn())
+                }
+                if (this.config.workers.doPunchCards) {
+                    await runPointTask('打卡活动', async () => this.workers.doPunchCards(data, this.mainMobilePage))
+                }
 
                 const searchPoints = await this.browser.func.getSearchPoints()
                 const missingSearchPoints = this.browser.func.missingSearchPoints(searchPoints, true)
+                const searchStartPoints = await getLatestPoints(Number(this.userData.currentPoints ?? initialPoints))
+                this.userData.currentPoints = searchStartPoints
+                updateAccountPointTotals(accountEmail, { currentPoints: searchStartPoints, finalPoints: searchStartPoints })
 
                 this.cookies.mobile = await initialContext.cookies()
 
@@ -633,26 +767,100 @@ export class MicrosoftRewardsBot {
 
                 mobileContextClosed = true
 
-                this.userData.gainedPoints = mobilePoints + desktopPoints
-
                 const finalPoints = await this.browser.func.getCurrentPoints()
-                const collectedPoints = finalPoints - initialPoints
+                const collectedPoints = Math.max(0, finalPoints - initialPoints)
+                const searchGainedPoints = Math.max(0, finalPoints - searchStartPoints)
+                const estimatedSearchPoints = Math.max(0, mobilePoints) + Math.max(0, desktopPoints)
+                let mobileGainedPoints = 0
+                let desktopGainedPoints = 0
+                let otherGainedPoints = 0
+                if (searchGainedPoints > 0 && estimatedSearchPoints > 0) {
+                    mobileGainedPoints = Math.round((searchGainedPoints * Math.max(0, mobilePoints)) / estimatedSearchPoints)
+                    desktopGainedPoints = searchGainedPoints - mobileGainedPoints
+                } else if (searchGainedPoints > 0 && mobilePoints > 0) {
+                    mobileGainedPoints = searchGainedPoints
+                } else if (searchGainedPoints > 0 && desktopPoints > 0) {
+                    desktopGainedPoints = searchGainedPoints
+                } else {
+                    otherGainedPoints = searchGainedPoints
+                }
+
+                const finalSearchPoints = await this.browser.func.getSearchPoints().catch(() => searchPoints)
+                const finalMobileSearch = finalSearchPoints.mobileSearch?.[0]
+                const finalPcSearch = finalSearchPoints.pcSearch?.[0]
+                updateAccountTaskProgress(accountEmail, {
+                    mobile: {
+                        completed: finalMobileSearch?.pointProgress ?? initialMobileProgress,
+                        total: finalMobileSearch?.pointProgressMax ?? initialMobileSearch?.pointProgressMax ?? 0,
+                        gained: mobileGainedPoints,
+                        status:
+                            finalMobileSearch && finalMobileSearch.pointProgress < finalMobileSearch.pointProgressMax
+                                ? '进行中'
+                                : '已完成'
+                    },
+                    desktop: {
+                        completed: finalPcSearch?.pointProgress ?? initialPcProgress,
+                        total: finalPcSearch?.pointProgressMax ?? initialPcSearch?.pointProgressMax ?? 0,
+                        gained: desktopGainedPoints,
+                        status:
+                            finalPcSearch && finalPcSearch.pointProgress < finalPcSearch.pointProgressMax
+                                ? '进行中'
+                                : '已完成'
+                    },
+                    daily: {
+                        completed: dailyGainedPoints,
+                        total: dailyGainedPoints,
+                        gained: dailyGainedPoints,
+                        status: '已完成'
+                    }
+                })
+                updateAccountPointTotals(accountEmail, {
+                    currentPoints: finalPoints,
+                    finalPoints
+                })
+
+                taskSummary.push({
+                    key: 'mobile',
+                    label: '移动搜索',
+                    completed: finalMobileSearch?.pointProgress ?? initialMobileProgress,
+                    total: finalMobileSearch?.pointProgressMax ?? initialMobileSearch?.pointProgressMax ?? 0,
+                    gained: mobileGainedPoints,
+                    status: '已完成'
+                })
+                taskSummary.push({
+                    key: 'desktop',
+                    label: 'PC 搜索',
+                    completed: finalPcSearch?.pointProgress ?? initialPcProgress,
+                    total: finalPcSearch?.pointProgressMax ?? initialPcSearch?.pointProgressMax ?? 0,
+                    gained: desktopGainedPoints,
+                    status: '已完成'
+                })
+                if (otherGainedPoints > 0) {
+                    taskSummary.push({
+                        key: 'other',
+                        label: '其他积分变化',
+                        gained: otherGainedPoints,
+                        status: '已记录'
+                    })
+                }
                 updateTaskProgress(accountEmail, 'daily', {
-                    completed: collectedPoints,
-                    total: collectedPoints,
-                    gained: collectedPoints,
+                    completed: dailyGainedPoints,
+                    total: dailyGainedPoints,
+                    gained: dailyGainedPoints,
                     status: '已完成'
                 })
 
                 this.logger.info(
                     'main',
                     'FLOW',
-                    `已收集: +${collectedPoints} | 移动端: +${mobilePoints} | 桌面端: +${desktopPoints} | ${accountEmail}`
+                    `已收集: +${collectedPoints} | 日常: +${dailyGainedPoints} | 移动端: +${mobileGainedPoints} | 桌面端: +${desktopGainedPoints} | ${accountEmail}`
                 )
 
                 return {
                     initialPoints,
-                    collectedPoints: collectedPoints || 0
+                    finalPoints,
+                    collectedPoints,
+                    taskSummary
                 }
             })
         } finally {

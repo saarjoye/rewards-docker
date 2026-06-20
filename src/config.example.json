@@ -79,6 +79,15 @@
             "title": "Microsoft-Rewards-Script",
             "template": "txt"
         },
+        "wecom": {
+            "enabled": false,
+            "corpId": "",
+            "agentId": "",
+            "corpSecret": "",
+            "toUser": "@all",
+            "proxyMode": "direct",
+            "proxyBaseUrl": ""
+        },
         "webhookLogFilter": {
             "enabled": false,
             "mode": "whitelist",

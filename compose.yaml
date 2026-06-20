@@ -55,6 +55,15 @@ services:
             # CONFIG_PUSHPLUS_ENABLED: "true"
             # CONFIG_PUSHPLUS_TOKEN: ""
 
+            # Enterprise WeChat webhook (can also be configured in the Web backend)
+            # CONFIG_WECOM_ENABLED: "true"
+            # CONFIG_WECOM_CORP_ID: ""
+            # CONFIG_WECOM_AGENT_ID: ""
+            # CONFIG_WECOM_CORP_SECRET: ""
+            # CONFIG_WECOM_TO_USER: "@all"
+            # CONFIG_WECOM_PROXY_MODE: "direct"
+            # CONFIG_WECOM_PROXY_BASE_URL: ""
+
             # Discord webhook
             # CONFIG_DISCORD_ENABLED: "true"
             # CONFIG_DISCORD_URL: "https://discord.com/api/webhooks/..."

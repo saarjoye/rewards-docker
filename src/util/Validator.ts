@@ -50,6 +50,17 @@ const WebhookSchema = z.object({
             channel: z.string().optional()
         })
         .optional(),
+    wecom: z
+        .object({
+            enabled: z.boolean().optional(),
+            corpId: z.string(),
+            agentId: z.union([z.string(), z.number()]),
+            corpSecret: z.string(),
+            toUser: z.string(),
+            proxyMode: z.enum(['direct', 'qinglong']).optional(),
+            proxyBaseUrl: z.string().optional()
+        })
+        .optional(),
     webhookLogFilter: LogFilterSchema
 })
 
@@ -159,6 +170,15 @@ const defaultConfig: Config = {
         regexPatterns: []
     },
     webhook: {
+        wecom: {
+            enabled: false,
+            corpId: '',
+            agentId: '',
+            corpSecret: '',
+            toUser: '',
+            proxyMode: 'direct',
+            proxyBaseUrl: ''
+        },
         webhookLogFilter: {
             enabled: false,
             mode: 'whitelist',

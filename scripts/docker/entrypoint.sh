@@ -249,7 +249,14 @@ _cfg() {
       jq --arg v "$val" "$path = \$v" "$CONFIG_FILE" > "$CONFIG_FILE.tmp" && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
       ;;
   esac
-  echo "[entrypoint]   $path = $val"
+  case "$path" in
+    *token*|*Token*|*secret*|*Secret*|*password*|*Password*)
+      echo "[entrypoint]   $path = [REDACTED]"
+      ;;
+    *)
+      echo "[entrypoint]   $path = $val"
+      ;;
+  esac
 }
 
 # headless is always forced true — cannot run headed inside Docker
@@ -329,6 +336,15 @@ _cfg "${CONFIG_PUSHPLUS_TOKEN:-}"     '.webhook.pushplus.token'     string
 _cfg "${CONFIG_PUSHPLUS_TITLE:-}"     '.webhook.pushplus.title'     string
 _cfg "${CONFIG_PUSHPLUS_TEMPLATE:-}"  '.webhook.pushplus.template'  string
 _cfg "${CONFIG_PUSHPLUS_CHANNEL:-}"   '.webhook.pushplus.channel'   string
+
+# Enterprise WeChat webhook
+_cfg "${CONFIG_WECOM_ENABLED:-}"        '.webhook.wecom.enabled'       bool
+_cfg "${CONFIG_WECOM_CORP_ID:-}"        '.webhook.wecom.corpId'        string
+_cfg "${CONFIG_WECOM_AGENT_ID:-}"       '.webhook.wecom.agentId'       string
+_cfg "${CONFIG_WECOM_CORP_SECRET:-}"    '.webhook.wecom.corpSecret'    string
+_cfg "${CONFIG_WECOM_TO_USER:-}"        '.webhook.wecom.toUser'        string
+_cfg "${CONFIG_WECOM_PROXY_MODE:-}"     '.webhook.wecom.proxyMode'     string
+_cfg "${CONFIG_WECOM_PROXY_BASE_URL:-}" '.webhook.wecom.proxyBaseUrl'  string
 
 # Webhook log filter
 _cfg "${CONFIG_WEBHOOK_LOG_FILTER_ENABLED:-}"  '.webhook.webhookLogFilter.enabled'  bool

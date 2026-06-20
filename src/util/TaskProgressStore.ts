@@ -12,6 +12,9 @@ export interface StoredTaskProgressItem {
 export interface StoredAccountTaskProgress {
     accountHash: string
     updatedAt: string
+    initialPoints: number
+    currentPoints: number
+    finalPoints: number
     desktop: StoredTaskProgressItem
     mobile: StoredTaskProgressItem
     daily: StoredTaskProgressItem
@@ -38,6 +41,9 @@ function emptyAccount(accountHash: string): StoredAccountTaskProgress {
     return {
         accountHash,
         updatedAt: new Date().toISOString(),
+        initialPoints: 0,
+        currentPoints: 0,
+        finalPoints: 0,
         desktop: emptyItem(),
         mobile: emptyItem(),
         daily: emptyItem()
@@ -104,6 +110,25 @@ export function updateAccountTaskProgress(
     for (const [task, item] of Object.entries(patch) as Array<[ProgressTaskKey, Partial<StoredTaskProgressItem>]>) {
         updateTaskProgress(email, task, item)
     }
+}
+
+export function updateAccountPointTotals(
+    email: string,
+    patch: Partial<Pick<StoredAccountTaskProgress, 'initialPoints' | 'currentPoints' | 'finalPoints'>>
+): void {
+    const data = readProgressFile()
+    const accountHash = accountProgressHash(email)
+    let account = data.accounts.find(item => item.accountHash === accountHash)
+    if (!account) {
+        account = emptyAccount(accountHash)
+        data.accounts.push(account)
+    }
+
+    account.initialPoints = Math.max(0, Number(patch.initialPoints ?? account.initialPoints ?? 0))
+    account.currentPoints = Math.max(0, Number(patch.currentPoints ?? account.currentPoints ?? 0))
+    account.finalPoints = Math.max(0, Number(patch.finalPoints ?? account.finalPoints ?? 0))
+    account.updatedAt = new Date().toISOString()
+    writeProgressFile(data)
 }
 
 export function updateSearchTaskProgress(

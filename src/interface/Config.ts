@@ -61,6 +61,7 @@ export interface ConfigWebhook {
     discord?: WebhookDiscordConfig
     ntfy?: WebhookNtfyConfig
     pushplus?: WebhookPushPlusConfig
+    wecom?: WebhookWeComConfig
     webhookLogFilter: LogFilter
 }
 
@@ -93,4 +94,14 @@ export interface WebhookPushPlusConfig {
     title?: string
     template?: 'txt' | 'html' | 'markdown'
     channel?: string
+}
+
+export interface WebhookWeComConfig {
+    enabled?: boolean
+    corpId: string
+    agentId: string | number
+    corpSecret: string
+    toUser: string
+    proxyMode?: 'direct' | 'qinglong'
+    proxyBaseUrl?: string
 }

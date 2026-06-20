@@ -23,6 +23,14 @@ interface SearchResults {
 export class SearchManager {
     constructor(private bot: MicrosoftRewardsBot) {}
 
+    private async readCurrentPoints(): Promise<number | null> {
+        try {
+            return await this.bot.browser.func.getCurrentPoints()
+        } catch {
+            return null
+        }
+    }
+
     async doSearches(
         data: DashboardData,
         missingSearchPoints: MissingSearchPoints,
@@ -336,13 +344,21 @@ export class SearchManager {
                 'SEARCH-MANAGER',
                 `串行移动端 | 目标=${missingSearchPoints.mobilePoints}`
             )
-            mobilePoints = await this.doMobileSearch(
+            const beforePoints = Number(this.bot.userData.currentPoints ?? 0)
+            const reportedPoints = await this.doMobileSearch(
                 data,
                 missingSearchPoints,
                 mobileSession,
                 accountEmail,
                 executionContext
             )
+            const afterPoints = await this.readCurrentPoints()
+            if (afterPoints !== null) {
+                mobilePoints = Math.max(0, afterPoints - beforePoints)
+                this.bot.userData.currentPoints = afterPoints
+            } else {
+                mobilePoints = reportedPoints
+            }
             updateSearchTaskProgress(
                 accountEmail,
                 'mobile',
@@ -383,13 +399,21 @@ export class SearchManager {
                 'SEARCH-MANAGER',
                 `串行桌面端 | 目标=${missingSearchPoints.desktopPoints}`
             )
-            desktopPoints = await this.doDesktopSearchSequential(
+            const beforePoints = Number(this.bot.userData.currentPoints ?? 0)
+            const reportedPoints = await this.doDesktopSearchSequential(
                 data,
                 missingSearchPoints,
                 account,
                 accountEmail,
                 executionContext
             )
+            const afterPoints = await this.readCurrentPoints()
+            if (afterPoints !== null) {
+                desktopPoints = Math.max(0, afterPoints - beforePoints)
+                this.bot.userData.currentPoints = afterPoints
+            } else {
+                desktopPoints = reportedPoints
+            }
             updateSearchTaskProgress(
                 accountEmail,
                 'desktop',
