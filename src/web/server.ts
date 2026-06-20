@@ -58,14 +58,18 @@ interface RunState {
     finishedAt?: string
     exitCode?: number | null
     lastMessage: string
+    recentLog?: string[]
 }
 
 const runtimeRoot = path.resolve(__dirname, '..')
 const appRoot = path.resolve(__dirname, '..', '..')
-const authFile = path.join(runtimeRoot, 'web-auth.json')
+const runtimeConfigDir = path.join(runtimeRoot, 'config')
+const legacyAuthFile = path.join(runtimeRoot, 'web-auth.json')
+const authFile = path.join(runtimeConfigDir, 'web-auth.json')
 const accountsFile = path.join(runtimeRoot, 'accounts.json')
 const configFile = path.join(runtimeRoot, 'config.json')
 const scheduleFile = path.join(runtimeRoot, 'config', 'schedule.json')
+const manualRunLogFile = path.join(appRoot, 'logs', 'manual-run.log')
 const configExampleFile = path.join(runtimeRoot, 'config.example.json')
 const configExampleFallbacks = [
     configExampleFile,
@@ -77,10 +81,18 @@ let runState: RunState = { running: false, lastMessage: '暂无手动运行记�
 const SESSION_COOKIE = 'mrs_session'
 const SESSION_TTL_MS = 1000 * 60 * 60 * 12
 const MAX_BODY_BYTES = 1024 * 1024
+const MAX_RUN_LOG_LINES = 160
+const MAX_RUN_LOG_BYTES = 256 * 1024
 
 function ensureRuntimeFiles(): void {
     if (!fs.existsSync(runtimeRoot)) {
         fs.mkdirSync(runtimeRoot, { recursive: true })
+    }
+    if (!fs.existsSync(runtimeConfigDir)) {
+        fs.mkdirSync(runtimeConfigDir, { recursive: true })
+    }
+    if (!fs.existsSync(authFile) && fs.existsSync(legacyAuthFile)) {
+        fs.copyFileSync(legacyAuthFile, authFile)
     }
 
     if (!fs.existsSync(configFile)) {
@@ -156,6 +168,49 @@ function saveSchedule(schedule: string): ScheduleFile {
     return next
 }
 
+function stripAnsi(value: string): string {
+    return value.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
+}
+
+function redactLogLine(line: string): string {
+    return stripAnsi(line)
+        .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, email => maskEmail(email))
+        .replace(
+            /\b(password|passwd|pwd|token|secret|cookie|authorization)(\s*[:=]\s*)([^\s|]+)/gi,
+            '$1$2[REDACTED]'
+        )
+}
+
+function appendManualRunLog(lines: string[]): void {
+    if (lines.length === 0) return
+    try {
+        fs.mkdirSync(path.dirname(manualRunLogFile), { recursive: true })
+        fs.appendFileSync(manualRunLogFile, `${lines.join('\n')}\n`, 'utf8')
+    } catch {}
+}
+
+function collectRunOutput(chunk: Buffer | string, stream: NodeJS.WriteStream): void {
+    const lines = chunk
+        .toString()
+        .split(/\r?\n/)
+        .map(redactLogLine)
+        .map(line => line.trimEnd())
+        .filter(line => line.trim().length > 0)
+
+    if (lines.length === 0) return
+
+    const stamped = lines.map(line => `[${new Date().toISOString()}] ${line}`)
+    runState = {
+        ...runState,
+        lastMessage: stamped[stamped.length - 1] ?? runState.lastMessage,
+        recentLog: [...(runState.recentLog ?? []), ...stamped].slice(-MAX_RUN_LOG_LINES)
+    }
+    appendManualRunLog(stamped)
+    for (const line of stamped) {
+        stream.write(`${line}\n`)
+    }
+}
+
 function runOnce(): RunState {
     if (runState.running) {
         return runState
@@ -168,29 +223,55 @@ function runOnce(): RunState {
 
     const child = spawn('bash', [script], {
         cwd: appRoot,
-        detached: true,
-        stdio: 'ignore',
+        stdio: ['ignore', 'pipe', 'pipe'],
         env: { ...process.env, SKIP_RANDOM_SLEEP: 'true' }
     })
 
+    const startedLine = `[${new Date().toISOString()}] 手动运行已启动，PID ${child.pid}`
     runState = {
         running: true,
         pid: child.pid,
         startedAt: new Date().toISOString(),
         exitCode: null,
-        lastMessage: `手动运行已启动，PID ${child.pid}`
+        lastMessage: `手动运行已启动，PID ${child.pid}`,
+        recentLog: [startedLine]
     }
+    appendManualRunLog([startedLine])
 
-    child.on('exit', code => {
+    child.stdout?.on('data', chunk => collectRunOutput(chunk, process.stdout))
+    child.stderr?.on('data', chunk => collectRunOutput(chunk, process.stderr))
+    child.on('error', error => {
+        const message = `手动运行启动失败：${error.message}`
+        runState = {
+            ...runState,
+            running: false,
+            finishedAt: new Date().toISOString(),
+            exitCode: -1,
+            lastMessage: message,
+            recentLog: [...(runState.recentLog ?? []), `[${new Date().toISOString()}] ${message}`].slice(
+                -MAX_RUN_LOG_LINES
+            )
+        }
+        appendManualRunLog([`[${new Date().toISOString()}] ${message}`])
+    })
+
+    child.on('close', (code, signal) => {
+        const message =
+            code === 0 && !signal
+                ? '手动运行已完成'
+                : `手动运行结束，退出码 ${code ?? 'n/a'}${signal ? `，信号 ${signal}` : ''}`
         runState = {
             ...runState,
             running: false,
             finishedAt: new Date().toISOString(),
             exitCode: code,
-            lastMessage: code === 0 ? '手动运行已完成' : `手动运行结束，退出码 ${code}`
+            lastMessage: message,
+            recentLog: [...(runState.recentLog ?? []), `[${new Date().toISOString()}] ${message}`].slice(
+                -MAX_RUN_LOG_LINES
+            )
         }
+        appendManualRunLog([`[${new Date().toISOString()}] ${message}`])
     })
-    child.unref()
     return runState
 }
 
@@ -673,6 +754,10 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
 }
 
 function readLastRunSummary(): string {
+    if (runState.recentLog?.length) {
+        return runState.recentLog.slice(-80).join('\n')
+    }
+
     const logDir = path.resolve(process.cwd(), 'logs')
     if (!fs.existsSync(logDir)) return '暂无本地日志'
 
@@ -683,12 +768,20 @@ function readLastRunSummary(): string {
         .reverse()
 
     for (const file of files) {
-        const content = fs.readFileSync(path.join(logDir, file), 'utf8')
+        const filePath = path.join(logDir, file)
+        const stat = fs.statSync(filePath)
+        const start = Math.max(0, stat.size - MAX_RUN_LOG_BYTES)
+        const fd = fs.openSync(filePath, 'r')
+        const buffer = Buffer.alloc(stat.size - start)
+        fs.readSync(fd, buffer, 0, buffer.length, start)
+        fs.closeSync(fd)
+        const content = buffer.toString('utf8')
         const lines = content
             .split(/\r?\n/)
-            .filter(line => /RUN-END|ACCOUNT-END|MAIN-ERROR|UNHANDLED-REJECTION/.test(line))
-            .slice(-1)
-        if (lines[0]) return lines[0].slice(0, 180)
+            .map(redactLogLine)
+            .filter(line => line.trim().length > 0)
+            .slice(-80)
+        if (lines.length > 0) return lines.join('\n')
     }
 
     return '暂无完成记录'
@@ -821,6 +914,7 @@ function baseCss(): string {
 function clientJs(): string {
     return `
 let state = null;
+let pollTimer = null;
 const views = ['dashboard','accounts','tasks','logs','system'];
 const titles = {dashboard:'仪表盘',accounts:'账号设置',tasks:'任务配置',logs:'运行日志',system:'系统设置'};
 const workerLabels = {
@@ -845,7 +939,16 @@ async function api(path, options = {}) {
 }
 function el(id){return document.getElementById(id)}
 function esc(v){return String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-async function loadState(){ state = await api('/api/state'); renderAll(); }
+async function loadState(){ state = await api('/api/state'); renderAll(); updateRunPolling(); }
+function updateRunPolling(){
+  if (state?.runState?.running && !pollTimer) {
+    pollTimer = setInterval(() => loadState().catch(() => {}), 3000);
+  }
+  if (!state?.runState?.running && pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+}
 function switchView(view){
   views.forEach(v => el(v).classList.toggle('active', v === view));
   document.querySelectorAll('.nav-item').forEach(btn => btn.classList.toggle('active', btn.dataset.view === view));
@@ -879,12 +982,13 @@ function settingsItems(){
 function setting(name,value){return '<div class="setting-item"><span>'+esc(name)+'</span><strong>'+esc(value)+'</strong></div>'}
 function runControls(){
   const r = state.runState;
+  const recent = Array.isArray(r.recentLog) && r.recentLog.length ? r.recentLog.slice(-18).join('\\n') : state.stats.lastRun;
   return '<section class="card section"><div class="toolbar"><div><h2>运行控制</h2><p class="section-note">立即执行会跳过随机休眠，并使用任务锁避免和定时任务并发。</p></div><button id="runOnceBtn" class="primary-btn" '+(r.running?'disabled':'')+'>立即执行一次</button></div><div class="settings-list">'
     + setting('运行状态', r.running ? '运行中' : '空闲')
     + setting('最近消息', r.lastMessage || '-')
     + setting('当前定时', state.schedule.schedule)
     + setting('时区', state.schedule.timezone)
-    + '</div></section>';
+    + '</div><div class="log-box" style="margin-top:16px;min-height:160px">'+esc(recent)+'</div></section>';
 }
 function scheduleForm(){
   return '<form id="scheduleForm" class="card section"><h2>定时设置</h2><p class="section-note">填写 5 段 cron 表达式，保存后容器内 cron 会即时重载。例：0 7 * * *</p><div class="form-grid"><div class="field"><label>CRON_SCHEDULE</label><input name="schedule" value="'+esc(state.schedule.schedule)+'" placeholder="0 7 * * *"></div><div class="field"><label>时区</label><input value="'+esc(state.schedule.timezone)+'" disabled></div></div><div class="modal-actions"><button class="primary-btn">保存定时</button></div></form>';
@@ -965,6 +1069,7 @@ async function saveConfig(event){
 async function runOnceNow(){
   await api('/api/run', {method:'POST', body:'{}'});
   await loadState();
+  updateRunPolling();
   switchView('dashboard');
 }
 async function saveSchedule(event){

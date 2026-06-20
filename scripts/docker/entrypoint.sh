@@ -108,8 +108,12 @@ if [ "$(echo "$account_array" | jq 'length')" -gt 0 ]; then
   echo "$account_array" > "$ACCOUNTS_FILE"
   echo "[entrypoint] accounts.json written with $(echo "$account_array" | jq 'length') account(s)"
 else
-  echo "WARNING: No ACCOUNT_1_EMAIL found. accounts.json not written — script will likely fail." >&2
-  echo "         Set ACCOUNT_1_EMAIL and ACCOUNT_1_PASSWORD in your .env file." >&2
+  if [ -f "$ACCOUNTS_FILE" ]; then
+    echo "[entrypoint] Using existing Web-managed accounts.json."
+  else
+    echo "[]" > "$ACCOUNTS_FILE"
+    echo "[entrypoint] No ACCOUNT_N_* env import found; created empty Web-managed accounts.json."
+  fi
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -356,10 +360,15 @@ if [ -f "/etc/cron.d/microsoft-rewards-cron.template" ]; then
     echo "正在配置 cron 任务..."
     "$SCRIPT_DIR/scripts/docker/schedule.sh" apply "$CRON_SCHEDULE"
 
-    if service cron status; then
+    if pgrep -x cron >/dev/null 2>&1; then
         echo "Cron 服务已运行"
     else
-        echo "警告: Cron 服务启动失败"
+        echo "Cron 进程未检测到，尝试再次启动..."
+        if service cron start >/dev/null 2>&1 || cron; then
+            echo "Cron 服务已启动"
+        else
+            echo "警告: Cron 服务启动失败"
+        fi
     fi
 else
     echo "警告: 在 /etc/cron.d/microsoft-rewards-cron.template 找不到 Cron 模板"

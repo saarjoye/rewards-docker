@@ -4,7 +4,7 @@ services:
         container_name: microsoft-rewards-script
         restart: unless-stopped
         ports:
-            - "${WEB_UI_PORT:-3000}:3000"
+            - "8787:3000"
         volumes:
             - ./config:/usr/src/microsoft-rewards-script/dist/config
             - ./sessions:/usr/src/microsoft-rewards-script/dist/browser/sessions

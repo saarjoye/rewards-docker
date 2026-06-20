@@ -149,6 +149,7 @@ if npm start 2>&1 | tee -a /var/log/microsoft-rewards.log; then
     echo "[$(date)] [run_daily.sh] 脚本成功完成。"
 else
     echo "[$(date)] [run_daily.sh] 错误: 脚本失败！" >&2
+    exit 1
 fi
 
 echo "[$(date)] [run_daily.sh] 脚本完成"
