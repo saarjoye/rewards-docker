@@ -1284,8 +1284,9 @@ function setting(name,value){return '<div class="setting-item"><span>'+esc(name)
 function progressRow(item){
   const total = Number(item.total || 0);
   const completed = Number(item.completed || 0);
+  const gained = Number(item.gained || completed || 0);
   const percent = total > 0 ? Math.max(0, Math.min(100, Math.round(completed / total * 100))) : (completed > 0 ? 100 : 0);
-  return '<div class="progress-row"><strong>'+esc(item.label)+'</strong><div><div class="progress-bar"><div class="progress-fill" style="width:'+percent+'%"></div></div></div><span>'+completed+'/'+total+'</span><span class="progress-points">今日增加'+Number(item.gained || 0)+'分</span></div>';
+  return '<div class="progress-row"><strong>'+esc(item.label)+'</strong><div><div class="progress-bar"><div class="progress-fill" style="width:'+percent+'%"></div></div></div><span>'+completed+'/'+total+'</span><span class="progress-points">今日增加'+gained+'分</span></div>';
 }
 function taskProgress(){
   const groups = Array.isArray(state.taskProgress) ? state.taskProgress : [];

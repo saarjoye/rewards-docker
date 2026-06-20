@@ -556,20 +556,22 @@ export class MicrosoftRewardsBot {
                 })
                 const initialMobileSearch = data.userStatus.counters.mobileSearch?.[0]
                 const initialPcSearch = data.userStatus.counters.pcSearch?.[0]
+                const initialMobileProgress = initialMobileSearch?.pointProgress ?? 0
+                const initialPcProgress = initialPcSearch?.pointProgress ?? 0
                 updateAccountTaskProgress(accountEmail, {
                     mobile: {
-                        completed: initialMobileSearch?.pointProgress ?? 0,
+                        completed: initialMobileProgress,
                         total: initialMobileSearch?.pointProgressMax ?? 0,
-                        gained: 0,
+                        gained: initialMobileProgress,
                         status:
                             initialMobileSearch && initialMobileSearch.pointProgress < initialMobileSearch.pointProgressMax
                                 ? '进行中'
                                 : '已完成'
                     },
                     desktop: {
-                        completed: initialPcSearch?.pointProgress ?? 0,
+                        completed: initialPcProgress,
                         total: initialPcSearch?.pointProgressMax ?? 0,
-                        gained: 0,
+                        gained: initialPcProgress,
                         status:
                             initialPcSearch && initialPcSearch.pointProgress < initialPcSearch.pointProgressMax
                                 ? '进行中'
