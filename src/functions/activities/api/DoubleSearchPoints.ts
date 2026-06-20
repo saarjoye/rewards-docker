@@ -12,11 +12,11 @@ export class DoubleSearchPoints extends Workers {
         const activityType = promotion.activityType
 
         try {
-            if (!this.bot.requestToken && this.bot.rewardsVersion === 'legacy') {
+            if (!this.bot.requestToken) {
                 this.bot.logger.warn(
                     this.bot.isMobile,
                     'DOUBLE-SEARCH-POINTS',
-                    '跳过：请求令牌不可用，此活动需要它！'
+                    '跳过：旧版双倍搜索积分接口需要 RequestVerificationToken，当前会话未提供'
                 )
                 return
             }

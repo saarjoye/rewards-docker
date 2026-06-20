@@ -665,22 +665,22 @@ export class Login {
                     const html = await page.content()
                     const $ = await this.bot.browser.utils.loadInCheerio(html)
 
-                    // 检查当前使用的是哪个版本的仪表板，在新版仪表板上禁用 requestToken 请求
-                    const isModernDashboard = $('section#dailyset').length > 0 // 仅在新版 UI 和仪表板/概览页面上存在
+                    // 检查当前使用的是哪个版本的仪表板，在新版仪表板上禁用 requestToken 请求。
+                    // 新版 Rewards 使用 Next.js App Router，页面经常不再包含 __RequestVerificationToken。
+                    const isModernDashboard =
+                        $('section#dailyset').length > 0 ||
+                        $('script[src*="/_next/"]').length > 0 ||
+                        html.includes('self.__next_f') ||
+                        html.includes('__NEXT_DATA__') ||
+                        /[?&]dpl=\d+-\d+/.test(html)
 
                     if (isModernDashboard) {
                         this.bot.rewardsVersion = 'modern'
 
-                        this.bot.logger.warn(
+                        this.bot.logger.info(
                             this.bot.isMobile,
                             'GET-REWARD-SESSION',
-                            '检测到现代 Rewards 仪表板。此脚本版本可能不完全支持。'
-                        )
-
-                        this.bot.logger.warn(
-                            this.bot.isMobile,
-                            'GET-REWARD-SESSION',
-                            '本次会话已禁用 RequestToken（预期行为）。'
+                            '检测到现代 Rewards 仪表板，RequestVerificationToken 不是必需项'
                         )
                     }
 
@@ -699,6 +699,15 @@ export class Login {
                         return
                     }
 
+                    if (isModernDashboard) {
+                        this.bot.logger.info(
+                            this.bot.isMobile,
+                            'GET-REWARD-SESSION',
+                            '现代仪表板未提供 RequestVerificationToken，已按预期跳过旧版令牌获取'
+                        )
+                        return
+                    }
+
                     this.bot.logger.debug(this.bot.isMobile, 'GET-REWARD-SESSION', '页面上未找到令牌')
                 } else {
                     this.bot.logger.debug(
@@ -711,11 +720,19 @@ export class Login {
                 await this.bot.utils.wait(1000)
             }
 
-            this.bot.logger.warn(
-                this.bot.isMobile,
-                'GET-REWARD-SESSION',
-                '未找到RequestVerificationToken，某些活动可能无法工作'
-            )
+            if (this.bot.rewardsVersion === 'modern') {
+                this.bot.logger.info(
+                    this.bot.isMobile,
+                    'GET-REWARD-SESSION',
+                    '现代仪表板未找到 RequestVerificationToken，继续使用 Cookie / Server Action 流程'
+                )
+            } else {
+                this.bot.logger.warn(
+                    this.bot.isMobile,
+                    'GET-REWARD-SESSION',
+                    '未找到RequestVerificationToken，旧版 REST 活动将跳过'
+                )
+            }
         } catch (error) {
             throw this.bot.logger.error(
                 this.bot.isMobile,
