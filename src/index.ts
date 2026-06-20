@@ -592,6 +592,7 @@ export class MicrosoftRewardsBot {
 
         try {
             return await executionContext.run({ isMobile: true, account }, async () => {
+                this.accessToken = ''
                 mobileSession = await this.browserFactory.createBrowser(account)
                 const initialContext: BrowserContext = mobileSession.context
                 this.mainMobilePage = await initialContext.newPage()
@@ -614,12 +615,31 @@ export class MicrosoftRewardsBot {
                         `获取移动访问令牌失败: ${error instanceof Error ? error.message : String(error)}`
                     )
                 }
+                const hasAppAccessToken = Boolean(this.accessToken)
+                if (!hasAppAccessToken) {
+                    this.logger.warn(
+                        'main',
+                        'FLOW',
+                        '移动App访问令牌不可用，跳过App活动/每日签到/阅读赚取，继续执行网页任务和移动搜索'
+                    )
+                }
 
                 this.cookies.mobile = await initialContext.cookies()
                 this.fingerprint = mobileSession.fingerprint
 
                 const data: DashboardData = await this.browser.func.getDashboardData()
-                const appData: AppDashboardData = await this.browser.func.getAppDashboardData()
+                let appData: AppDashboardData | null = null
+                if (hasAppAccessToken) {
+                    try {
+                        appData = await this.browser.func.getAppDashboardData()
+                    } catch (error) {
+                        this.logger.warn(
+                            'main',
+                            'FLOW',
+                            `获取App仪表盘失败，跳过App活动并继续搜索: ${error instanceof Error ? error.message : String(error)}`
+                        )
+                    }
+                }
                 this.panelData = await this.browser.func.getPanelFlyoutData()
 
                 // 新版 UI 用 Next.js Server Actions，需要从 dashboard 页面提取部署 ID
@@ -684,7 +704,18 @@ export class MicrosoftRewardsBot {
                 })
 
                 const browserEarnable = await this.browser.func.getBrowserEarnablePoints()
-                const appEarnable = await this.browser.func.getAppEarnablePoints()
+                const appEarnable = hasAppAccessToken
+                    ? await this.browser.func.getAppEarnablePoints().catch(error => {
+                          this.logger.warn(
+                              'main',
+                              'POINTS',
+                              `获取App可赚积分失败，按0处理并继续搜索: ${
+                                  error instanceof Error ? error.message : String(error)
+                              }`
+                          )
+                          return { readToEarn: 0, checkIn: 0, totalEarnablePoints: 0 }
+                      })
+                    : { readToEarn: 0, checkIn: 0, totalEarnablePoints: 0 }
 
                 this.pointsCanCollect = browserEarnable.mobileSearchPoints + (appEarnable?.totalEarnablePoints ?? 0)
 
@@ -746,6 +777,15 @@ export class MicrosoftRewardsBot {
                     })
                     updateAccountPointTotals(accountEmail, { currentPoints: after, finalPoints: after })
                 }
+                const skipAppTokenTask = (label: string): void => {
+                    taskSummary.push({
+                        key: 'daily',
+                        label,
+                        gained: 0,
+                        status: '已跳过：App访问令牌不可用'
+                    })
+                    this.logger.warn('main', 'FLOW', `${label}已跳过：App访问令牌不可用，后续搜索继续执行`)
+                }
 
                 // Ensure streak protection is true if enabled
                 if (this.config.ensureStreakProtection) {
@@ -754,8 +794,10 @@ export class MicrosoftRewardsBot {
                 if (this.config.workers.doClaimBonusPoints) {
                     await runPointTask('领取奖励积分', async () => this.workers.doClaimBonusPoints(data))
                 }
-                if (this.config.workers.doAppPromotions) {
+                if (this.config.workers.doAppPromotions && appData) {
                     await runPointTask('App 活动', async () => this.workers.doAppPromotions(appData))
+                } else if (this.config.workers.doAppPromotions) {
+                    skipAppTokenTask('App 活动')
                 }
                 if (this.config.workers.doDailySet) {
                     await runPointTask('每日任务', async () => this.workers.doDailySet(data, this.mainMobilePage))
@@ -768,11 +810,15 @@ export class MicrosoftRewardsBot {
                         this.workers.doMorePromotions(data, this.mainMobilePage)
                     )
                 }
-                if (this.config.workers.doDailyCheckIn) {
+                if (this.config.workers.doDailyCheckIn && hasAppAccessToken) {
                     await runPointTask('每日签到', async () => this.activities.doDailyCheckIn())
+                } else if (this.config.workers.doDailyCheckIn) {
+                    skipAppTokenTask('每日签到')
                 }
-                if (this.config.workers.doReadToEarn) {
+                if (this.config.workers.doReadToEarn && hasAppAccessToken) {
                     await runPointTask('阅读赚取', async () => this.activities.doReadToEarn())
+                } else if (this.config.workers.doReadToEarn) {
+                    skipAppTokenTask('阅读赚取')
                 }
                 if (this.config.workers.doPunchCards) {
                     await runPointTask('打卡活动', async () => this.workers.doPunchCards(data, this.mainMobilePage))
@@ -818,22 +864,32 @@ export class MicrosoftRewardsBot {
                 const finalSearchPoints = await this.browser.func.getSearchPoints().catch(() => searchPoints)
                 const finalMobileSearch = finalSearchPoints.mobileSearch?.[0]
                 const finalPcSearch = finalSearchPoints.pcSearch?.[0]
+                const finalMobileTotal = finalMobileSearch?.pointProgressMax ?? initialMobileSearch?.pointProgressMax ?? 0
+                const finalPcTotal = finalPcSearch?.pointProgressMax ?? initialPcSearch?.pointProgressMax ?? 0
+                const finalMobileCompleted = Math.max(
+                    finalMobileSearch?.pointProgress ?? initialMobileProgress,
+                    finalMobileTotal > 0 ? Math.min(finalMobileTotal, mobileGainedPoints) : mobileGainedPoints
+                )
+                const finalPcCompleted = Math.max(
+                    finalPcSearch?.pointProgress ?? initialPcProgress,
+                    finalPcTotal > 0 ? Math.min(finalPcTotal, desktopGainedPoints) : desktopGainedPoints
+                )
                 updateAccountTaskProgress(accountEmail, {
                     mobile: {
-                        completed: finalMobileSearch?.pointProgress ?? initialMobileProgress,
-                        total: finalMobileSearch?.pointProgressMax ?? initialMobileSearch?.pointProgressMax ?? 0,
+                        completed: finalMobileCompleted,
+                        total: finalMobileTotal,
                         gained: mobileGainedPoints,
                         status:
-                            finalMobileSearch && finalMobileSearch.pointProgress < finalMobileSearch.pointProgressMax
+                            finalMobileTotal > 0 && finalMobileCompleted < finalMobileTotal
                                 ? '进行中'
                                 : '已完成'
                     },
                     desktop: {
-                        completed: finalPcSearch?.pointProgress ?? initialPcProgress,
-                        total: finalPcSearch?.pointProgressMax ?? initialPcSearch?.pointProgressMax ?? 0,
+                        completed: finalPcCompleted,
+                        total: finalPcTotal,
                         gained: desktopGainedPoints,
                         status:
-                            finalPcSearch && finalPcSearch.pointProgress < finalPcSearch.pointProgressMax
+                            finalPcTotal > 0 && finalPcCompleted < finalPcTotal
                                 ? '进行中'
                                 : '已完成'
                     },
@@ -852,16 +908,16 @@ export class MicrosoftRewardsBot {
                 taskSummary.push({
                     key: 'mobile',
                     label: '移动搜索',
-                    completed: finalMobileSearch?.pointProgress ?? initialMobileProgress,
-                    total: finalMobileSearch?.pointProgressMax ?? initialMobileSearch?.pointProgressMax ?? 0,
+                    completed: finalMobileCompleted,
+                    total: finalMobileTotal,
                     gained: mobileGainedPoints,
                     status: '已完成'
                 })
                 taskSummary.push({
                     key: 'desktop',
                     label: 'PC 搜索',
-                    completed: finalPcSearch?.pointProgress ?? initialPcProgress,
-                    total: finalPcSearch?.pointProgressMax ?? initialPcSearch?.pointProgressMax ?? 0,
+                    completed: finalPcCompleted,
+                    total: finalPcTotal,
                     gained: desktopGainedPoints,
                     status: '已完成'
                 })

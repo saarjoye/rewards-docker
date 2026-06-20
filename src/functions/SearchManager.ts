@@ -3,7 +3,7 @@ import type { BrowserFingerprintWithHeaders } from 'fingerprint-generator'
 import { MicrosoftRewardsBot, executionContext } from '../index'
 import type { DashboardData } from '../interface/DashboardData'
 import type { Account } from '../interface/Account'
-import { updateSearchTaskProgress } from '../util/TaskProgressStore'
+import { updateSearchTaskProgress, updateTaskProgress } from '../util/TaskProgressStore'
 
 interface BrowserSession {
     context: BrowserContext
@@ -82,6 +82,12 @@ export class SearchManager {
             'SEARCH-MANAGER',
             `桌面端: ${desktopStatus} (启用=${this.bot.config.workers.doDesktopSearch}, 缺失=${missingSearchPoints.desktopPoints})`
         )
+        updateTaskProgress(accountEmail, 'mobile', {
+            status: doMobile ? '进行中' : this.bot.config.workers.doMobileSearch ? '已完成' : '已禁用'
+        })
+        updateTaskProgress(accountEmail, 'desktop', {
+            status: doDesktop ? '进行中' : this.bot.config.workers.doDesktopSearch ? '已完成' : '已禁用'
+        })
 
         if (!doMobile && !doDesktop) {
             const bothWorkersEnabled = this.bot.config.workers.doMobileSearch && this.bot.config.workers.doDesktopSearch
@@ -354,8 +360,8 @@ export class SearchManager {
             )
             const afterPoints = await this.readCurrentPoints()
             if (afterPoints !== null) {
-                mobilePoints = Math.max(0, afterPoints - beforePoints)
-                this.bot.userData.currentPoints = afterPoints
+                mobilePoints = Math.max(reportedPoints, Math.max(0, afterPoints - beforePoints))
+                this.bot.userData.currentPoints = Math.max(Number(this.bot.userData.currentPoints ?? 0), afterPoints)
             } else {
                 mobilePoints = reportedPoints
             }
@@ -409,8 +415,8 @@ export class SearchManager {
             )
             const afterPoints = await this.readCurrentPoints()
             if (afterPoints !== null) {
-                desktopPoints = Math.max(0, afterPoints - beforePoints)
-                this.bot.userData.currentPoints = afterPoints
+                desktopPoints = Math.max(reportedPoints, Math.max(0, afterPoints - beforePoints))
+                this.bot.userData.currentPoints = Math.max(Number(this.bot.userData.currentPoints ?? 0), afterPoints)
             } else {
                 desktopPoints = reportedPoints
             }

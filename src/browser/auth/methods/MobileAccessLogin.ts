@@ -90,6 +90,15 @@ export class MobileAccessLogin {
                     lastUrl = currentUrl
                 }
 
+                if (currentUrl.startsWith('chrome-error://')) {
+                    this.bot.logger.warn(
+                        this.bot.isMobile,
+                        'LOGIN-APP',
+                        `OAuth页面打开失败，当前URL=${currentUrl}；将跳过App专属任务并继续搜索任务`
+                    )
+                    break
+                }
+
                 try {
                     const url = new URL(currentUrl)
 
@@ -119,7 +128,7 @@ export class MobileAccessLogin {
                 this.bot.logger.warn(
                     this.bot.isMobile,
                     'LOGIN-APP',
-                    `等待OAuth代码超时，已等待 ${Math.round((Date.now() - start) / 1000)}秒`
+                    `未获取到移动OAuth代码，已等待 ${Math.round((Date.now() - start) / 1000)}秒；App活动/签到/阅读将跳过，搜索任务继续执行`
                 )
 
                 this.bot.logger.debug(this.bot.isMobile, 'LOGIN-APP', `最终页面URL: ${this.page.url()}`)
