@@ -32,6 +32,9 @@ jobs:
         with:
           context: .
           push: true
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.description=Microsoft Rewards Script Web UI Docker image
           tags: |
-            ghcr.io/${{ github.repository_owner }}/rewards-docker:latest
-            ghcr.io/${{ github.repository_owner }}/rewards-docker:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/rewards-docker-app:latest
+            ghcr.io/${{ github.repository_owner }}/rewards-docker-app:${{ github.sha }}

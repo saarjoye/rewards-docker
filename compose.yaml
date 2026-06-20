@@ -1,6 +1,6 @@
 services:
     microsoft-rewards-script:
-        image: ghcr.io/saarjoye/rewards-docker:latest
+        image: ghcr.io/saarjoye/rewards-docker-app:latest
         container_name: microsoft-rewards-script
         restart: unless-stopped
         ports:
