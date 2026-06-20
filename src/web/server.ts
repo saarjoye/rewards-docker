@@ -9,6 +9,7 @@ import pkg from '../../package.json'
 import { ConfigSchema, AccountSchema } from '../util/Validator'
 import type { Account } from '../interface/Account'
 import type { Config, ConfigWorkers } from '../interface/Config'
+import { accountProgressHash, readTaskProgressFile } from '../util/TaskProgressStore'
 
 type JsonValue = Record<string, unknown> | unknown[] | string | number | boolean | null
 
@@ -883,6 +884,11 @@ function progressItem(progress: AccountTaskProgress, key: string): TaskProgressI
 }
 
 function parseTaskProgress(accounts: Account[], lines = readRecentLogLines()): AccountTaskProgress[] {
+    const storedProgress = readStoredTaskProgress(accounts)
+    if (storedProgress.some(group => group.items.some(item => item.total > 0 || item.completed > 0 || item.gained > 0))) {
+        return storedProgress
+    }
+
     const chronological = [...lines].reverse()
     const byEmail = new Map<string, AccountTaskProgress>()
     const values: AccountTaskProgress[] = []
@@ -896,7 +902,7 @@ function parseTaskProgress(accounts: Account[], lines = readRecentLogLines()): A
         const label = maskEmail(account.email)
         const maskedKey = emailKey(label)
         const progress: AccountTaskProgress = {
-            key: emailKey(account.email) || `account-${index + 1}`,
+            key: `account-${index + 1}`,
             accountLabel: `账号 ${index + 1} · ${label || '未填写邮箱'}`,
             items: defaultTaskItems()
         }
@@ -974,6 +980,29 @@ function parseTaskProgress(accounts: Account[], lines = readRecentLogLines()): A
     }
 
     return values
+}
+
+function readStoredTaskProgress(accounts: Account[]): AccountTaskProgress[] {
+    const stored = readTaskProgressFile()
+    return accounts.map((account, index) => {
+        const label = maskEmail(account.email)
+        const saved = stored.accounts.find(item => item.accountHash === accountProgressHash(account.email))
+        const items = defaultTaskItems()
+        if (saved) {
+            for (const item of items) {
+                const storedItem = saved[item.key as keyof Pick<typeof saved, 'desktop' | 'mobile' | 'daily'>]
+                item.completed = storedItem.completed
+                item.total = storedItem.total
+                item.gained = storedItem.gained
+                item.status = storedItem.status
+            }
+        }
+        return {
+            key: `account-${index + 1}`,
+            accountLabel: `账号 ${index + 1} · ${label || '未填写邮箱'}`,
+            items
+        }
+    })
 }
 
 function loginHtml(setupRequired: boolean): string {

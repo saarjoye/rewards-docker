@@ -27,6 +27,7 @@ import { sendPushPlus, flushPushPlusQueue } from './logging/PushPlus'
 import type { DashboardData } from './interface/DashboardData'
 import type { AppDashboardData } from './interface/AppDashBoardData'
 import { PanelFlyoutData } from './interface/PanelFlyoutData'
+import { updateTaskProgress } from './util/TaskProgressStore'
 interface ExecutionContext {
     isMobile: boolean
     account: Account
@@ -63,6 +64,7 @@ async function flushAllWebhooks(timeoutMs = 5000): Promise<void> {
 
 interface UserData {
     userName: string
+    accountEmail: string
     geoLocale: string
     langCode: string
     timezoneOffset: string
@@ -115,6 +117,7 @@ export class MicrosoftRewardsBot {
         // 初始化用户数据
         this.userData = {
             userName: '', // 用户名
+            accountEmail: '', // 当前账号邮箱
             geoLocale: 'CN', // 地理区域
             langCode: 'zh', // 语言代码
             timezoneOffset: '480', // 时区偏移（分钟）
@@ -350,6 +353,7 @@ export class MicrosoftRewardsBot {
             const accountStartTime = Date.now()
             const accountEmail = account.email
             this.userData.userName = this.utils.getEmailUsername(accountEmail)
+            this.userData.accountEmail = accountEmail
             this.userData.timezoneOffset = String(-new Date().getTimezoneOffset())
 
             try {
@@ -378,6 +382,12 @@ export class MicrosoftRewardsBot {
                     const collectedPoints = result.collectedPoints ?? 0
                     const accountInitialPoints = result.initialPoints ?? 0
                     const accountFinalPoints = accountInitialPoints + collectedPoints
+                    updateTaskProgress(accountEmail, 'daily', {
+                        completed: collectedPoints,
+                        total: collectedPoints,
+                        gained: collectedPoints,
+                        status: '已完成'
+                    })
 
                     accountStats.push({
                         email: accountEmail,
@@ -551,6 +561,12 @@ export class MicrosoftRewardsBot {
 
                 const finalPoints = await this.browser.func.getCurrentPoints()
                 const collectedPoints = finalPoints - initialPoints
+                updateTaskProgress(accountEmail, 'daily', {
+                    completed: collectedPoints,
+                    total: collectedPoints,
+                    gained: collectedPoints,
+                    status: '已完成'
+                })
 
                 this.logger.info(
                     'main',

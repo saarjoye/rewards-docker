@@ -3,6 +3,7 @@ import type { BrowserFingerprintWithHeaders } from 'fingerprint-generator'
 import { MicrosoftRewardsBot, executionContext } from '../index'
 import type { DashboardData } from '../interface/DashboardData'
 import type { Account } from '../interface/Account'
+import { updateTaskProgress } from '../util/TaskProgressStore'
 
 interface BrowserSession {
     context: BrowserContext
@@ -34,6 +35,18 @@ export class SearchManager {
             'SEARCH-MANAGER',
             `开始 | 账户=${accountEmail} | 移动端缺失=${missingSearchPoints.mobilePoints} | 桌面端缺失=${missingSearchPoints.desktopPoints}`
         )
+        updateTaskProgress(accountEmail, 'mobile', {
+            completed: 0,
+            total: missingSearchPoints.mobilePoints,
+            gained: 0,
+            status: missingSearchPoints.mobilePoints > 0 ? '进行中' : '已完成'
+        })
+        updateTaskProgress(accountEmail, 'desktop', {
+            completed: 0,
+            total: missingSearchPoints.desktopPoints,
+            gained: 0,
+            status: missingSearchPoints.desktopPoints > 0 ? '进行中' : '已完成'
+        })
 
         const doMobile = this.bot.config.workers.doMobileSearch && missingSearchPoints.mobilePoints > 0
         const doDesktop = this.bot.config.workers.doDesktopSearch && missingSearchPoints.desktopPoints > 0
@@ -160,6 +173,12 @@ export class SearchManager {
                     this.doMobileSearch(data, missingSearchPoints, mobileSession, accountEmail, executionContext).then(
                         points => {
                             mobileContextClosed = true
+                            updateTaskProgress(accountEmail, 'mobile', {
+                                completed: points,
+                                total: missingSearchPoints.mobilePoints,
+                                gained: points,
+                                status: '已完成'
+                            })
                             this.bot.logger.info(
                                 'main',
                                 'SEARCH-MANAGER',
@@ -208,6 +227,12 @@ export class SearchManager {
                         accountEmail,
                         executionContext
                     ).then(points => {
+                        updateTaskProgress(accountEmail, 'desktop', {
+                            completed: points,
+                            total: missingSearchPoints.desktopPoints,
+                            gained: points,
+                            status: '已完成'
+                        })
                         this.bot.logger.info(
                             'main',
                             'SEARCH-MANAGER',
@@ -314,6 +339,12 @@ export class SearchManager {
                 accountEmail,
                 executionContext
             )
+            updateTaskProgress(accountEmail, 'mobile', {
+                completed: mobilePoints,
+                total: missingSearchPoints.mobilePoints,
+                gained: mobilePoints,
+                status: '已完成'
+            })
             this.bot.logger.info(
                 'main',
                 'SEARCH-MANAGER',
@@ -354,6 +385,12 @@ export class SearchManager {
                 accountEmail,
                 executionContext
             )
+            updateTaskProgress(accountEmail, 'desktop', {
+                completed: desktopPoints,
+                total: missingSearchPoints.desktopPoints,
+                gained: desktopPoints,
+                status: '已完成'
+            })
             this.bot.logger.info(
                 'main',
                 'SEARCH-MANAGER',
@@ -440,6 +477,12 @@ export class SearchManager {
                 this.bot.logger.debug('main', 'SEARCH-MOBILE-SEARCH', 'activities.doSearch (mobile)')
 
                 const pointsEarned = await this.bot.activities.doSearch(data, this.bot.mainMobilePage, true)
+                updateTaskProgress(accountEmail, 'mobile', {
+                    completed: pointsEarned,
+                    total: missingSearchPoints.mobilePoints,
+                    gained: pointsEarned,
+                    status: '已完成'
+                })
 
                 this.bot.logger.info(
                     'main',
@@ -504,6 +547,12 @@ export class SearchManager {
                     `搜索开始 | 目标=${missingSearchPoints.desktopPoints}`
                 )
                 const pointsEarned = await this.bot.activities.doSearch(data, this.bot.mainDesktopPage, false)
+                updateTaskProgress(accountEmail, 'desktop', {
+                    completed: pointsEarned,
+                    total: missingSearchPoints.desktopPoints,
+                    gained: pointsEarned,
+                    status: '已完成'
+                })
 
                 this.bot.logger.info(
                     'main',
@@ -583,6 +632,12 @@ export class SearchManager {
                 )
 
                 const pointsEarned = await this.bot.activities.doSearch(data, this.bot.mainDesktopPage, false)
+                updateTaskProgress(accountEmail, 'desktop', {
+                    completed: pointsEarned,
+                    total: missingSearchPoints.desktopPoints,
+                    gained: pointsEarned,
+                    status: '已完成'
+                })
 
                 this.bot.logger.info(
                     'main',

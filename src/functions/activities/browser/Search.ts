@@ -4,6 +4,7 @@ import type { Counters, DashboardData } from '../../../interface/DashboardData'
 
 import { QueryCore } from '../../QueryEngine'
 import { Workers } from '../../Workers'
+import { updateTaskProgress, type ProgressTaskKey } from '../../../util/TaskProgressStore'
 
 /**
  * 必应搜索类，负责执行必应搜索以获取积分
@@ -21,6 +22,8 @@ export class Search extends Workers {
 
     public async doSearch(data: DashboardData, page: Page, isMobile: boolean): Promise<number> {
         const startBalance = Number(this.bot.userData.currentPoints ?? 0)
+        const accountEmail = this.bot.userData.accountEmail
+        const taskKey: ProgressTaskKey = isMobile ? 'mobile' : 'desktop'
 
         this.bot.logger.info(isMobile, 'SEARCH-BING', `开始必应搜索 | currentPoints=${startBalance}`)
 
@@ -30,6 +33,7 @@ export class Search extends Workers {
             let searchCounters: Counters = await this.bot.browser.func.getSearchPoints()
             const missingPoints = this.bot.browser.func.missingSearchPoints(searchCounters, isMobile)
             let missingPointsTotal = missingPoints.totalPoints
+            const initialMissingPointsTotal = missingPointsTotal
 
             this.bot.logger.debug(
                 isMobile,
@@ -103,6 +107,14 @@ export class Search extends Workers {
                     this.bot.userData.gainedPoints = (this.bot.userData.gainedPoints ?? 0) + gainedPoints
 
                     totalGainedPoints += gainedPoints
+                    if (accountEmail) {
+                        updateTaskProgress(accountEmail, taskKey, {
+                            completed: totalGainedPoints,
+                            total: initialMissingPointsTotal,
+                            gained: totalGainedPoints,
+                            status: newMissingPointsTotal > 0 ? '进行中' : '已完成'
+                        })
+                    }
 
                     this.bot.logger.info(
                         isMobile,
@@ -216,6 +228,14 @@ export class Search extends Workers {
                             this.bot.userData.gainedPoints = (this.bot.userData.gainedPoints ?? 0) + gainedPoints
 
                             totalGainedPoints += gainedPoints
+                            if (accountEmail) {
+                                updateTaskProgress(accountEmail, taskKey, {
+                                    completed: totalGainedPoints,
+                                    total: initialMissingPointsTotal,
+                                    gained: totalGainedPoints,
+                                    status: newMissingPointsTotal > 0 ? '进行中' : '已完成'
+                                })
+                            }
 
                             this.bot.logger.info(
                                 isMobile,
@@ -255,6 +275,14 @@ export class Search extends Workers {
             }
 
             const finalBalance = Number(this.bot.userData.currentPoints ?? startBalance)
+            if (accountEmail) {
+                updateTaskProgress(accountEmail, taskKey, {
+                    completed: totalGainedPoints,
+                    total: initialMissingPointsTotal,
+                    gained: totalGainedPoints,
+                    status: '已完成'
+                })
+            }
 
             this.bot.logger.info(
                 isMobile,
