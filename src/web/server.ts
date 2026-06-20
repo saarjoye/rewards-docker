@@ -61,11 +61,45 @@ interface RunState {
     recentLog?: string[]
 }
 
+interface TaskProgressItem {
+    key: string
+    label: string
+    completed: number
+    total: number
+    gained: number
+    status: string
+}
+
+interface AccountTaskProgress {
+    key: string
+    accountLabel: string
+    items: TaskProgressItem[]
+}
+
+interface RawLogLine {
+    raw: string
+    safe: string
+}
+
 const runtimeRoot = path.resolve(__dirname, '..')
 const appRoot = path.resolve(__dirname, '..', '..')
 const runtimeConfigDir = path.join(runtimeRoot, 'config')
 const legacyAuthFile = path.join(runtimeRoot, 'web-auth.json')
-const authFile = path.join(runtimeConfigDir, 'web-auth.json')
+const defaultAuthFile = path.join(runtimeConfigDir, 'web-auth.json')
+const configuredAuthFile = process.env.WEB_AUTH_FILE?.trim()
+const authFile = configuredAuthFile ? path.resolve(configuredAuthFile) : defaultAuthFile
+const authMirrorFiles = (process.env.WEB_AUTH_MIRROR_FILE ?? '')
+    .split(path.delimiter)
+    .map(file => file.trim())
+    .filter(Boolean)
+    .map(file => path.resolve(file))
+const authReadFiles = Array.from(
+    new Set(
+        configuredAuthFile
+            ? [authFile, ...authMirrorFiles]
+            : [authFile, ...authMirrorFiles, defaultAuthFile, path.join(appRoot, 'config', 'web-auth.json'), legacyAuthFile]
+    )
+)
 const accountsFile = path.join(runtimeRoot, 'accounts.json')
 const configFile = path.join(runtimeRoot, 'config.json')
 const scheduleFile = path.join(runtimeRoot, 'config', 'schedule.json')
@@ -91,8 +125,16 @@ function ensureRuntimeFiles(): void {
     if (!fs.existsSync(runtimeConfigDir)) {
         fs.mkdirSync(runtimeConfigDir, { recursive: true })
     }
-    if (!fs.existsSync(authFile) && fs.existsSync(legacyAuthFile)) {
-        fs.copyFileSync(legacyAuthFile, authFile)
+    for (const file of [authFile, ...authMirrorFiles]) {
+        fs.mkdirSync(path.dirname(file), { recursive: true })
+    }
+    const existingAuthFile = authReadFiles.find(file => fs.existsSync(file))
+    if (existingAuthFile) {
+        for (const target of [authFile, ...authMirrorFiles]) {
+            if (!fs.existsSync(target)) {
+                fs.copyFileSync(existingAuthFile, target)
+            }
+        }
     }
 
     if (!fs.existsSync(configFile)) {
@@ -120,6 +162,23 @@ function readJsonFile<T>(file: string, fallback: T): T {
 function writeJsonFile(file: string, data: unknown): void {
     fs.mkdirSync(path.dirname(file), { recursive: true })
     fs.writeFileSync(file, `${JSON.stringify(data, null, 4)}\n`, 'utf8')
+}
+
+function writeAuthFile(data: AuthFile): void {
+    const targets = Array.from(new Set([authFile, ...authMirrorFiles]))
+    let lastError: unknown = null
+
+    for (const file of targets) {
+        try {
+            writeJsonFile(file, data)
+        } catch (error) {
+            lastError = error
+        }
+    }
+
+    if (!fs.existsSync(authFile) && lastError) {
+        throw lastError
+    }
 }
 
 function currentSchedule(): ScheduleFile {
@@ -307,8 +366,9 @@ function getConfiguredAuth(): AuthFile | null {
         }
     }
 
-    if (!fs.existsSync(authFile)) return null
-    return readJsonFile<AuthFile | null>(authFile, null)
+    const file = authReadFiles.find(candidate => fs.existsSync(candidate))
+    if (!file) return null
+    return readJsonFile<AuthFile | null>(file, null)
 }
 
 function createSession(username: string): string {
@@ -617,7 +677,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
 
         const nextAuth = hashPassword(password)
         nextAuth.username = username
-        writeJsonFile(authFile, nextAuth)
+        writeAuthFile(nextAuth)
         const sessionId = createSession(username)
         res.setHeader('Set-Cookie', cookieHeader(SESSION_COOKIE, sessionId, SESSION_TTL_MS / 1000))
         sendJson(res, 200, { ok: true })
@@ -676,6 +736,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
                 lastRun: readLastRunSummary()
             },
             accounts: accounts.map(sanitizeAccount),
+            taskProgress: parseTaskProgress(accounts),
             config: publicConfig(config),
             schedule: currentSchedule(),
             runState
@@ -755,11 +816,18 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
 
 function readLastRunSummary(): string {
     if (runState.recentLog?.length) {
-        return runState.recentLog.slice(-80).join('\n')
+        return runState.recentLog.slice(-80).reverse().join('\n')
     }
 
+    const lines = readRecentLogLines().map(line => line.safe)
+    if (lines.length > 0) return lines.join('\n')
+
+    return '暂无完成记录'
+}
+
+function readRecentLogLines(): RawLogLine[] {
     const logDir = path.resolve(process.cwd(), 'logs')
-    if (!fs.existsSync(logDir)) return '暂无本地日志'
+    if (!fs.existsSync(logDir)) return []
 
     const files = fs
         .readdirSync(logDir)
@@ -778,13 +846,134 @@ function readLastRunSummary(): string {
         const content = buffer.toString('utf8')
         const lines = content
             .split(/\r?\n/)
-            .map(redactLogLine)
-            .filter(line => line.trim().length > 0)
-            .slice(-80)
-        if (lines.length > 0) return lines.join('\n')
+            .map(line => ({ raw: stripAnsi(line), safe: redactLogLine(line) }))
+            .filter(line => line.safe.trim().length > 0)
+            .slice(-120)
+            .reverse()
+        if (lines.length > 0) return lines
     }
 
-    return '暂无完成记录'
+    return []
+}
+
+function defaultTaskItems(): TaskProgressItem[] {
+    return [
+        { key: 'desktop', label: 'PC任务', completed: 0, total: 0, gained: 0, status: '等待运行' },
+        { key: 'mobile', label: '移动任务', completed: 0, total: 0, gained: 0, status: '等待运行' },
+        { key: 'daily', label: '每日活动', completed: 0, total: 0, gained: 0, status: '等待运行' }
+    ]
+}
+
+function emailKey(email: string): string {
+    return email.trim().toLowerCase()
+}
+
+function findProgressByLine(line: string, byEmail: Map<string, AccountTaskProgress>): AccountTaskProgress | null {
+    const lowerLine = line.toLowerCase()
+    for (const [needle, progress] of byEmail) {
+        if (needle && lowerLine.includes(needle)) {
+            return progress
+        }
+    }
+    return null
+}
+
+function progressItem(progress: AccountTaskProgress, key: string): TaskProgressItem {
+    return progress.items.find(item => item.key === key) ?? progress.items[0]!
+}
+
+function parseTaskProgress(accounts: Account[], lines = readRecentLogLines()): AccountTaskProgress[] {
+    const chronological = [...lines].reverse()
+    const byEmail = new Map<string, AccountTaskProgress>()
+    const values: AccountTaskProgress[] = []
+    const maskedCounts = accounts.reduce((counts, account) => {
+        const key = emailKey(maskEmail(account.email))
+        if (key) counts.set(key, (counts.get(key) ?? 0) + 1)
+        return counts
+    }, new Map<string, number>())
+
+    accounts.forEach((account, index) => {
+        const label = maskEmail(account.email)
+        const maskedKey = emailKey(label)
+        const progress: AccountTaskProgress = {
+            key: emailKey(account.email) || `account-${index + 1}`,
+            accountLabel: `账号 ${index + 1} · ${label || '未填写邮箱'}`,
+            items: defaultTaskItems()
+        }
+        byEmail.set(emailKey(account.email), progress)
+        if (maskedKey && maskedCounts.get(maskedKey) === 1) {
+            byEmail.set(maskedKey, progress)
+        }
+        values.push(progress)
+    })
+
+    let currentProgress: AccountTaskProgress | null = null
+
+    for (const line of chronological) {
+        const explicitProgress = findProgressByLine(line.raw, byEmail)
+        if (explicitProgress) {
+            currentProgress = explicitProgress
+        }
+        const progress = explicitProgress ?? currentProgress
+        if (!progress) continue
+
+        const rawLine = line.raw
+        const mobile = progressItem(progress, 'mobile')
+        const desktop = progressItem(progress, 'desktop')
+        const daily = progressItem(progress, 'daily')
+
+        const missing = rawLine.match(/移动端缺失=(\d+).*桌面端缺失=(\d+)/)
+        if (missing) {
+            mobile.total = Number(missing[1] ?? 0)
+            desktop.total = Number(missing[2] ?? 0)
+            mobile.status = mobile.total > 0 ? '进行中' : '已完成'
+            desktop.status = desktop.total > 0 ? '进行中' : '已完成'
+        }
+
+        const mobileDone = rawLine.match(/(?:移动端(?:完成|=.*?)|SEARCH-MOBILE-SEARCH.*搜索完成).*获得=(\d+)(?:\/(\d+))?/)
+        if (mobileDone) {
+            const gained = Number(mobileDone[1] ?? 0)
+            const total = Number(mobileDone[2] ?? 0)
+            if (total > 0) mobile.total = Math.max(mobile.total, total)
+            mobile.gained = Math.max(mobile.gained, gained)
+            mobile.completed = mobile.total > 0 ? Math.min(mobile.total, gained) : gained
+            mobile.status = '已完成'
+        }
+
+        const desktopDone = rawLine.match(
+            /(?:桌面端(?:完成|=.*?)|SEARCH-DESKTOP-(?:PARALLEL|SEQUENTIAL).*搜索完成).*获得=(\d+)(?:\/(\d+))?/
+        )
+        if (desktopDone) {
+            const gained = Number(desktopDone[1] ?? 0)
+            const total = Number(desktopDone[2] ?? 0)
+            if (total > 0) desktop.total = Math.max(desktop.total, total)
+            desktop.gained = Math.max(desktop.gained, gained)
+            desktop.completed = desktop.total > 0 ? Math.min(desktop.total, gained) : gained
+            desktop.status = '已完成'
+        }
+
+        const flow = rawLine.match(/已收集:\s*\+(\d+)\s*\|\s*移动端:\s*\+(\d+)\s*\|\s*桌面端:\s*\+(\d+)/)
+        if (flow) {
+            const mobileGained = Number(flow[2] ?? 0)
+            const desktopGained = Number(flow[3] ?? 0)
+            mobile.gained = Math.max(mobile.gained, mobileGained)
+            desktop.gained = Math.max(desktop.gained, desktopGained)
+            mobile.completed = mobile.total > 0 ? Math.min(mobile.total, mobileGained) : mobileGained
+            desktop.completed = desktop.total > 0 ? Math.min(desktop.total, desktopGained) : desktopGained
+            mobile.status = '已完成'
+            desktop.status = '已完成'
+        }
+
+        const accountEnd = rawLine.match(/ACCOUNT-END.*总计:\s*\+(\d+)/)
+        if (accountEnd) {
+            daily.gained = Number(accountEnd[1] ?? 0)
+            daily.completed = daily.gained
+            daily.total = Math.max(daily.total, daily.gained)
+            daily.status = '已完成'
+        }
+    }
+
+    return values
 }
 
 function loginHtml(setupRequired: boolean): string {
@@ -877,7 +1066,6 @@ function appHtml(): string {
       <button class="nav-item active" data-view="dashboard"><span class="nav-icon">⌂</span>仪表盘</button>
       <button class="nav-item" data-view="accounts"><span class="nav-icon">◎</span>账号设置</button>
       <button class="nav-item" data-view="tasks"><span class="nav-icon">☷</span>任务配置</button>
-      <button class="nav-item" data-view="logs"><span class="nav-icon">≡</span>运行日志</button>
       <button class="nav-item" data-view="system"><span class="nav-icon">⚙</span>系统设置</button>
     </nav>
     <section class="sidebar-note">
@@ -893,7 +1081,6 @@ function appHtml(): string {
     <section id="dashboard" class="view active"></section>
     <section id="accounts" class="view"></section>
     <section id="tasks" class="view"></section>
-    <section id="logs" class="view"></section>
     <section id="system" class="view"></section>
   </main>
 </div>
@@ -908,15 +1095,15 @@ function baseCss(): string {
 :root{--bg:#eaf6f3;--bg-strong:#d9f0ec;--surface:#fff;--surface-soft:#f7fbfa;--line:#d7e5e1;--teal:#0f8f85;--teal-dark:#08746d;--teal-soft:#ddf3ef;--text:#17211f;--sub:#64736f;--muted:#91a19d;--danger:#b54646;--amber:#a96516;--blue:#2f6fed;--shadow:0 18px 42px rgba(15,63,58,.13)}
 *{box-sizing:border-box}body{margin:0;font-family:Inter,Segoe UI,Arial,"Microsoft YaHei",sans-serif;color:var(--text);background:var(--bg)}button,input,select{font:inherit}button{cursor:pointer}button:disabled{cursor:not-allowed;opacity:.65}
 .login-body{min-height:100vh;overflow:hidden;background:var(--bg)}.login-shell{min-height:100vh;position:relative;display:grid;place-items:center;padding:28px}.signin-shell{border-top:10px solid var(--teal)}.auth-shape{position:absolute;background:var(--bg-strong);border-radius:48px;pointer-events:none}.auth-shape-a{width:520px;height:520px;right:8vw;top:12vh}.auth-shape-b{width:420px;height:300px;left:-160px;bottom:-80px}.setup-shell .auth-shape-a{right:18vw;top:-110px}.setup-shell .auth-shape-b{left:-150px;bottom:-100px}.login-panel{position:relative;width:min(576px,calc(100vw - 36px));background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:48px 54px 40px;box-shadow:var(--shadow)}.signin-shell .login-panel{width:min(520px,calc(100vw - 36px));padding:46px 48px 36px}.brand-lock{display:flex;align-items:center;gap:14px;margin-bottom:28px}.brand-lock strong{display:block;font-size:15px;font-weight:800;line-height:1.2}.brand-lock span{display:block;margin-top:4px;color:var(--muted);font:12px/1.2 "Geist Mono",Consolas,monospace}.brand-mark{width:44px;height:44px;border-radius:8px;background:var(--teal);display:grid;place-items:center;color:#fff;font:800 14px/1 "Geist Mono",Consolas,monospace}.login-panel h1{margin:0;font-size:36px;line-height:1.15;font-weight:800;letter-spacing:0}.auth-hint{margin:12px 0 34px;color:var(--sub);font-size:15px;line-height:1.55}.login-form{display:grid;gap:18px}.auth-field{display:grid;gap:10px;font-size:13px;font-weight:700;color:var(--sub)}.auth-field input{height:54px;width:100%;border:1px solid var(--line);border-radius:8px;background:var(--surface-soft);padding:0 18px;color:var(--text);outline:none}.auth-field input:focus,.field input:focus,.field select:focus{border-color:var(--teal);box-shadow:0 0 0 3px rgba(15,143,133,.1)}.primary-btn{height:44px;border:0;border-radius:8px;background:var(--teal);color:#fff;font-weight:800;padding:0 18px;display:inline-flex;align-items:center;justify-content:center;gap:8px}.wide-btn{height:54px;width:100%;margin-top:2px}.form-message{min-height:18px;margin:0;color:var(--danger);font-size:13px}.security-note{margin-top:16px;padding:14px 16px 14px 44px;position:relative;background:var(--surface-soft);border:1px solid var(--line);border-radius:8px;color:var(--sub);font-size:13px;line-height:1.4}.security-note:before{content:"✓";position:absolute;left:16px;top:14px;width:18px;height:18px;border-radius:50%;display:grid;place-items:center;background:var(--teal-soft);color:var(--teal);font-size:12px;font-weight:800}
-.app{display:grid;grid-template-columns:272px minmax(0,1fr);min-height:100vh;background:var(--bg)}.sidebar{background:var(--surface);border-right:1px solid var(--line);padding:28px 22px;display:flex;flex-direction:column;gap:24px}.logo-row{display:flex;align-items:center;gap:12px;min-width:0}.logo-row strong{display:block;font-size:14px;font-weight:800;line-height:1.2}.logo-row span{display:block;margin-top:4px;color:var(--muted);font:12px/1.2 "Geist Mono",Consolas,monospace}.sidebar nav{display:grid;gap:12px}.nav-item{height:44px;border:0;border-radius:8px;background:transparent;display:flex;align-items:center;gap:12px;padding:0 14px;color:var(--sub);font-size:14px;font-weight:700;text-align:left}.nav-item.active{background:var(--teal-soft);color:var(--teal-dark);font-weight:800}.nav-icon{width:18px;height:18px;display:grid;place-items:center;color:inherit}.sidebar-note{margin-top:auto;border:1px solid var(--line);background:var(--surface-soft);border-radius:8px;padding:16px}.sidebar-note strong{font-size:13px}.sidebar-note p{margin:8px 0 0;color:var(--sub);font-size:12px;line-height:1.45}.main{min-width:0}.topbar{height:118px;display:flex;align-items:center;justify-content:space-between;padding:34px 46px 22px}.topbar h1{font-size:32px;line-height:1.1;margin:0 0 10px;font-weight:800}.topbar p{margin:0;color:var(--sub);font-size:14px}.top-actions{display:flex;align-items:center;gap:10px}.user-badge,.env-pill{height:36px;display:inline-flex;align-items:center;border-radius:8px;border:1px solid var(--line);background:var(--surface);padding:0 12px;color:var(--text);font-size:13px;font-weight:800}.env-pill{color:var(--sub);font:12px/1 "Geist Mono",Consolas,monospace}.icon-btn,.ghost-btn,.small-btn,.danger-btn{height:36px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--sub);padding:0 12px}.icon-btn{width:36px;padding:0}.danger-btn{color:var(--danger)}.view{display:none}.view.active{display:block}.content-grid{padding:0 46px 46px;display:grid;gap:24px}.metrics{display:grid;grid-template-columns:repeat(4,minmax(180px,1fr));gap:16px}.card{background:var(--surface);border:1px solid var(--line);border-radius:8px}.metric{min-height:132px;padding:22px;display:grid;grid-template-columns:44px 1fr;gap:16px;align-items:start}.metric-icon{width:42px;height:42px;border-radius:8px;background:var(--teal-soft);display:grid;place-items:center;color:var(--teal);font-weight:900}.metric small{display:block;color:var(--sub);font-size:13px}.metric strong{display:block;margin:8px 0 10px;font:800 28px/1 "Geist Mono",Consolas,monospace;color:var(--text)}.split-grid{display:grid;grid-template-columns:minmax(0,1fr) 474px;gap:24px}.bottom-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(360px,1fr);gap:24px}.section{padding:22px 26px}.section h2{font-size:20px;margin:0;color:var(--text)}.section-note{margin:8px 0 18px;color:var(--sub);font-size:13px;line-height:1.45}.toolbar{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:18px}.table-wrap{overflow:auto}.table{width:100%;border-collapse:collapse;min-width:720px}.table th,.table td{border-bottom:1px solid var(--line);padding:14px 12px;text-align:left;font-size:13px;white-space:nowrap}.table th{background:var(--surface-soft);color:var(--sub);font-weight:800}.pill{display:inline-flex;align-items:center;border-radius:999px;padding:4px 10px;background:var(--teal-soft);color:var(--teal-dark);font-weight:800;font-size:12px}.form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.field{display:grid;gap:7px}.field label{font-size:12px;color:var(--sub);font-weight:800}.field input,.field select{height:40px;border:1px solid var(--line);border-radius:8px;padding:0 10px;background:#fff;color:var(--text);outline:none}.switch-row{display:grid;gap:10px}.toggle{min-height:54px;display:flex;justify-content:space-between;align-items:center;gap:14px;padding:14px 16px;border:1px solid var(--line);border-radius:8px;background:#fff;font-weight:700}.toggle input{width:44px;height:24px;accent-color:var(--teal)}.log-box{white-space:pre-wrap;background:var(--surface-soft);color:var(--text);padding:18px;border-radius:8px;min-height:180px;line-height:1.65;border:1px solid var(--line);font-family:"Geist Mono",Consolas,monospace;font-size:13px}.settings-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.setting-item{border:1px solid var(--line);border-radius:8px;background:var(--surface-soft);padding:16px}.setting-item span{display:block;color:var(--sub);font-size:12px;font-weight:800}.setting-item strong{display:block;margin-top:8px;color:var(--teal-dark);font:800 13px/1.3 "Geist Mono",Consolas,monospace;word-break:break-word}.modal{position:fixed;inset:0;background:rgba(10,31,28,.46);display:grid;place-items:center;padding:24px;z-index:20}.modal.hidden{display:none}.modal-card{width:min(760px,100%);max-height:calc(100vh - 48px);overflow:auto;background:#fff;border-radius:8px;padding:24px;box-shadow:0 24px 70px rgba(5,34,30,.22)}.modal-card h2{margin:0 0 18px}.modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px}.empty-state{padding:30px;text-align:center;color:var(--sub);background:var(--surface-soft);border:1px dashed var(--line);border-radius:8px}@media(max-width:1180px){.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.split-grid,.bottom-grid{grid-template-columns:1fr}}@media(max-width:820px){.app{grid-template-columns:1fr}.sidebar{position:static;padding:18px}.sidebar nav{grid-template-columns:repeat(2,minmax(0,1fr))}.sidebar-note{display:none}.topbar{height:auto;padding:22px;align-items:flex-start;gap:16px;flex-direction:column}.content-grid{padding:0 18px 28px}.metrics,.form-grid,.settings-list{grid-template-columns:1fr}.login-panel,.signin-shell .login-panel{padding:32px 24px}.auth-shape{display:none}}`
+.app{display:grid;grid-template-columns:272px minmax(0,1fr);min-height:100vh;background:var(--bg)}.sidebar{background:var(--surface);border-right:1px solid var(--line);padding:28px 22px;display:flex;flex-direction:column;gap:24px}.logo-row{display:flex;align-items:center;gap:12px;min-width:0}.logo-row strong{display:block;font-size:14px;font-weight:800;line-height:1.2}.logo-row span{display:block;margin-top:4px;color:var(--muted);font:12px/1.2 "Geist Mono",Consolas,monospace}.sidebar nav{display:grid;gap:12px}.nav-item{height:44px;border:0;border-radius:8px;background:transparent;display:flex;align-items:center;gap:12px;padding:0 14px;color:var(--sub);font-size:14px;font-weight:700;text-align:left}.nav-item.active{background:var(--teal-soft);color:var(--teal-dark);font-weight:800}.nav-icon{width:18px;height:18px;display:grid;place-items:center;color:inherit}.sidebar-note{margin-top:auto;border:1px solid var(--line);background:var(--surface-soft);border-radius:8px;padding:16px}.sidebar-note strong{font-size:13px}.sidebar-note p{margin:8px 0 0;color:var(--sub);font-size:12px;line-height:1.45}.main{min-width:0}.topbar{height:118px;display:flex;align-items:center;justify-content:space-between;padding:34px 46px 22px}.topbar h1{font-size:32px;line-height:1.1;margin:0 0 10px;font-weight:800}.topbar p{margin:0;color:var(--sub);font-size:14px}.top-actions{display:flex;align-items:center;gap:10px}.user-badge,.env-pill{height:36px;display:inline-flex;align-items:center;border-radius:8px;border:1px solid var(--line);background:var(--surface);padding:0 12px;color:var(--text);font-size:13px;font-weight:800}.env-pill{color:var(--sub);font:12px/1 "Geist Mono",Consolas,monospace}.icon-btn,.ghost-btn,.small-btn,.danger-btn{height:36px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--sub);padding:0 12px}.icon-btn{width:36px;padding:0}.danger-btn{color:var(--danger)}.view{display:none}.view.active{display:block}.content-grid{padding:0 46px 46px;display:grid;gap:24px}.metrics{display:grid;grid-template-columns:repeat(4,minmax(180px,1fr));gap:16px}.card{background:var(--surface);border:1px solid var(--line);border-radius:8px}.metric{min-height:132px;padding:22px;display:grid;grid-template-columns:44px 1fr;gap:16px;align-items:start}.metric-icon{width:42px;height:42px;border-radius:8px;background:var(--teal-soft);display:grid;place-items:center;color:var(--teal);font-weight:900}.metric small{display:block;color:var(--sub);font-size:13px}.metric strong{display:block;margin:8px 0 10px;font:800 28px/1 "Geist Mono",Consolas,monospace;color:var(--text)}.split-grid{display:grid;grid-template-columns:minmax(0,1fr) 474px;gap:24px}.bottom-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(360px,1fr);gap:24px}.section{padding:22px 26px}.section h2{font-size:20px;margin:0;color:var(--text)}.section-note{margin:8px 0 18px;color:var(--sub);font-size:13px;line-height:1.45}.toolbar{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:18px}.table-wrap{overflow:auto}.table{width:100%;border-collapse:collapse;min-width:720px}.table th,.table td{border-bottom:1px solid var(--line);padding:14px 12px;text-align:left;font-size:13px;white-space:nowrap}.table th{background:var(--surface-soft);color:var(--sub);font-weight:800}.pill{display:inline-flex;align-items:center;border-radius:999px;padding:4px 10px;background:var(--teal-soft);color:var(--teal-dark);font-weight:800;font-size:12px}.form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.field{display:grid;gap:7px}.field label{font-size:12px;color:var(--sub);font-weight:800}.field input,.field select{height:40px;border:1px solid var(--line);border-radius:8px;padding:0 10px;background:#fff;color:var(--text);outline:none}.switch-row{display:grid;gap:10px}.toggle{min-height:54px;display:flex;justify-content:space-between;align-items:center;gap:14px;padding:14px 16px;border:1px solid var(--line);border-radius:8px;background:#fff;font-weight:700}.toggle input{width:44px;height:24px;accent-color:var(--teal)}.log-box{white-space:pre-wrap;background:var(--surface-soft);color:var(--text);padding:18px;border-radius:8px;height:280px;overflow:auto;line-height:1.65;border:1px solid var(--line);font-family:"Geist Mono",Consolas,monospace;font-size:13px}.progress-list{display:grid;gap:14px}.progress-account{border:1px solid var(--line);border-radius:8px;background:var(--surface-soft);padding:16px}.progress-account h3{margin:0 0 12px;font-size:15px}.progress-items{display:grid;gap:10px}.progress-row{display:grid;grid-template-columns:110px minmax(90px,1fr) 130px 80px;gap:12px;align-items:center;font-size:13px}.progress-row strong{font-size:13px}.progress-bar{height:8px;border-radius:99px;background:#e2eeeb;overflow:hidden}.progress-fill{height:100%;background:var(--teal);border-radius:99px}.progress-points{color:var(--teal-dark);font-weight:800}.progress-status{color:var(--sub);font-size:12px}.settings-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.setting-item{border:1px solid var(--line);border-radius:8px;background:var(--surface-soft);padding:16px}.setting-item span{display:block;color:var(--sub);font-size:12px;font-weight:800}.setting-item strong{display:block;margin-top:8px;color:var(--teal-dark);font:800 13px/1.3 "Geist Mono",Consolas,monospace;word-break:break-word}.modal{position:fixed;inset:0;background:rgba(10,31,28,.46);display:grid;place-items:center;padding:24px;z-index:20}.modal.hidden{display:none}.modal-card{width:min(760px,100%);max-height:calc(100vh - 48px);overflow:auto;background:#fff;border-radius:8px;padding:24px;box-shadow:0 24px 70px rgba(5,34,30,.22)}.modal-card h2{margin:0 0 18px}.modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px}.empty-state{padding:30px;text-align:center;color:var(--sub);background:var(--surface-soft);border:1px dashed var(--line);border-radius:8px}@media(max-width:1180px){.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.split-grid,.bottom-grid{grid-template-columns:1fr}}@media(max-width:820px){.app{grid-template-columns:1fr}.sidebar{position:static;padding:18px}.sidebar nav{grid-template-columns:repeat(2,minmax(0,1fr))}.sidebar-note{display:none}.topbar{height:auto;padding:22px;align-items:flex-start;gap:16px;flex-direction:column}.content-grid{padding:0 18px 28px}.metrics,.form-grid,.settings-list{grid-template-columns:1fr}.progress-row{grid-template-columns:1fr}.login-panel,.signin-shell .login-panel{padding:32px 24px}.auth-shape{display:none}}`
 }
 
 function clientJs(): string {
     return `
 let state = null;
 let pollTimer = null;
-const views = ['dashboard','accounts','tasks','logs','system'];
-const titles = {dashboard:'仪表盘',accounts:'账号设置',tasks:'任务配置',logs:'运行日志',system:'系统设置'};
+const views = ['dashboard','accounts','tasks','system'];
+const titles = {dashboard:'仪表盘',accounts:'账号设置',tasks:'任务配置',system:'系统设置'};
 const workerLabels = {
   doDailySet:'每日任务', doClaimBonusPoints:'领取奖励积分', doSpecialPromotions:'特殊活动',
   doMorePromotions:'更多推广', doPunchCards:'打卡活动', doAppPromotions:'App 活动',
@@ -927,7 +1114,6 @@ const subtitles = {
   dashboard:'查看运行概况，维护账号、任务与系统参数。',
   accounts:'维护 Microsoft 账号，敏感字段保存后不在页面回显。',
   tasks:'调整任务开关、并发与延迟参数。',
-  logs:'查看脱敏后的最近运行摘要。',
   system:'查看本地运行环境与基础设置。'
 };
 async function api(path, options = {}) {
@@ -959,7 +1145,7 @@ document.querySelectorAll('.nav-item').forEach(btn => btn.addEventListener('clic
 el('logoutBtn').addEventListener('click', async () => { await api('/api/logout', {method:'POST', body:'{}'}); location.reload(); });
 function renderAll(){
   el('userBadge').textContent = state.user.username;
-  renderDashboard(); renderAccounts(); renderTasks(); renderLogs(); renderSystem();
+  renderDashboard(); renderAccounts(); renderTasks(); renderSystem();
 }
 function metric(name,value,sub,icon){return '<article class="card metric"><div class="metric-icon">'+icon+'</div><div><small>'+name+'</small><strong>'+value+'</strong><small>'+sub+'</small></div></article>'}
 function accountTable(limit){
@@ -980,6 +1166,17 @@ function settingsItems(){
     + '</div>';
 }
 function setting(name,value){return '<div class="setting-item"><span>'+esc(name)+'</span><strong>'+esc(value)+'</strong></div>'}
+function progressRow(item){
+  const total = Number(item.total || 0);
+  const completed = Number(item.completed || 0);
+  const percent = total > 0 ? Math.max(0, Math.min(100, Math.round(completed / total * 100))) : (completed > 0 ? 100 : 0);
+  return '<div class="progress-row"><strong>'+esc(item.label)+'</strong><div><div class="progress-bar"><div class="progress-fill" style="width:'+percent+'%"></div></div></div><span>'+completed+'/'+total+'</span><span class="progress-points">今日增加'+Number(item.gained || 0)+'分</span></div>';
+}
+function taskProgress(){
+  const groups = Array.isArray(state.taskProgress) ? state.taskProgress : [];
+  if (!groups.length) return '<div class="empty-state">暂无账号任务进度</div>';
+  return '<div class="progress-list">'+groups.map(group => '<article class="progress-account"><h3>'+esc(group.accountLabel)+'</h3><div class="progress-items">'+group.items.map(progressRow).join('')+'</div></article>').join('')+'</div>';
+}
 function runControls(){
   const r = state.runState;
   const recent = Array.isArray(r.recentLog) && r.recentLog.length ? r.recentLog.slice(-18).join('\\n') : state.stats.lastRun;
@@ -999,13 +1196,13 @@ function renderDashboard(){
     + '<div class="metrics">'
     + metric('账号数量', s.accounts, '邮箱已脱敏展示', '◎')
     + metric('启用任务', s.workersEnabled, '搜索、阅读、活动任务', '✓')
-    + metric('今日状态', s.lastRun === '暂无本地日志' ? '待运行' : '有记录', '默认等待计划触发', '◷')
+    + metric('今日状态', /^暂无/.test(s.lastRun) ? '待运行' : '有记录', '默认等待计划触发', '◷')
     + metric('安全项', '4', '敏感字段不下发前端', '◇')
     + '</div>'
     + runControls()
     + '<div class="split-grid"><section class="card section"><div class="toolbar"><div><h2>账号设置</h2><p class="section-note">密码、TOTP 与代理密码保存后不在页面回显。</p></div><button class="primary-btn" onclick="openAccount()">新增账号</button></div>'+accountTable(3)+'</section>'
     + '<section class="card section"><h2>任务配置</h2><p class="section-note">常用任务开关与执行参数。</p><form id="dashboardTaskForm" class="switch-row">'+taskToggles(3)+'<div class="modal-actions"><button class="primary-btn">保存配置</button></div></form></section></div>'
-    + '<div class="bottom-grid"><section class="card section"><h2>运行日志</h2><p class="section-note">仅展示脱敏后的最近事件。</p><div class="log-box">'+esc(s.lastRun)+'</div></section>'
+    + '<div class="bottom-grid"><section class="card section"><h2>任务进度</h2><p class="section-note">按账号展示今日搜索和活动完成情况。</p>'+taskProgress()+'</section>'
     + '<section class="card section"><h2>系统设置</h2><p class="section-note">运行方式、并发与调试开关。</p>'+settingsItems()+'</section></div>'
     + '</div>';
   document.querySelector('#dashboardTaskForm')?.addEventListener('submit', saveConfig);
@@ -1079,7 +1276,6 @@ async function saveSchedule(event){
   await loadState();
   switchView('tasks');
 }
-function renderLogs(){ el('logs').innerHTML = '<div class="content-grid"><section class="card section"><h2>运行日志</h2><p class="section-note">Cookie、Token、密码与完整邮箱不会在前端日志中显示。</p><div class="log-box">'+esc(state.stats.lastRun)+'</div></section></div>'; }
 function renderSystem(){ el('system').innerHTML = '<div class="content-grid">'+scheduleForm()+'<section class="card section"><h2>系统设置</h2><p class="section-note">基础运行环境信息。</p>'+settingsItems()+'<div class="table-wrap" style="margin-top:18px"><table class="table"><tr><th>运行目录</th><td>'+esc(state.runtime.root)+'</td></tr><tr><th>Node 环境</th><td>'+esc(state.runtime.nodeEnv)+'</td></tr><tr><th>Web 端口</th><td>'+esc(state.runtime.webPort)+'</td></tr></table></div></section></div>'; document.querySelector('#system #scheduleForm').addEventListener('submit', saveSchedule); }
 loadState().catch(err => alert(err.message));`
 }

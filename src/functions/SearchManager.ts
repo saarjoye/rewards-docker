@@ -29,7 +29,7 @@ export class SearchManager {
         account: Account,
         accountEmail: string
     ): Promise<SearchResults> {
-        this.bot.logger.debug(
+        this.bot.logger.info(
             'main',
             'SEARCH-MANAGER',
             `开始 | 账户=${accountEmail} | 移动端缺失=${missingSearchPoints.mobilePoints} | 桌面端缺失=${missingSearchPoints.desktopPoints}`
@@ -160,7 +160,11 @@ export class SearchManager {
                     this.doMobileSearch(data, missingSearchPoints, mobileSession, accountEmail, executionContext).then(
                         points => {
                             mobileContextClosed = true
-                            this.bot.logger.info('main', 'SEARCH-MANAGER', `移动端完成 | 获得=${points}`)
+                            this.bot.logger.info(
+                                'main',
+                                'SEARCH-MANAGER',
+                                `移动端完成 | 账户=${accountEmail} | 获得=${points}`
+                            )
                             return points
                         }
                     )
@@ -204,7 +208,11 @@ export class SearchManager {
                         accountEmail,
                         executionContext
                     ).then(points => {
-                        this.bot.logger.info('main', 'SEARCH-MANAGER', `桌面端完成 | 获得=${points}`)
+                        this.bot.logger.info(
+                            'main',
+                            'SEARCH-MANAGER',
+                            `桌面端完成 | 账户=${accountEmail} | 获得=${points}`
+                        )
                         return points
                     })
                 )
@@ -226,7 +234,7 @@ export class SearchManager {
             this.bot.logger.info(
                 'main',
                 'SEARCH-MANAGER',
-                `并行摘要 | 移动端=${mobilePoints} | 桌面端=${desktopPoints} | 总计=${
+                `并行摘要 | 账户=${accountEmail} | 移动端=${mobilePoints} | 桌面端=${desktopPoints} | 总计=${
                     mobilePoints + desktopPoints
                 }`
             )
@@ -306,7 +314,11 @@ export class SearchManager {
                 accountEmail,
                 executionContext
             )
-            this.bot.logger.info('main', 'SEARCH-MANAGER', `步骤 1: 移动端完成 | 获得=${mobilePoints}`)
+            this.bot.logger.info(
+                'main',
+                'SEARCH-MANAGER',
+                `步骤 1: 移动端完成 | 账户=${accountEmail} | 获得=${mobilePoints}`
+            )
         } else {
             const reason = !this.bot.config.workers.doMobileSearch ? 'disabled' : 'no-points'
             this.bot.logger.info('main', 'SEARCH-MANAGER', `步骤 1: 跳过移动端 (${reason})；正在关闭移动端会话`)
@@ -342,7 +354,11 @@ export class SearchManager {
                 accountEmail,
                 executionContext
             )
-            this.bot.logger.info('main', 'SEARCH-MANAGER', `步骤 2: 桌面端完成 | 获得=${desktopPoints}`)
+            this.bot.logger.info(
+                'main',
+                'SEARCH-MANAGER',
+                `步骤 2: 桌面端完成 | 账户=${accountEmail} | 获得=${desktopPoints}`
+            )
         } else {
             const reason = !this.bot.config.workers.doDesktopSearch ? 'disabled' : 'no-points'
             this.bot.logger.info('main', 'SEARCH-MANAGER', `步骤 2: 跳过桌面端 (${reason})`)
@@ -351,7 +367,7 @@ export class SearchManager {
         this.bot.logger.info(
             'main',
             'SEARCH-MANAGER',
-            `串行摘要 | 移动端=${mobilePoints} | 桌面端=${desktopPoints} | 总计=${
+            `串行摘要 | 账户=${accountEmail} | 移动端=${mobilePoints} | 桌面端=${desktopPoints} | 总计=${
                 mobilePoints + desktopPoints
             }`
         )
@@ -428,7 +444,7 @@ export class SearchManager {
                 this.bot.logger.info(
                     'main',
                     'SEARCH-MOBILE-SEARCH',
-                    `搜索完成 | 获得=${pointsEarned}/${missingSearchPoints.mobilePoints}`
+                    `搜索完成 | 账户=${accountEmail} | 获得=${pointsEarned}/${missingSearchPoints.mobilePoints}`
                 )
                 this.bot.logger.debug(
                     'main',
@@ -492,7 +508,7 @@ export class SearchManager {
                 this.bot.logger.info(
                     'main',
                     'SEARCH-DESKTOP-PARALLEL',
-                    `搜索完成 | 获得=${pointsEarned}/${missingSearchPoints.desktopPoints}`
+                    `搜索完成 | 账户=${accountEmail} | 获得=${pointsEarned}/${missingSearchPoints.desktopPoints}`
                 )
                 this.bot.logger.debug(
                     'main',
@@ -571,7 +587,7 @@ export class SearchManager {
                 this.bot.logger.info(
                     'main',
                     'SEARCH-DESKTOP-SEQUENTIAL',
-                    `搜索完成 | 获得=${pointsEarned}/${missingSearchPoints.desktopPoints}`
+                    `搜索完成 | 账户=${accountEmail} | 获得=${pointsEarned}/${missingSearchPoints.desktopPoints}`
                 )
                 this.bot.logger.debug(
                     'main',

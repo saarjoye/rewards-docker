@@ -14,6 +14,7 @@ services:
             NODE_ENV: "production"
             WEB_UI_HOST: "0.0.0.0"
             WEB_UI_PORT: "3000"
+            WEB_AUTH_FILE: "/usr/src/microsoft-rewards-script/dist/config/web-auth.json"
             WEB_ADMIN_USER: ${WEB_ADMIN_USER:-}
             WEB_ADMIN_PASSWORD: ${WEB_ADMIN_PASSWORD:-}
 
