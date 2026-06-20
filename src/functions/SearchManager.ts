@@ -3,7 +3,7 @@ import type { BrowserFingerprintWithHeaders } from 'fingerprint-generator'
 import { MicrosoftRewardsBot, executionContext } from '../index'
 import type { DashboardData } from '../interface/DashboardData'
 import type { Account } from '../interface/Account'
-import { updateSearchTaskProgress, updateTaskProgress } from '../util/TaskProgressStore'
+import { updateSearchTaskProgress } from '../util/TaskProgressStore'
 
 interface BrowserSession {
     context: BrowserContext

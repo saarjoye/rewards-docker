@@ -112,8 +112,7 @@ export class Quiz extends Workers {
                         attempts = i + 1
 
                         if (gainedPoints > 0) {
-                            this.bot.userData.currentPoints = newBalance
-                            this.bot.userData.gainedPoints = (this.bot.userData.gainedPoints ?? 0) + gainedPoints
+                            this.bot.recordPointGain(`测验 ${i + 1}`, gainedPoints, newBalance)
 
                             oldBalance = newBalance
                             totalGained += gainedPoints

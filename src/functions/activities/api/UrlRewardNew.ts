@@ -110,8 +110,7 @@ export class UrlRewardNew extends Workers {
             )
 
             if (this.gainedPoints > 0) {
-                this.bot.userData.currentPoints = newBalance
-                this.bot.userData.gainedPoints = (this.bot.userData.gainedPoints ?? 0) + this.gainedPoints
+                this.bot.recordPointGain('UrlReward', this.gainedPoints, newBalance)
 
                 this.bot.logger.info(
                     this.bot.isMobile,

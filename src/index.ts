@@ -247,6 +247,35 @@ export class MicrosoftRewardsBot {
         return getCurrentContext().isMobile
     }
 
+    public recordPointGain(label: string, gained: number, newBalance: number, task: 'daily' | 'mobile' | 'desktop' = 'daily'): void {
+        const accountEmail = this.userData.accountEmail
+        const safeGained = Math.max(0, Number.isFinite(Number(gained)) ? Number(gained) : 0)
+        const safeBalance = Math.max(
+            0,
+            Number.isFinite(Number(newBalance)) ? Number(newBalance) : Number(this.userData.currentPoints ?? 0)
+        )
+
+        this.userData.currentPoints = safeBalance
+        if (safeGained > 0) {
+            this.userData.gainedPoints = Math.max(0, Number(this.userData.gainedPoints ?? 0)) + safeGained
+        }
+
+        if (!accountEmail) return
+
+        updateAccountPointTotals(accountEmail, { currentPoints: safeBalance, finalPoints: safeBalance })
+
+        if (task !== 'daily') return
+
+        const initialPoints = Math.max(0, Number(this.userData.initialPoints ?? 0))
+        const dailyGained = initialPoints > 0 ? Math.max(0, safeBalance - initialPoints) : Math.max(0, Number(this.userData.gainedPoints ?? 0))
+        updateTaskProgress(accountEmail, 'daily', {
+            completed: dailyGained,
+            total: dailyGained,
+            gained: dailyGained,
+            status: safeGained > 0 ? `${label} +${safeGained}` : '进行中'
+        })
+    }
+
     // 初始化账户数据
     async initialize(): Promise<void> {
         this.accounts = loadAccounts()
@@ -702,7 +731,7 @@ export class MicrosoftRewardsBot {
                     const after = await getLatestPoints(before)
                     const gained = Math.max(0, after - before)
                     this.userData.currentPoints = after
-                    dailyGainedPoints += gained
+                    dailyGainedPoints = Math.max(dailyGainedPoints, Math.max(0, after - initialPoints))
                     taskSummary.push({
                         key: 'daily',
                         label,
@@ -713,7 +742,7 @@ export class MicrosoftRewardsBot {
                         completed: dailyGainedPoints,
                         total: dailyGainedPoints,
                         gained: dailyGainedPoints,
-                        status: '进行中'
+                        status: gained > 0 ? `${label} +${gained}` : '进行中'
                     })
                     updateAccountPointTotals(accountEmail, { currentPoints: after, finalPoints: after })
                 }
@@ -770,6 +799,7 @@ export class MicrosoftRewardsBot {
                 const finalPoints = await this.browser.func.getCurrentPoints()
                 const collectedPoints = Math.max(0, finalPoints - initialPoints)
                 const searchGainedPoints = Math.max(0, finalPoints - searchStartPoints)
+                dailyGainedPoints = Math.max(dailyGainedPoints, Math.max(0, searchStartPoints - initialPoints))
                 const estimatedSearchPoints = Math.max(0, mobilePoints) + Math.max(0, desktopPoints)
                 let mobileGainedPoints = 0
                 let desktopGainedPoints = 0

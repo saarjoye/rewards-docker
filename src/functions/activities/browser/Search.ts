@@ -104,8 +104,7 @@ export class Search extends Workers {
                     stagnantLoop = 0
 
                     const newBalance = Number(this.bot.userData.currentPoints ?? 0) + gainedPoints
-                    this.bot.userData.currentPoints = newBalance
-                    this.bot.userData.gainedPoints = (this.bot.userData.gainedPoints ?? 0) + gainedPoints
+                    this.bot.recordPointGain(isMobile ? '移动搜索' : 'PC搜索', gainedPoints, newBalance, taskKey)
 
                     totalGainedPoints += gainedPoints
                     if (accountEmail) {
@@ -227,8 +226,7 @@ export class Search extends Workers {
                             stagnantLoop = 0
 
                             const newBalance = Number(this.bot.userData.currentPoints ?? 0) + gainedPoints
-                            this.bot.userData.currentPoints = newBalance
-                            this.bot.userData.gainedPoints = (this.bot.userData.gainedPoints ?? 0) + gainedPoints
+                            this.bot.recordPointGain(isMobile ? '移动搜索' : 'PC搜索', gainedPoints, newBalance, taskKey)
 
                             totalGainedPoints += gainedPoints
                             if (accountEmail) {
