@@ -4,7 +4,7 @@ import type { Counters, DashboardData } from '../../../interface/DashboardData'
 
 import { QueryCore } from '../../QueryEngine'
 import { Workers } from '../../Workers'
-import { updateTaskProgress, type ProgressTaskKey } from '../../../util/TaskProgressStore'
+import { updateSearchTaskProgress, type ProgressTaskKey } from '../../../util/TaskProgressStore'
 
 /**
  * 必应搜索类，负责执行必应搜索以获取积分
@@ -34,6 +34,7 @@ export class Search extends Workers {
             const missingPoints = this.bot.browser.func.missingSearchPoints(searchCounters, isMobile)
             let missingPointsTotal = missingPoints.totalPoints
             const initialMissingPointsTotal = missingPointsTotal
+            let latestMissingPointsTotal = missingPointsTotal
 
             this.bot.logger.debug(
                 isMobile,
@@ -108,12 +109,13 @@ export class Search extends Workers {
 
                     totalGainedPoints += gainedPoints
                     if (accountEmail) {
-                        updateTaskProgress(accountEmail, taskKey, {
-                            completed: totalGainedPoints,
-                            total: initialMissingPointsTotal,
-                            gained: totalGainedPoints,
-                            status: newMissingPointsTotal > 0 ? '进行中' : '已完成'
-                        })
+                        updateSearchTaskProgress(
+                            accountEmail,
+                            taskKey,
+                            totalGainedPoints,
+                            newMissingPointsTotal,
+                            initialMissingPointsTotal
+                        )
                     }
 
                     this.bot.logger.info(
@@ -125,6 +127,7 @@ export class Search extends Workers {
                 }
 
                 missingPointsTotal = newMissingPointsTotal
+                latestMissingPointsTotal = newMissingPointsTotal
 
                 if (missingPointsTotal === 0) {
                     this.bot.logger.info(
@@ -229,12 +232,13 @@ export class Search extends Workers {
 
                             totalGainedPoints += gainedPoints
                             if (accountEmail) {
-                                updateTaskProgress(accountEmail, taskKey, {
-                                    completed: totalGainedPoints,
-                                    total: initialMissingPointsTotal,
-                                    gained: totalGainedPoints,
-                                    status: newMissingPointsTotal > 0 ? '进行中' : '已完成'
-                                })
+                                updateSearchTaskProgress(
+                                    accountEmail,
+                                    taskKey,
+                                    totalGainedPoints,
+                                    newMissingPointsTotal,
+                                    initialMissingPointsTotal
+                                )
                             }
 
                             this.bot.logger.info(
@@ -246,6 +250,7 @@ export class Search extends Workers {
                         }
 
                         missingPointsTotal = newMissingPointsTotal
+                        latestMissingPointsTotal = newMissingPointsTotal
 
                         if (missingPointsTotal === 0) {
                             this.bot.logger.info(
@@ -276,12 +281,13 @@ export class Search extends Workers {
 
             const finalBalance = Number(this.bot.userData.currentPoints ?? startBalance)
             if (accountEmail) {
-                updateTaskProgress(accountEmail, taskKey, {
-                    completed: totalGainedPoints,
-                    total: initialMissingPointsTotal,
-                    gained: totalGainedPoints,
-                    status: '已完成'
-                })
+                updateSearchTaskProgress(
+                    accountEmail,
+                    taskKey,
+                    totalGainedPoints,
+                    latestMissingPointsTotal,
+                    initialMissingPointsTotal
+                )
             }
 
             this.bot.logger.info(

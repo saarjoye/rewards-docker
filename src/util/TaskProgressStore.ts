@@ -96,3 +96,40 @@ export function updateTaskProgress(
     account.updatedAt = new Date().toISOString()
     writeProgressFile(data)
 }
+
+export function updateAccountTaskProgress(
+    email: string,
+    patch: Partial<Record<ProgressTaskKey, Partial<StoredTaskProgressItem>>>
+): void {
+    for (const [task, item] of Object.entries(patch) as Array<[ProgressTaskKey, Partial<StoredTaskProgressItem>]>) {
+        updateTaskProgress(email, task, item)
+    }
+}
+
+export function updateSearchTaskProgress(
+    email: string,
+    task: Extract<ProgressTaskKey, 'desktop' | 'mobile'>,
+    gained: number,
+    remaining: number,
+    fallbackTotal: number
+): void {
+    const data = readProgressFile()
+    const accountHash = accountProgressHash(email)
+    let account = data.accounts.find(item => item.accountHash === accountHash)
+    if (!account) {
+        account = emptyAccount(accountHash)
+        data.accounts.push(account)
+    }
+
+    const current = account[task]
+    const total = current.total > 0 ? current.total : fallbackTotal
+    const completed = total > 0 ? Math.max(0, Math.min(total, total - remaining)) : gained
+    account[task] = {
+        completed,
+        total,
+        gained: Math.max(current.gained, gained),
+        status: remaining > 0 ? '进行中' : '已完成'
+    }
+    account.updatedAt = new Date().toISOString()
+    writeProgressFile(data)
+}

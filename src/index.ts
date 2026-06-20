@@ -27,7 +27,7 @@ import { sendPushPlus, flushPushPlusQueue } from './logging/PushPlus'
 import type { DashboardData } from './interface/DashboardData'
 import type { AppDashboardData } from './interface/AppDashBoardData'
 import { PanelFlyoutData } from './interface/PanelFlyoutData'
-import { updateTaskProgress } from './util/TaskProgressStore'
+import { updateAccountTaskProgress, updateTaskProgress } from './util/TaskProgressStore'
 interface ExecutionContext {
     isMobile: boolean
     account: Account
@@ -515,6 +515,28 @@ export class MicrosoftRewardsBot {
                 this.userData.initialPoints = data.userStatus.availablePoints
                 this.userData.currentPoints = data.userStatus.availablePoints
                 const initialPoints = this.userData.initialPoints ?? 0
+                const initialMobileSearch = data.userStatus.counters.mobileSearch?.[0]
+                const initialPcSearch = data.userStatus.counters.pcSearch?.[0]
+                updateAccountTaskProgress(accountEmail, {
+                    mobile: {
+                        completed: initialMobileSearch?.pointProgress ?? 0,
+                        total: initialMobileSearch?.pointProgressMax ?? 0,
+                        gained: 0,
+                        status:
+                            initialMobileSearch && initialMobileSearch.pointProgress < initialMobileSearch.pointProgressMax
+                                ? '进行中'
+                                : '已完成'
+                    },
+                    desktop: {
+                        completed: initialPcSearch?.pointProgress ?? 0,
+                        total: initialPcSearch?.pointProgressMax ?? 0,
+                        gained: 0,
+                        status:
+                            initialPcSearch && initialPcSearch.pointProgress < initialPcSearch.pointProgressMax
+                                ? '进行中'
+                                : '已完成'
+                    }
+                })
 
                 const browserEarnable = await this.browser.func.getBrowserEarnablePoints()
                 const appEarnable = await this.browser.func.getAppEarnablePoints()
