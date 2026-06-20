@@ -28,6 +28,7 @@ import type { DashboardData } from './interface/DashboardData'
 import type { AppDashboardData } from './interface/AppDashBoardData'
 import { PanelFlyoutData } from './interface/PanelFlyoutData'
 import { updateAccountTaskProgress, updateTaskProgress } from './util/TaskProgressStore'
+import { updateAccountStatus } from './util/AccountStatusStore'
 interface ExecutionContext {
     isMobile: boolean
     account: Account
@@ -357,6 +358,11 @@ export class MicrosoftRewardsBot {
             this.userData.timezoneOffset = String(-new Date().getTimezoneOffset())
 
             try {
+                updateAccountStatus(accountEmail, {
+                    state: 'checking',
+                    stage: 'account-start',
+                    lastMessage: '开始检测账号登录状态'
+                })
                 this.logger.info(
                     'main',
                     'ACCOUNT-START',
@@ -382,11 +388,20 @@ export class MicrosoftRewardsBot {
                     const collectedPoints = result.collectedPoints ?? 0
                     const accountInitialPoints = result.initialPoints ?? 0
                     const accountFinalPoints = accountInitialPoints + collectedPoints
+                    const statusMessage =
+                        process.env.ACCOUNT_STATUS_CHECK_ONLY === 'true'
+                            ? '账号状态检测通过'
+                            : `任务已完成，今日增加 ${collectedPoints} 分`
                     updateTaskProgress(accountEmail, 'daily', {
                         completed: collectedPoints,
                         total: collectedPoints,
                         gained: collectedPoints,
                         status: '已完成'
+                    })
+                    updateAccountStatus(accountEmail, {
+                        state: 'success',
+                        stage: process.env.ACCOUNT_STATUS_CHECK_ONLY === 'true' ? 'status-check' : 'account-end',
+                        lastMessage: statusMessage
                     })
 
                     accountStats.push({
@@ -405,6 +420,12 @@ export class MicrosoftRewardsBot {
                         'green'
                     )
                 } else {
+                    updateAccountStatus(accountEmail, {
+                        state: 'error',
+                        stage: 'account-flow',
+                        lastMessage: '账号流程失败，请查看运行日志',
+                        error: '流程失败'
+                    })
                     accountStats.push({
                         email: accountEmail,
                         initialPoints: 0,
@@ -417,10 +438,17 @@ export class MicrosoftRewardsBot {
                 }
             } catch (error) {
                 const durationSeconds = ((Date.now() - accountStartTime) / 1000).toFixed(1)
+                const message = error instanceof Error ? error.message : String(error)
+                updateAccountStatus(accountEmail, {
+                    state: 'error',
+                    stage: 'account-error',
+                    lastMessage: message,
+                    error: message
+                })
                 this.logger.error(
                     'main',
                     'ACCOUNT-ERROR',
-                    `${accountEmail}: ${error instanceof Error ? error.message : String(error)}`
+                    `${accountEmail}: ${message}`
                 )
 
                 accountStats.push({
@@ -430,7 +458,7 @@ export class MicrosoftRewardsBot {
                     collectedPoints: 0,
                     duration: parseFloat(durationSeconds),
                     success: false,
-                    error: error instanceof Error ? error.message : String(error)
+                    error: message
                 })
             }
         }
@@ -440,18 +468,19 @@ export class MicrosoftRewardsBot {
             const totalInitialPoints = accountStats.reduce((sum, s) => sum + s.initialPoints, 0)
             const totalFinalPoints = accountStats.reduce((sum, s) => sum + s.finalPoints, 0)
             const totalDurationMinutes = ((Date.now() - runStartTime) / 1000 / 60).toFixed(1)
+            const hadWorkerFailure = accountStats.some(s => !s.success)
 
+            const runSummary = process.env.ACCOUNT_STATUS_CHECK_ONLY === 'true' ? '账号状态检测完成' : '已完成所有账户'
             this.logger.info(
                 'main',
                 'RUN-END',
-                `已完成所有账户 | 已处理账户: ${accountStats.length} | 总收集积分: +${totalCollectedPoints} | 原始总计: ${totalInitialPoints} → 新总计: ${totalFinalPoints} | 总运行时间: ${totalDurationMinutes}分钟`,
-                'green'
+                `${runSummary} | 已处理账户: ${accountStats.length} | 总收集积分: +${totalCollectedPoints} | 原始总计: ${totalInitialPoints} → 新总计: ${totalFinalPoints} | 总运行时间: ${totalDurationMinutes}分钟`,
+                hadWorkerFailure ? 'yellow' : 'green'
             )
 
-            const hadWorkerFailure = accountStats.some(s => !s.success)
             await this.sendPushPlusSummary(accountStats, runStartTime, hadWorkerFailure)
             await flushAllWebhooks()
-            process.exit(0)
+            process.exit(hadWorkerFailure ? 1 : 0)
         }
 
         return accountStats
@@ -473,6 +502,11 @@ export class MicrosoftRewardsBot {
                 this.logger.info('main', 'BROWSER', `移动浏览器已启动 | ${accountEmail}`)
 
                 await this.login.login(this.mainMobilePage, account)
+                updateAccountStatus(accountEmail, {
+                    state: 'valid',
+                    stage: 'login',
+                    lastMessage: '登录验证通过'
+                })
 
                 try {
                     this.accessToken = await this.login.getAppAccessToken(this.mainMobilePage, accountEmail)
@@ -515,6 +549,11 @@ export class MicrosoftRewardsBot {
                 this.userData.initialPoints = data.userStatus.availablePoints
                 this.userData.currentPoints = data.userStatus.availablePoints
                 const initialPoints = this.userData.initialPoints ?? 0
+                updateAccountStatus(accountEmail, {
+                    state: 'running',
+                    stage: 'dashboard',
+                    lastMessage: `账号有效，当前积分 ${initialPoints}`
+                })
                 const initialMobileSearch = data.userStatus.counters.mobileSearch?.[0]
                 const initialPcSearch = data.userStatus.counters.pcSearch?.[0]
                 updateAccountTaskProgress(accountEmail, {
@@ -550,6 +589,19 @@ export class MicrosoftRewardsBot {
                         browserEarnable.mobileSearchPoints
                     } | 应用: ${appEarnable?.totalEarnablePoints ?? 0} | ${accountEmail} | 区域设置: ${this.userData.geoLocale}`
                 )
+
+                if (process.env.ACCOUNT_STATUS_CHECK_ONLY === 'true') {
+                    updateAccountStatus(accountEmail, {
+                        state: 'success',
+                        stage: 'status-check',
+                        lastMessage: `账号状态正常，当前积分 ${initialPoints}`
+                    })
+                    this.logger.info('main', 'ACCOUNT-CHECK', `账号状态检测通过 | ${accountEmail}`)
+                    return {
+                        initialPoints,
+                        collectedPoints: 0
+                    }
+                }
 
                 // Ensure streak protection is true if enabled
                 if (this.config.ensureStreakProtection) {
