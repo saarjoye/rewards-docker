@@ -28,7 +28,16 @@ import { sendWeCom, flushWeComQueue } from './logging/WeCom'
 import type { DashboardData } from './interface/DashboardData'
 import type { AppDashboardData } from './interface/AppDashBoardData'
 import { PanelFlyoutData } from './interface/PanelFlyoutData'
-import { updateAccountPointTotals, updateAccountTaskProgress, updateTaskProgress } from './util/TaskProgressStore'
+import {
+    recordTaskDetailGain,
+    resetAccountRunProgress,
+    taskDetailKey,
+    updateAccountPointTotals,
+    updateAccountRunState,
+    updateAccountTaskProgress,
+    updateTaskDetail,
+    updateTaskProgress
+} from './util/TaskProgressStore'
 import { updateAccountStatus } from './util/AccountStatusStore'
 interface ExecutionContext {
     isMobile: boolean
@@ -110,6 +119,8 @@ export class MicrosoftRewardsBot {
     public requestToken = '' // 请求令牌
     public cookies: { mobile: Cookie[]; desktop: Cookie[] } // 移动端和桌面端的cookies
     public fingerprint!: BrowserFingerprintWithHeaders // 浏览器指纹
+    public currentDetailTask: { key: string; label: string; group: 'daily' | 'mobile' | 'desktop' | 'activity' } | null =
+        null
 
     // 新版 UI（modern dashboard）使用 Next.js Server Actions 而非 REST API。
     // next-action hash 在编译时生成，绑定到具体部署版本（dpl）。
@@ -263,6 +274,13 @@ export class MicrosoftRewardsBot {
         if (!accountEmail) return
 
         updateAccountPointTotals(accountEmail, { currentPoints: safeBalance, finalPoints: safeBalance })
+
+        const detail =
+            this.currentDetailTask ??
+            (task === 'daily'
+                ? { key: taskDetailKey(label), label, group: 'activity' as const }
+                : { key: task === 'desktop' ? 'desktop-search' : 'mobile-search', label, group: task })
+        recordTaskDetailGain(accountEmail, detail, safeGained, safeGained > 0 ? `${label} +${safeGained}` : label)
 
         if (task !== 'daily') return
 
@@ -480,7 +498,7 @@ export class MicrosoftRewardsBot {
                     const statusMessage =
                         process.env.ACCOUNT_STATUS_CHECK_ONLY === 'true'
                             ? '账号状态检测通过'
-                            : `任务已完成，今日增加 ${collectedPoints} 分`
+                            : `任务已完成，本次增加 ${collectedPoints} 分`
                     updateAccountStatus(accountEmail, {
                         state: 'success',
                         stage: process.env.ACCOUNT_STATUS_CHECK_ONLY === 'true' ? 'status-check' : 'account-end',
@@ -668,7 +686,7 @@ export class MicrosoftRewardsBot {
                 const initialPoints = this.userData.initialPoints ?? 0
                 const taskSummary: AccountTaskSummary[] = []
                 let dailyGainedPoints = 0
-                updateAccountPointTotals(accountEmail, {
+                resetAccountRunProgress(accountEmail, {
                     initialPoints,
                     currentPoints: initialPoints,
                     finalPoints: initialPoints
@@ -757,32 +775,81 @@ export class MicrosoftRewardsBot {
                     }
                 }
                 const runPointTask = async (label: string, fn: () => Promise<void>): Promise<void> => {
-                    const before = Number(this.userData.currentPoints ?? initialPoints)
-                    await fn()
-                    const after = await getLatestPoints(before)
-                    const gained = Math.max(0, after - before)
-                    this.userData.currentPoints = after
-                    dailyGainedPoints = Math.max(dailyGainedPoints, Math.max(0, after - initialPoints))
-                    taskSummary.push({
-                        key: 'daily',
+                    const detailKey = taskDetailKey(label)
+                    this.currentDetailTask = { key: detailKey, label, group: 'activity' }
+                    updateAccountRunState(accountEmail, {
+                        currentTask: label,
+                        currentStage: 'activity',
+                        currentMessage: `正在执行：${label}`
+                    })
+                    updateTaskDetail(accountEmail, {
+                        key: detailKey,
                         label,
-                        gained,
-                        status: '已完成'
+                        group: 'activity',
+                        status: '进行中',
+                        message: `正在执行：${label}`
                     })
-                    updateTaskProgress(accountEmail, 'daily', {
-                        completed: dailyGainedPoints,
-                        total: dailyGainedPoints,
-                        gained: dailyGainedPoints,
-                        status: gained > 0 ? `${label} +${gained}` : '进行中'
-                    })
-                    updateAccountPointTotals(accountEmail, { currentPoints: after, finalPoints: after })
+                    const before = Number(this.userData.currentPoints ?? initialPoints)
+                    try {
+                        await fn()
+                        const after = await getLatestPoints(before)
+                        const gained = Math.max(0, after - before)
+                        this.userData.currentPoints = after
+                        dailyGainedPoints = Math.max(dailyGainedPoints, Math.max(0, after - initialPoints))
+                        taskSummary.push({
+                            key: 'daily',
+                            label,
+                            gained,
+                            status: '已完成'
+                        })
+                        updateTaskDetail(accountEmail, {
+                            key: detailKey,
+                            label,
+                            group: 'activity',
+                            completed: gained,
+                            total: gained,
+                            gained,
+                            status: '已完成',
+                            message: gained > 0 ? `${label} +${gained}` : `${label} 已完成，未新增积分`
+                        })
+                        updateTaskProgress(accountEmail, 'daily', {
+                            completed: dailyGainedPoints,
+                            total: dailyGainedPoints,
+                            gained: dailyGainedPoints,
+                            status: gained > 0 ? `${label} +${gained}` : '进行中'
+                        })
+                        updateAccountPointTotals(accountEmail, { currentPoints: after, finalPoints: after })
+                    } catch (error) {
+                        const message = error instanceof Error ? error.message : String(error)
+                        updateTaskDetail(accountEmail, {
+                            key: detailKey,
+                            label,
+                            group: 'activity',
+                            status: '失败',
+                            message
+                        })
+                        throw error
+                    } finally {
+                        this.currentDetailTask = null
+                    }
                 }
                 const skipAppTokenTask = (label: string): void => {
+                    const detailKey = taskDetailKey(label)
                     taskSummary.push({
                         key: 'daily',
                         label,
                         gained: 0,
                         status: '已跳过：App访问令牌不可用'
+                    })
+                    updateTaskDetail(accountEmail, {
+                        key: detailKey,
+                        label,
+                        group: 'activity',
+                        completed: 0,
+                        total: 0,
+                        gained: 0,
+                        status: '已跳过',
+                        message: 'App访问令牌不可用'
                     })
                     this.logger.warn('main', 'FLOW', `${label}已跳过：App访问令牌不可用，后续搜索继续执行`)
                 }
@@ -832,6 +899,11 @@ export class MicrosoftRewardsBot {
 
                 this.cookies.mobile = await initialContext.cookies()
 
+                updateAccountRunState(accountEmail, {
+                    currentTask: '搜索任务',
+                    currentStage: 'search',
+                    currentMessage: `准备搜索：移动剩余 ${missingSearchPoints.mobilePoints}，PC剩余 ${missingSearchPoints.desktopPoints}`
+                })
                 const { mobilePoints, desktopPoints } = await this.searchManager.doSearches(
                     data,
                     missingSearchPoints,
@@ -934,6 +1006,11 @@ export class MicrosoftRewardsBot {
                     total: dailyGainedPoints,
                     gained: dailyGainedPoints,
                     status: '已完成'
+                })
+                updateAccountRunState(accountEmail, {
+                    currentTask: '账号任务完成',
+                    currentStage: 'done',
+                    currentMessage: `本次运行增加 ${collectedPoints} 分`
                 })
 
                 this.logger.info(

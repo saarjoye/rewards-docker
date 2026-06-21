@@ -3,7 +3,7 @@ import type { BrowserFingerprintWithHeaders } from 'fingerprint-generator'
 import { MicrosoftRewardsBot, executionContext } from '../index'
 import type { DashboardData } from '../interface/DashboardData'
 import type { Account } from '../interface/Account'
-import { updateSearchTaskProgress, updateTaskProgress } from '../util/TaskProgressStore'
+import { updateAccountRunState, updateSearchTaskProgress, updateTaskDetail, updateTaskProgress } from '../util/TaskProgressStore'
 
 interface BrowserSession {
     context: BrowserContext
@@ -20,6 +20,12 @@ interface SearchResults {
     desktopPoints: number
 }
 
+interface SearchCounterProgress {
+    completed: number
+    total: number
+    remaining: number
+}
+
 export class SearchManager {
     constructor(private bot: MicrosoftRewardsBot) {}
 
@@ -28,6 +34,17 @@ export class SearchManager {
             return await this.bot.browser.func.getCurrentPoints()
         } catch {
             return null
+        }
+    }
+
+    private searchCounterProgress(data: DashboardData, task: 'mobile' | 'desktop'): SearchCounterProgress {
+        const counters = task === 'mobile' ? data.userStatus.counters.mobileSearch : data.userStatus.counters.pcSearch
+        const completed = counters?.reduce((sum, item) => sum + Math.max(0, Number(item.pointProgress ?? 0)), 0) ?? 0
+        const total = counters?.reduce((sum, item) => sum + Math.max(0, Number(item.pointProgressMax ?? 0)), 0) ?? 0
+        return {
+            completed,
+            total,
+            remaining: Math.max(0, total - completed)
         }
     }
 
@@ -57,6 +74,8 @@ export class SearchManager {
             missingSearchPoints.desktopPoints,
             missingSearchPoints.desktopPoints
         )
+        const mobileCounter = this.searchCounterProgress(data, 'mobile')
+        const desktopCounter = this.searchCounterProgress(data, 'desktop')
 
         const doMobile = this.bot.config.workers.doMobileSearch && missingSearchPoints.mobilePoints > 0
         const doDesktop = this.bot.config.workers.doDesktopSearch && missingSearchPoints.desktopPoints > 0
@@ -83,10 +102,34 @@ export class SearchManager {
             `桌面端: ${desktopStatus} (启用=${this.bot.config.workers.doDesktopSearch}, 缺失=${missingSearchPoints.desktopPoints})`
         )
         updateTaskProgress(accountEmail, 'mobile', {
-            status: doMobile ? '进行中' : this.bot.config.workers.doMobileSearch ? '已完成' : '已禁用'
+            status: doMobile ? '进行中' : this.bot.config.workers.doMobileSearch ? '无剩余积分，已跳过' : '已禁用'
         })
         updateTaskProgress(accountEmail, 'desktop', {
-            status: doDesktop ? '进行中' : this.bot.config.workers.doDesktopSearch ? '已完成' : '已禁用'
+            status: doDesktop ? '进行中' : this.bot.config.workers.doDesktopSearch ? '无剩余积分，已跳过' : '已禁用'
+        })
+        updateTaskDetail(accountEmail, {
+            key: 'mobile-search',
+            label: '移动搜索',
+            group: 'mobile',
+            completed: mobileCounter.completed,
+            total: mobileCounter.total,
+            gained: 0,
+            status: doMobile ? '进行中' : this.bot.config.workers.doMobileSearch ? '无剩余积分，已跳过' : '已禁用',
+            message: doMobile
+                ? `剩余 ${mobileCounter.remaining}，进度 ${mobileCounter.completed}/${mobileCounter.total}`
+                : mobileStatus
+        })
+        updateTaskDetail(accountEmail, {
+            key: 'desktop-search',
+            label: 'PC搜索',
+            group: 'desktop',
+            completed: desktopCounter.completed,
+            total: desktopCounter.total,
+            gained: 0,
+            status: doDesktop ? '进行中' : this.bot.config.workers.doDesktopSearch ? '无剩余积分，已跳过' : '已禁用',
+            message: doDesktop
+                ? `剩余 ${desktopCounter.remaining}，进度 ${desktopCounter.completed}/${desktopCounter.total}`
+                : desktopStatus
         })
 
         if (!doMobile && !doDesktop) {
@@ -177,8 +220,22 @@ export class SearchManager {
         try {
             const promises: Promise<number>[] = []
             const searchTypes: string[] = []
+            if (shouldDoMobile && shouldDoDesktop) {
+                updateAccountRunState(accountEmail, {
+                    currentTask: '并行搜索',
+                    currentStage: 'search',
+                    currentMessage: `移动剩余 ${missingSearchPoints.mobilePoints}，PC剩余 ${missingSearchPoints.desktopPoints}`
+                })
+            }
 
             if (shouldDoMobile) {
+                if (!shouldDoDesktop) {
+                    updateAccountRunState(accountEmail, {
+                        currentTask: '移动搜索',
+                        currentStage: 'mobile-search',
+                        currentMessage: `正在执行移动搜索，目标 ${missingSearchPoints.mobilePoints}`
+                    })
+                }
                 this.bot.logger.debug(
                     'main',
                     'SEARCH-MANAGER',
@@ -214,6 +271,13 @@ export class SearchManager {
             }
 
             if (shouldDoDesktop) {
+                if (!shouldDoMobile) {
+                    updateAccountRunState(accountEmail, {
+                        currentTask: 'PC搜索',
+                        currentStage: 'desktop-search',
+                        currentMessage: `正在执行PC搜索，目标 ${missingSearchPoints.desktopPoints}`
+                    })
+                }
                 this.bot.logger.info('main', 'SEARCH-MANAGER', '桌面端登录开始')
                 this.bot.logger.debug(
                     'main',
@@ -344,6 +408,11 @@ export class SearchManager {
         let desktopPoints = 0
 
         if (shouldDoMobile) {
+            updateAccountRunState(accountEmail, {
+                currentTask: '移动搜索',
+                currentStage: 'mobile-search',
+                currentMessage: `正在执行移动搜索，目标 ${missingSearchPoints.mobilePoints}`
+            })
             this.bot.logger.info('main', 'SEARCH-MANAGER', '步骤 1: 移动端')
             this.bot.logger.debug(
                 'main',
@@ -399,6 +468,11 @@ export class SearchManager {
         }
 
         if (shouldDoDesktop) {
+            updateAccountRunState(accountEmail, {
+                currentTask: 'PC搜索',
+                currentStage: 'desktop-search',
+                currentMessage: `正在执行PC搜索，目标 ${missingSearchPoints.desktopPoints}`
+            })
             this.bot.logger.info('main', 'SEARCH-MANAGER', '步骤 2: 桌面端')
             this.bot.logger.debug(
                 'main',
