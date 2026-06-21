@@ -365,7 +365,7 @@ if [ "${RUN_ON_START:-false}" = "true" ]; then
       exit 1
     }
     # 跳过初始运行的随机延迟，但保留 cron 作业的设置
-    SKIP_RANDOM_SLEEP=true scripts/docker/run_daily.sh
+    RUN_SOURCE=startup RUN_MODE=task SKIP_RANDOM_SLEEP=true scripts/docker/run_daily.sh
     echo "[entrypoint-bg] 初始运行在 $(date) 完成"
   ) &
   echo "[entrypoint] 后台进程已启动 (PID: $!)"

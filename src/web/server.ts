@@ -67,16 +67,33 @@ interface ScheduleFile {
 }
 
 type RunMode = 'task' | 'account-check'
+type RunSource = 'cron' | 'web' | 'startup' | 'unknown'
+type LogSource = 'manual' | 'runtime'
+type LogLevel = 'all' | 'error' | 'warn' | 'info' | 'debug'
 
 interface RunState {
     running: boolean
+    source?: RunSource
     mode?: RunMode
     pid?: number
     startedAt?: string
     finishedAt?: string
     exitCode?: number | null
+    ageSeconds?: number
+    lockFile?: string
+    lockOwnerAlive?: boolean
+    conflictReason?: string
     lastMessage: string
     recentLog?: string[]
+}
+
+interface RunLockMeta {
+    pid?: number
+    source?: RunSource
+    mode?: RunMode
+    startedAt?: string
+    skipRandomSleep?: string
+    logFile?: string
 }
 
 interface TaskProgressItem {
@@ -112,6 +129,11 @@ interface RawLogLine {
     safe: string
 }
 
+interface PublicLogLine {
+    text: string
+    level: LogLevel
+}
+
 const runtimeRoot = path.resolve(__dirname, '..')
 const appRoot = path.resolve(__dirname, '..', '..')
 const runtimeConfigDir = path.join(runtimeRoot, 'config')
@@ -135,6 +157,9 @@ const accountsFile = path.join(runtimeRoot, 'accounts.json')
 const configFile = path.join(runtimeRoot, 'config.json')
 const scheduleFile = path.join(runtimeRoot, 'config', 'schedule.json')
 const manualRunLogFile = path.join(appRoot, 'logs', 'manual-run.log')
+const runtimeLogFile = process.env.RUNTIME_LOG_FILE?.trim() || '/var/log/microsoft-rewards.log'
+const runLockFile = process.env.RUN_LOCK_FILE?.trim() || '/tmp/run_daily.lock'
+const runLockMetaFile = process.env.RUN_LOCK_META_FILE?.trim() || '/tmp/run_daily.lock.meta'
 const configExampleFile = path.join(runtimeRoot, 'config.example.json')
 const configExampleFallbacks = [
     configExampleFile,
@@ -148,6 +173,7 @@ const SESSION_TTL_MS = 1000 * 60 * 60 * 12
 const MAX_BODY_BYTES = 1024 * 1024
 const MAX_RUN_LOG_LINES = 1000
 const MAX_RUN_LOG_BYTES = 2 * 1024 * 1024
+const LOG_LEVELS = new Set<LogLevel>(['all', 'error', 'warn', 'info', 'debug'])
 
 function ensureRuntimeFiles(): void {
     if (!fs.existsSync(runtimeRoot)) {
@@ -265,14 +291,17 @@ function stripAnsi(value: string): string {
 function redactLogLine(line: string): string {
     return stripAnsi(line)
         .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, email => maskEmail(email))
+        .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{16,}/gi, 'Bearer [REDACTED]')
         .replace(
             /([?&](?:code|access_token|id_token|refresh_token|request_token|client_secret|RequestVerificationToken)=)[^&\s|]+/gi,
             '$1[REDACTED]'
         )
         .replace(
-            /\b(password|passwd|pwd|token|secret|cookie|authorization)(\s*[:=]\s*)([^\s|]+)/gi,
+            /\b(password|passwd|pwd|token|secret|cookie|authorization|corpsecret|client_secret)(\s*[:=]\s*)([^\s|]+)/gi,
             '$1$2[REDACTED]'
         )
+        .replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, '[IP-REDACTED]')
+        .replace(/\b[A-Za-z0-9_-]{48,}\b/g, '[TOKEN-REDACTED]')
 }
 
 function appendManualRunLog(lines: string[]): void {
@@ -321,6 +350,10 @@ function startScriptRun(mode: RunMode): RunState {
         env: {
             ...process.env,
             SKIP_RANDOM_SLEEP: 'true',
+            RUN_SOURCE: 'web',
+            RUN_MODE: mode,
+            RUN_FAIL_ON_LOCK: 'true',
+            RUNTIME_LOG_FILE: runtimeLogFile,
             ...(mode === 'account-check' ? { ACCOUNT_STATUS_CHECK_ONLY: 'true' } : {})
         }
     })
@@ -329,6 +362,7 @@ function startScriptRun(mode: RunMode): RunState {
     const startedLine = `[${new Date().toISOString()}] ${label}已启动，PID ${child.pid}`
     runState = {
         running: true,
+        source: 'web',
         mode,
         pid: child.pid,
         startedAt: new Date().toISOString(),
@@ -458,6 +492,120 @@ function maskEmail(email: string): string {
     if (!domain) return email ? `${email.slice(0, 2)}***` : ''
     const left = name.length <= 2 ? `${name[0] ?? ''}***` : `${name.slice(0, 2)}***${name.slice(-1)}`
     return `${left}@${domain}`
+}
+
+function readTextFileTail(file: string, maxBytes = MAX_RUN_LOG_BYTES): string {
+    if (!fs.existsSync(file)) return ''
+    const stat = fs.statSync(file)
+    if (!stat.isFile() || stat.size <= 0) return ''
+
+    const start = Math.max(0, stat.size - maxBytes)
+    const length = stat.size - start
+    const fd = fs.openSync(file, 'r')
+    try {
+        const buffer = Buffer.alloc(length)
+        fs.readSync(fd, buffer, 0, buffer.length, start)
+        return buffer.toString('utf8')
+    } finally {
+        fs.closeSync(fd)
+    }
+}
+
+function numericPid(value: unknown): number | undefined {
+    const n = Number(value)
+    return Number.isInteger(n) && n > 0 ? n : undefined
+}
+
+function readPidFile(file: string): number | undefined {
+    try {
+        const raw = fs.readFileSync(file, 'utf8').trim()
+        return /^\d+$/.test(raw) ? Number(raw) : undefined
+    } catch {
+        return undefined
+    }
+}
+
+function processAlive(pid?: number): boolean {
+    if (!pid) return false
+    try {
+        process.kill(pid, 0)
+        return true
+    } catch {
+        return false
+    }
+}
+
+function readRunLockMeta(): RunLockMeta | null {
+    const meta = readJsonFile<Partial<RunLockMeta> | null>(runLockMetaFile, null)
+    if (!meta) return null
+    const source = meta.source === 'cron' || meta.source === 'web' || meta.source === 'startup' ? meta.source : 'unknown'
+    const mode = meta.mode === 'account-check' ? 'account-check' : 'task'
+    return {
+        pid: numericPid(meta.pid),
+        source,
+        mode,
+        startedAt: typeof meta.startedAt === 'string' ? meta.startedAt : undefined,
+        skipRandomSleep: typeof meta.skipRandomSleep === 'string' ? meta.skipRandomSleep : undefined,
+        logFile: typeof meta.logFile === 'string' ? meta.logFile : undefined
+    }
+}
+
+function ageSeconds(startedAt?: string): number | undefined {
+    if (!startedAt) return undefined
+    const ts = Date.parse(startedAt)
+    if (!Number.isFinite(ts)) return undefined
+    return Math.max(0, Math.floor((Date.now() - ts) / 1000))
+}
+
+function mergedRunState(): RunState {
+    const lockPid = readPidFile(runLockFile)
+    const meta = readRunLockMeta()
+    const pid = lockPid ?? meta?.pid ?? runState.pid
+    const lockOwnerAlive = processAlive(pid)
+    const locked = Boolean(lockPid)
+    const externalRunning = Boolean(locked && lockOwnerAlive)
+    const running = Boolean(runState.running || externalRunning)
+    const startedAt = meta?.startedAt ?? runState.startedAt
+    const source = meta?.source ?? runState.source ?? (externalRunning ? 'unknown' : undefined)
+    const mode = meta?.mode ?? runState.mode
+    const conflictReason = running
+        ? `已有${sourceLabel(source)}${modeLabel(mode)}正在运行${pid ? `，PID ${pid}` : ''}`
+        : undefined
+
+    return {
+        ...runState,
+        running,
+        source,
+        mode,
+        pid,
+        startedAt,
+        ageSeconds: ageSeconds(startedAt),
+        lockFile: runLockFile,
+        lockOwnerAlive,
+        conflictReason,
+        lastMessage:
+            running && conflictReason && (!runState.lastMessage || runState.lastMessage === '暂无手动运行记录')
+                ? conflictReason
+                : runState.lastMessage,
+        recentLog: runState.recentLog
+    }
+}
+
+function sourceLabel(source?: RunSource): string {
+    switch (source) {
+        case 'cron':
+            return '定时任务'
+        case 'web':
+            return 'Web手动'
+        case 'startup':
+            return '启动任务'
+        default:
+            return '任务'
+    }
+}
+
+function modeLabel(mode?: RunMode): string {
+    return mode === 'account-check' ? '账号检测' : '执行任务'
 }
 
 function accountStatusLabel(state: AccountStatusState): string {
@@ -821,6 +969,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
         const accounts = loadAccounts()
         const config = loadConfig()
         const workersEnabled = Object.values(config.workers).filter(Boolean).length
+        const currentRunState = mergedRunState()
         sendJson(res, 200, {
             user: { username: session.username },
             runtime: {
@@ -842,13 +991,22 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
             config: publicConfig(config),
             wecom: publicWeComConfig(config),
             schedule: currentSchedule(),
-            runState
+            runState: currentRunState
         })
         return
     }
 
     if (url.pathname === '/api/run' && req.method === 'POST') {
         try {
+            const currentRunState = mergedRunState()
+            if (currentRunState.running) {
+                sendJson(res, 409, {
+                    error: 'RUN_ALREADY_ACTIVE',
+                    message: currentRunState.conflictReason ?? '已有任务正在运行',
+                    runState: currentRunState
+                })
+                return
+            }
             sendJson(res, 200, { ok: true, runState: startScriptRun('task') })
         } catch (error) {
             sendJson(res, 400, {
@@ -861,6 +1019,15 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
 
     if (url.pathname === '/api/account-status/check' && req.method === 'POST') {
         try {
+            const currentRunState = mergedRunState()
+            if (currentRunState.running) {
+                sendJson(res, 409, {
+                    error: 'RUN_ALREADY_ACTIVE',
+                    message: currentRunState.conflictReason ?? '已有任务正在运行',
+                    runState: currentRunState
+                })
+                return
+            }
             sendJson(res, 200, { ok: true, runState: startScriptRun('account-check') })
         } catch (error) {
             sendJson(res, 400, {
@@ -868,6 +1035,30 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
                 message: error instanceof Error ? error.message : String(error)
             })
         }
+        return
+    }
+
+    if (url.pathname === '/api/logs' && req.method === 'GET') {
+        const result = queryLogs(url)
+        sendJson(res, 200, {
+            ok: true,
+            source: result.source,
+            level: result.level,
+            query: result.query,
+            tail: result.tail,
+            count: result.lines.length,
+            lines: result.lines
+        })
+        return
+    }
+
+    if (url.pathname === '/api/logs/download' && req.method === 'GET') {
+        const result = queryLogs(url)
+        const filename = `mrs-${result.source}-redacted-${new Date().toISOString().slice(0, 10)}.log`
+        res.statusCode = 200
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8')
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+        res.end(result.lines.map(line => line.text).join('\n'))
         return
     }
 
@@ -1014,13 +1205,60 @@ function readLastRunSummary(): string {
         return runState.recentLog.slice(-80).reverse().join('\n')
     }
 
-    const lines = readRecentLogLines().map(line => line.safe)
+    const lines = readRecentLogLines('manual', 80).map(line => line.safe)
     if (lines.length > 0) return lines.join('\n')
+
+    const runtimeLines = readRecentLogLines('runtime', 80).map(line => line.safe)
+    if (runtimeLines.length > 0) return runtimeLines.join('\n')
 
     return '暂无完成记录'
 }
 
-function readRecentLogLines(): RawLogLine[] {
+function logFileForSource(source: LogSource): string {
+    return source === 'runtime' ? runtimeLogFile : manualRunLogFile
+}
+
+function detectLogLevel(line: string): LogLevel {
+    if (/\[(ERROR|ERR)\]|\bERROR\b|错误|失败/i.test(line)) return 'error'
+    if (/\[WARN\]|\bWARN(?:ING)?\b|警告/i.test(line)) return 'warn'
+    if (/\[DEBUG\]|\bDEBUG\b/i.test(line)) return 'debug'
+    return 'info'
+}
+
+function normalizeLogSource(value: string | null): LogSource {
+    return value === 'runtime' ? 'runtime' : 'manual'
+}
+
+function normalizeLogLevel(value: string | null): LogLevel {
+    return LOG_LEVELS.has(value as LogLevel) ? (value as LogLevel) : 'all'
+}
+
+function normalizeTail(value: string | null): number {
+    const n = Number(value ?? MAX_RUN_LOG_LINES)
+    if (!Number.isFinite(n)) return MAX_RUN_LOG_LINES
+    return Math.max(50, Math.min(MAX_RUN_LOG_LINES, Math.floor(n)))
+}
+
+function readRecentLogLines(source: LogSource = 'manual', tail = MAX_RUN_LOG_LINES): RawLogLine[] {
+    const file = logFileForSource(source)
+    const content = readTextFileTail(file)
+    const lines = content
+        .split(/\r?\n/)
+        .map(line => ({ raw: stripAnsi(line), safe: redactLogLine(line) }))
+        .filter(line => line.safe.trim().length > 0)
+        .slice(-tail)
+        .reverse()
+
+    if (lines.length > 0) return lines
+
+    if (source === 'manual') {
+        return fallbackLogLines(tail)
+    }
+
+    return []
+}
+
+function fallbackLogLines(tail = MAX_RUN_LOG_LINES): RawLogLine[] {
     const logDir = path.resolve(process.cwd(), 'logs')
     if (!fs.existsSync(logDir)) return []
 
@@ -1043,12 +1281,25 @@ function readRecentLogLines(): RawLogLine[] {
             .split(/\r?\n/)
             .map(line => ({ raw: stripAnsi(line), safe: redactLogLine(line) }))
             .filter(line => line.safe.trim().length > 0)
-            .slice(-MAX_RUN_LOG_LINES)
+            .slice(-tail)
             .reverse()
         if (lines.length > 0) return lines
     }
 
     return []
+}
+
+function queryLogs(url: URL): { source: LogSource; level: LogLevel; query: string; tail: number; lines: PublicLogLine[] } {
+    const source = normalizeLogSource(url.searchParams.get('source'))
+    const level = normalizeLogLevel(url.searchParams.get('level'))
+    const query = (url.searchParams.get('query') ?? '').trim().toLowerCase()
+    const tail = normalizeTail(url.searchParams.get('tail'))
+    const lines = readRecentLogLines(source, tail)
+        .map(line => ({ text: line.safe, level: detectLogLevel(line.safe) }))
+        .filter(line => level === 'all' || line.level === level)
+        .filter(line => !query || line.text.toLowerCase().includes(query))
+
+    return { source, level, query, tail, lines }
 }
 
 function defaultTaskItems(): TaskProgressItem[] {
@@ -1295,6 +1546,7 @@ function appHtml(): string {
       <button class="nav-item active" data-view="dashboard"><span class="nav-icon">⌂</span>仪表盘</button>
       <button class="nav-item" data-view="accounts"><span class="nav-icon">◎</span>账号设置</button>
       <button class="nav-item" data-view="tasks"><span class="nav-icon">☷</span>任务配置</button>
+      <button class="nav-item" data-view="logs"><span class="nav-icon">≡</span>运行日志</button>
       <button class="nav-item" data-view="wecom"><span class="nav-icon">✉</span>企业微信推送</button>
       <button class="nav-item" data-view="system"><span class="nav-icon">⚙</span>系统设置</button>
     </nav>
@@ -1311,6 +1563,7 @@ function appHtml(): string {
     <section id="dashboard" class="view active"></section>
     <section id="accounts" class="view"></section>
     <section id="tasks" class="view"></section>
+    <section id="logs" class="view"></section>
     <section id="wecom" class="view"></section>
     <section id="system" class="view"></section>
   </main>
@@ -1326,15 +1579,17 @@ function baseCss(): string {
 :root{--bg:#eaf6f3;--bg-strong:#d9f0ec;--surface:#fff;--surface-soft:#f7fbfa;--line:#d7e5e1;--teal:#0f8f85;--teal-dark:#08746d;--teal-soft:#ddf3ef;--text:#17211f;--sub:#64736f;--muted:#91a19d;--danger:#b54646;--amber:#a96516;--blue:#2f6fed;--shadow:0 18px 42px rgba(15,63,58,.13)}
 *{box-sizing:border-box}body{margin:0;font-family:Inter,Segoe UI,Arial,"Microsoft YaHei",sans-serif;color:var(--text);background:var(--bg)}button,input,select{font:inherit}button{cursor:pointer}button:disabled{cursor:not-allowed;opacity:.65}
 .login-body{min-height:100vh;overflow:hidden;background:var(--bg)}.login-shell{min-height:100vh;position:relative;display:grid;place-items:center;padding:28px}.signin-shell{border-top:10px solid var(--teal)}.auth-shape{position:absolute;background:var(--bg-strong);border-radius:48px;pointer-events:none}.auth-shape-a{width:520px;height:520px;right:8vw;top:12vh}.auth-shape-b{width:420px;height:300px;left:-160px;bottom:-80px}.setup-shell .auth-shape-a{right:18vw;top:-110px}.setup-shell .auth-shape-b{left:-150px;bottom:-100px}.login-panel{position:relative;width:min(576px,calc(100vw - 36px));background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:48px 54px 40px;box-shadow:var(--shadow)}.signin-shell .login-panel{width:min(520px,calc(100vw - 36px));padding:46px 48px 36px}.brand-lock{display:flex;align-items:center;gap:14px;margin-bottom:28px}.brand-lock strong{display:block;font-size:15px;font-weight:800;line-height:1.2}.brand-lock span{display:block;margin-top:4px;color:var(--muted);font:12px/1.2 "Geist Mono",Consolas,monospace}.brand-mark{width:44px;height:44px;border-radius:8px;background:var(--teal);display:grid;place-items:center;color:#fff;font:800 14px/1 "Geist Mono",Consolas,monospace}.login-panel h1{margin:0;font-size:36px;line-height:1.15;font-weight:800;letter-spacing:0}.auth-hint{margin:12px 0 34px;color:var(--sub);font-size:15px;line-height:1.55}.login-form{display:grid;gap:18px}.auth-field{display:grid;gap:10px;font-size:13px;font-weight:700;color:var(--sub)}.auth-field input{height:54px;width:100%;border:1px solid var(--line);border-radius:8px;background:var(--surface-soft);padding:0 18px;color:var(--text);outline:none}.auth-field input:focus,.field input:focus,.field select:focus{border-color:var(--teal);box-shadow:0 0 0 3px rgba(15,143,133,.1)}.primary-btn{height:44px;border:0;border-radius:8px;background:var(--teal);color:#fff;font-weight:800;padding:0 18px;display:inline-flex;align-items:center;justify-content:center;gap:8px}.wide-btn{height:54px;width:100%;margin-top:2px}.form-message{min-height:18px;margin:0;color:var(--danger);font-size:13px}.security-note{margin-top:16px;padding:14px 16px 14px 44px;position:relative;background:var(--surface-soft);border:1px solid var(--line);border-radius:8px;color:var(--sub);font-size:13px;line-height:1.4}.security-note:before{content:"✓";position:absolute;left:16px;top:14px;width:18px;height:18px;border-radius:50%;display:grid;place-items:center;background:var(--teal-soft);color:var(--teal);font-size:12px;font-weight:800}
-.app{display:grid;grid-template-columns:272px minmax(0,1fr);min-height:100vh;background:var(--bg)}.sidebar{background:var(--surface);border-right:1px solid var(--line);padding:28px 22px;display:flex;flex-direction:column;gap:24px}.logo-row{display:flex;align-items:center;gap:12px;min-width:0}.logo-row strong{display:block;font-size:14px;font-weight:800;line-height:1.2}.logo-row span{display:block;margin-top:4px;color:var(--muted);font:12px/1.2 "Geist Mono",Consolas,monospace}.sidebar nav{display:grid;gap:12px}.nav-item{height:44px;border:0;border-radius:8px;background:transparent;display:flex;align-items:center;gap:12px;padding:0 14px;color:var(--sub);font-size:14px;font-weight:700;text-align:left}.nav-item.active{background:var(--teal-soft);color:var(--teal-dark);font-weight:800}.nav-icon{width:18px;height:18px;display:grid;place-items:center;color:inherit}.sidebar-note{margin-top:auto;border:1px solid var(--line);background:var(--surface-soft);border-radius:8px;padding:16px}.sidebar-note strong{font-size:13px}.sidebar-note p{margin:8px 0 0;color:var(--sub);font-size:12px;line-height:1.45}.main{min-width:0}.topbar{height:118px;display:flex;align-items:center;justify-content:space-between;padding:34px 46px 22px}.topbar h1{font-size:32px;line-height:1.1;margin:0 0 10px;font-weight:800}.topbar p{margin:0;color:var(--sub);font-size:14px}.top-actions{display:flex;align-items:center;gap:10px}.user-badge,.env-pill{height:36px;display:inline-flex;align-items:center;border-radius:8px;border:1px solid var(--line);background:var(--surface);padding:0 12px;color:var(--text);font-size:13px;font-weight:800}.env-pill{color:var(--sub);font:12px/1 "Geist Mono",Consolas,monospace}.icon-btn,.ghost-btn,.small-btn,.danger-btn{height:36px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--sub);padding:0 12px}.icon-btn{width:36px;padding:0}.danger-btn{color:var(--danger)}.view{display:none}.view.active{display:block}.content-grid{padding:0 46px 46px;display:grid;gap:24px}.metrics{display:grid;grid-template-columns:repeat(4,minmax(180px,1fr));gap:16px}.card{background:var(--surface);border:1px solid var(--line);border-radius:8px}.metric{min-height:132px;padding:22px;display:grid;grid-template-columns:44px 1fr;gap:16px;align-items:start}.metric-icon{width:42px;height:42px;border-radius:8px;background:var(--teal-soft);display:grid;place-items:center;color:var(--teal);font-weight:900}.metric small{display:block;color:var(--sub);font-size:13px}.metric strong{display:block;margin:8px 0 10px;font:800 28px/1 "Geist Mono",Consolas,monospace;color:var(--text)}.split-grid{display:grid;grid-template-columns:minmax(0,1fr) 474px;gap:24px}.bottom-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(360px,1fr);gap:24px}.section{padding:22px 26px}.section h2{font-size:20px;margin:0;color:var(--text)}.section-note{margin:8px 0 18px;color:var(--sub);font-size:13px;line-height:1.45}.toolbar{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:18px}.table-wrap{overflow:auto}.table{width:100%;border-collapse:collapse;min-width:820px}.table th,.table td{border-bottom:1px solid var(--line);padding:14px 12px;text-align:left;font-size:13px;white-space:nowrap}.table th{background:var(--surface-soft);color:var(--sub);font-weight:800}.pill,.status-pill{display:inline-flex;align-items:center;border-radius:999px;padding:4px 10px;background:var(--teal-soft);color:var(--teal-dark);font-weight:800;font-size:12px}.status-pill.state-unknown{background:#eef3f1;color:var(--sub)}.status-pill.state-checking,.status-pill.state-running{background:#e8f0ff;color:var(--blue)}.status-pill.state-valid,.status-pill.state-success{background:var(--teal-soft);color:var(--teal-dark)}.status-pill.state-error{background:#ffeceb;color:var(--danger)}.account-status{display:grid;gap:5px}.account-status small{color:var(--sub);font-size:12px;max-width:260px;overflow:hidden;text-overflow:ellipsis}.form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.field{display:grid;gap:7px}.field label{font-size:12px;color:var(--sub);font-weight:800}.field input,.field select{height:40px;border:1px solid var(--line);border-radius:8px;padding:0 10px;background:#fff;color:var(--text);outline:none}.switch-row{display:grid;gap:10px}.toggle{min-height:54px;display:flex;justify-content:space-between;align-items:center;gap:14px;padding:14px 16px;border:1px solid var(--line);border-radius:8px;background:#fff;font-weight:700}.toggle input{width:44px;height:24px;accent-color:var(--teal)}.log-box{white-space:pre-wrap;background:var(--surface-soft);color:var(--text);padding:18px;border-radius:8px;height:320px;overflow-x:hidden;overflow-y:auto;overflow-wrap:anywhere;word-break:break-word;max-width:100%;line-height:1.65;border:1px solid var(--line);font-family:"Geist Mono",Consolas,monospace;font-size:13px}.progress-list{display:grid;gap:14px}.progress-account{border:1px solid var(--line);border-radius:8px;background:var(--surface-soft);padding:16px}.progress-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}.progress-heading h3{margin:0;font-size:15px}.progress-heading span{color:var(--teal-dark);font-weight:800;font-size:13px;text-align:right}.progress-items{display:grid;gap:10px}.progress-row{display:grid;grid-template-columns:110px minmax(90px,1fr) 130px 100px;gap:12px;align-items:center;font-size:13px}.progress-row strong{font-size:13px}.progress-bar{height:8px;border-radius:99px;background:#e2eeeb;overflow:hidden}.progress-fill{height:100%;background:var(--teal);border-radius:99px}.progress-points{color:var(--teal-dark);font-weight:800}.progress-status{color:var(--sub);font-size:12px}.settings-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.setting-item{border:1px solid var(--line);border-radius:8px;background:var(--surface-soft);padding:16px}.setting-item span{display:block;color:var(--sub);font-size:12px;font-weight:800}.setting-item strong{display:block;margin-top:8px;color:var(--teal-dark);font:800 13px/1.3 "Geist Mono",Consolas,monospace;word-break:break-word}.modal{position:fixed;inset:0;background:rgba(10,31,28,.46);display:grid;place-items:center;padding:24px;z-index:20}.modal.hidden{display:none}.modal-card{width:min(760px,100%);max-height:calc(100vh - 48px);overflow:auto;background:#fff;border-radius:8px;padding:24px;box-shadow:0 24px 70px rgba(5,34,30,.22)}.modal-card h2{margin:0 0 18px}.modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px}.empty-state{padding:30px;text-align:center;color:var(--sub);background:var(--surface-soft);border:1px dashed var(--line);border-radius:8px}@media(max-width:1180px){.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.split-grid,.bottom-grid{grid-template-columns:1fr}}@media(max-width:820px){.app{grid-template-columns:1fr}.sidebar{position:static;padding:18px}.sidebar nav{grid-template-columns:repeat(2,minmax(0,1fr))}.sidebar-note{display:none}.topbar{height:auto;padding:22px;align-items:flex-start;gap:16px;flex-direction:column}.content-grid{padding:0 18px 28px}.metrics,.form-grid,.settings-list{grid-template-columns:1fr}.progress-row{grid-template-columns:1fr}.progress-heading{display:grid}.progress-heading span{text-align:left}.login-panel,.signin-shell .login-panel{padding:32px 24px}.auth-shape{display:none}}`
+.app{display:grid;grid-template-columns:272px minmax(0,1fr);min-height:100vh;background:var(--bg)}.sidebar{background:var(--surface);border-right:1px solid var(--line);padding:28px 22px;display:flex;flex-direction:column;gap:24px}.logo-row{display:flex;align-items:center;gap:12px;min-width:0}.logo-row strong{display:block;font-size:14px;font-weight:800;line-height:1.2}.logo-row span{display:block;margin-top:4px;color:var(--muted);font:12px/1.2 "Geist Mono",Consolas,monospace}.sidebar nav{display:grid;gap:12px}.nav-item{height:44px;border:0;border-radius:8px;background:transparent;display:flex;align-items:center;gap:12px;padding:0 14px;color:var(--sub);font-size:14px;font-weight:700;text-align:left}.nav-item.active{background:var(--teal-soft);color:var(--teal-dark);font-weight:800}.nav-icon{width:18px;height:18px;display:grid;place-items:center;color:inherit}.sidebar-note{margin-top:auto;border:1px solid var(--line);background:var(--surface-soft);border-radius:8px;padding:16px}.sidebar-note strong{font-size:13px}.sidebar-note p{margin:8px 0 0;color:var(--sub);font-size:12px;line-height:1.45}.main{min-width:0}.topbar{height:118px;display:flex;align-items:center;justify-content:space-between;padding:34px 46px 22px}.topbar h1{font-size:32px;line-height:1.1;margin:0 0 10px;font-weight:800}.topbar p{margin:0;color:var(--sub);font-size:14px}.top-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.user-badge,.env-pill{height:36px;display:inline-flex;align-items:center;border-radius:8px;border:1px solid var(--line);background:var(--surface);padding:0 12px;color:var(--text);font-size:13px;font-weight:800}.env-pill{color:var(--sub);font:12px/1 "Geist Mono",Consolas,monospace}.icon-btn,.ghost-btn,.small-btn,.danger-btn{height:36px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--sub);padding:0 12px}.icon-btn{width:36px;padding:0}.danger-btn{color:var(--danger)}.view{display:none}.view.active{display:block}.content-grid{padding:0 46px 46px;display:grid;gap:24px}.metrics{display:grid;grid-template-columns:repeat(4,minmax(180px,1fr));gap:16px}.card{background:var(--surface);border:1px solid var(--line);border-radius:8px}.metric{min-height:132px;padding:22px;display:grid;grid-template-columns:44px 1fr;gap:16px;align-items:start}.metric-icon{width:42px;height:42px;border-radius:8px;background:var(--teal-soft);display:grid;place-items:center;color:var(--teal);font-weight:900}.metric small{display:block;color:var(--sub);font-size:13px}.metric strong{display:block;margin:8px 0 10px;font:800 28px/1 "Geist Mono",Consolas,monospace;color:var(--text)}.split-grid{display:grid;grid-template-columns:minmax(0,1fr) 474px;gap:24px}.bottom-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(360px,1fr);gap:24px}.section{padding:22px 26px}.section h2{font-size:20px;margin:0;color:var(--text)}.section-note{margin:8px 0 18px;color:var(--sub);font-size:13px;line-height:1.45}.toolbar{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:18px}.table-wrap{overflow:auto}.table{width:100%;border-collapse:collapse;min-width:820px}.table th,.table td{border-bottom:1px solid var(--line);padding:14px 12px;text-align:left;font-size:13px;white-space:nowrap}.table th{background:var(--surface-soft);color:var(--sub);font-weight:800}.pill,.status-pill{display:inline-flex;align-items:center;border-radius:999px;padding:4px 10px;background:var(--teal-soft);color:var(--teal-dark);font-weight:800;font-size:12px}.status-pill.state-unknown{background:#eef3f1;color:var(--sub)}.status-pill.state-checking,.status-pill.state-running{background:#e8f0ff;color:var(--blue)}.status-pill.state-valid,.status-pill.state-success{background:var(--teal-soft);color:var(--teal-dark)}.status-pill.state-error{background:#ffeceb;color:var(--danger)}.account-status{display:grid;gap:5px}.account-status small{color:var(--sub);font-size:12px;max-width:260px;overflow:hidden;text-overflow:ellipsis}.form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.field{display:grid;gap:7px}.field label{font-size:12px;color:var(--sub);font-weight:800}.field input,.field select{height:40px;border:1px solid var(--line);border-radius:8px;padding:0 10px;background:#fff;color:var(--text);outline:none}.switch-row{display:grid;gap:10px}.toggle{min-height:54px;display:flex;justify-content:space-between;align-items:center;gap:14px;padding:14px 16px;border:1px solid var(--line);border-radius:8px;background:#fff;font-weight:700}.toggle input{width:44px;height:24px;accent-color:var(--teal)}.log-box{white-space:pre-wrap;background:var(--surface-soft);color:var(--text);padding:18px;border-radius:8px;height:320px;overflow-x:hidden;overflow-y:auto;overflow-wrap:anywhere;word-break:break-word;max-width:100%;line-height:1.65;border:1px solid var(--line);font-family:"Geist Mono",Consolas,monospace;font-size:13px}.log-box.large{height:560px}.log-line{display:block;padding:2px 0}.log-line.error{color:var(--danger)}.log-line.warn{color:var(--amber)}.log-line.debug{color:var(--sub)}.filter-grid{display:grid;grid-template-columns:150px 130px 120px minmax(180px,1fr);gap:12px;align-items:end}.progress-list{display:grid;gap:14px}.progress-account{border:1px solid var(--line);border-radius:8px;background:var(--surface-soft);padding:16px}.progress-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}.progress-heading h3{margin:0;font-size:15px}.progress-heading span{color:var(--teal-dark);font-weight:800;font-size:13px;text-align:right}.progress-items{display:grid;gap:10px}.progress-row{display:grid;grid-template-columns:110px minmax(90px,1fr) 130px 100px;gap:12px;align-items:center;font-size:13px}.progress-row strong{font-size:13px}.progress-bar{height:8px;border-radius:99px;background:#e2eeeb;overflow:hidden}.progress-fill{height:100%;background:var(--teal);border-radius:99px}.progress-points{color:var(--teal-dark);font-weight:800}.progress-status{color:var(--sub);font-size:12px}.settings-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.setting-item{border:1px solid var(--line);border-radius:8px;background:var(--surface-soft);padding:16px}.setting-item span{display:block;color:var(--sub);font-size:12px;font-weight:800}.setting-item strong{display:block;margin-top:8px;color:var(--teal-dark);font:800 13px/1.3 "Geist Mono",Consolas,monospace;word-break:break-word}.modal{position:fixed;inset:0;background:rgba(10,31,28,.46);display:grid;place-items:center;padding:24px;z-index:20}.modal.hidden{display:none}.modal-card{width:min(760px,100%);max-height:calc(100vh - 48px);overflow:auto;background:#fff;border-radius:8px;padding:24px;box-shadow:0 24px 70px rgba(5,34,30,.22)}.modal-card h2{margin:0 0 18px}.modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px}.empty-state{padding:30px;text-align:center;color:var(--sub);background:var(--surface-soft);border:1px dashed var(--line);border-radius:8px}@media(max-width:1180px){.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.split-grid,.bottom-grid{grid-template-columns:1fr}}@media(max-width:820px){.app{grid-template-columns:1fr}.sidebar{position:static;padding:18px}.sidebar nav{grid-template-columns:repeat(2,minmax(0,1fr))}.sidebar-note{display:none}.topbar{height:auto;padding:22px;align-items:flex-start;gap:16px;flex-direction:column}.content-grid{padding:0 18px 28px}.metrics,.form-grid,.settings-list,.filter-grid{grid-template-columns:1fr}.progress-row{grid-template-columns:1fr}.progress-heading{display:grid}.progress-heading span{text-align:left}.login-panel,.signin-shell .login-panel{padding:32px 24px}.auth-shape{display:none}}`
 }
 
 function clientJs(): string {
     return `
 let state = null;
 let pollTimer = null;
-const views = ['dashboard','accounts','tasks','wecom','system'];
-const titles = {dashboard:'仪表盘',accounts:'账号设置',tasks:'任务配置',wecom:'企业微信推送',system:'系统设置'};
+let logPollTimer = null;
+const logFilters = {source:'manual', level:'all', tail:'1000', query:'', autoRefresh:false};
+const views = ['dashboard','accounts','tasks','logs','wecom','system'];
+const titles = {dashboard:'仪表盘',accounts:'账号设置',tasks:'任务配置',logs:'运行日志',wecom:'企业微信推送',system:'系统设置'};
 const workerLabels = {
   doDailySet:'每日任务', doClaimBonusPoints:'领取奖励积分', doSpecialPromotions:'特殊活动',
   doMorePromotions:'更多推广', doPunchCards:'打卡活动', doAppPromotions:'App 活动',
@@ -1345,6 +1600,7 @@ const subtitles = {
   dashboard:'查看运行概况，维护账号、任务与系统参数。',
   accounts:'维护 Microsoft 账号，敏感字段保存后不在页面回显。',
   tasks:'调整任务开关、并发与延迟参数。',
+  logs:'查看脱敏后的运行日志，定位任务告警和失败原因。',
   wecom:'配置企业微信应用推送，账号完成后立即发送任务摘要。',
   system:'查看本地运行环境与基础设置。'
 };
@@ -1372,12 +1628,14 @@ function switchView(view){
   document.querySelectorAll('.nav-item').forEach(btn => btn.classList.toggle('active', btn.dataset.view === view));
   el('pageTitle').textContent = titles[view];
   el('pageSubtitle').textContent = subtitles[view];
+  if (view === 'logs') loadLogs().catch(err => showLogMessage(err.message));
+  updateLogPolling(view);
 }
 document.querySelectorAll('.nav-item').forEach(btn => btn.addEventListener('click', () => switchView(btn.dataset.view)));
 el('logoutBtn').addEventListener('click', async () => { await api('/api/logout', {method:'POST', body:'{}'}); location.reload(); });
 function renderAll(){
   el('userBadge').textContent = state.user.username;
-  renderDashboard(); renderAccounts(); renderTasks(); renderWeCom(); renderSystem();
+  renderDashboard(); renderAccounts(); renderTasks(); renderLogs(); renderWeCom(); renderSystem();
 }
 function metric(name,value,sub,icon){return '<article class="card metric"><div class="metric-icon">'+icon+'</div><div><small>'+name+'</small><strong>'+value+'</strong><small>'+sub+'</small></div></article>'}
 function safeStateClass(value){return String(value || 'unknown').replace(/[^a-z-]/g, '') || 'unknown'}
@@ -1407,6 +1665,17 @@ function settingsItems(){
     + '</div>';
 }
 function setting(name,value){return '<div class="setting-item"><span>'+esc(name)+'</span><strong>'+esc(value)+'</strong></div>'}
+function fmtDuration(seconds){
+  const n = Number(seconds || 0);
+  if (!n) return '-';
+  const h = Math.floor(n / 3600);
+  const m = Math.floor((n % 3600) / 60);
+  const s = n % 60;
+  return (h ? h + '小时' : '') + (m ? m + '分' : '') + s + '秒';
+}
+function sourceLabel(source){
+  return source === 'cron' ? '定时任务' : source === 'web' ? 'Web手动' : source === 'startup' ? '启动任务' : '未知来源';
+}
 function currentPointsLabel(group){
   const current = Number(group.currentPoints || group.finalPoints || 0);
   const initial = Number(group.initialPoints || 0);
@@ -1429,11 +1698,17 @@ function runControls(){
   const r = state.runState;
   const modeLabel = r.mode === 'account-check' ? '账号检测' : '执行任务';
   const recent = Array.isArray(r.recentLog) && r.recentLog.length ? r.recentLog.join('\\n') : state.stats.lastRun;
-  return '<section class="card section"><div class="toolbar"><div><h2>运行控制</h2><p class="section-note">立即执行会跳过随机休眠；账号检测只验证登录和仪表盘读取，不执行搜索任务。</p></div><div class="top-actions"><button id="checkAccountsBtn" class="ghost-btn" '+(r.running?'disabled':'')+'>检测账号状态</button><button id="runOnceBtn" class="primary-btn" '+(r.running?'disabled':'')+'>立即执行一次</button></div></div><div class="settings-list">'
+  const disabled = r.running ? 'disabled' : '';
+  const conflict = r.running ? (r.conflictReason || '已有任务正在运行') : '空闲，可启动新任务';
+  return '<section class="card section"><div class="toolbar"><div><h2>运行控制</h2><p class="section-note">立即执行会跳过随机休眠；账号检测只验证登录和仪表盘读取，不执行搜索任务。</p></div><div class="top-actions"><button id="checkAccountsBtn" class="ghost-btn" '+disabled+'>检测账号状态</button><button id="runOnceBtn" class="primary-btn" '+disabled+'>立即执行一次</button></div></div><div class="settings-list">'
     + setting('运行状态', r.running ? modeLabel + '中' : '空闲')
+    + setting('运行来源', r.running ? sourceLabel(r.source) : '-')
+    + setting('PID', r.pid || '-')
+    + setting('开始时间', r.startedAt || '-')
+    + setting('运行时长', fmtDuration(r.ageSeconds))
+    + setting('锁状态', (r.lockOwnerAlive ? '持有中' : '未持有') + (r.lockFile ? ' | ' + r.lockFile : ''))
     + setting('最近消息', r.lastMessage || '-')
-    + setting('当前定时', state.schedule.schedule)
-    + setting('时区', state.schedule.timezone)
+    + setting('启动限制', conflict)
     + '</div><div class="log-box" style="margin-top:16px">'+esc(recent)+'</div></section>';
 }
 function scheduleForm(){
@@ -1499,6 +1774,66 @@ function renderTasks(){
   el('tasks').innerHTML = '<div class="content-grid">'+scheduleForm()+'<section class="card section"><h2>任务配置</h2><p class="section-note">保存后会写入本地配置文件。</p><form id="taskForm"><div class="switch-row">'+taskToggles()+'</div><div class="form-grid" style="margin-top:16px">'+field('clusters','集群数',c.clusters,'number')+field('globalTimeout','全局超时',c.globalTimeout)+field('searchDelayMin','搜索最小延迟',c.searchSettings.searchDelay.min)+field('searchDelayMax','搜索最大延迟',c.searchSettings.searchDelay.max)+field('readDelayMin','阅读最小延迟',c.searchSettings.readDelay.min)+field('readDelayMax','阅读最大延迟',c.searchSettings.readDelay.max)+'</div><div class="modal-actions"><button class="primary-btn">保存配置</button></div></form></section></div>';
   document.querySelector('#taskForm').addEventListener('submit', saveConfig);
   document.querySelector('#tasks #scheduleForm').addEventListener('submit', saveSchedule);
+}
+function renderLogs(){
+  el('logs').innerHTML = '<div class="content-grid"><section class="card section"><div class="toolbar"><div><h2>运行日志</h2><p class="section-note">只展示服务端脱敏后的日志；邮箱、Token、Cookie、IP 和长密钥会被隐藏。</p></div><div class="top-actions"><button id="refreshLogsBtn" class="ghost-btn">刷新</button><button id="downloadLogsBtn" class="primary-btn">下载脱敏日志</button></div></div>'
+    + '<div class="filter-grid">'
+    + '<div class="field"><label>来源</label><select id="logSource"><option value="manual">Web/最近运行</option><option value="runtime">容器运行日志</option></select></div>'
+    + '<div class="field"><label>级别</label><select id="logLevel"><option value="all">全部</option><option value="error">错误</option><option value="warn">警告</option><option value="info">信息</option><option value="debug">调试</option></select></div>'
+    + '<div class="field"><label>行数</label><select id="logTail"><option value="200">200</option><option value="500">500</option><option value="1000">1000</option></select></div>'
+    + '<div class="field"><label>搜索</label><input id="logQuery" placeholder="关键词"></div>'
+    + '</div><div class="top-actions" style="margin-top:14px"><label class="toggle" style="min-height:40px;padding:8px 12px"><span>自动刷新</span><input id="logAutoRefresh" type="checkbox"></label><span id="logStatus" class="env-pill">等待加载</span></div><div id="logViewer" class="log-box large" style="margin-top:16px"></div></section></div>';
+  el('logSource').value = logFilters.source;
+  el('logLevel').value = logFilters.level;
+  el('logTail').value = logFilters.tail;
+  el('logQuery').value = logFilters.query;
+  el('logAutoRefresh').checked = logFilters.autoRefresh;
+  ['logSource','logLevel','logTail'].forEach(id => el(id).addEventListener('change', onLogFilterChange));
+  el('logQuery').addEventListener('input', debounce(onLogFilterChange, 300));
+  el('logAutoRefresh').addEventListener('change', event => { logFilters.autoRefresh = event.target.checked; updateLogPolling('logs'); });
+  el('refreshLogsBtn').addEventListener('click', () => loadLogs().catch(err => showLogMessage(err.message)));
+  el('downloadLogsBtn').addEventListener('click', downloadLogs);
+}
+function debounce(fn, wait){
+  let timer = null;
+  return (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), wait); };
+}
+function onLogFilterChange(){
+  logFilters.source = el('logSource').value;
+  logFilters.level = el('logLevel').value;
+  logFilters.tail = el('logTail').value;
+  logFilters.query = el('logQuery').value;
+  loadLogs().catch(err => showLogMessage(err.message));
+}
+function logQueryString(){
+  return new URLSearchParams({source:logFilters.source, level:logFilters.level, tail:logFilters.tail, query:logFilters.query}).toString();
+}
+function showLogMessage(message){
+  const viewer = el('logViewer');
+  if (viewer) viewer.textContent = message || '日志加载失败';
+  const status = el('logStatus');
+  if (status) status.textContent = '加载失败';
+}
+async function loadLogs(){
+  if (!el('logViewer')) return;
+  const result = await api('/api/logs?' + logQueryString(), {headers:{}});
+  const lines = Array.isArray(result.lines) ? result.lines : [];
+  el('logStatus').textContent = result.count + ' 行 | 已脱敏';
+  el('logViewer').innerHTML = lines.length
+    ? lines.map(line => '<span class="log-line '+esc(line.level || 'info')+'">'+esc(line.text)+'</span>').join('')
+    : '<span class="log-line">暂无匹配日志</span>';
+}
+function updateLogPolling(activeView){
+  if (activeView === 'logs' && logFilters.autoRefresh && !logPollTimer) {
+    logPollTimer = setInterval(() => loadLogs().catch(() => {}), 3000);
+  }
+  if ((activeView !== 'logs' || !logFilters.autoRefresh) && logPollTimer) {
+    clearInterval(logPollTimer);
+    logPollTimer = null;
+  }
+}
+function downloadLogs(){
+  location.href = '/api/logs/download?' + logQueryString();
 }
 function renderWeCom(){
   const w = state.wecom || {};
@@ -1572,13 +1907,21 @@ async function clearWeCom(){
   await loadState(); switchView('wecom');
 }
 async function runOnceNow(){
-  await api('/api/run', {method:'POST', body:'{}'});
+  try {
+    await api('/api/run', {method:'POST', body:'{}'});
+  } catch (error) {
+    alert(error.message);
+  }
   await loadState();
   updateRunPolling();
   switchView('dashboard');
 }
 async function checkAccountStatus(){
-  await api('/api/account-status/check', {method:'POST', body:'{}'});
+  try {
+    await api('/api/account-status/check', {method:'POST', body:'{}'});
+  } catch (error) {
+    alert(error.message);
+  }
   await loadState();
   updateRunPolling();
   switchView('dashboard');

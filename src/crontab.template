@@ -4,6 +4,5 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 TZ=${TZ}
 
 # Run automation according to CRON_SCHEDULE; redirect both stdout & stderr to Docker logs
-${CRON_SCHEDULE} root /bin/bash /usr/src/microsoft-rewards-script/scripts/docker/run_daily.sh >> /proc/1/fd/1 2>&1
-
+${CRON_SCHEDULE} root RUN_SOURCE=cron RUN_MODE=task /bin/bash /usr/src/microsoft-rewards-script/scripts/docker/run_daily.sh >> /proc/1/fd/1 2>&1
 
