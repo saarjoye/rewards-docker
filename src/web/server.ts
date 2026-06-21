@@ -10,6 +10,11 @@ import { ConfigSchema, AccountSchema, validateConfig } from '../util/Validator'
 import type { Account } from '../interface/Account'
 import type { Config, ConfigWorkers, WebhookWeComConfig } from '../interface/Config'
 import { accountProgressHash, readTaskProgressFile } from '../util/TaskProgressStore'
+import {
+    queryPointsCalendar,
+    type PointsCalendarAccount,
+    type PointsRangePreset
+} from '../util/PointsHistoryStore'
 import { readAccountStatusFile, updateAccountStatus, type AccountStatusState } from '../util/AccountStatusStore'
 import {
     readRunCheckpointFile,
@@ -785,6 +790,21 @@ function sanitizeAccount(account: Account, id: number): PublicAccount {
     }
 }
 
+function pointsCalendarAccounts(accounts: Account[]): PointsCalendarAccount[] {
+    return accounts.map((account, index) => ({
+        id: `account-${index + 1}`,
+        accountHash: accountProgressHash(account.email),
+        label: `账号 ${index + 1} · ${maskEmail(account.email) || '未填写邮箱'}`
+    }))
+}
+
+function normalizePointsRangePreset(value: string | null): PointsRangePreset {
+    if (value === 'week' || value === 'month' || value === 'quarter' || value === 'year' || value === 'custom') {
+        return value
+    }
+    return 'month'
+}
+
 function loadAccounts(): Account[] {
     const raw = readJsonFile<unknown>(accountsFile, [])
     if (!Array.isArray(raw)) return []
@@ -1184,6 +1204,18 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
         res.setHeader('Content-Type', 'text/plain; charset=utf-8')
         res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
         res.end(result.lines.map(line => line.text).join('\n'))
+        return
+    }
+
+    if (url.pathname === '/api/points-calendar' && req.method === 'GET') {
+        const accounts = loadAccounts()
+        const result = queryPointsCalendar(pointsCalendarAccounts(accounts), {
+            account: url.searchParams.get('account') ?? 'all',
+            range: normalizePointsRangePreset(url.searchParams.get('range')),
+            start: url.searchParams.get('start') ?? undefined,
+            end: url.searchParams.get('end') ?? undefined
+        })
+        sendJson(res, 200, { ok: true, ...result })
         return
     }
 
@@ -1702,6 +1734,7 @@ function appHtml(): string {
       <button class="nav-item active" data-view="dashboard"><span class="nav-icon">⌂</span>仪表盘</button>
       <button class="nav-item" data-view="accounts"><span class="nav-icon">◎</span>账号设置</button>
       <button class="nav-item" data-view="tasks"><span class="nav-icon">☷</span>任务配置</button>
+      <button class="nav-item" data-view="pointsCalendar"><span class="nav-icon">▦</span>积分日历</button>
       <button class="nav-item" data-view="logs"><span class="nav-icon">≡</span>运行日志</button>
       <button class="nav-item" data-view="wecom"><span class="nav-icon">✉</span>企业微信推送</button>
       <button class="nav-item" data-view="system"><span class="nav-icon">⚙</span>系统设置</button>
@@ -1719,6 +1752,7 @@ function appHtml(): string {
     <section id="dashboard" class="view active"></section>
     <section id="accounts" class="view"></section>
     <section id="tasks" class="view"></section>
+    <section id="pointsCalendar" class="view"></section>
     <section id="logs" class="view"></section>
     <section id="wecom" class="view"></section>
     <section id="system" class="view"></section>
@@ -1735,7 +1769,7 @@ function baseCss(): string {
 :root{--bg:#eaf6f3;--bg-strong:#d9f0ec;--surface:#fff;--surface-soft:#f7fbfa;--line:#d7e5e1;--teal:#0f8f85;--teal-dark:#08746d;--teal-soft:#ddf3ef;--text:#17211f;--sub:#64736f;--muted:#91a19d;--danger:#b54646;--amber:#a96516;--blue:#2f6fed;--shadow:0 18px 42px rgba(15,63,58,.13)}
 *{box-sizing:border-box}body{margin:0;font-family:Inter,Segoe UI,Arial,"Microsoft YaHei",sans-serif;color:var(--text);background:var(--bg)}button,input,select{font:inherit}button{cursor:pointer}button:disabled{cursor:not-allowed;opacity:.65}
 .login-body{min-height:100vh;overflow:hidden;background:var(--bg)}.login-shell{min-height:100vh;position:relative;display:grid;place-items:center;padding:28px}.signin-shell{border-top:10px solid var(--teal)}.auth-shape{position:absolute;background:var(--bg-strong);border-radius:48px;pointer-events:none}.auth-shape-a{width:520px;height:520px;right:8vw;top:12vh}.auth-shape-b{width:420px;height:300px;left:-160px;bottom:-80px}.setup-shell .auth-shape-a{right:18vw;top:-110px}.setup-shell .auth-shape-b{left:-150px;bottom:-100px}.login-panel{position:relative;width:min(576px,calc(100vw - 36px));background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:48px 54px 40px;box-shadow:var(--shadow)}.signin-shell .login-panel{width:min(520px,calc(100vw - 36px));padding:46px 48px 36px}.brand-lock{display:flex;align-items:center;gap:14px;margin-bottom:28px}.brand-lock strong{display:block;font-size:15px;font-weight:800;line-height:1.2}.brand-lock span{display:block;margin-top:4px;color:var(--muted);font:12px/1.2 "Geist Mono",Consolas,monospace}.brand-mark{width:44px;height:44px;border-radius:8px;background:var(--teal);display:grid;place-items:center;color:#fff;font:800 14px/1 "Geist Mono",Consolas,monospace}.login-panel h1{margin:0;font-size:36px;line-height:1.15;font-weight:800;letter-spacing:0}.auth-hint{margin:12px 0 34px;color:var(--sub);font-size:15px;line-height:1.55}.login-form{display:grid;gap:18px}.auth-field{display:grid;gap:10px;font-size:13px;font-weight:700;color:var(--sub)}.auth-field input{height:54px;width:100%;border:1px solid var(--line);border-radius:8px;background:var(--surface-soft);padding:0 18px;color:var(--text);outline:none}.auth-field input:focus,.field input:focus,.field select:focus{border-color:var(--teal);box-shadow:0 0 0 3px rgba(15,143,133,.1)}.primary-btn{height:44px;border:0;border-radius:8px;background:var(--teal);color:#fff;font-weight:800;padding:0 18px;display:inline-flex;align-items:center;justify-content:center;gap:8px}.wide-btn{height:54px;width:100%;margin-top:2px}.form-message{min-height:18px;margin:0;color:var(--danger);font-size:13px}.security-note{margin-top:16px;padding:14px 16px 14px 44px;position:relative;background:var(--surface-soft);border:1px solid var(--line);border-radius:8px;color:var(--sub);font-size:13px;line-height:1.4}.security-note:before{content:"✓";position:absolute;left:16px;top:14px;width:18px;height:18px;border-radius:50%;display:grid;place-items:center;background:var(--teal-soft);color:var(--teal);font-size:12px;font-weight:800}
-.app{display:grid;grid-template-columns:272px minmax(0,1fr);min-height:100vh;background:var(--bg)}.sidebar{background:var(--surface);border-right:1px solid var(--line);padding:28px 22px;display:flex;flex-direction:column;gap:24px}.logo-row{display:flex;align-items:center;gap:12px;min-width:0}.logo-row strong{display:block;font-size:14px;font-weight:800;line-height:1.2}.logo-row span{display:block;margin-top:4px;color:var(--muted);font:12px/1.2 "Geist Mono",Consolas,monospace}.sidebar nav{display:grid;gap:12px}.nav-item{height:44px;border:0;border-radius:8px;background:transparent;display:flex;align-items:center;gap:12px;padding:0 14px;color:var(--sub);font-size:14px;font-weight:700;text-align:left}.nav-item.active{background:var(--teal-soft);color:var(--teal-dark);font-weight:800}.nav-icon{width:18px;height:18px;display:grid;place-items:center;color:inherit}.sidebar-note{margin-top:auto;border:1px solid var(--line);background:var(--surface-soft);border-radius:8px;padding:16px}.sidebar-note strong{font-size:13px}.sidebar-note p{margin:8px 0 0;color:var(--sub);font-size:12px;line-height:1.45}.main{min-width:0}.topbar{height:118px;display:flex;align-items:center;justify-content:space-between;padding:34px 46px 22px}.topbar h1{font-size:32px;line-height:1.1;margin:0 0 10px;font-weight:800}.topbar p{margin:0;color:var(--sub);font-size:14px}.top-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.user-badge,.env-pill{height:36px;display:inline-flex;align-items:center;border-radius:8px;border:1px solid var(--line);background:var(--surface);padding:0 12px;color:var(--text);font-size:13px;font-weight:800}.env-pill{color:var(--sub);font:12px/1 "Geist Mono",Consolas,monospace}.icon-btn,.ghost-btn,.small-btn,.danger-btn{height:36px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--sub);padding:0 12px}.icon-btn{width:36px;padding:0}.danger-btn{color:var(--danger)}.view{display:none}.view.active{display:block}.content-grid{padding:0 46px 46px;display:grid;gap:24px}.metrics{display:grid;grid-template-columns:repeat(4,minmax(180px,1fr));gap:16px}.card{background:var(--surface);border:1px solid var(--line);border-radius:8px}.metric{min-height:132px;padding:22px;display:grid;grid-template-columns:44px 1fr;gap:16px;align-items:start}.metric-icon{width:42px;height:42px;border-radius:8px;background:var(--teal-soft);display:grid;place-items:center;color:var(--teal);font-weight:900}.metric small{display:block;color:var(--sub);font-size:13px}.metric strong{display:block;margin:8px 0 10px;font:800 28px/1 "Geist Mono",Consolas,monospace;color:var(--text)}.split-grid{display:grid;grid-template-columns:minmax(0,1fr) 474px;gap:24px}.bottom-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(360px,1fr);gap:24px}.section{padding:22px 26px}.section h2{font-size:20px;margin:0;color:var(--text)}.section-note{margin:8px 0 18px;color:var(--sub);font-size:13px;line-height:1.45}.toolbar{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:18px}.table-wrap{overflow:auto}.table{width:100%;border-collapse:collapse;min-width:820px}.table th,.table td{border-bottom:1px solid var(--line);padding:14px 12px;text-align:left;font-size:13px;white-space:nowrap}.table th{background:var(--surface-soft);color:var(--sub);font-weight:800}.progress-account .table td:last-child,.progress-account .table th:last-child{white-space:normal;min-width:220px;overflow-wrap:anywhere;word-break:break-word}.pill,.status-pill{display:inline-flex;align-items:center;border-radius:999px;padding:4px 10px;background:var(--teal-soft);color:var(--teal-dark);font-weight:800;font-size:12px}.status-pill.state-unknown,.status-pill.state-pending,.status-pill.state-skipped{background:#eef3f1;color:var(--sub)}.status-pill.state-checking,.status-pill.state-running,.status-pill.state-interrupted{background:#e8f0ff;color:var(--blue)}.status-pill.state-valid,.status-pill.state-success,.status-pill.state-completed{background:var(--teal-soft);color:var(--teal-dark)}.status-pill.state-error,.status-pill.state-failed{background:#ffeceb;color:var(--danger)}.account-status{display:grid;gap:5px}.account-status small{color:var(--sub);font-size:12px;max-width:260px;overflow:hidden;text-overflow:ellipsis}.form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.field{display:grid;gap:7px}.field label{font-size:12px;color:var(--sub);font-weight:800}.field input,.field select{height:40px;border:1px solid var(--line);border-radius:8px;padding:0 10px;background:#fff;color:var(--text);outline:none}.switch-row{display:grid;gap:10px}.toggle{min-height:54px;display:flex;justify-content:space-between;align-items:center;gap:14px;padding:14px 16px;border:1px solid var(--line);border-radius:8px;background:#fff;font-weight:700}.toggle input{width:44px;height:24px;accent-color:var(--teal)}.log-box{white-space:pre-wrap;background:var(--surface-soft);color:var(--text);padding:18px;border-radius:8px;height:320px;overflow-x:hidden;overflow-y:auto;overflow-wrap:anywhere;word-break:break-word;max-width:100%;line-height:1.65;border:1px solid var(--line);font-family:"Geist Mono",Consolas,monospace;font-size:13px}.log-box.large{height:560px}.log-line{display:block;padding:2px 0}.log-line.error{color:var(--danger)}.log-line.warn{color:var(--amber)}.log-line.debug{color:var(--sub)}.filter-grid{display:grid;grid-template-columns:150px 130px 120px minmax(180px,1fr);gap:12px;align-items:end}.progress-list{display:grid;gap:14px}.progress-account{border:1px solid var(--line);border-radius:8px;background:var(--surface-soft);padding:16px}.progress-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}.progress-heading h3{margin:0;font-size:15px}.progress-heading span{color:var(--teal-dark);font-weight:800;font-size:13px;text-align:right}.progress-items{display:grid;gap:10px}.progress-row{display:grid;grid-template-columns:110px minmax(90px,1fr) 130px 100px;gap:12px;align-items:center;font-size:13px}.progress-row strong{font-size:13px}.progress-bar{height:8px;border-radius:99px;background:#e2eeeb;overflow:hidden}.progress-fill{height:100%;background:var(--teal);border-radius:99px}.progress-points{color:var(--teal-dark);font-weight:800}.progress-status{color:var(--sub);font-size:12px;line-height:1.45}.settings-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.setting-item{border:1px solid var(--line);border-radius:8px;background:var(--surface-soft);padding:16px}.setting-item span{display:block;color:var(--sub);font-size:12px;font-weight:800}.setting-item strong{display:block;margin-top:8px;color:var(--teal-dark);font:800 13px/1.3 "Geist Mono",Consolas,monospace;word-break:break-word}.modal{position:fixed;inset:0;background:rgba(10,31,28,.46);display:grid;place-items:center;padding:24px;z-index:20}.modal.hidden{display:none}.modal-card{width:min(760px,100%);max-height:calc(100vh - 48px);overflow:auto;background:#fff;border-radius:8px;padding:24px;box-shadow:0 24px 70px rgba(5,34,30,.22)}.modal-card h2{margin:0 0 18px}.modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px}.empty-state{padding:30px;text-align:center;color:var(--sub);background:var(--surface-soft);border:1px dashed var(--line);border-radius:8px}@media(max-width:1180px){.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.split-grid,.bottom-grid{grid-template-columns:1fr}}@media(max-width:820px){.app{grid-template-columns:1fr}.sidebar{position:static;padding:18px}.sidebar nav{grid-template-columns:repeat(2,minmax(0,1fr))}.sidebar-note{display:none}.topbar{height:auto;padding:22px;align-items:flex-start;gap:16px;flex-direction:column}.content-grid{padding:0 18px 28px}.metrics,.form-grid,.settings-list,.filter-grid{grid-template-columns:1fr}.progress-row{grid-template-columns:1fr}.progress-heading{display:grid}.progress-heading span{text-align:left}.login-panel,.signin-shell .login-panel{padding:32px 24px}.auth-shape{display:none}}`
+.app{display:grid;grid-template-columns:272px minmax(0,1fr);min-height:100vh;background:var(--bg)}.sidebar{background:var(--surface);border-right:1px solid var(--line);padding:28px 22px;display:flex;flex-direction:column;gap:24px}.logo-row{display:flex;align-items:center;gap:12px;min-width:0}.logo-row strong{display:block;font-size:14px;font-weight:800;line-height:1.2}.logo-row span{display:block;margin-top:4px;color:var(--muted);font:12px/1.2 "Geist Mono",Consolas,monospace}.sidebar nav{display:grid;gap:12px}.nav-item{height:44px;border:0;border-radius:8px;background:transparent;display:flex;align-items:center;gap:12px;padding:0 14px;color:var(--sub);font-size:14px;font-weight:700;text-align:left}.nav-item.active{background:var(--teal-soft);color:var(--teal-dark);font-weight:800}.nav-icon{width:18px;height:18px;display:grid;place-items:center;color:inherit}.sidebar-note{margin-top:auto;border:1px solid var(--line);background:var(--surface-soft);border-radius:8px;padding:16px}.sidebar-note strong{font-size:13px}.sidebar-note p{margin:8px 0 0;color:var(--sub);font-size:12px;line-height:1.45}.main{min-width:0}.topbar{height:118px;display:flex;align-items:center;justify-content:space-between;padding:34px 46px 22px}.topbar h1{font-size:32px;line-height:1.1;margin:0 0 10px;font-weight:800}.topbar p{margin:0;color:var(--sub);font-size:14px}.top-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.user-badge,.env-pill{height:36px;display:inline-flex;align-items:center;border-radius:8px;border:1px solid var(--line);background:var(--surface);padding:0 12px;color:var(--text);font-size:13px;font-weight:800}.env-pill{color:var(--sub);font:12px/1 "Geist Mono",Consolas,monospace}.icon-btn,.ghost-btn,.small-btn,.danger-btn{height:36px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--sub);padding:0 12px}.icon-btn{width:36px;padding:0}.danger-btn{color:var(--danger)}.view{display:none}.view.active{display:block}.content-grid{padding:0 46px 46px;display:grid;gap:24px}.metrics{display:grid;grid-template-columns:repeat(4,minmax(180px,1fr));gap:16px}.card{background:var(--surface);border:1px solid var(--line);border-radius:8px}.metric{min-height:132px;padding:22px;display:grid;grid-template-columns:44px 1fr;gap:16px;align-items:start}.metric-icon{width:42px;height:42px;border-radius:8px;background:var(--teal-soft);display:grid;place-items:center;color:var(--teal);font-weight:900}.metric small{display:block;color:var(--sub);font-size:13px}.metric strong{display:block;margin:8px 0 10px;font:800 28px/1 "Geist Mono",Consolas,monospace;color:var(--text)}.split-grid{display:grid;grid-template-columns:minmax(0,1fr) 474px;gap:24px}.bottom-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(360px,1fr);gap:24px}.section{padding:22px 26px}.section h2{font-size:20px;margin:0;color:var(--text)}.section-note{margin:8px 0 18px;color:var(--sub);font-size:13px;line-height:1.45}.toolbar{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:18px}.table-wrap{overflow:auto}.table{width:100%;border-collapse:collapse;min-width:820px}.table th,.table td{border-bottom:1px solid var(--line);padding:14px 12px;text-align:left;font-size:13px;white-space:nowrap}.table th{background:var(--surface-soft);color:var(--sub);font-weight:800}.progress-account .table td:last-child,.progress-account .table th:last-child,.points-table td,.runs-panel td{white-space:normal;overflow-wrap:anywhere;word-break:break-word}.pill,.status-pill{display:inline-flex;align-items:center;border-radius:999px;padding:4px 10px;background:var(--teal-soft);color:var(--teal-dark);font-weight:800;font-size:12px}.status-pill.state-unknown,.status-pill.state-pending,.status-pill.state-skipped,.status-pill.state-notrun{background:#eef3f1;color:var(--sub)}.status-pill.state-checking,.status-pill.state-running,.status-pill.state-interrupted,.status-pill.state-partial{background:#e8f0ff;color:var(--blue)}.status-pill.state-valid,.status-pill.state-success,.status-pill.state-completed{background:var(--teal-soft);color:var(--teal-dark)}.status-pill.state-error,.status-pill.state-failed{background:#ffeceb;color:var(--danger)}.account-status{display:grid;gap:5px}.account-status small{color:var(--sub);font-size:12px;max-width:260px;overflow:hidden;text-overflow:ellipsis}.form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.field{display:grid;gap:7px}.field label{font-size:12px;color:var(--sub);font-weight:800}.field input,.field select{height:40px;border:1px solid var(--line);border-radius:8px;padding:0 10px;background:#fff;color:var(--text);outline:none}.switch-row{display:grid;gap:10px}.toggle{min-height:54px;display:flex;justify-content:space-between;align-items:center;gap:14px;padding:14px 16px;border:1px solid var(--line);border-radius:8px;background:#fff;font-weight:700}.toggle input{width:44px;height:24px;accent-color:var(--teal)}.log-box{white-space:pre-wrap;background:var(--surface-soft);color:var(--text);padding:18px;border-radius:8px;height:320px;overflow-x:hidden;overflow-y:auto;overflow-wrap:anywhere;word-break:break-word;max-width:100%;line-height:1.65;border:1px solid var(--line);font-family:"Geist Mono",Consolas,monospace;font-size:13px}.log-box.large{height:560px}.log-line{display:block;padding:2px 0}.log-line.error{color:var(--danger)}.log-line.warn{color:var(--amber)}.log-line.debug{color:var(--sub)}.filter-grid{display:grid;grid-template-columns:150px 130px 120px minmax(180px,1fr);gap:12px;align-items:end}.points-filter-grid{display:grid;grid-template-columns:minmax(170px,1.2fr) 140px 150px 150px auto;gap:12px;align-items:end}.progress-list{display:grid;gap:14px}.progress-account{border:1px solid var(--line);border-radius:8px;background:var(--surface-soft);padding:16px}.progress-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}.progress-heading h3{margin:0;font-size:15px}.progress-heading span{color:var(--teal-dark);font-weight:800;font-size:13px;text-align:right}.progress-items{display:grid;gap:10px}.progress-row{display:grid;grid-template-columns:110px minmax(90px,1fr) 130px 100px;gap:12px;align-items:center;font-size:13px}.progress-row strong{font-size:13px}.progress-bar{height:8px;border-radius:99px;background:#e2eeeb;overflow:hidden}.progress-fill{height:100%;background:var(--teal);border-radius:99px}.progress-points{color:var(--teal-dark);font-weight:800}.progress-status{color:var(--sub);font-size:12px;line-height:1.45}.calendar-grid{display:grid;grid-template-columns:repeat(7,minmax(92px,1fr));gap:10px}.calendar-cell{min-height:82px;border:1px solid var(--line);border-radius:8px;background:#f7fbfa;padding:10px;display:grid;align-content:space-between;gap:8px}.calendar-cell.is-empty{opacity:.45}.calendar-cell strong{font:800 13px/1 "Geist Mono",Consolas,monospace}.calendar-cell span{font-size:12px;color:var(--sub);line-height:1.35}.calendar-cell b{font:800 18px/1 "Geist Mono",Consolas,monospace;color:var(--teal-dark)}.points-table .category-list{display:flex;flex-wrap:wrap;gap:6px;min-width:240px}.category-chip{display:inline-flex;border-radius:999px;background:var(--surface-soft);border:1px solid var(--line);padding:3px 8px;color:var(--sub);font-size:12px}.runs-panel{background:var(--surface-soft)}.runs-panel table{min-width:760px}.settings-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.setting-item{border:1px solid var(--line);border-radius:8px;background:var(--surface-soft);padding:16px}.setting-item span{display:block;color:var(--sub);font-size:12px;font-weight:800}.setting-item strong{display:block;margin-top:8px;color:var(--teal-dark);font:800 13px/1.3 "Geist Mono",Consolas,monospace;word-break:break-word}.modal{position:fixed;inset:0;background:rgba(10,31,28,.46);display:grid;place-items:center;padding:24px;z-index:20}.modal.hidden{display:none}.modal-card{width:min(760px,100%);max-height:calc(100vh - 48px);overflow:auto;background:#fff;border-radius:8px;padding:24px;box-shadow:0 24px 70px rgba(5,34,30,.22)}.modal-card h2{margin:0 0 18px}.modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px}.empty-state{padding:30px;text-align:center;color:var(--sub);background:var(--surface-soft);border:1px dashed var(--line);border-radius:8px}@media(max-width:1180px){.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.split-grid,.bottom-grid{grid-template-columns:1fr}.points-filter-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.calendar-grid{grid-template-columns:repeat(4,minmax(92px,1fr))}}@media(max-width:820px){.app{grid-template-columns:1fr}.sidebar{position:static;padding:18px}.sidebar nav{grid-template-columns:repeat(2,minmax(0,1fr))}.sidebar-note{display:none}.topbar{height:auto;padding:22px;align-items:flex-start;gap:16px;flex-direction:column}.content-grid{padding:0 18px 28px}.metrics,.form-grid,.settings-list,.filter-grid,.points-filter-grid{grid-template-columns:1fr}.progress-row{grid-template-columns:1fr}.progress-heading{display:grid}.progress-heading span{text-align:left}.calendar-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.login-panel,.signin-shell .login-panel{padding:32px 24px}.auth-shape{display:none}}`
 }
 
 function clientJs(): string {
@@ -1743,9 +1777,11 @@ function clientJs(): string {
 let state = null;
 let pollTimer = null;
 let logPollTimer = null;
+let pointsCalendarData = null;
 const logFilters = {source:'manual', level:'all', tail:'1000', query:'', autoRefresh:false};
-const views = ['dashboard','accounts','tasks','logs','wecom','system'];
-const titles = {dashboard:'仪表盘',accounts:'账号设置',tasks:'任务配置',logs:'运行日志',wecom:'企业微信推送',system:'系统设置'};
+const pointsFilters = {account:'all', range:'month', start:'', end:''};
+const views = ['dashboard','accounts','tasks','pointsCalendar','logs','wecom','system'];
+const titles = {dashboard:'仪表盘',accounts:'账号设置',tasks:'任务配置',pointsCalendar:'积分日历',logs:'运行日志',wecom:'企业微信推送',system:'系统设置'};
 const workerLabels = {
   doDailySet:'每日任务', doClaimBonusPoints:'领取奖励积分', doSpecialPromotions:'特殊活动',
   doMorePromotions:'更多推广', doPunchCards:'打卡活动', doAppPromotions:'App 活动',
@@ -1756,6 +1792,7 @@ const subtitles = {
   dashboard:'查看运行概况，维护账号、任务与系统参数。',
   accounts:'维护 Microsoft 账号，敏感字段保存后不在页面回显。',
   tasks:'调整任务开关、并发与延迟参数。',
+  pointsCalendar:'按账号和时间范围查看每天积分变化、分类来源与每次执行记录。',
   logs:'查看脱敏后的运行日志，定位任务告警和失败原因。',
   wecom:'配置企业微信应用推送，账号完成后立即发送任务摘要。',
   system:'查看本地运行环境与基础设置。'
@@ -1785,16 +1822,17 @@ function switchView(view){
   el('pageTitle').textContent = titles[view];
   el('pageSubtitle').textContent = subtitles[view];
   if (view === 'logs') loadLogs().catch(err => showLogMessage(err.message));
+  if (view === 'pointsCalendar') loadPointsCalendar().catch(err => renderPointsCalendarError(err.message));
   updateLogPolling(view);
 }
 document.querySelectorAll('.nav-item').forEach(btn => btn.addEventListener('click', () => switchView(btn.dataset.view)));
 el('logoutBtn').addEventListener('click', async () => { await api('/api/logout', {method:'POST', body:'{}'}); location.reload(); });
 function renderAll(){
   el('userBadge').textContent = state.user.username;
-  renderDashboard(); renderAccounts(); renderTasks(); renderLogs(); renderWeCom(); renderSystem();
+  renderDashboard(); renderAccounts(); renderTasks(); renderPointsCalendar(); renderLogs(); renderWeCom(); renderSystem();
 }
 function metric(name,value,sub,icon){return '<article class="card metric"><div class="metric-icon">'+icon+'</div><div><small>'+name+'</small><strong>'+value+'</strong><small>'+sub+'</small></div></article>'}
-function safeStateClass(value){return String(value || 'unknown').replace(/[^a-z-]/g, '') || 'unknown'}
+function safeStateClass(value){return String(value || 'unknown').toLowerCase().replace(/[^a-z-]/g, '') || 'unknown'}
 function accountStatusCell(a){
   const s = a.status || {};
   const message = s.lastMessage || '尚未检测';
@@ -1953,6 +1991,112 @@ function renderTasks(){
   el('tasks').innerHTML = '<div class="content-grid">'+scheduleForm()+'<section class="card section"><h2>任务配置</h2><p class="section-note">保存后会写入本地配置文件。</p><form id="taskForm"><div class="switch-row">'+taskToggles()+'</div><div class="form-grid" style="margin-top:16px">'+field('clusters','集群数',c.clusters,'number')+field('globalTimeout','全局超时',c.globalTimeout)+field('searchDelayMin','搜索最小延迟',c.searchSettings.searchDelay.min)+field('searchDelayMax','搜索最大延迟',c.searchSettings.searchDelay.max)+field('readDelayMin','阅读最小延迟',c.searchSettings.readDelay.min)+field('readDelayMax','阅读最大延迟',c.searchSettings.readDelay.max)+'</div><div class="modal-actions"><button class="primary-btn">保存配置</button></div></form></section></div>';
   document.querySelector('#taskForm').addEventListener('submit', saveConfig);
   document.querySelector('#tasks #scheduleForm').addEventListener('submit', saveSchedule);
+}
+function pointsAccountOptions(){
+  const accountOptions = (state.accounts || []).map(a => '<option value="account-'+(Number(a.id)+1)+'">'+esc('账号 '+(Number(a.id)+1)+' · '+a.maskedEmail)+'</option>').join('');
+  return '<option value="all">全部账号</option>'+accountOptions;
+}
+function renderPointsCalendar(){
+  const section = el('pointsCalendar');
+  if (!section) return;
+  const body = pointsCalendarData ? pointsCalendarContent(pointsCalendarData) : '<section class="card section"><div class="empty-state">积分日历等待加载</div></section>';
+  section.innerHTML = '<div class="content-grid"><section class="card section"><div class="toolbar"><div><h2>积分日历</h2><p class="section-note">按账号和时间范围统计 todayGained（当天累计）与 runGained（本次执行），历史保存在本地 logs/points-history.json。</p></div><div class="top-actions"><button id="refreshPointsBtn" class="ghost-btn">刷新</button></div></div>'
+    + '<div class="points-filter-grid">'
+    + '<div class="field"><label>账号</label><select id="pointsAccount">'+pointsAccountOptions()+'</select></div>'
+    + '<div class="field"><label>范围</label><select id="pointsRange"><option value="week">本周</option><option value="month">本月</option><option value="quarter">本季度</option><option value="year">本年</option><option value="custom">自定义</option></select></div>'
+    + '<div class="field"><label>开始日期</label><input id="pointsStart" type="date"></div>'
+    + '<div class="field"><label>结束日期</label><input id="pointsEnd" type="date"></div>'
+    + '<button id="applyPointsFilterBtn" class="primary-btn">应用筛选</button>'
+    + '</div></section>'+body+'</div>';
+  el('pointsAccount').value = pointsFilters.account;
+  el('pointsRange').value = pointsFilters.range;
+  el('pointsStart').value = pointsFilters.start || pointsCalendarData?.range?.start || '';
+  el('pointsEnd').value = pointsFilters.end || pointsCalendarData?.range?.end || '';
+  el('refreshPointsBtn')?.addEventListener('click', () => loadPointsCalendar().catch(err => renderPointsCalendarError(err.message)));
+  el('applyPointsFilterBtn')?.addEventListener('click', applyPointsFilters);
+  el('pointsRange')?.addEventListener('change', event => {
+    pointsFilters.range = event.target.value;
+  });
+}
+function pointsCalendarContent(data){
+  const summary = data.summary || {};
+  const highest = summary.highestPointDay || {};
+  return '<div class="metrics">'
+    + metric('总积分', '+'+Number(summary.totalPoints || 0), (data.range?.start || '-')+' 至 '+(data.range?.end || '-'), '▦')
+    + metric('平均每日', Number(summary.averageDailyPoints || 0), '按当前筛选范围计算', '≈')
+    + metric('完成天数', Number(summary.completedDays || 0), '完成或部分完成', '✓')
+    + metric('最高积分日', highest.date ? '+'+Number(highest.points || 0) : '-', highest.date || '暂无记录', '↑')
+    + '</div>'
+    + '<section class="card section"><div class="toolbar"><div><h2>日历视图</h2><p class="section-note">颜色越深表示当天获得积分越多；空白代表未运行或无记录。</p></div><span class="env-pill">'+esc(rangeLabel(data.range?.preset))+'</span></div>'+pointsCalendarGrid(data.days || [])+'</section>'
+    + '<section class="card section"><div class="toolbar"><div><h2>明细表格</h2><p class="section-note">按账号和日期展示分类积分；展开可查看同一天多次执行的 run 记录。</p></div><span class="env-pill">'+Number((data.records || []).length)+' 条</span></div>'+pointsRecordsTable(data.records || [])+'</section>';
+}
+function rangeLabel(value){
+  return value === 'week' ? '本周' : value === 'quarter' ? '本季度' : value === 'year' ? '本年' : value === 'custom' ? '自定义' : '本月';
+}
+function statusLabel(value){
+  return value === 'completed' ? '完成' : value === 'partial' ? '部分完成' : value === 'failed' ? '失败' : value === 'skipped' ? '跳过' : '未运行';
+}
+const pointCategoryLabels = {pcSearch:'PC搜索', mobileSearch:'移动搜索', dailyActivity:'每日活动', appActivity:'App活动', checkIn:'签到', readToEarn:'阅读赚取', bonus:'奖励领取', streak:'连击保护', other:'其他'};
+function categoryChips(categories){
+  const entries = Object.entries(pointCategoryLabels).map(([key,label]) => ({label, value:Number(categories?.[key] || 0)}));
+  const visible = entries.filter(item => item.value > 0);
+  if (!visible.length) return '<span class="category-chip">无分类积分</span>';
+  return visible.map(item => '<span class="category-chip">'+esc(item.label)+' +'+item.value+'</span>').join('');
+}
+function pointsCalendarGrid(days){
+  if (!days.length) return '<div class="empty-state">暂无日期范围</div>';
+  const max = Math.max(1, ...days.map(day => Number(day.totalGained || 0)));
+  return '<div class="calendar-grid">'+days.map(day => {
+    const points = Number(day.totalGained || 0);
+    const alpha = points > 0 ? Math.max(0.1, Math.min(0.48, points / max * 0.48)) : 0;
+    const style = points > 0 ? ' style="background:rgba(15,143,133,'+alpha.toFixed(2)+')"' : '';
+    return '<article class="calendar-cell '+(points > 0 ? '' : 'is-empty')+'"'+style+'><strong>'+esc(day.date)+'</strong><b>+'+points+'</b><span>'+esc(statusLabel(day.status))+' · '+Number(day.records || 0)+' 账号</span></article>';
+  }).join('')+'</div>';
+}
+function pointRecordRow(record, index){
+  const runs = Array.isArray(record.runs) ? record.runs : [];
+  const runRows = runs.length ? '<tr class="runs-panel"><td colspan="10"><details><summary>查看 '+runs.length+' 次执行记录</summary><div class="table-wrap" style="margin-top:10px"><table class="table"><thead><tr><th>开始</th><th>结束</th><th>任务前</th><th>任务后</th><th>runGained</th><th>状态</th><th>来源</th><th>明细</th></tr></thead><tbody>'+runs.map(run => '<tr><td>'+esc(run.startedAt || '-')+'</td><td>'+esc(run.finishedAt || '-')+'</td><td>'+Number(run.beforePoints || 0)+'</td><td>'+Number(run.afterPoints || 0)+'</td><td>+'+Number(run.runGained || 0)+'</td><td>'+esc(statusLabel(run.status))+'</td><td>'+esc(run.source || '-')+'</td><td>'+runTaskSummary(run.taskSummary)+'</td></tr>').join('')+'</tbody></table></div></details></td></tr>' : '';
+  return '<tr><td>'+esc(record.date)+'</td><td>'+esc(record.accountLabel)+'</td><td>'+Number(record.beforePoints || 0)+'</td><td>'+Number(record.afterPoints || 0)+'</td><td>+'+Number(record.todayGained || 0)+'</td><td>+'+Number(record.runGained || 0)+'</td><td><div class="category-list">'+categoryChips(record.categories || {})+'</div></td><td><span class="status-pill state-'+safeStateClass(record.status)+'">'+esc(statusLabel(record.status))+'</span></td><td>'+esc(record.updatedAt || '-')+'</td><td>'+(runs.length ? '<span class="pill">'+runs.length+' 次</span>' : '-')+'</td></tr>'+runRows;
+}
+function runTaskSummary(items){
+  if (!Array.isArray(items) || !items.length) return '-';
+  return items.slice(-8).map(item => esc(item.label || '任务')+' +'+Number(item.gained || 0)).join('<br>');
+}
+function pointsRecordsTable(records){
+  if (!records.length) return '<div class="empty-state">当前筛选范围没有积分记录</div>';
+  const rows = records.map(pointRecordRow).join('');
+  return '<div class="table-wrap"><table class="table points-table"><thead><tr><th>日期</th><th>账号</th><th>任务前</th><th>任务后</th><th>todayGained</th><th>runGained</th><th>分类积分</th><th>状态</th><th>最后更新</th><th>Runs</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+}
+async function applyPointsFilters(){
+  pointsFilters.account = el('pointsAccount')?.value || 'all';
+  pointsFilters.range = el('pointsRange')?.value || 'month';
+  pointsFilters.start = el('pointsStart')?.value || '';
+  pointsFilters.end = el('pointsEnd')?.value || '';
+  await loadPointsCalendar();
+}
+function pointsQueryString(){
+  const params = new URLSearchParams({account:pointsFilters.account, range:pointsFilters.range});
+  if (pointsFilters.range === 'custom') {
+    if (pointsFilters.start) params.set('start', pointsFilters.start);
+    if (pointsFilters.end) params.set('end', pointsFilters.end);
+  }
+  return params.toString();
+}
+async function loadPointsCalendar(){
+  const container = el('pointsCalendar');
+  if (container && !pointsCalendarData) {
+    container.innerHTML = '<div class="content-grid"><section class="card section"><div class="empty-state">正在加载积分日历...</div></section></div>';
+  }
+  pointsCalendarData = await api('/api/points-calendar?' + pointsQueryString(), {headers:{}});
+  if (pointsCalendarData?.range) {
+    pointsFilters.start = pointsCalendarData.range.start || pointsFilters.start;
+    pointsFilters.end = pointsCalendarData.range.end || pointsFilters.end;
+  }
+  renderPointsCalendar();
+}
+function renderPointsCalendarError(message){
+  const section = el('pointsCalendar');
+  if (section) section.innerHTML = '<div class="content-grid"><section class="card section"><div class="empty-state">积分日历加载失败：'+esc(message || '未知错误')+'</div></section></div>';
 }
 function renderLogs(){
   el('logs').innerHTML = '<div class="content-grid"><section class="card section"><div class="toolbar"><div><h2>运行日志</h2><p class="section-note">只展示服务端脱敏后的日志；邮箱、Token、Cookie、IP 和长密钥会被隐藏。</p></div><div class="top-actions"><button id="refreshLogsBtn" class="ghost-btn">刷新</button><button id="downloadLogsBtn" class="primary-btn">下载脱敏日志</button></div></div>'

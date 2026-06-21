@@ -38,6 +38,15 @@ import {
     updateTaskDetail,
     updateTaskProgress
 } from './util/TaskProgressStore'
+import {
+    ensurePointRunCategoryMinimum,
+    finishPointRun,
+    pointCategoryFor,
+    recordPointRunGain,
+    startPointRun,
+    updatePointRunBaseline,
+    type PointRunStatus
+} from './util/PointsHistoryStore'
 import { updateAccountStatus } from './util/AccountStatusStore'
 import {
     markRunningCheckpointsInterrupted,
@@ -173,6 +182,7 @@ export class MicrosoftRewardsBot {
     public fingerprint!: BrowserFingerprintWithHeaders // 浏览器指纹
     public currentDetailTask: { key: string; label: string; group: 'daily' | 'mobile' | 'desktop' | 'activity' } | null =
         null
+    private currentPointRunId: string | null = null
 
     // 新版 UI（modern dashboard）使用 Next.js Server Actions 而非 REST API。
     // next-action hash 在编译时生成，绑定到具体部署版本（dpl）。
@@ -333,6 +343,24 @@ export class MicrosoftRewardsBot {
                 ? { key: taskDetailKey(label), label, group: 'activity' as const }
                 : { key: task === 'desktop' ? 'desktop-search' : 'mobile-search', label, group: task })
         recordTaskDetailGain(accountEmail, detail, safeGained, safeGained > 0 ? `${label} +${safeGained}` : label)
+        if (!isAccountStatusCheckOnly()) {
+            try {
+                recordPointRunGain(
+                    accountEmail,
+                    this.currentPointRunId,
+                    label,
+                    pointCategoryFor(label, task, detail.label),
+                    safeGained,
+                    safeBalance
+                )
+            } catch (error) {
+                this.logger.warn(
+                    'main',
+                    'POINTS-HISTORY',
+                    `积分历史实时写入失败: ${error instanceof Error ? error.message : String(error)}`
+                )
+            }
+        }
 
         if (task !== 'daily') return
 
@@ -350,6 +378,84 @@ export class MicrosoftRewardsBot {
         if (!isAccountStatusCheckOnly()) {
             updateRunCheckpoint(email, patch)
         }
+    }
+
+    private safeStartPointRun(email: string, beforePoints: number): string | null {
+        try {
+            return startPointRun(email, beforePoints, {
+                source: process.env.RUN_SOURCE || 'local',
+                pid: process.pid
+            })
+        } catch (error) {
+            this.logger.warn(
+                'main',
+                'POINTS-HISTORY',
+                `积分历史 run 创建失败: ${error instanceof Error ? error.message : String(error)}`
+            )
+            return null
+        }
+    }
+
+    private safeUpdatePointRunBaseline(email: string, beforePoints: number): void {
+        try {
+            updatePointRunBaseline(email, this.currentPointRunId, beforePoints)
+        } catch (error) {
+            this.logger.warn(
+                'main',
+                'POINTS-HISTORY',
+                `积分历史基准更新失败: ${error instanceof Error ? error.message : String(error)}`
+            )
+        }
+    }
+
+    private safeEnsurePointRunCategoryMinimum(
+        email: string,
+        label: string,
+        category: Parameters<typeof ensurePointRunCategoryMinimum>[3],
+        minimumGained: number,
+        balance?: number
+    ): void {
+        try {
+            ensurePointRunCategoryMinimum(email, this.currentPointRunId, label, category, minimumGained, balance)
+        } catch (error) {
+            this.logger.warn(
+                'main',
+                'POINTS-HISTORY',
+                `积分历史分类补齐失败: ${error instanceof Error ? error.message : String(error)}`
+            )
+        }
+    }
+
+    private finishCurrentPointRun(
+        email: string,
+        status: PointRunStatus,
+        patch: {
+            beforePoints?: number
+            afterPoints?: number
+            runGained?: number
+            taskSummary?: AccountTaskSummary[]
+            error?: string
+        } = {}
+    ): void {
+        if (isAccountStatusCheckOnly() || !this.currentPointRunId) return
+
+        try {
+            finishPointRun(email, this.currentPointRunId, {
+                status,
+                beforePoints: patch.beforePoints,
+                afterPoints: patch.afterPoints,
+                runGained: patch.runGained,
+                taskSummary: patch.taskSummary,
+                error: patch.error
+            })
+        } catch (error) {
+            this.logger.warn(
+                'main',
+                'POINTS-HISTORY',
+                `积分历史 run 收口失败: ${error instanceof Error ? error.message : String(error)}`
+            )
+        }
+        this.currentPointRunId = null
     }
 
     // 初始化账户数据
@@ -545,9 +651,16 @@ export class MicrosoftRewardsBot {
         for (const account of accounts) {
             const accountStartTime = Date.now()
             const accountEmail = account.email
+            this.currentPointRunId = null
             this.userData.userName = this.utils.getEmailUsername(accountEmail)
             this.userData.accountEmail = accountEmail
             this.userData.timezoneOffset = String(-new Date().getTimezoneOffset())
+            this.userData.initialPoints = 0
+            this.userData.currentPoints = 0
+            this.userData.gainedPoints = 0
+            if (!isAccountStatusCheckOnly()) {
+                this.currentPointRunId = this.safeStartPointRun(accountEmail, 0)
+            }
 
             try {
                 updateAccountStatus(accountEmail, {
@@ -628,6 +741,12 @@ export class MicrosoftRewardsBot {
                         runMode: currentRunOptions().accountMode,
                         pid: process.pid
                     })
+                    this.finishCurrentPointRun(accountEmail, 'completed', {
+                        beforePoints: accountInitialPoints,
+                        afterPoints: accountFinalPoints,
+                        runGained: collectedPoints,
+                        taskSummary: result.taskSummary
+                    })
 
                     const stat: AccountStats = {
                         email: accountEmail,
@@ -664,6 +783,12 @@ export class MicrosoftRewardsBot {
                         runMode: currentRunOptions().accountMode,
                         pid: process.pid
                     })
+                    this.finishCurrentPointRun(accountEmail, 'failed', {
+                        beforePoints: this.userData.initialPoints,
+                        afterPoints: this.userData.currentPoints,
+                        runGained: Math.max(0, Number(this.userData.currentPoints ?? 0) - Number(this.userData.initialPoints ?? 0)),
+                        error: '流程失败'
+                    })
                     const stat: AccountStats = {
                         email: accountEmail,
                         initialPoints: 0,
@@ -695,6 +820,12 @@ export class MicrosoftRewardsBot {
                     runSource: process.env.RUN_SOURCE || 'local',
                     runMode: currentRunOptions().accountMode,
                     pid: process.pid
+                })
+                this.finishCurrentPointRun(accountEmail, 'failed', {
+                    beforePoints: this.userData.initialPoints,
+                    afterPoints: this.userData.currentPoints,
+                    runGained: Math.max(0, Number(this.userData.currentPoints ?? 0) - Number(this.userData.initialPoints ?? 0)),
+                    error: message
                 })
                 this.logger.error(
                     'main',
@@ -857,6 +988,7 @@ export class MicrosoftRewardsBot {
                 const taskSummary: AccountTaskSummary[] = []
                 let dailyGainedPoints = 0
                 if (!isAccountStatusCheckOnly()) {
+                    this.safeUpdatePointRunBaseline(accountEmail, initialPoints)
                     resetAccountRunProgress(accountEmail, {
                         initialPoints,
                         currentPoints: initialPoints,
@@ -1003,6 +1135,13 @@ export class MicrosoftRewardsBot {
                             status: gained > 0 ? `${label} +${gained}` : '进行中'
                         })
                         updateAccountPointTotals(accountEmail, { currentPoints: after, finalPoints: after })
+                        this.safeEnsurePointRunCategoryMinimum(
+                            accountEmail,
+                            label,
+                            pointCategoryFor(label),
+                            gained,
+                            after
+                        )
                     } catch (error) {
                         const message = error instanceof Error ? error.message : String(error)
                         updateTaskDetail(accountEmail, {
@@ -1116,6 +1255,27 @@ export class MicrosoftRewardsBot {
                 } else {
                     otherGainedPoints = searchGainedPoints
                 }
+                this.safeEnsurePointRunCategoryMinimum(
+                    accountEmail,
+                    '移动搜索',
+                    'mobileSearch',
+                    mobileGainedPoints,
+                    finalPoints
+                )
+                this.safeEnsurePointRunCategoryMinimum(
+                    accountEmail,
+                    'PC搜索',
+                    'pcSearch',
+                    desktopGainedPoints,
+                    finalPoints
+                )
+                this.safeEnsurePointRunCategoryMinimum(
+                    accountEmail,
+                    '其他积分变化',
+                    'other',
+                    otherGainedPoints,
+                    finalPoints
+                )
 
                 const finalSearchPoints = await this.browser.func.getSearchPoints().catch(() => searchPoints)
                 const finalMobileSearch = finalSearchPoints.mobileSearch?.[0]
