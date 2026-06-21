@@ -39,6 +39,12 @@ import {
     updateTaskProgress
 } from './util/TaskProgressStore'
 import { updateAccountStatus } from './util/AccountStatusStore'
+import {
+    markRunningCheckpointsInterrupted,
+    selectAccountsForRun,
+    updateRunCheckpoint,
+    type RunAccountMode
+} from './util/RunCheckpointStore'
 interface ExecutionContext {
     isMobile: boolean
     account: Account
@@ -69,6 +75,12 @@ interface AccountTaskSummary {
     status: string
 }
 
+interface RunOptions {
+    accountMode: RunAccountMode
+    targetAccountIndex?: number
+    source: string
+}
+
 const executionContext = new AsyncLocalStorage<ExecutionContext>()
 
 export function getCurrentContext(): ExecutionContext {
@@ -86,6 +98,46 @@ async function flushAllWebhooks(timeoutMs = 5000): Promise<void> {
         flushPushPlusQueue(timeoutMs),
         flushWeComQueue(timeoutMs)
     ])
+}
+
+function parseRunAccountMode(value: string | undefined): RunAccountMode {
+    switch ((value ?? '').trim().toLowerCase()) {
+        case 'failed':
+            return 'failed'
+        case 'all':
+            return 'all'
+        case 'account':
+            return 'account'
+        case 'continue':
+        case '':
+            return 'continue'
+        default:
+            return 'continue'
+    }
+}
+
+function parsePositiveInteger(value: string | undefined): number | undefined {
+    const parsed = Number(value)
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined
+}
+
+function isAccountStatusCheckOnly(): boolean {
+    return process.env.ACCOUNT_STATUS_CHECK_ONLY === 'true'
+}
+
+function currentRunOptions(): RunOptions {
+    const statusCheckOnly = isAccountStatusCheckOnly()
+    return {
+        accountMode: statusCheckOnly ? 'all' : parseRunAccountMode(process.env.RUN_ACCOUNT_MODE),
+        targetAccountIndex: parsePositiveInteger(process.env.RUN_ACCOUNT_INDEX),
+        source: process.env.RUN_SOURCE || 'local'
+    }
+}
+
+function markFormalRunInterrupted(message: string): void {
+    if (!isAccountStatusCheckOnly()) {
+        markRunningCheckpointsInterrupted(message)
+    }
 }
 
 interface UserData {
@@ -294,6 +346,12 @@ export class MicrosoftRewardsBot {
         })
     }
 
+    private updateFormalRunCheckpoint(email: string, patch: Parameters<typeof updateRunCheckpoint>[1]): void {
+        if (!isAccountStatusCheckOnly()) {
+            updateRunCheckpoint(email, patch)
+        }
+    }
+
     // 初始化账户数据
     async initialize(): Promise<void> {
         this.accounts = loadAccounts()
@@ -301,34 +359,66 @@ export class MicrosoftRewardsBot {
 
     // 运行主要的积分收集流程
     async run(): Promise<void> {
-        const totalAccounts = this.accounts.length
         const runStartTime = Date.now()
+
+        if (this.config.clusters > 1 && !cluster.isPrimary) {
+            this.runWorker(runStartTime)
+            return
+        }
+
+        const options = currentRunOptions()
+        const selection = isAccountStatusCheckOnly()
+            ? {
+                  mode: options.accountMode,
+                  targetAccountIndex: options.targetAccountIndex,
+                  selected: this.accounts,
+                  skipped: [],
+                  interrupted: 0
+              }
+            : selectAccountsForRun(this.accounts, {
+                  mode: options.accountMode,
+                  targetAccountIndex: options.targetAccountIndex,
+                  runSource: options.source,
+                  pid: process.pid
+              })
+        const accountsToRun = selection.selected
+        const totalAccounts = accountsToRun.length
 
         this.logger.info(
             'main',
             'RUN-START',
-            `启动微软奖励脚本 | v${pkg.version} | 账户数: ${totalAccounts} | 集群数: ${this.config.clusters}`
+            `启动微软奖励脚本 | v${pkg.version} | 运行模式: ${selection.mode}${
+                selection.targetAccountIndex ? `#${selection.targetAccountIndex}` : ''
+            } | 待执行账户: ${totalAccounts}/${this.accounts.length} | 已跳过: ${selection.skipped.length} | 上次中断: ${
+                selection.interrupted
+            } | 集群数: ${this.config.clusters}`
         )
+
+        if (totalAccounts === 0) {
+            this.logger.info(
+                'main',
+                'RUN-END',
+                `没有需要执行的账户 | 运行模式: ${selection.mode} | 已跳过: ${selection.skipped.length}`,
+                'green'
+            )
+            await flushAllWebhooks()
+            return
+        }
 
         // 如果集群数大于1，则使用多进程模式
         if (this.config.clusters > 1) {
-            if (cluster.isPrimary) {
-                // 主进程逻辑
-                await this.runMaster(runStartTime)
-            } else {
-                // 工作进程逻辑
-                this.runWorker(runStartTime)
-            }
+            // 主进程逻辑
+            await this.runMaster(accountsToRun, runStartTime)
         } else {
             // 单进程模式，直接运行任务
-            await this.runTasks(this.accounts, runStartTime)
+            await this.runTasks(accountsToRun, runStartTime)
         }
     }
 
-    private async runMaster(runStartTime: number): Promise<void> {
+    private async runMaster(accounts: Account[], runStartTime: number): Promise<void> {
         void this.logger.info('main', 'CLUSTER-PRIMARY', `主进程已启动 | PID: ${process.pid}`)
 
-        const rawChunks = this.utils.chunkArray(this.accounts, this.config.clusters)
+        const rawChunks = this.utils.chunkArray(accounts, this.config.clusters)
         const accountChunks = rawChunks.filter(c => c && c.length > 0)
         this.activeWorkers = accountChunks.length
 
@@ -463,8 +553,31 @@ export class MicrosoftRewardsBot {
                 updateAccountStatus(accountEmail, {
                     state: 'checking',
                     stage: 'account-start',
-                    lastMessage: '开始检测账号登录状态'
+                    lastMessage:
+                        isAccountStatusCheckOnly()
+                            ? '开始检测账号登录状态'
+                            : '任务前置登录验证'
                 })
+                this.updateFormalRunCheckpoint(accountEmail, {
+                    state: 'running',
+                    currentTask:
+                        isAccountStatusCheckOnly() ? '账号状态检测' : '任务前置登录验证',
+                    currentStep: 'account-start',
+                    lastMessage:
+                        isAccountStatusCheckOnly()
+                            ? '开始检测账号登录状态'
+                            : '正式任务开始前登录并读取 dashboard',
+                    runSource: process.env.RUN_SOURCE || 'local',
+                    runMode: currentRunOptions().accountMode,
+                    pid: process.pid
+                })
+                if (!isAccountStatusCheckOnly()) {
+                    updateAccountRunState(accountEmail, {
+                        currentTask: '任务前置登录验证',
+                        currentStage: 'account-start',
+                        currentMessage: '正式任务开始前登录并读取 dashboard'
+                    })
+                }
                 this.logger.info(
                     'main',
                     'ACCOUNT-START',
@@ -496,13 +609,24 @@ export class MicrosoftRewardsBot {
                     const accountInitialPoints = result.initialPoints ?? 0
                     const accountFinalPoints = result.finalPoints ?? accountInitialPoints + collectedPoints
                     const statusMessage =
-                        process.env.ACCOUNT_STATUS_CHECK_ONLY === 'true'
+                        isAccountStatusCheckOnly()
                             ? '账号状态检测通过'
                             : `任务已完成，本次增加 ${collectedPoints} 分`
                     updateAccountStatus(accountEmail, {
                         state: 'success',
-                        stage: process.env.ACCOUNT_STATUS_CHECK_ONLY === 'true' ? 'status-check' : 'account-end',
+                        stage: isAccountStatusCheckOnly() ? 'status-check' : 'account-end',
                         lastMessage: statusMessage
+                    })
+                    this.updateFormalRunCheckpoint(accountEmail, {
+                        state: 'completed',
+                        currentTask:
+                            isAccountStatusCheckOnly() ? '账号状态检测完成' : '账号任务完成',
+                        currentStep:
+                            isAccountStatusCheckOnly() ? 'status-check' : 'account-end',
+                        lastMessage: statusMessage,
+                        runSource: process.env.RUN_SOURCE || 'local',
+                        runMode: currentRunOptions().accountMode,
+                        pid: process.pid
                     })
 
                     const stat: AccountStats = {
@@ -530,6 +654,16 @@ export class MicrosoftRewardsBot {
                         lastMessage: '账号流程失败，请查看运行日志',
                         error: '流程失败'
                     })
+                    this.updateFormalRunCheckpoint(accountEmail, {
+                        state: 'failed',
+                        currentTask: '账号流程失败',
+                        currentStep: 'account-flow',
+                        lastMessage: '账号流程失败，请查看运行日志',
+                        error: '流程失败',
+                        runSource: process.env.RUN_SOURCE || 'local',
+                        runMode: currentRunOptions().accountMode,
+                        pid: process.pid
+                    })
                     const stat: AccountStats = {
                         email: accountEmail,
                         initialPoints: 0,
@@ -551,6 +685,16 @@ export class MicrosoftRewardsBot {
                     stage: 'account-error',
                     lastMessage: message,
                     error: message
+                })
+                this.updateFormalRunCheckpoint(accountEmail, {
+                    state: 'failed',
+                    currentTask: '账号异常',
+                    currentStep: 'account-error',
+                    lastMessage: message,
+                    error: message,
+                    runSource: process.env.RUN_SOURCE || 'local',
+                    runMode: currentRunOptions().accountMode,
+                    pid: process.pid
                 })
                 this.logger.error(
                     'main',
@@ -580,7 +724,7 @@ export class MicrosoftRewardsBot {
             const totalDurationMinutes = ((Date.now() - runStartTime) / 1000 / 60).toFixed(1)
             const hadWorkerFailure = accountStats.some(s => !s.success)
 
-            const runSummary = process.env.ACCOUNT_STATUS_CHECK_ONLY === 'true' ? '账号状态检测完成' : '已完成所有账户'
+            const runSummary = isAccountStatusCheckOnly() ? '账号状态检测完成' : '已完成所有账户'
             this.logger.info(
                 'main',
                 'RUN-END',
@@ -617,11 +761,37 @@ export class MicrosoftRewardsBot {
 
                 this.logger.info('main', 'BROWSER', `移动浏览器已启动 | ${accountEmail}`)
 
+                this.updateFormalRunCheckpoint(accountEmail, {
+                    state: 'running',
+                    currentTask:
+                        isAccountStatusCheckOnly() ? '账号状态检测' : '任务前置登录验证',
+                    currentStep: 'login',
+                    lastMessage:
+                        isAccountStatusCheckOnly()
+                            ? '正在验证账号登录'
+                            : '正式任务前置登录验证',
+                    runSource: process.env.RUN_SOURCE || 'local',
+                    runMode: currentRunOptions().accountMode,
+                    pid: process.pid
+                })
                 await this.login.login(this.mainMobilePage, account)
                 updateAccountStatus(accountEmail, {
                     state: 'valid',
                     stage: 'login',
-                    lastMessage: '登录验证通过'
+                    lastMessage:
+                        isAccountStatusCheckOnly()
+                            ? '登录验证通过'
+                            : '任务前置登录验证通过'
+                })
+                this.updateFormalRunCheckpoint(accountEmail, {
+                    state: 'running',
+                    currentTask:
+                        isAccountStatusCheckOnly() ? '账号状态检测' : '任务前置登录验证',
+                    currentStep: 'dashboard',
+                    lastMessage: '登录通过，正在读取 dashboard',
+                    runSource: process.env.RUN_SOURCE || 'local',
+                    runMode: currentRunOptions().accountMode,
+                    pid: process.pid
                 })
 
                 try {
@@ -686,40 +856,54 @@ export class MicrosoftRewardsBot {
                 const initialPoints = this.userData.initialPoints ?? 0
                 const taskSummary: AccountTaskSummary[] = []
                 let dailyGainedPoints = 0
-                resetAccountRunProgress(accountEmail, {
-                    initialPoints,
-                    currentPoints: initialPoints,
-                    finalPoints: initialPoints
-                })
+                if (!isAccountStatusCheckOnly()) {
+                    resetAccountRunProgress(accountEmail, {
+                        initialPoints,
+                        currentPoints: initialPoints,
+                        finalPoints: initialPoints
+                    })
+                }
                 updateAccountStatus(accountEmail, {
                     state: 'running',
                     stage: 'dashboard',
                     lastMessage: `账号有效，当前积分 ${initialPoints}`
                 })
+                this.updateFormalRunCheckpoint(accountEmail, {
+                    state: 'running',
+                    currentTask:
+                        isAccountStatusCheckOnly() ? '账号状态检测' : '任务执行中',
+                    currentStep: 'dashboard',
+                    lastMessage: `dashboard 已读取，当前积分 ${initialPoints}`,
+                    runSource: process.env.RUN_SOURCE || 'local',
+                    runMode: currentRunOptions().accountMode,
+                    pid: process.pid
+                })
                 const initialMobileSearch = data.userStatus.counters.mobileSearch?.[0]
                 const initialPcSearch = data.userStatus.counters.pcSearch?.[0]
                 const initialMobileProgress = initialMobileSearch?.pointProgress ?? 0
                 const initialPcProgress = initialPcSearch?.pointProgress ?? 0
-                updateAccountTaskProgress(accountEmail, {
-                    mobile: {
-                        completed: initialMobileProgress,
-                        total: initialMobileSearch?.pointProgressMax ?? 0,
-                        gained: 0,
-                        status:
-                            initialMobileSearch && initialMobileSearch.pointProgress < initialMobileSearch.pointProgressMax
-                                ? '进行中'
-                                : '已完成'
-                    },
-                    desktop: {
-                        completed: initialPcProgress,
-                        total: initialPcSearch?.pointProgressMax ?? 0,
-                        gained: 0,
-                        status:
-                            initialPcSearch && initialPcSearch.pointProgress < initialPcSearch.pointProgressMax
-                                ? '进行中'
-                                : '已完成'
-                    }
-                })
+                if (!isAccountStatusCheckOnly()) {
+                    updateAccountTaskProgress(accountEmail, {
+                        mobile: {
+                            completed: initialMobileProgress,
+                            total: initialMobileSearch?.pointProgressMax ?? 0,
+                            gained: 0,
+                            status:
+                                initialMobileSearch && initialMobileSearch.pointProgress < initialMobileSearch.pointProgressMax
+                                    ? '进行中'
+                                    : '已完成'
+                        },
+                        desktop: {
+                            completed: initialPcProgress,
+                            total: initialPcSearch?.pointProgressMax ?? 0,
+                            gained: 0,
+                            status:
+                                initialPcSearch && initialPcSearch.pointProgress < initialPcSearch.pointProgressMax
+                                    ? '进行中'
+                                    : '已完成'
+                        }
+                    })
+                }
 
                 const browserEarnable = await this.browser.func.getBrowserEarnablePoints()
                 const appEarnable = hasAppAccessToken
@@ -745,7 +929,7 @@ export class MicrosoftRewardsBot {
                     } | 应用: ${appEarnable?.totalEarnablePoints ?? 0} | ${accountEmail} | 区域设置: ${this.userData.geoLocale}`
                 )
 
-                if (process.env.ACCOUNT_STATUS_CHECK_ONLY === 'true') {
+                if (isAccountStatusCheckOnly()) {
                     updateAccountStatus(accountEmail, {
                         state: 'success',
                         stage: 'status-check',
@@ -1050,21 +1234,25 @@ async function main(): Promise<void> {
     })
     process.on('SIGINT', async () => {
         rewardsBot.logger.warn('main', 'PROCESS', '收到 SIGINT 信号，正在刷新并退出...')
+        markFormalRunInterrupted('收到 SIGINT，任务中断，等待续跑')
         await flushAllWebhooks()
         process.exit(130)
     })
     process.on('SIGTERM', async () => {
         rewardsBot.logger.warn('main', 'PROCESS', '收到 SIGTERM 信号，正在刷新并退出...')
+        markFormalRunInterrupted('收到 SIGTERM，任务中断，等待续跑')
         await flushAllWebhooks()
         process.exit(143)
     })
     process.on('uncaughtException', async error => {
         rewardsBot.logger.error('main', 'UNCAUGHT-EXCEPTION', error)
+        markFormalRunInterrupted('未捕获异常，任务中断，等待续跑')
         await flushAllWebhooks()
         process.exit(1)
     })
     process.on('unhandledRejection', async reason => {
         rewardsBot.logger.error('main', 'UNHANDLED-REJECTION', reason as Error)
+        markFormalRunInterrupted('未处理 Promise 异常，任务中断，等待续跑')
         await flushAllWebhooks()
         process.exit(1)
     })
@@ -1074,12 +1262,14 @@ async function main(): Promise<void> {
         await rewardsBot.run()
     } catch (error) {
         rewardsBot.logger.error('main', 'MAIN-ERROR', error as Error)
+        markFormalRunInterrupted('主流程异常，任务中断，等待续跑')
     }
 }
 
 main().catch(async error => {
     const tmpBot = new MicrosoftRewardsBot()
     tmpBot.logger.error('main', 'MAIN-ERROR', error as Error)
+    markFormalRunInterrupted('主流程异常，任务中断，等待续跑')
     await flushAllWebhooks()
     process.exit(1)
 })

@@ -11,9 +11,13 @@ LOCK_META_FILE="${RUN_LOCK_META_FILE:-/tmp/run_daily.lock.meta}"
 RUNTIME_LOG_FILE="${RUNTIME_LOG_FILE:-/var/log/microsoft-rewards.log}"
 RUN_SOURCE="${RUN_SOURCE:-cron}"
 RUN_MODE="${RUN_MODE:-task}"
+RUN_ACCOUNT_MODE="${RUN_ACCOUNT_MODE:-continue}"
+RUN_ACCOUNT_INDEX="${RUN_ACCOUNT_INDEX:-}"
 RUN_FAIL_ON_LOCK="${RUN_FAIL_ON_LOCK:-false}"
 SCRIPT_PID="$$"
 CHILD_PID=""
+
+export RUN_SOURCE RUN_MODE RUN_ACCOUNT_MODE RUN_ACCOUNT_INDEX RUN_FAIL_ON_LOCK RUNTIME_LOG_FILE
 
 log() {
     echo "[$(date)] [run_daily.sh] $*"
@@ -31,6 +35,8 @@ write_lock_meta() {
   "pid": $SCRIPT_PID,
   "source": "$(json_escape "$RUN_SOURCE")",
   "mode": "$(json_escape "$RUN_MODE")",
+  "accountMode": "$(json_escape "$RUN_ACCOUNT_MODE")",
+  "accountIndex": "$(json_escape "$RUN_ACCOUNT_INDEX")",
   "startedAt": "$(json_escape "$started_at")",
   "skipRandomSleep": "$(json_escape "${SKIP_RANDOM_SLEEP:-false}")",
   "logFile": "$(json_escape "$RUNTIME_LOG_FILE")"
@@ -118,7 +124,7 @@ handle_existing_runner() {
         return 0
     fi
 
-    log "已有任务运行中，PID: $existing_pid；本次来源=$RUN_SOURCE，模式=$RUN_MODE，拒绝启动。"
+    log "已有任务运行中，PID: $existing_pid；本次来源=$RUN_SOURCE，模式=$RUN_MODE，账号模式=$RUN_ACCOUNT_MODE，拒绝启动。"
     return 1
 }
 
@@ -132,7 +138,7 @@ acquire_lock() {
 
         if (set -C; echo "$SCRIPT_PID" > "$LOCKFILE") 2>/dev/null; then
             write_lock_meta
-            log "锁获取成功 (PID: $SCRIPT_PID, source=$RUN_SOURCE, mode=$RUN_MODE)"
+            log "锁获取成功 (PID: $SCRIPT_PID, source=$RUN_SOURCE, mode=$RUN_MODE, accountMode=$RUN_ACCOUNT_MODE)"
             return 0
         fi
 
@@ -191,7 +197,7 @@ trap cleanup EXIT
 trap 'exit 143' TERM
 trap 'exit 130' INT
 
-log "当前进程PID: $SCRIPT_PID | source=$RUN_SOURCE | mode=$RUN_MODE"
+log "当前进程PID: $SCRIPT_PID | source=$RUN_SOURCE | mode=$RUN_MODE | accountMode=$RUN_ACCOUNT_MODE | accountIndex=${RUN_ACCOUNT_INDEX:-all}"
 
 self_heal_lockfile
 

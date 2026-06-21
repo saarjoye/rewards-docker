@@ -11,6 +11,11 @@ import type { Account } from '../interface/Account'
 import type { Config, ConfigWorkers, WebhookWeComConfig } from '../interface/Config'
 import { accountProgressHash, readTaskProgressFile } from '../util/TaskProgressStore'
 import { readAccountStatusFile, updateAccountStatus, type AccountStatusState } from '../util/AccountStatusStore'
+import {
+    readRunCheckpointFile,
+    type RunCheckpointState,
+    type StoredRunCheckpointAccount
+} from '../util/RunCheckpointStore'
 import { diagnoseWeCom, testWeCom } from '../logging/WeCom'
 
 type JsonValue = Record<string, unknown> | unknown[] | string | number | boolean | null
@@ -47,6 +52,7 @@ interface PublicAccount {
         desktop: boolean
     }
     status: PublicAccountStatus
+    checkpoint: PublicRunCheckpoint
 }
 
 interface PublicAccountStatus {
@@ -60,6 +66,18 @@ interface PublicAccountStatus {
     lastFailureAt: string
 }
 
+interface PublicRunCheckpoint {
+    state: RunCheckpointState | 'unknown'
+    label: string
+    currentTask: string
+    currentStep: string
+    lastMessage: string
+    updatedAt: string
+    startedAt: string
+    finishedAt: string
+    runMode: string
+}
+
 interface ScheduleFile {
     schedule: string
     timezone: string
@@ -68,6 +86,7 @@ interface ScheduleFile {
 
 type RunMode = 'task' | 'account-check'
 type RunSource = 'cron' | 'web' | 'startup' | 'unknown'
+type RunAccountMode = 'continue' | 'failed' | 'all' | 'account'
 type LogSource = 'manual' | 'runtime'
 type LogLevel = 'all' | 'error' | 'warn' | 'info' | 'debug'
 
@@ -75,6 +94,8 @@ interface RunState {
     running: boolean
     source?: RunSource
     mode?: RunMode
+    accountMode?: RunAccountMode
+    accountIndex?: number
     pid?: number
     startedAt?: string
     finishedAt?: string
@@ -91,6 +112,8 @@ interface RunLockMeta {
     pid?: number
     source?: RunSource
     mode?: RunMode
+    accountMode?: RunAccountMode
+    accountIndex?: string
     startedAt?: string
     skipRandomSleep?: string
     logFile?: string
@@ -341,7 +364,10 @@ function collectRunOutput(chunk: Buffer | string, stream: NodeJS.WriteStream): v
     }
 }
 
-function startScriptRun(mode: RunMode): RunState {
+function startScriptRun(
+    mode: RunMode,
+    options: { accountMode?: RunAccountMode; accountIndex?: number } = {}
+): RunState {
     if (runState.running) {
         return runState
     }
@@ -349,6 +375,11 @@ function startScriptRun(mode: RunMode): RunState {
     const script = path.join(appRoot, 'scripts', 'docker', 'run_daily.sh')
     if (!fs.existsSync(script)) {
         throw new Error('找不到运行脚本 scripts/docker/run_daily.sh')
+    }
+    const accountMode = mode === 'account-check' ? 'all' : options.accountMode ?? 'continue'
+    const accountIndex = accountMode === 'account' ? options.accountIndex : undefined
+    if (accountMode === 'account' && !accountIndex) {
+        throw new Error('指定账号模式需要选择账号序号')
     }
 
     const child = spawn('bash', [script], {
@@ -359,18 +390,22 @@ function startScriptRun(mode: RunMode): RunState {
             SKIP_RANDOM_SLEEP: 'true',
             RUN_SOURCE: 'web',
             RUN_MODE: mode,
+            RUN_ACCOUNT_MODE: accountMode,
+            ...(accountIndex ? { RUN_ACCOUNT_INDEX: String(accountIndex) } : {}),
             RUN_FAIL_ON_LOCK: 'true',
             RUNTIME_LOG_FILE: runtimeLogFile,
             ...(mode === 'account-check' ? { ACCOUNT_STATUS_CHECK_ONLY: 'true' } : {})
         }
     })
 
-    const label = mode === 'account-check' ? '账号状态检测' : '手动运行'
+    const label = mode === 'account-check' ? '账号状态检测' : `手动运行（${accountModeLabel(accountMode)}）`
     const startedLine = `[${new Date().toISOString()}] ${label}已启动，PID ${child.pid}`
     runState = {
         running: true,
         source: 'web',
         mode,
+        accountMode,
+        accountIndex,
         pid: child.pid,
         startedAt: new Date().toISOString(),
         exitCode: null,
@@ -523,6 +558,27 @@ function numericPid(value: unknown): number | undefined {
     return Number.isInteger(n) && n > 0 ? n : undefined
 }
 
+function positiveInteger(value: unknown): number | undefined {
+    const n = Number(value)
+    return Number.isInteger(n) && n > 0 ? n : undefined
+}
+
+function normalizeRunAccountMode(value: unknown): RunAccountMode {
+    switch (String(value ?? '').trim().toLowerCase()) {
+        case 'failed':
+            return 'failed'
+        case 'all':
+            return 'all'
+        case 'account':
+            return 'account'
+        case 'continue':
+        case '':
+            return 'continue'
+        default:
+            return 'continue'
+    }
+}
+
 function readPidFile(file: string): number | undefined {
     try {
         const raw = fs.readFileSync(file, 'utf8').trim()
@@ -551,6 +607,8 @@ function readRunLockMeta(): RunLockMeta | null {
         pid: numericPid(meta.pid),
         source,
         mode,
+        accountMode: normalizeRunAccountMode(meta.accountMode),
+        accountIndex: typeof meta.accountIndex === 'string' ? meta.accountIndex : undefined,
         startedAt: typeof meta.startedAt === 'string' ? meta.startedAt : undefined,
         skipRandomSleep: typeof meta.skipRandomSleep === 'string' ? meta.skipRandomSleep : undefined,
         logFile: typeof meta.logFile === 'string' ? meta.logFile : undefined
@@ -575,6 +633,8 @@ function mergedRunState(): RunState {
     const startedAt = meta?.startedAt ?? runState.startedAt
     const source = meta?.source ?? runState.source ?? (externalRunning ? 'unknown' : undefined)
     const mode = meta?.mode ?? runState.mode
+    const accountMode = meta?.accountMode ?? runState.accountMode
+    const accountIndex = positiveInteger(meta?.accountIndex) ?? runState.accountIndex
     const conflictReason = running
         ? `已有${sourceLabel(source)}${modeLabel(mode)}正在运行${pid ? `，PID ${pid}` : ''}`
         : undefined
@@ -584,6 +644,8 @@ function mergedRunState(): RunState {
         running,
         source,
         mode,
+        accountMode,
+        accountIndex,
         pid,
         startedAt,
         ageSeconds: ageSeconds(startedAt),
@@ -615,6 +677,20 @@ function modeLabel(mode?: RunMode): string {
     return mode === 'account-check' ? '账号检测' : '执行任务'
 }
 
+function accountModeLabel(mode?: RunAccountMode): string {
+    switch (mode) {
+        case 'failed':
+            return '只重跑失败账号'
+        case 'all':
+            return '强制全量重跑'
+        case 'account':
+            return '重跑指定账号'
+        case 'continue':
+        default:
+            return '继续未完成账号'
+    }
+}
+
 function accountStatusLabel(state: AccountStatusState): string {
     switch (state) {
         case 'checking':
@@ -629,6 +705,43 @@ function accountStatusLabel(state: AccountStatusState): string {
             return '异常'
         default:
             return '未检测'
+    }
+}
+
+function checkpointLabel(state: RunCheckpointState | 'unknown'): string {
+    switch (state) {
+        case 'pending':
+            return '等待执行'
+        case 'running':
+            return '执行中'
+        case 'completed':
+            return '今日已完成'
+        case 'failed':
+            return '失败待重跑'
+        case 'interrupted':
+            return '中断待续跑'
+        case 'skipped':
+            return '已跳过'
+        default:
+            return '无记录'
+    }
+}
+
+function getRunCheckpoint(account: Account): PublicRunCheckpoint {
+    const saved: StoredRunCheckpointAccount | undefined = readRunCheckpointFile().accounts.find(
+        item => item.accountHash === accountProgressHash(account.email)
+    )
+    const state = saved?.state ?? 'unknown'
+    return {
+        state,
+        label: checkpointLabel(state),
+        currentTask: saved?.currentTask ?? '',
+        currentStep: saved?.currentStep ?? '',
+        lastMessage: saved?.lastMessage ?? '今天尚未运行',
+        updatedAt: saved?.updatedAt ?? '',
+        startedAt: saved?.startedAt ?? '',
+        finishedAt: saved?.finishedAt ?? '',
+        runMode: saved?.runMode ?? ''
     }
 }
 
@@ -649,6 +762,7 @@ function getAccountStatus(account: Account): PublicAccountStatus {
 
 function sanitizeAccount(account: Account, id: number): PublicAccount {
     const status = getAccountStatus(account)
+    const checkpoint = getRunCheckpoint(account)
     return {
         id,
         maskedEmail: maskEmail(account.email),
@@ -666,7 +780,8 @@ function sanitizeAccount(account: Account, id: number): PublicAccount {
             mobile: Boolean(account.saveFingerprint?.mobile),
             desktop: Boolean(account.saveFingerprint?.desktop)
         },
-        status
+        status,
+        checkpoint
     }
 }
 
@@ -1014,7 +1129,10 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
                 })
                 return
             }
-            sendJson(res, 200, { ok: true, runState: startScriptRun('task') })
+            const body = (await readBody(req)) as Record<string, unknown>
+            const accountMode = normalizeRunAccountMode(body.accountMode)
+            const accountIndex = positiveInteger(body.accountIndex)
+            sendJson(res, 200, { ok: true, runState: startScriptRun('task', { accountMode, accountIndex }) })
         } catch (error) {
             sendJson(res, 400, {
                 error: 'RUN_FAILED',
@@ -1617,7 +1735,7 @@ function baseCss(): string {
 :root{--bg:#eaf6f3;--bg-strong:#d9f0ec;--surface:#fff;--surface-soft:#f7fbfa;--line:#d7e5e1;--teal:#0f8f85;--teal-dark:#08746d;--teal-soft:#ddf3ef;--text:#17211f;--sub:#64736f;--muted:#91a19d;--danger:#b54646;--amber:#a96516;--blue:#2f6fed;--shadow:0 18px 42px rgba(15,63,58,.13)}
 *{box-sizing:border-box}body{margin:0;font-family:Inter,Segoe UI,Arial,"Microsoft YaHei",sans-serif;color:var(--text);background:var(--bg)}button,input,select{font:inherit}button{cursor:pointer}button:disabled{cursor:not-allowed;opacity:.65}
 .login-body{min-height:100vh;overflow:hidden;background:var(--bg)}.login-shell{min-height:100vh;position:relative;display:grid;place-items:center;padding:28px}.signin-shell{border-top:10px solid var(--teal)}.auth-shape{position:absolute;background:var(--bg-strong);border-radius:48px;pointer-events:none}.auth-shape-a{width:520px;height:520px;right:8vw;top:12vh}.auth-shape-b{width:420px;height:300px;left:-160px;bottom:-80px}.setup-shell .auth-shape-a{right:18vw;top:-110px}.setup-shell .auth-shape-b{left:-150px;bottom:-100px}.login-panel{position:relative;width:min(576px,calc(100vw - 36px));background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:48px 54px 40px;box-shadow:var(--shadow)}.signin-shell .login-panel{width:min(520px,calc(100vw - 36px));padding:46px 48px 36px}.brand-lock{display:flex;align-items:center;gap:14px;margin-bottom:28px}.brand-lock strong{display:block;font-size:15px;font-weight:800;line-height:1.2}.brand-lock span{display:block;margin-top:4px;color:var(--muted);font:12px/1.2 "Geist Mono",Consolas,monospace}.brand-mark{width:44px;height:44px;border-radius:8px;background:var(--teal);display:grid;place-items:center;color:#fff;font:800 14px/1 "Geist Mono",Consolas,monospace}.login-panel h1{margin:0;font-size:36px;line-height:1.15;font-weight:800;letter-spacing:0}.auth-hint{margin:12px 0 34px;color:var(--sub);font-size:15px;line-height:1.55}.login-form{display:grid;gap:18px}.auth-field{display:grid;gap:10px;font-size:13px;font-weight:700;color:var(--sub)}.auth-field input{height:54px;width:100%;border:1px solid var(--line);border-radius:8px;background:var(--surface-soft);padding:0 18px;color:var(--text);outline:none}.auth-field input:focus,.field input:focus,.field select:focus{border-color:var(--teal);box-shadow:0 0 0 3px rgba(15,143,133,.1)}.primary-btn{height:44px;border:0;border-radius:8px;background:var(--teal);color:#fff;font-weight:800;padding:0 18px;display:inline-flex;align-items:center;justify-content:center;gap:8px}.wide-btn{height:54px;width:100%;margin-top:2px}.form-message{min-height:18px;margin:0;color:var(--danger);font-size:13px}.security-note{margin-top:16px;padding:14px 16px 14px 44px;position:relative;background:var(--surface-soft);border:1px solid var(--line);border-radius:8px;color:var(--sub);font-size:13px;line-height:1.4}.security-note:before{content:"✓";position:absolute;left:16px;top:14px;width:18px;height:18px;border-radius:50%;display:grid;place-items:center;background:var(--teal-soft);color:var(--teal);font-size:12px;font-weight:800}
-.app{display:grid;grid-template-columns:272px minmax(0,1fr);min-height:100vh;background:var(--bg)}.sidebar{background:var(--surface);border-right:1px solid var(--line);padding:28px 22px;display:flex;flex-direction:column;gap:24px}.logo-row{display:flex;align-items:center;gap:12px;min-width:0}.logo-row strong{display:block;font-size:14px;font-weight:800;line-height:1.2}.logo-row span{display:block;margin-top:4px;color:var(--muted);font:12px/1.2 "Geist Mono",Consolas,monospace}.sidebar nav{display:grid;gap:12px}.nav-item{height:44px;border:0;border-radius:8px;background:transparent;display:flex;align-items:center;gap:12px;padding:0 14px;color:var(--sub);font-size:14px;font-weight:700;text-align:left}.nav-item.active{background:var(--teal-soft);color:var(--teal-dark);font-weight:800}.nav-icon{width:18px;height:18px;display:grid;place-items:center;color:inherit}.sidebar-note{margin-top:auto;border:1px solid var(--line);background:var(--surface-soft);border-radius:8px;padding:16px}.sidebar-note strong{font-size:13px}.sidebar-note p{margin:8px 0 0;color:var(--sub);font-size:12px;line-height:1.45}.main{min-width:0}.topbar{height:118px;display:flex;align-items:center;justify-content:space-between;padding:34px 46px 22px}.topbar h1{font-size:32px;line-height:1.1;margin:0 0 10px;font-weight:800}.topbar p{margin:0;color:var(--sub);font-size:14px}.top-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.user-badge,.env-pill{height:36px;display:inline-flex;align-items:center;border-radius:8px;border:1px solid var(--line);background:var(--surface);padding:0 12px;color:var(--text);font-size:13px;font-weight:800}.env-pill{color:var(--sub);font:12px/1 "Geist Mono",Consolas,monospace}.icon-btn,.ghost-btn,.small-btn,.danger-btn{height:36px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--sub);padding:0 12px}.icon-btn{width:36px;padding:0}.danger-btn{color:var(--danger)}.view{display:none}.view.active{display:block}.content-grid{padding:0 46px 46px;display:grid;gap:24px}.metrics{display:grid;grid-template-columns:repeat(4,minmax(180px,1fr));gap:16px}.card{background:var(--surface);border:1px solid var(--line);border-radius:8px}.metric{min-height:132px;padding:22px;display:grid;grid-template-columns:44px 1fr;gap:16px;align-items:start}.metric-icon{width:42px;height:42px;border-radius:8px;background:var(--teal-soft);display:grid;place-items:center;color:var(--teal);font-weight:900}.metric small{display:block;color:var(--sub);font-size:13px}.metric strong{display:block;margin:8px 0 10px;font:800 28px/1 "Geist Mono",Consolas,monospace;color:var(--text)}.split-grid{display:grid;grid-template-columns:minmax(0,1fr) 474px;gap:24px}.bottom-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(360px,1fr);gap:24px}.section{padding:22px 26px}.section h2{font-size:20px;margin:0;color:var(--text)}.section-note{margin:8px 0 18px;color:var(--sub);font-size:13px;line-height:1.45}.toolbar{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:18px}.table-wrap{overflow:auto}.table{width:100%;border-collapse:collapse;min-width:820px}.table th,.table td{border-bottom:1px solid var(--line);padding:14px 12px;text-align:left;font-size:13px;white-space:nowrap}.table th{background:var(--surface-soft);color:var(--sub);font-weight:800}.progress-account .table td:last-child,.progress-account .table th:last-child{white-space:normal;min-width:220px;overflow-wrap:anywhere;word-break:break-word}.pill,.status-pill{display:inline-flex;align-items:center;border-radius:999px;padding:4px 10px;background:var(--teal-soft);color:var(--teal-dark);font-weight:800;font-size:12px}.status-pill.state-unknown{background:#eef3f1;color:var(--sub)}.status-pill.state-checking,.status-pill.state-running{background:#e8f0ff;color:var(--blue)}.status-pill.state-valid,.status-pill.state-success{background:var(--teal-soft);color:var(--teal-dark)}.status-pill.state-error{background:#ffeceb;color:var(--danger)}.account-status{display:grid;gap:5px}.account-status small{color:var(--sub);font-size:12px;max-width:260px;overflow:hidden;text-overflow:ellipsis}.form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.field{display:grid;gap:7px}.field label{font-size:12px;color:var(--sub);font-weight:800}.field input,.field select{height:40px;border:1px solid var(--line);border-radius:8px;padding:0 10px;background:#fff;color:var(--text);outline:none}.switch-row{display:grid;gap:10px}.toggle{min-height:54px;display:flex;justify-content:space-between;align-items:center;gap:14px;padding:14px 16px;border:1px solid var(--line);border-radius:8px;background:#fff;font-weight:700}.toggle input{width:44px;height:24px;accent-color:var(--teal)}.log-box{white-space:pre-wrap;background:var(--surface-soft);color:var(--text);padding:18px;border-radius:8px;height:320px;overflow-x:hidden;overflow-y:auto;overflow-wrap:anywhere;word-break:break-word;max-width:100%;line-height:1.65;border:1px solid var(--line);font-family:"Geist Mono",Consolas,monospace;font-size:13px}.log-box.large{height:560px}.log-line{display:block;padding:2px 0}.log-line.error{color:var(--danger)}.log-line.warn{color:var(--amber)}.log-line.debug{color:var(--sub)}.filter-grid{display:grid;grid-template-columns:150px 130px 120px minmax(180px,1fr);gap:12px;align-items:end}.progress-list{display:grid;gap:14px}.progress-account{border:1px solid var(--line);border-radius:8px;background:var(--surface-soft);padding:16px}.progress-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}.progress-heading h3{margin:0;font-size:15px}.progress-heading span{color:var(--teal-dark);font-weight:800;font-size:13px;text-align:right}.progress-items{display:grid;gap:10px}.progress-row{display:grid;grid-template-columns:110px minmax(90px,1fr) 130px 100px;gap:12px;align-items:center;font-size:13px}.progress-row strong{font-size:13px}.progress-bar{height:8px;border-radius:99px;background:#e2eeeb;overflow:hidden}.progress-fill{height:100%;background:var(--teal);border-radius:99px}.progress-points{color:var(--teal-dark);font-weight:800}.progress-status{color:var(--sub);font-size:12px;line-height:1.45}.settings-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.setting-item{border:1px solid var(--line);border-radius:8px;background:var(--surface-soft);padding:16px}.setting-item span{display:block;color:var(--sub);font-size:12px;font-weight:800}.setting-item strong{display:block;margin-top:8px;color:var(--teal-dark);font:800 13px/1.3 "Geist Mono",Consolas,monospace;word-break:break-word}.modal{position:fixed;inset:0;background:rgba(10,31,28,.46);display:grid;place-items:center;padding:24px;z-index:20}.modal.hidden{display:none}.modal-card{width:min(760px,100%);max-height:calc(100vh - 48px);overflow:auto;background:#fff;border-radius:8px;padding:24px;box-shadow:0 24px 70px rgba(5,34,30,.22)}.modal-card h2{margin:0 0 18px}.modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px}.empty-state{padding:30px;text-align:center;color:var(--sub);background:var(--surface-soft);border:1px dashed var(--line);border-radius:8px}@media(max-width:1180px){.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.split-grid,.bottom-grid{grid-template-columns:1fr}}@media(max-width:820px){.app{grid-template-columns:1fr}.sidebar{position:static;padding:18px}.sidebar nav{grid-template-columns:repeat(2,minmax(0,1fr))}.sidebar-note{display:none}.topbar{height:auto;padding:22px;align-items:flex-start;gap:16px;flex-direction:column}.content-grid{padding:0 18px 28px}.metrics,.form-grid,.settings-list,.filter-grid{grid-template-columns:1fr}.progress-row{grid-template-columns:1fr}.progress-heading{display:grid}.progress-heading span{text-align:left}.login-panel,.signin-shell .login-panel{padding:32px 24px}.auth-shape{display:none}}`
+.app{display:grid;grid-template-columns:272px minmax(0,1fr);min-height:100vh;background:var(--bg)}.sidebar{background:var(--surface);border-right:1px solid var(--line);padding:28px 22px;display:flex;flex-direction:column;gap:24px}.logo-row{display:flex;align-items:center;gap:12px;min-width:0}.logo-row strong{display:block;font-size:14px;font-weight:800;line-height:1.2}.logo-row span{display:block;margin-top:4px;color:var(--muted);font:12px/1.2 "Geist Mono",Consolas,monospace}.sidebar nav{display:grid;gap:12px}.nav-item{height:44px;border:0;border-radius:8px;background:transparent;display:flex;align-items:center;gap:12px;padding:0 14px;color:var(--sub);font-size:14px;font-weight:700;text-align:left}.nav-item.active{background:var(--teal-soft);color:var(--teal-dark);font-weight:800}.nav-icon{width:18px;height:18px;display:grid;place-items:center;color:inherit}.sidebar-note{margin-top:auto;border:1px solid var(--line);background:var(--surface-soft);border-radius:8px;padding:16px}.sidebar-note strong{font-size:13px}.sidebar-note p{margin:8px 0 0;color:var(--sub);font-size:12px;line-height:1.45}.main{min-width:0}.topbar{height:118px;display:flex;align-items:center;justify-content:space-between;padding:34px 46px 22px}.topbar h1{font-size:32px;line-height:1.1;margin:0 0 10px;font-weight:800}.topbar p{margin:0;color:var(--sub);font-size:14px}.top-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.user-badge,.env-pill{height:36px;display:inline-flex;align-items:center;border-radius:8px;border:1px solid var(--line);background:var(--surface);padding:0 12px;color:var(--text);font-size:13px;font-weight:800}.env-pill{color:var(--sub);font:12px/1 "Geist Mono",Consolas,monospace}.icon-btn,.ghost-btn,.small-btn,.danger-btn{height:36px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--sub);padding:0 12px}.icon-btn{width:36px;padding:0}.danger-btn{color:var(--danger)}.view{display:none}.view.active{display:block}.content-grid{padding:0 46px 46px;display:grid;gap:24px}.metrics{display:grid;grid-template-columns:repeat(4,minmax(180px,1fr));gap:16px}.card{background:var(--surface);border:1px solid var(--line);border-radius:8px}.metric{min-height:132px;padding:22px;display:grid;grid-template-columns:44px 1fr;gap:16px;align-items:start}.metric-icon{width:42px;height:42px;border-radius:8px;background:var(--teal-soft);display:grid;place-items:center;color:var(--teal);font-weight:900}.metric small{display:block;color:var(--sub);font-size:13px}.metric strong{display:block;margin:8px 0 10px;font:800 28px/1 "Geist Mono",Consolas,monospace;color:var(--text)}.split-grid{display:grid;grid-template-columns:minmax(0,1fr) 474px;gap:24px}.bottom-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(360px,1fr);gap:24px}.section{padding:22px 26px}.section h2{font-size:20px;margin:0;color:var(--text)}.section-note{margin:8px 0 18px;color:var(--sub);font-size:13px;line-height:1.45}.toolbar{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:18px}.table-wrap{overflow:auto}.table{width:100%;border-collapse:collapse;min-width:820px}.table th,.table td{border-bottom:1px solid var(--line);padding:14px 12px;text-align:left;font-size:13px;white-space:nowrap}.table th{background:var(--surface-soft);color:var(--sub);font-weight:800}.progress-account .table td:last-child,.progress-account .table th:last-child{white-space:normal;min-width:220px;overflow-wrap:anywhere;word-break:break-word}.pill,.status-pill{display:inline-flex;align-items:center;border-radius:999px;padding:4px 10px;background:var(--teal-soft);color:var(--teal-dark);font-weight:800;font-size:12px}.status-pill.state-unknown,.status-pill.state-pending,.status-pill.state-skipped{background:#eef3f1;color:var(--sub)}.status-pill.state-checking,.status-pill.state-running,.status-pill.state-interrupted{background:#e8f0ff;color:var(--blue)}.status-pill.state-valid,.status-pill.state-success,.status-pill.state-completed{background:var(--teal-soft);color:var(--teal-dark)}.status-pill.state-error,.status-pill.state-failed{background:#ffeceb;color:var(--danger)}.account-status{display:grid;gap:5px}.account-status small{color:var(--sub);font-size:12px;max-width:260px;overflow:hidden;text-overflow:ellipsis}.form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.field{display:grid;gap:7px}.field label{font-size:12px;color:var(--sub);font-weight:800}.field input,.field select{height:40px;border:1px solid var(--line);border-radius:8px;padding:0 10px;background:#fff;color:var(--text);outline:none}.switch-row{display:grid;gap:10px}.toggle{min-height:54px;display:flex;justify-content:space-between;align-items:center;gap:14px;padding:14px 16px;border:1px solid var(--line);border-radius:8px;background:#fff;font-weight:700}.toggle input{width:44px;height:24px;accent-color:var(--teal)}.log-box{white-space:pre-wrap;background:var(--surface-soft);color:var(--text);padding:18px;border-radius:8px;height:320px;overflow-x:hidden;overflow-y:auto;overflow-wrap:anywhere;word-break:break-word;max-width:100%;line-height:1.65;border:1px solid var(--line);font-family:"Geist Mono",Consolas,monospace;font-size:13px}.log-box.large{height:560px}.log-line{display:block;padding:2px 0}.log-line.error{color:var(--danger)}.log-line.warn{color:var(--amber)}.log-line.debug{color:var(--sub)}.filter-grid{display:grid;grid-template-columns:150px 130px 120px minmax(180px,1fr);gap:12px;align-items:end}.progress-list{display:grid;gap:14px}.progress-account{border:1px solid var(--line);border-radius:8px;background:var(--surface-soft);padding:16px}.progress-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}.progress-heading h3{margin:0;font-size:15px}.progress-heading span{color:var(--teal-dark);font-weight:800;font-size:13px;text-align:right}.progress-items{display:grid;gap:10px}.progress-row{display:grid;grid-template-columns:110px minmax(90px,1fr) 130px 100px;gap:12px;align-items:center;font-size:13px}.progress-row strong{font-size:13px}.progress-bar{height:8px;border-radius:99px;background:#e2eeeb;overflow:hidden}.progress-fill{height:100%;background:var(--teal);border-radius:99px}.progress-points{color:var(--teal-dark);font-weight:800}.progress-status{color:var(--sub);font-size:12px;line-height:1.45}.settings-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.setting-item{border:1px solid var(--line);border-radius:8px;background:var(--surface-soft);padding:16px}.setting-item span{display:block;color:var(--sub);font-size:12px;font-weight:800}.setting-item strong{display:block;margin-top:8px;color:var(--teal-dark);font:800 13px/1.3 "Geist Mono",Consolas,monospace;word-break:break-word}.modal{position:fixed;inset:0;background:rgba(10,31,28,.46);display:grid;place-items:center;padding:24px;z-index:20}.modal.hidden{display:none}.modal-card{width:min(760px,100%);max-height:calc(100vh - 48px);overflow:auto;background:#fff;border-radius:8px;padding:24px;box-shadow:0 24px 70px rgba(5,34,30,.22)}.modal-card h2{margin:0 0 18px}.modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px}.empty-state{padding:30px;text-align:center;color:var(--sub);background:var(--surface-soft);border:1px dashed var(--line);border-radius:8px}@media(max-width:1180px){.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.split-grid,.bottom-grid{grid-template-columns:1fr}}@media(max-width:820px){.app{grid-template-columns:1fr}.sidebar{position:static;padding:18px}.sidebar nav{grid-template-columns:repeat(2,minmax(0,1fr))}.sidebar-note{display:none}.topbar{height:auto;padding:22px;align-items:flex-start;gap:16px;flex-direction:column}.content-grid{padding:0 18px 28px}.metrics,.form-grid,.settings-list,.filter-grid{grid-template-columns:1fr}.progress-row{grid-template-columns:1fr}.progress-heading{display:grid}.progress-heading span{text-align:left}.login-panel,.signin-shell .login-panel{padding:32px 24px}.auth-shape{display:none}}`
 }
 
 function clientJs(): string {
@@ -1682,13 +1800,18 @@ function accountStatusCell(a){
   const message = s.lastMessage || '尚未检测';
   return '<div class="account-status"><span class="status-pill state-'+safeStateClass(s.state)+'">'+esc(s.label || '未检测')+'</span><small title="'+esc(message)+'">'+esc(message)+'</small></div>';
 }
+function checkpointCell(a){
+  const c = a.checkpoint || {};
+  const message = c.lastMessage || '今天尚未运行';
+  return '<div class="account-status"><span class="status-pill state-'+safeStateClass(c.state)+'">'+esc(c.label || '无记录')+'</span><small title="'+esc(message)+'">'+esc(message)+'</small></div>';
+}
 function accountActions(){
   return '<div class="top-actions"><button class="ghost-btn" onclick="checkAccountStatus()" '+(state.runState.running?'disabled':'')+'>检测账号状态</button><button class="primary-btn" onclick="openAccount()">新增账号</button></div>';
 }
 function accountTable(limit){
   const accounts = limit ? state.accounts.slice(0, limit) : state.accounts;
-  const rows = accounts.map(a => '<tr><td>'+esc(a.maskedEmail)+'</td><td>'+accountStatusCell(a)+'</td><td>'+esc(a.geoLocale)+'</td><td>'+esc(a.langCode)+'</td><td>'+(a.proxyEnabled?'<span class="pill">代理</span>':'-')+'</td><td>'+(a.hasTotpSecret?'已配置':'-')+'</td><td><button class="small-btn" onclick="openAccount('+a.id+')">编辑</button> <button class="danger-btn" onclick="deleteAccount('+a.id+')">删除</button></td></tr>').join('');
-  return '<div class="table-wrap"><table class="table"><thead><tr><th>邮箱</th><th>账号状态</th><th>地区</th><th>语言</th><th>代理</th><th>TOTP</th><th>操作</th></tr></thead><tbody>'+(rows || '<tr><td colspan="7">暂无账号，请新增。</td></tr>')+'</tbody></table></div>';
+  const rows = accounts.map(a => '<tr><td>'+esc(a.maskedEmail)+'</td><td>'+accountStatusCell(a)+'</td><td>'+checkpointCell(a)+'</td><td>'+esc(a.geoLocale)+'</td><td>'+esc(a.langCode)+'</td><td>'+(a.proxyEnabled?'<span class="pill">代理</span>':'-')+'</td><td>'+(a.hasTotpSecret?'已配置':'-')+'</td><td><button class="small-btn" onclick="openAccount('+a.id+')">编辑</button> <button class="danger-btn" onclick="deleteAccount('+a.id+')">删除</button></td></tr>').join('');
+  return '<div class="table-wrap"><table class="table"><thead><tr><th>邮箱</th><th>账号状态</th><th>续跑状态</th><th>地区</th><th>语言</th><th>代理</th><th>TOTP</th><th>操作</th></tr></thead><tbody>'+(rows || '<tr><td colspan="8">暂无账号，请新增。</td></tr>')+'</tbody></table></div>';
 }
 function taskToggles(limit){
   return Object.entries(state.config.workers).slice(0, limit).map(([key,val]) => '<label class="toggle"><span>'+workerLabels[key]+'</span><input type="checkbox" name="'+key+'" '+(val?'checked':'')+'></label>').join('');
@@ -1713,6 +1836,9 @@ function fmtDuration(seconds){
 }
 function sourceLabel(source){
   return source === 'cron' ? '定时任务' : source === 'web' ? 'Web手动' : source === 'startup' ? '启动任务' : '未知来源';
+}
+function accountModeLabel(mode){
+  return mode === 'failed' ? '只重跑失败账号' : mode === 'all' ? '强制全量重跑' : mode === 'account' ? '重跑指定账号' : '继续未完成账号';
 }
 function currentPointsLabel(group){
   const current = Number(group.currentPoints || group.finalPoints || 0);
@@ -1747,9 +1873,13 @@ function runControls(){
   const recent = Array.isArray(r.recentLog) && r.recentLog.length ? r.recentLog.join('\\n') : state.stats.lastRun;
   const disabled = r.running ? 'disabled' : '';
   const conflict = r.running ? (r.conflictReason || '已有任务正在运行') : '空闲，可启动新任务';
-  return '<section class="card section"><div class="toolbar"><div><h2>运行控制</h2><p class="section-note">立即执行会跳过随机休眠；账号检测只验证登录和仪表盘读取，不执行搜索任务。</p></div><div class="top-actions"><button id="checkAccountsBtn" class="ghost-btn" '+disabled+'>检测账号状态</button><button id="runOnceBtn" class="primary-btn" '+disabled+'>立即执行一次</button></div></div><div class="settings-list">'
+  const accountOptions = state.accounts.map(a => '<option value="'+a.id+'">'+esc(a.maskedEmail || ('账号 '+a.id))+'</option>').join('');
+  return '<section class="card section"><div class="toolbar"><div><h2>运行控制</h2><p class="section-note">正式任务开始前会做登录和 dashboard 读取，这是任务前置登录验证；账号检测按钮只验证登录和仪表盘读取，不执行搜索任务。</p></div><div class="top-actions"><button id="checkAccountsBtn" class="ghost-btn" '+disabled+'>检测账号状态</button><button id="runOnceBtn" class="primary-btn" '+disabled+'>立即执行一次</button></div></div>'
+    + '<div class="form-grid" style="margin-bottom:16px"><div class="field"><label>运行模式</label><select id="runAccountMode" '+disabled+'><option value="continue">继续未完成账号</option><option value="failed">只重跑失败账号</option><option value="account">重跑指定账号</option><option value="all">强制全量重跑</option></select></div><div class="field"><label>指定账号</label><select id="runAccountIndex" '+disabled+'>'+accountOptions+'</select></div></div>'
+    + '<div class="settings-list">'
     + setting('运行状态', r.running ? modeLabel + '中' : '空闲')
     + setting('运行来源', r.running ? sourceLabel(r.source) : '-')
+    + setting('账号模式', r.running ? accountModeLabel(r.accountMode) + (r.accountIndex ? ' #' + r.accountIndex : '') : '默认继续未完成账号')
     + setting('PID', r.pid || '-')
     + setting('开始时间', r.startedAt || '-')
     + setting('运行时长', fmtDuration(r.ageSeconds))
@@ -1778,6 +1908,8 @@ function renderDashboard(){
   document.querySelector('#dashboardTaskForm')?.addEventListener('submit', saveConfig);
   document.querySelector('#runOnceBtn')?.addEventListener('click', runOnceNow);
   document.querySelector('#checkAccountsBtn')?.addEventListener('click', checkAccountStatus);
+  document.querySelector('#runAccountMode')?.addEventListener('change', updateRunAccountSelect);
+  updateRunAccountSelect();
 }
 function renderAccounts(){
   el('accounts').innerHTML = '<div class="content-grid"><section class="card section"><div class="toolbar"><div><h2>账号设置</h2><p class="section-note">列表只展示脱敏邮箱、配置状态和账号检测结果。</p></div>'+accountActions()+'</div>'+accountTable()+'</section></div>';
@@ -1955,13 +2087,20 @@ async function clearWeCom(){
 }
 async function runOnceNow(){
   try {
-    await api('/api/run', {method:'POST', body:'{}'});
+    const accountMode = el('runAccountMode')?.value || 'continue';
+    const accountIndex = Number(el('runAccountIndex')?.value || 0);
+    await api('/api/run', {method:'POST', body:JSON.stringify({accountMode, accountIndex})});
   } catch (error) {
     alert(error.message);
   }
   await loadState();
   updateRunPolling();
   switchView('dashboard');
+}
+function updateRunAccountSelect(){
+  const mode = el('runAccountMode')?.value || 'continue';
+  const select = el('runAccountIndex');
+  if (select) select.disabled = mode !== 'account' || Boolean(state?.runState?.running);
 }
 async function checkAccountStatus(){
   try {
