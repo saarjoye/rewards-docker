@@ -887,6 +887,17 @@ function wecomFromPayload(input: Record<string, unknown>, existing?: WebhookWeCo
     }
 }
 
+function validateWeComForSave(wecom: WebhookWeComConfig): string[] {
+    if (!wecom.enabled) return []
+
+    const missing: string[] = []
+    if (!wecom.corpId.trim()) missing.push('corpid')
+    if (!/^\d+$/.test(String(wecom.agentId).trim())) missing.push('agentid')
+    if (!wecom.corpSecret.trim()) missing.push('corpsecret')
+    if (!wecom.toUser.trim()) missing.push('touser')
+    return missing
+}
+
 function defaultAccount(): Account {
     return {
         email: '',
@@ -1282,11 +1293,20 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     if (url.pathname === '/api/wecom' && req.method === 'POST') {
         const body = (await readBody(req)) as Record<string, unknown>
         const config = loadConfig()
+        const wecom = wecomFromPayload(body, config.webhook.wecom)
+        const missing = validateWeComForSave(wecom)
+        if (missing.length > 0) {
+            sendJson(res, 400, {
+                error: 'WECOM_REQUIRED_FIELDS_MISSING',
+                message: `企业微信配置缺少或无效：${missing.join('、')}`
+            })
+            return
+        }
         const next: Config = {
             ...config,
             webhook: {
                 ...config.webhook,
-                wecom: wecomFromPayload(body, config.webhook.wecom)
+                wecom
             }
         }
         saveConfig(next)
@@ -1778,6 +1798,9 @@ let state = null;
 let pollTimer = null;
 let logPollTimer = null;
 let pointsCalendarData = null;
+let currentView = 'dashboard';
+let wecomDirty = false;
+let wecomSaving = false;
 const logFilters = {source:'manual', level:'all', tail:'1000', query:'', autoRefresh:false};
 const pointsFilters = {account:'all', range:'month', start:'', end:''};
 const views = ['dashboard','accounts','tasks','pointsCalendar','logs','wecom','system'];
@@ -1817,6 +1840,7 @@ function updateRunPolling(){
   }
 }
 function switchView(view){
+  currentView = view;
   views.forEach(v => el(v).classList.toggle('active', v === view));
   document.querySelectorAll('.nav-item').forEach(btn => btn.classList.toggle('active', btn.dataset.view === view));
   el('pageTitle').textContent = titles[view];
@@ -1829,7 +1853,9 @@ document.querySelectorAll('.nav-item').forEach(btn => btn.addEventListener('clic
 el('logoutBtn').addEventListener('click', async () => { await api('/api/logout', {method:'POST', body:'{}'}); location.reload(); });
 function renderAll(){
   el('userBadge').textContent = state.user.username;
-  renderDashboard(); renderAccounts(); renderTasks(); renderPointsCalendar(); renderLogs(); renderWeCom(); renderSystem();
+  renderDashboard(); renderAccounts(); renderTasks(); renderPointsCalendar(); renderLogs();
+  if (!(currentView === 'wecom' && wecomDirty && !wecomSaving)) renderWeCom();
+  renderSystem();
 }
 function metric(name,value,sub,icon){return '<article class="card metric"><div class="metric-icon">'+icon+'</div><div><small>'+name+'</small><strong>'+value+'</strong><small>'+sub+'</small></div></article>'}
 function safeStateClass(value){return String(value || 'unknown').toLowerCase().replace(/[^a-z-]/g, '') || 'unknown'}
@@ -2179,7 +2205,11 @@ function renderWeCom(){
     + field('proxyBaseUrl','API 代理地址',w.proxyBaseUrl || '', 'text', '例如 https://example.com')
     + '</div><p id="wecomMessage" class="form-message" aria-live="polite"></p><div class="modal-actions"><button class="primary-btn">保存配置</button></div></form></section>'
     + '</div>';
-  document.querySelector('#wecomForm').addEventListener('submit', saveWeCom);
+  wecomDirty = false;
+  const form = document.querySelector('#wecomForm');
+  form.addEventListener('submit', saveWeCom);
+  form.addEventListener('input', () => { if (!wecomSaving) wecomDirty = true; });
+  form.addEventListener('change', () => { if (!wecomSaving) wecomDirty = true; });
   document.querySelector('#wecomDiagnoseBtn').addEventListener('click', diagnoseWeComPush);
   document.querySelector('#wecomTestBtn').addEventListener('click', testWeComPush);
   document.querySelector('#wecomClearBtn').addEventListener('click', clearWeCom);
@@ -2198,11 +2228,36 @@ async function saveConfig(event){
 }
 async function saveWeCom(event){
   event.preventDefault();
-  const data = Object.fromEntries(new FormData(event.target).entries());
-  data.enabled = Boolean(event.target.elements.enabled.checked);
-  const result = await api('/api/wecom', {method:'POST', body:JSON.stringify(data)});
-  el('wecomMessage').textContent = '已保存企业微信配置';
-  await loadState(); switchView('wecom');
+  const form = event.target;
+  const message = el('wecomMessage');
+  const data = Object.fromEntries(new FormData(form).entries());
+  data.enabled = Boolean(form.elements.enabled.checked);
+  const missing = validateWeComForm(data);
+  if (missing.length > 0) {
+    message.textContent = '企业微信配置缺少或无效：' + missing.join('、');
+    return;
+  }
+  wecomSaving = true;
+  message.textContent = '正在保存企业微信配置...';
+  try {
+    await api('/api/wecom', {method:'POST', body:JSON.stringify(data)});
+    wecomDirty = false;
+    message.textContent = '已保存企业微信配置';
+    await loadState(); switchView('wecom');
+  } catch (error) {
+    message.textContent = error.message;
+  } finally {
+    wecomSaving = false;
+  }
+}
+function validateWeComForm(data){
+  if (!data.enabled) return [];
+  const missing = [];
+  if (!String(data.corpId || '').trim()) missing.push('corpid');
+  if (!/^\\d+$/.test(String(data.agentId || '').trim())) missing.push('agentid');
+  if (!String(data.corpSecret || '').trim() && !state.wecom?.hasCorpSecret) missing.push('corpsecret');
+  if (!String(data.toUser || '').trim()) missing.push('touser');
+  return missing;
 }
 async function testWeComPush(){
   const message = el('wecomMessage');
