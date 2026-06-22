@@ -37,6 +37,7 @@ export class Login {
     totp2FALogin: TotpLogin
     codeLogin: CodeLogin
     recoveryLogin: RecoveryLogin
+    private passwordSubmittedDuringLogin = false
 
     private readonly selectors = {
         primaryButton: 'button[data-testid="primaryButton"]',
@@ -58,6 +59,8 @@ export class Login {
         identityBanner: '[data-testid="identityBanner"]',
         viewFooter: '[data-testid="viewFooter"] >> [role="button"]',
         otherWaysToSignIn: '[data-testid="viewFooter"] span[role="button"]',
+        passwordTextOptions:
+            'text=/^(Use your password|Use my password|Enter your password|Sign in with your password|使用密码|使用我的密码|输入密码)$/i',
         otpCodeEntry: '[data-testid="codeEntry"]',
         backButton: '#back-button',
         bingProfile: '#id_n',
@@ -91,6 +94,7 @@ export class Login {
             let iteration = 0
             let previousState: LoginState = 'UNKNOWN'
             let sameStateCount = 0
+            this.passwordSubmittedDuringLogin = false
 
             while (iteration < maxIterations) {
                 if (page.isClosed()) throw new Error('页面意外关闭')
@@ -313,7 +317,10 @@ export class Login {
 
             case 'PASSWORD_INPUT': {
                 this.bot.logger.info(this.bot.isMobile, 'LOGIN', '输入密码')
-                await this.emailLogin.enterPassword(page, account.password)
+                const result = await this.emailLogin.enterPassword(page, account.password)
+                if (result === 'ok') {
+                    this.passwordSubmittedDuringLogin = true
+                }
                 await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {
                     this.bot.logger.debug(this.bot.isMobile, 'LOGIN', '密码输入后网络空闲超时')
                 })
@@ -496,12 +503,28 @@ export class Login {
             }
 
             case 'LOGIN_PASSWORDLESS': {
-                this.bot.logger.info(this.bot.isMobile, 'LOGIN', '处理无密码认证')
-                await this.passwordlessLogin.handle(page)
-                await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {
-                    this.bot.logger.debug(this.bot.isMobile, 'LOGIN', '无密码认证后网络空闲超时')
+                if (
+                    account.password &&
+                    !this.passwordSubmittedDuringLogin &&
+                    (await this.preferPasswordOverPasswordless(page))
+                ) {
+                    return true
+                }
+                if (this.passwordSubmittedDuringLogin) {
+                    this.bot.logger.warn(
+                        this.bot.isMobile,
+                        'LOGIN',
+                        '密码已提交，当前页面仍要求 Microsoft Authenticator 批准，按二次验证处理'
+                    )
+                }
+                this.bot.logger.info(this.bot.isMobile, 'LOGIN', '处理 Microsoft Authenticator/无密码批准')
+                await this.passwordlessLogin.handle(page, {
+                    afterPassword: this.passwordSubmittedDuringLogin
                 })
-                this.bot.logger.info(this.bot.isMobile, 'LOGIN', '无密码认证完成')
+                await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {
+                    this.bot.logger.debug(this.bot.isMobile, 'LOGIN', '批准流程后网络空闲超时')
+                })
+                this.bot.logger.info(this.bot.isMobile, 'LOGIN', '批准流程完成')
                 return true
             }
 
@@ -555,6 +578,43 @@ export class Login {
                 this.bot.logger.debug(this.bot.isMobile, 'HANDLE-STATE', `未处理的状态: ${state}，继续执行`)
                 return true
         }
+    }
+
+    private async preferPasswordOverPasswordless(page: Page): Promise<boolean> {
+        this.bot.logger.info(
+            this.bot.isMobile,
+            'LOGIN',
+            '账号已配置密码且尚未提交密码，优先尝试切换到密码登录'
+        )
+
+        const clickCandidates = [
+            [this.selectors.passwordTextOptions, '密码文本选项'],
+            [this.selectors.passwordIcon, '密码选项'],
+            [this.selectors.otherWaysToSignIn, '其他登录方式'],
+            [this.selectors.viewFooter, '页脚登录选项']
+        ] as const
+
+        for (const [selector, label] of clickCandidates) {
+            if (!(await this.checkSelector(page, selector))) {
+                continue
+            }
+
+            this.bot.logger.info(this.bot.isMobile, 'LOGIN', `无密码页面上找到${label}，尝试切换`)
+            const clicked = await this.bot.browser.utils.ghostClick(page, selector)
+            if (!clicked) {
+                continue
+            }
+
+            await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {
+                this.bot.logger.debug(this.bot.isMobile, 'LOGIN', `${label}点击后网络空闲超时`)
+            })
+            await this.bot.utils.wait(1000)
+            this.bot.logger.info(this.bot.isMobile, 'LOGIN', `已尝试通过${label}切换到密码登录`)
+            return true
+        }
+
+        this.bot.logger.warn(this.bot.isMobile, 'LOGIN', '未找到可切换到密码登录的控件，将继续无密码认证')
+        return false
     }
 
     private async finalizeLogin(page: Page, email: string) {
