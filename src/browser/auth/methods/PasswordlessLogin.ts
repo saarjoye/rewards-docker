@@ -69,13 +69,9 @@ export class PasswordlessLogin {
         }
     }
 
-    async handle(page: Page, options: { afterPassword?: boolean } = {}): Promise<void> {
+    async handle(page: Page): Promise<void> {
         try {
-            this.bot.logger.info(
-                this.bot.isMobile,
-                'LOGIN-PASSWORDLESS',
-                options.afterPassword ? '请求密码后的 Microsoft Authenticator 批准' : '请求无密码身份验证'
-            )
+            this.bot.logger.info(this.bot.isMobile, 'LOGIN-PASSWORDLESS', '请求无密码身份验证')
 
             const displayedNumber = await this.getDisplayedNumber(page)
 
@@ -101,11 +97,8 @@ export class PasswordlessLogin {
                 this.bot.logger.info(this.bot.isMobile, 'LOGIN-PASSWORDLESS', '登录批准成功')
                 await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {})
             } else {
-                const message = options.afterPassword
-                    ? '密码已提交，但 Microsoft Authenticator 批准超时'
-                    : '无密码身份验证超时'
                 this.bot.logger.error(this.bot.isMobile, 'LOGIN-PASSWORDLESS', '登录批准失败或超时')
-                throw new Error(message)
+                throw new Error('无密码身份验证超时')
             }
         } catch (error) {
             this.bot.logger.error(

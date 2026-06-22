@@ -62,6 +62,28 @@ export class EmailLogin {
             await page.fill(passwordInputSelector, '').catch(() => {})
             await this.bot.utils.wait(500)
             await page.fill(passwordInputSelector, password).catch(() => {})
+            let inputMatches = await this.passwordInputMatches(page, passwordInputSelector, password)
+            if (!inputMatches) {
+                this.bot.logger.warn(
+                    this.bot.isMobile,
+                    'LOGIN-ENTER-PASSWORD',
+                    '密码输入值校验失败，使用DOM赋值兜底'
+                )
+                await page
+                    .locator(passwordInputSelector)
+                    .evaluate((el, value) => {
+                        const input = el as HTMLInputElement
+                        input.value = value
+                        input.dispatchEvent(new Event('input', { bubbles: true }))
+                        input.dispatchEvent(new Event('change', { bubbles: true }))
+                    }, password)
+                    .catch(() => {})
+                inputMatches = await this.passwordInputMatches(page, passwordInputSelector, password)
+            }
+            if (!inputMatches) {
+                this.bot.logger.error(this.bot.isMobile, 'LOGIN-ENTER-PASSWORD', '密码输入值仍不匹配，停止提交')
+                return 'error'
+            }
             await this.bot.utils.wait(1000)
 
             const submitButton = await page
@@ -82,5 +104,12 @@ export class EmailLogin {
             )
             return 'error'
         }
+    }
+
+    private async passwordInputMatches(page: Page, selector: string, password: string): Promise<boolean> {
+        return page
+            .locator(selector)
+            .evaluate((el, expected) => (el as HTMLInputElement).value === expected, password)
+            .catch(() => false)
     }
 }
