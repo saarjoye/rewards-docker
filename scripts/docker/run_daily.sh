@@ -49,7 +49,7 @@ read_lock_pid() {
         return 1
     fi
     local pid
-    pid="$(<"$LOCKFILE" || true)"
+    pid="$(cat "$LOCKFILE" 2>/dev/null || true)"
     if [[ "$pid" =~ ^[0-9]+$ ]]; then
         printf '%s' "$pid"
         return 0
@@ -97,7 +97,7 @@ self_heal_lockfile() {
 find_other_runner() {
     local current="$SCRIPT_PID"
     local pids pid cmd
-    pids="$(pgrep -f 'scripts/docker/run_daily\.sh|node .*dist/index\.js|npm start' 2>/dev/null || true)"
+    pids="$(pgrep -f '[n]ode .*dist/index\.js|[n]pm start' 2>/dev/null || true)"
     for pid in $pids; do
         [ "$pid" = "$current" ] && continue
         [ "$pid" = "$PPID" ] && continue
@@ -179,7 +179,7 @@ terminate_child_group() {
 release_lock() {
     local lock_pid=""
     if [ -f "$LOCKFILE" ]; then
-        lock_pid="$(<"$LOCKFILE" || true)"
+        lock_pid="$(cat "$LOCKFILE" 2>/dev/null || true)"
     fi
 
     if [ "$lock_pid" = "$SCRIPT_PID" ]; then
