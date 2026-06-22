@@ -26,6 +26,7 @@ import type {
     FindClippyPromotion,
     PurplePromotionalItem
 } from '../interface/DashboardData'
+import type { MissingSearchPoints } from '../interface/Points'
 import type { Promotion } from '../interface/AppDashBoardData'
 
 // 活动处理类 - 负责执行各种Microsoft Rewards活动
@@ -37,9 +38,14 @@ export default class Activities {
     }
 
     // Browser Activities
-    doSearch = async (data: DashboardData, page: Page, isMobile: boolean): Promise<number> => {
+    doSearch = async (
+        data: DashboardData,
+        page: Page,
+        isMobile: boolean,
+        initialMissingPoints?: MissingSearchPoints
+    ): Promise<number> => {
         const search = new Search(this.bot)
-        return await search.doSearch(data, page, isMobile)
+        return await search.doSearch(data, page, isMobile, initialMissingPoints)
     }
 
     doSearchOnBing = async (promotion: BasePromotion, page: Page): Promise<void> => {

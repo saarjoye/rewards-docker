@@ -1,6 +1,7 @@
 import type { Page } from 'patchright'
 import { randomBytes } from 'crypto'
 import type { Counters, DashboardData } from '../../../interface/DashboardData'
+import type { MissingSearchPoints } from '../../../interface/Points'
 
 import { QueryCore } from '../../QueryEngine'
 import { Workers } from '../../Workers'
@@ -20,7 +21,12 @@ export class Search extends Workers {
     /** 首次滚动标志 */
     private firstScroll: boolean = true;
 
-    public async doSearch(data: DashboardData, page: Page, isMobile: boolean): Promise<number> {
+    public async doSearch(
+        data: DashboardData,
+        page: Page,
+        isMobile: boolean,
+        initialMissingPoints?: MissingSearchPoints
+    ): Promise<number> {
         const startBalance = Number(this.bot.userData.currentPoints ?? 0)
         const accountEmail = this.bot.userData.accountEmail
         const taskKey: ProgressTaskKey = isMobile ? 'mobile' : 'desktop'
@@ -31,10 +37,22 @@ export class Search extends Workers {
 
         try {
             let searchCounters: Counters = await this.bot.browser.func.getSearchPoints()
-            const missingPoints = this.bot.browser.func.missingSearchPoints(searchCounters, isMobile)
+            const missingPoints = initialMissingPoints ?? this.bot.browser.func.missingSearchPoints(searchCounters, isMobile)
             let missingPointsTotal = missingPoints.totalPoints
             const initialMissingPointsTotal = missingPointsTotal
             let latestMissingPointsTotal = missingPointsTotal
+
+            if (
+                isMobile &&
+                ['missing-counter', 'empty-counter', 'invalid-counter'].includes(missingPoints.mobileStatus)
+            ) {
+                this.bot.logger.warn(
+                    isMobile,
+                    'SEARCH-BING',
+                    `未识别到移动搜索 counter，停止移动搜索 | reason=${missingPoints.mobileStatus} | source=${missingPoints.source} | keys=${missingPoints.counterKeys.join(',') || 'none'}`
+                )
+                return 0
+            }
 
             this.bot.logger.debug(
                 isMobile,
@@ -88,6 +106,17 @@ export class Search extends Workers {
 
                 searchCounters = await this.bingSearch(page, query, isMobile)
                 const newMissingPoints = this.bot.browser.func.missingSearchPoints(searchCounters, isMobile)
+                if (
+                    isMobile &&
+                    ['missing-counter', 'empty-counter', 'invalid-counter'].includes(newMissingPoints.mobileStatus)
+                ) {
+                    this.bot.logger.warn(
+                        isMobile,
+                        'SEARCH-BING',
+                        `搜索后移动搜索 counter 未识别，停止移动搜索 | reason=${newMissingPoints.mobileStatus} | source=${newMissingPoints.source} | keys=${newMissingPoints.counterKeys.join(',') || 'none'}`
+                    )
+                    break
+                }
                 const newMissingPointsTotal = newMissingPoints.totalPoints
 
                 const rawGained = missingPointsTotal - newMissingPointsTotal
@@ -210,6 +239,19 @@ export class Search extends Workers {
 
                         searchCounters = await this.bingSearch(page, query, isMobile)
                         const newMissingPoints = this.bot.browser.func.missingSearchPoints(searchCounters, isMobile)
+                        if (
+                            isMobile &&
+                            ['missing-counter', 'empty-counter', 'invalid-counter'].includes(
+                                newMissingPoints.mobileStatus
+                            )
+                        ) {
+                            this.bot.logger.warn(
+                                isMobile,
+                                'SEARCH-BING-EXTRA',
+                                `额外搜索后移动搜索 counter 未识别，停止移动搜索 | reason=${newMissingPoints.mobileStatus} | source=${newMissingPoints.source} | keys=${newMissingPoints.counterKeys.join(',') || 'none'}`
+                            )
+                            return totalGainedPoints
+                        }
                         const newMissingPointsTotal = newMissingPoints.totalPoints
 
                         const rawGained = missingPointsTotal - newMissingPointsTotal

@@ -10,6 +10,7 @@ import type { XboxDashboardData } from './../interface/XboxDashboardData'
 import type { AppEarnablePoints, BrowserEarnablePoints, MissingSearchPoints } from '../interface/Points'
 import type { AppDashboardData } from '../interface/AppDashBoardData'
 import { PanelFlyoutData } from '../interface/PanelFlyoutData'
+import { calculateMissingSearchPoints } from '../util/SearchCounter'
 
 export default class BrowserFunc {
     private bot: MicrosoftRewardsBot
@@ -191,17 +192,95 @@ export default class BrowserFunc {
     }
 
     missingSearchPoints(counters: Counters, isMobile: boolean): MissingSearchPoints {
-        const mobileData = counters.mobileSearch?.[0]
-        const desktopData = counters.pcSearch?.[0]
-        const edgeData = counters.pcSearch?.[1]
+        return calculateMissingSearchPoints(counters, isMobile, 'dashboard')
+    }
 
-        const mobilePoints = mobileData ? Math.max(0, mobileData.pointProgressMax - mobileData.pointProgress) : 0
-        const desktopPoints = desktopData ? Math.max(0, desktopData.pointProgressMax - desktopData.pointProgress) : 0
-        const edgePoints = edgeData ? Math.max(0, edgeData.pointProgressMax - edgeData.pointProgress) : 0
+    async getMobileSearchPointsFallback(isMobile: boolean): Promise<MissingSearchPoints | null> {
+        const htmlResult = await this.getDashboardHtmlSearchPoints(isMobile).catch(error => {
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                'SEARCH-COUNTER-FALLBACK',
+                `dashboard-html unavailable: ${error instanceof Error ? error.message : String(error)}`
+            )
+            return null
+        })
+        if (htmlResult?.mobileDetected) {
+            return htmlResult
+        }
 
-        const totalPoints = isMobile ? mobilePoints : desktopPoints + edgePoints
+        const panelResult = this.getPanelFlyoutSearchPoints(isMobile)
+        if (panelResult?.mobileDetected) {
+            return panelResult
+        }
 
-        return { mobilePoints, desktopPoints, edgePoints, totalPoints }
+        return null
+    }
+
+    private async getDashboardHtmlSearchPoints(isMobile: boolean): Promise<MissingSearchPoints | null> {
+        const request: AxiosRequestConfig = {
+            url: this.bot.config.baseURL,
+            method: 'GET',
+            headers: {
+                ...(this.bot.fingerprint?.headers ?? {}),
+                Cookie: this.buildCookieHeader(this.bot.cookies.mobile),
+                Referer: 'https://rewards.bing.com/',
+                Origin: 'https://rewards.bing.com'
+            }
+        }
+
+        const response = await this.bot.axios.request(request)
+        const html = typeof response.data === 'string' ? response.data : ''
+        const match = html.match(/var\s+dashboard\s*=\s*({.*?});/s)
+        if (!match?.[1]) {
+            return null
+        }
+
+        const dashboard = JSON.parse(match[1]) as DashboardData
+        return calculateMissingSearchPoints(dashboard.userStatus?.counters, isMobile, 'dashboard-html')
+    }
+
+    private getPanelFlyoutSearchPoints(isMobile: boolean): MissingSearchPoints | null {
+        const panelData = this.bot.panelData as unknown
+        const counterContainer = this.findCounterContainer(panelData, 'mobileSearch')
+        if (!counterContainer) {
+            return null
+        }
+
+        return calculateMissingSearchPoints(counterContainer, isMobile, 'panel-flyout')
+    }
+
+    private findCounterContainer(value: unknown, key: string, depth = 0): Record<string, unknown> | null {
+        if (!value || depth > 6) {
+            return null
+        }
+
+        if (Array.isArray(value)) {
+            for (const item of value) {
+                const found = this.findCounterContainer(item, key, depth + 1)
+                if (found) {
+                    return found
+                }
+            }
+            return null
+        }
+
+        if (typeof value !== 'object') {
+            return null
+        }
+
+        const record = value as Record<string, unknown>
+        if (Object.prototype.hasOwnProperty.call(record, key)) {
+            return record
+        }
+
+        for (const child of Object.values(record)) {
+            const found = this.findCounterContainer(child, key, depth + 1)
+            if (found) {
+                return found
+            }
+        }
+
+        return null
     }
 
     /**

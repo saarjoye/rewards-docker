@@ -3,16 +3,12 @@ import type { BrowserFingerprintWithHeaders } from 'fingerprint-generator'
 import { MicrosoftRewardsBot, executionContext } from '../index'
 import type { DashboardData } from '../interface/DashboardData'
 import type { Account } from '../interface/Account'
+import type { MissingSearchPoints, SearchCounterInfo, SearchCounterStatus } from '../interface/Points'
 import { updateAccountRunState, updateSearchTaskProgress, updateTaskDetail, updateTaskProgress } from '../util/TaskProgressStore'
 
 interface BrowserSession {
     context: BrowserContext
     fingerprint: BrowserFingerprintWithHeaders
-}
-
-interface MissingSearchPoints {
-    mobilePoints: number
-    desktopPoints: number
 }
 
 interface SearchResults {
@@ -48,6 +44,67 @@ export class SearchManager {
         }
     }
 
+    private progressFromCounter(counter: SearchCounterInfo, fallback: SearchCounterProgress): SearchCounterProgress {
+        if (counter.detected || counter.status === 'completed') {
+            return {
+                completed: counter.completed,
+                total: counter.total,
+                remaining: counter.remaining
+            }
+        }
+        return fallback
+    }
+
+    private isCounterUnrecognized(status: SearchCounterStatus): boolean {
+        return ['missing-counter', 'empty-counter', 'invalid-counter'].includes(status)
+    }
+
+    private mobileSkipStatus(missingSearchPoints: MissingSearchPoints): string {
+        if (!this.bot.config.workers.doMobileSearch) {
+            return 'skip-disabled'
+        }
+        if (missingSearchPoints.mobileStatus === 'completed') {
+            return 'skip-no-points'
+        }
+        if (this.isCounterUnrecognized(missingSearchPoints.mobileStatus)) {
+            return 'skip-counter-missing'
+        }
+        return missingSearchPoints.mobilePoints > 0 ? 'run' : 'skip-no-points'
+    }
+
+    private mobileSkipReason(missingSearchPoints: MissingSearchPoints): string {
+        if (!this.bot.config.workers.doMobileSearch) {
+            return 'disabled'
+        }
+        if (this.isCounterUnrecognized(missingSearchPoints.mobileStatus)) {
+            return 'counter-missing'
+        }
+        return 'no-points'
+    }
+
+    private searchUiStatus(skipStatus: string, run: boolean): string {
+        if (run) {
+            return '进行中'
+        }
+        if (skipStatus === 'skip-disabled') {
+            return '已禁用'
+        }
+        if (skipStatus === 'skip-counter-missing') {
+            return '未识别到搜索额度'
+        }
+        return '无剩余积分，已跳过'
+    }
+
+    private searchUiMessage(skipStatus: string, counter: SearchCounterProgress, counterMessage: string): string {
+        if (skipStatus === 'run') {
+            return `剩余 ${counter.remaining}，进度 ${counter.completed}/${counter.total}`
+        }
+        if (skipStatus === 'skip-counter-missing') {
+            return counterMessage
+        }
+        return skipStatus
+    }
+
     async doSearches(
         data: DashboardData,
         missingSearchPoints: MissingSearchPoints,
@@ -60,13 +117,15 @@ export class SearchManager {
             'SEARCH-MANAGER',
             `开始 | 账户=${accountEmail} | 移动端缺失=${missingSearchPoints.mobilePoints} | 桌面端缺失=${missingSearchPoints.desktopPoints}`
         )
-        updateSearchTaskProgress(
-            accountEmail,
-            'mobile',
-            0,
-            missingSearchPoints.mobilePoints,
-            missingSearchPoints.mobilePoints
-        )
+        if (!this.isCounterUnrecognized(missingSearchPoints.mobileStatus)) {
+            updateSearchTaskProgress(
+                accountEmail,
+                'mobile',
+                0,
+                missingSearchPoints.mobilePoints,
+                Math.max(missingSearchPoints.mobileCounter.total, missingSearchPoints.mobilePoints)
+            )
+        }
         updateSearchTaskProgress(
             accountEmail,
             'desktop',
@@ -74,17 +133,16 @@ export class SearchManager {
             missingSearchPoints.desktopPoints,
             missingSearchPoints.desktopPoints
         )
-        const mobileCounter = this.searchCounterProgress(data, 'mobile')
+        const mobileCounter = this.progressFromCounter(
+            missingSearchPoints.mobileCounter,
+            this.searchCounterProgress(data, 'mobile')
+        )
         const desktopCounter = this.searchCounterProgress(data, 'desktop')
 
         const doMobile = this.bot.config.workers.doMobileSearch && missingSearchPoints.mobilePoints > 0
         const doDesktop = this.bot.config.workers.doDesktopSearch && missingSearchPoints.desktopPoints > 0
 
-        const mobileStatus = this.bot.config.workers.doMobileSearch
-            ? missingSearchPoints.mobilePoints > 0
-                ? 'run'
-                : 'skip-no-points'
-            : 'skip-disabled'
+        const mobileStatus = this.mobileSkipStatus(missingSearchPoints)
         const desktopStatus = this.bot.config.workers.doDesktopSearch
             ? missingSearchPoints.desktopPoints > 0
                 ? 'run'
@@ -94,7 +152,7 @@ export class SearchManager {
         this.bot.logger.info(
             'main',
             'SEARCH-MANAGER',
-            `移动端: ${mobileStatus} (启用=${this.bot.config.workers.doMobileSearch}, 缺失=${missingSearchPoints.mobilePoints})`
+            `移动端: ${mobileStatus} (enabled=${this.bot.config.workers.doMobileSearch}, remaining=${missingSearchPoints.mobilePoints}, reason=${missingSearchPoints.mobileStatus}, source=${missingSearchPoints.source}, keys=${missingSearchPoints.counterKeys.join(',') || 'none'})`
         )
         this.bot.logger.info(
             'main',
@@ -102,7 +160,9 @@ export class SearchManager {
             `桌面端: ${desktopStatus} (启用=${this.bot.config.workers.doDesktopSearch}, 缺失=${missingSearchPoints.desktopPoints})`
         )
         updateTaskProgress(accountEmail, 'mobile', {
-            status: doMobile ? '进行中' : this.bot.config.workers.doMobileSearch ? '无剩余积分，已跳过' : '已禁用'
+            completed: mobileCounter.completed,
+            total: mobileCounter.total,
+            status: this.searchUiStatus(mobileStatus, doMobile)
         })
         updateTaskProgress(accountEmail, 'desktop', {
             status: doDesktop ? '进行中' : this.bot.config.workers.doDesktopSearch ? '无剩余积分，已跳过' : '已禁用'
@@ -114,10 +174,8 @@ export class SearchManager {
             completed: mobileCounter.completed,
             total: mobileCounter.total,
             gained: 0,
-            status: doMobile ? '进行中' : this.bot.config.workers.doMobileSearch ? '无剩余积分，已跳过' : '已禁用',
-            message: doMobile
-                ? `剩余 ${mobileCounter.remaining}，进度 ${mobileCounter.completed}/${mobileCounter.total}`
-                : mobileStatus
+            status: this.searchUiStatus(mobileStatus, doMobile),
+            message: this.searchUiMessage(mobileStatus, mobileCounter, missingSearchPoints.mobileMessage)
         })
         updateTaskDetail(accountEmail, {
             key: 'desktop-search',
@@ -135,8 +193,15 @@ export class SearchManager {
         if (!doMobile && !doDesktop) {
             const bothWorkersEnabled = this.bot.config.workers.doMobileSearch && this.bot.config.workers.doDesktopSearch
             const bothNoPoints = missingSearchPoints.mobilePoints <= 0 && missingSearchPoints.desktopPoints <= 0
+            const hasUnrecognizedMobileCounter = mobileStatus === 'skip-counter-missing'
 
-            if (bothWorkersEnabled && bothNoPoints) {
+            if (hasUnrecognizedMobileCounter) {
+                this.bot.logger.warn(
+                    'main',
+                    'SEARCH-MANAGER',
+                    `未识别到移动搜索 counter，已跳过移动搜索诊断 | reason=${missingSearchPoints.mobileStatus} | source=${missingSearchPoints.source} | keys=${missingSearchPoints.counterKeys.join(',') || 'none'}`
+                )
+            } else if (bothWorkersEnabled && bothNoPoints) {
                 this.bot.logger.info(
                     'main',
                     'SEARCH-MANAGER',
@@ -263,7 +328,7 @@ export class SearchManager {
                     )
                 )
             } else {
-                const reason = !this.bot.config.workers.doMobileSearch ? 'disabled' : 'no-points'
+                const reason = this.mobileSkipReason(missingSearchPoints)
                 this.bot.logger.info('main', 'SEARCH-MANAGER', `跳过移动端 (${reason})；正在关闭移动端会话`)
                 await this.bot.browser.func.closeBrowser(mobileSession.context, accountEmail)
                 mobileContextClosed = true
@@ -447,7 +512,7 @@ export class SearchManager {
                 `步骤 1: 移动端完成 | 账户=${accountEmail} | 获得=${mobilePoints}`
             )
         } else {
-            const reason = !this.bot.config.workers.doMobileSearch ? 'disabled' : 'no-points'
+            const reason = this.mobileSkipReason(missingSearchPoints)
             this.bot.logger.info('main', 'SEARCH-MANAGER', `步骤 1: 跳过移动端 (${reason})；正在关闭移动端会话`)
             this.bot.logger.debug('main', 'SEARCH-MANAGER', '正在关闭未使用的移动端上下文')
             try {
@@ -575,7 +640,10 @@ export class SearchManager {
                 }
 
                 if (missingSearchPoints.mobilePoints === 0) {
-                    this.bot.logger.info('main', 'SEARCH-MOBILE-SEARCH', '跳过：没有剩余积分')
+                    const message = this.isCounterUnrecognized(missingSearchPoints.mobileStatus)
+                        ? `跳过：未识别到移动搜索 counter (${missingSearchPoints.mobileStatus})`
+                        : '跳过：没有剩余积分'
+                    this.bot.logger.info('main', 'SEARCH-MOBILE-SEARCH', message)
                     return 0
                 }
 
@@ -586,7 +654,12 @@ export class SearchManager {
                 )
                 this.bot.logger.debug('main', 'SEARCH-MOBILE-SEARCH', 'activities.doSearch (mobile)')
 
-                const pointsEarned = await this.bot.activities.doSearch(data, this.bot.mainMobilePage, true)
+                const pointsEarned = await this.bot.activities.doSearch(
+                    data,
+                    this.bot.mainMobilePage,
+                    true,
+                    missingSearchPoints
+                )
                 updateSearchTaskProgress(
                     accountEmail,
                     'mobile',
