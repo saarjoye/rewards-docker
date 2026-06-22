@@ -69,25 +69,29 @@ process_age() {
 
 remove_stale_lock() {
     rm -f "$LOCKFILE" "$LOCK_META_FILE"
+    return 0
 }
 
 self_heal_lockfile() {
     if [ ! -f "$LOCKFILE" ]; then
         [ -f "$LOCK_META_FILE" ] && rm -f "$LOCK_META_FILE"
-        return
+        return 0
     fi
 
     local lock_pid
     if ! lock_pid="$(read_lock_pid)"; then
         log "发现损坏的锁文件，正在删除。"
         remove_stale_lock
-        return
+        return 0
     fi
 
     if ! is_alive "$lock_pid"; then
         log "锁文件PID $lock_pid 已死亡，正在删除陈旧锁。"
         remove_stale_lock
+        return 0
     fi
+
+    return 0
 }
 
 find_other_runner() {
