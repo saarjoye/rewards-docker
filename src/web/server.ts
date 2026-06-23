@@ -323,8 +323,23 @@ function stripAnsi(value: string): string {
     return value.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
 }
 
+function readableLogSnippet(line: string): string {
+    const cleaned = stripAnsi(line).replace(/\r?\n/g, ' ')
+    const chars = [...cleaned]
+    const badCount = chars.filter(char => {
+        const code = char.charCodeAt(0)
+        return (code >= 0 && code < 9) || (code > 13 && code < 32) || code === 65533
+    }).length
+    if (cleaned.length > 0 && badCount / cleaned.length > 0.05) {
+        return `<binary-like log line omitted | chars=${cleaned.length}>`
+    }
+    return cleaned
+        .replace(/[^\x09\x20-\x7E\u4E00-\u9FFF，。！？、；：“”‘’（）《》【】]/g, '�')
+        .slice(0, 1200)
+}
+
 function redactLogLine(line: string): string {
-    return stripAnsi(line)
+    return stampLogLine(readableLogSnippet(line))
         .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, email => maskEmail(email))
         .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{16,}/gi, 'Bearer [REDACTED]')
         .replace(
@@ -343,7 +358,9 @@ function appendManualRunLog(lines: string[]): void {
     if (lines.length === 0) return
     try {
         fs.mkdirSync(path.dirname(manualRunLogFile), { recursive: true })
-        fs.appendFileSync(manualRunLogFile, `${lines.join('\n')}\n`, 'utf8')
+        const content = `${lines.join('\n')}\n`
+        fs.appendFileSync(manualRunLogFile, content, 'utf8')
+        fs.appendFileSync(datedManualRunLogFile(), content, 'utf8')
     } catch {}
 }
 
@@ -357,7 +374,8 @@ function collectRunOutput(chunk: Buffer | string, stream: NodeJS.WriteStream): v
 
     if (lines.length === 0) return
 
-    const stamped = lines.map(line => `[${new Date().toISOString()}] ${line}`)
+    const now = new Date()
+    const stamped = lines.map(line => stampLogLine(line, now))
     runState = {
         ...runState,
         lastMessage: stamped[stamped.length - 1] ?? runState.lastMessage,
@@ -404,7 +422,7 @@ function startScriptRun(
     })
 
     const label = mode === 'account-check' ? '账号状态检测' : `手动运行（${accountModeLabel(accountMode)}）`
-    const startedLine = `[${new Date().toISOString()}] ${label}已启动，PID ${child.pid}`
+    const startedLine = stampLogLine(`${label}已启动，PID ${child.pid}`)
     runState = {
         running: true,
         source: 'web',
@@ -429,11 +447,11 @@ function startScriptRun(
             finishedAt: new Date().toISOString(),
             exitCode: -1,
             lastMessage: message,
-            recentLog: [...(runState.recentLog ?? []), `[${new Date().toISOString()}] ${message}`].slice(
+            recentLog: [...(runState.recentLog ?? []), stampLogLine(message)].slice(
                 -MAX_RUN_LOG_LINES
             )
         }
-        appendManualRunLog([`[${new Date().toISOString()}] ${message}`])
+        appendManualRunLog([stampLogLine(message)])
     })
 
     child.on('close', (code, signal) => {
@@ -447,11 +465,11 @@ function startScriptRun(
             finishedAt: new Date().toISOString(),
             exitCode: code,
             lastMessage: message,
-            recentLog: [...(runState.recentLog ?? []), `[${new Date().toISOString()}] ${message}`].slice(
+            recentLog: [...(runState.recentLog ?? []), stampLogLine(message)].slice(
                 -MAX_RUN_LOG_LINES
             )
         }
-        appendManualRunLog([`[${new Date().toISOString()}] ${message}`])
+        appendManualRunLog([stampLogLine(message)])
     })
     return runState
 }
@@ -539,6 +557,53 @@ function maskEmail(email: string): string {
     if (!domain) return email ? `${email.slice(0, 2)}***` : ''
     const left = name.length <= 2 ? `${name[0] ?? ''}***` : `${name.slice(0, 2)}***${name.slice(-1)}`
     return `${left}@${domain}`
+}
+
+function localDateKey(date = new Date()): string {
+    const year = date.getFullYear()
+    const month = String(date.getMonth() + 1).padStart(2, '0')
+    const day = String(date.getDate()).padStart(2, '0')
+    return `${year}-${month}-${day}`
+}
+
+function datedManualRunLogFile(date = localDateKey()): string {
+    return path.join(appRoot, 'logs', `manual-run-${date}.log`)
+}
+
+function formatLogTimestamp(date = new Date()): string {
+    const h = String(date.getHours()).padStart(2, '0')
+    const m = String(date.getMinutes()).padStart(2, '0')
+    const s = String(date.getSeconds()).padStart(2, '0')
+    return `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}, ${h}:${m}:${s}`
+}
+
+function parseExistingLogTimestamp(line: string): { date: Date; rest: string } | null {
+    const iso = line.match(/^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z)\]\s*(.*)$/)
+    if (iso?.[1]) {
+        const date = new Date(iso[1])
+        if (Number.isFinite(date.getTime())) return { date, rest: iso[2] ?? '' }
+    }
+
+    const local = line.match(
+        /^\[(\d{1,2})\/(\d{1,2})\/(\d{4}),\s*(\d{1,2}):(\d{2}):(\d{2})\s*(AM|PM)?\]\s*(.*)$/i
+    )
+    if (local) {
+        let hour = Number(local[4])
+        const meridiem = local[7]?.toUpperCase()
+        if (meridiem === 'PM' && hour < 12) hour += 12
+        if (meridiem === 'AM' && hour === 12) hour = 0
+        const date = new Date(Number(local[3]), Number(local[1]) - 1, Number(local[2]), hour, Number(local[5]), Number(local[6]))
+        if (Number.isFinite(date.getTime())) return { date, rest: local[8] ?? '' }
+    }
+
+    return null
+}
+
+function stampLogLine(line: string, fallbackDate = new Date()): string {
+    const existing = parseExistingLogTimestamp(line)
+    const date = existing?.date ?? fallbackDate
+    const rest = existing?.rest ?? line
+    return `[${formatLogTimestamp(date)}] ${rest.trim()}`
 }
 
 function readTextFileTail(file: string, maxBytes = MAX_RUN_LOG_BYTES): string {
@@ -806,11 +871,7 @@ function normalizePointsRangePreset(value: string | null): PointsRangePreset {
 }
 
 function todayDateKey(): string {
-    const now = new Date()
-    const year = now.getFullYear()
-    const month = String(now.getMonth() + 1).padStart(2, '0')
-    const day = String(now.getDate()).padStart(2, '0')
-    return `${year}-${month}-${day}`
+    return localDateKey()
 }
 
 function pointTodaySummary(accounts: Account[]): Record<string, { todayGained: number; runGained: number }> {
@@ -1422,6 +1483,11 @@ function logFileForSource(source: LogSource): string {
     return source === 'runtime' ? runtimeLogFile : manualRunLogFile
 }
 
+function logFilesForSource(source: LogSource): string[] {
+    if (source === 'runtime') return [runtimeLogFile]
+    return [datedManualRunLogFile(), manualRunLogFile]
+}
+
 function detectLogLevel(line: string): LogLevel {
     if (/\[(ERROR|ERR)\]|\bERROR\b|错误|失败/i.test(line)) return 'error'
     if (/\[WARN\]|\bWARN(?:ING)?\b|警告/i.test(line)) return 'warn'
@@ -1444,12 +1510,13 @@ function normalizeTail(value: string | null): number {
 }
 
 function readRecentLogLines(source: LogSource = 'manual', tail = MAX_RUN_LOG_LINES): RawLogLine[] {
-    const file = logFileForSource(source)
-    const content = readTextFileTail(file)
-    const lines = content
-        .split(/\r?\n/)
-        .map(line => ({ raw: stripAnsi(line), safe: redactLogLine(line) }))
-        .filter(line => line.safe.trim().length > 0)
+    const lines = logFilesForSource(source)
+        .flatMap(file =>
+            readTextFileTail(file)
+                .split(/\r?\n/)
+                .map(line => ({ raw: stripAnsi(line), safe: redactLogLine(line) }))
+                .filter(line => line.safe.trim().length > 0)
+        )
         .slice(-tail)
         .reverse()
 
@@ -1469,28 +1536,32 @@ function fallbackLogLines(tail = MAX_RUN_LOG_LINES): RawLogLine[] {
     const files = fs
         .readdirSync(logDir)
         .filter(file => file.endsWith('.log'))
-        .sort()
-        .reverse()
+        .map(file => {
+            const filePath = path.join(logDir, file)
+            const stat = fs.statSync(filePath)
+            return { filePath, mtimeMs: stat.mtimeMs, size: stat.size, isFile: stat.isFile() }
+        })
+        .filter(file => file.isFile && file.size > 0)
+        .sort((a, b) => b.mtimeMs - a.mtimeMs)
+        .slice(0, 5)
 
+    const merged: RawLogLine[] = []
     for (const file of files) {
-        const filePath = path.join(logDir, file)
-        const stat = fs.statSync(filePath)
-        const start = Math.max(0, stat.size - MAX_RUN_LOG_BYTES)
-        const fd = fs.openSync(filePath, 'r')
-        const buffer = Buffer.alloc(stat.size - start)
+        const start = Math.max(0, file.size - MAX_RUN_LOG_BYTES)
+        const fd = fs.openSync(file.filePath, 'r')
+        const buffer = Buffer.alloc(file.size - start)
         fs.readSync(fd, buffer, 0, buffer.length, start)
         fs.closeSync(fd)
         const content = buffer.toString('utf8')
-        const lines = content
-            .split(/\r?\n/)
-            .map(line => ({ raw: stripAnsi(line), safe: redactLogLine(line) }))
-            .filter(line => line.safe.trim().length > 0)
-            .slice(-tail)
-            .reverse()
-        if (lines.length > 0) return lines
+        merged.push(
+            ...content
+                .split(/\r?\n/)
+                .map(line => ({ raw: stripAnsi(line), safe: redactLogLine(line) }))
+                .filter(line => line.safe.trim().length > 0)
+        )
     }
 
-    return []
+    return merged.slice(-tail).reverse()
 }
 
 function queryLogs(url: URL): { source: LogSource; level: LogLevel; query: string; tail: number; lines: PublicLogLine[] } {

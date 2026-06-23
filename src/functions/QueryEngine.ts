@@ -711,10 +711,9 @@ export class QueryCore {
      * 请求单个中国热搜源并解析标题。
      * 走 bot.axios（统一代理、错误诊断、fingerprint headers），带 10s 超时。
      *
-     * 诊断策略：正常就 return；任何异常都把"原始返回值"打到日志里，让看日志的人直接判断
-     * 是限流、HTML 拦截页、维护 JSON 还是接口结构变更——比预先贴标签更有用。
+     * 诊断策略：正常就 return；异常只把响应摘要写入日志，避免压缩/二进制响应污染日志页。
      * 唯一例外是限流：上层退避需要它做控制流，所以用 ChinaApiRateLimitError 单独标记，
-     * 但错误信息同样带上原始响应。
+     * 错误信息同样带上安全摘要。
      */
     private async fetchChinaHotWords(url: string, source: string): Promise<string[]> {
         const request: AxiosRequestConfig = {
@@ -726,21 +725,21 @@ export class QueryCore {
             timeout: 10000
         }
 
-        // 请求失败（HTTP 非 2xx / 超时 / 网络错误）：直接吐原始返回，不再预先贴标签
+        // 请求失败（HTTP 非 2xx / 超时 / 网络错误）：写入响应摘要，不输出原始二进制/超长内容。
         let response: AxiosResponse
         try {
             response = await this.bot.axios.request(request, this.bot.config.proxy.queryEngine)
         } catch (error) {
             const { rateLimited, text } = this.describeAxiosError(error)
             if (rateLimited) throw new ChinaApiRateLimitError(source, text)
-            throw new Error(`${source} 失败 | 原始响应=${text}`)
+            throw new Error(`${source} 失败 | 响应摘要=${text}`)
         }
 
         const data = response.data
 
         // 限流：上层退避需要这个标记；信息里仍带原始响应
         if (this.isChinaRateLimited(response)) {
-            throw new ChinaApiRateLimitError(source, `原始响应=${this.summarizeBody(data)}`)
+            throw new ChinaApiRateLimitError(source, `响应摘要=${this.summarizeBody(data)}`)
         }
 
         // 正常结构：{ data: [{ title: string }, ...] }
@@ -751,8 +750,8 @@ export class QueryCore {
                 .filter((title: string) => title.trim().length > 0)
         }
 
-        // 结构非预期：直接吐原始返回，由人判断（HTML 拦截页 / 维护 JSON / 结构变更）
-        throw new Error(`${source} 失败 | 原始响应=${this.summarizeBody(data)}`)
+        // 结构非预期：输出安全摘要，由人判断（HTML 拦截页 / 维护 JSON / 结构变更）。
+        throw new Error(`${source} 失败 | 响应摘要=${this.summarizeBody(data)}`)
     }
 
     /**
@@ -777,16 +776,38 @@ export class QueryCore {
     }
 
     /**
-     * 把响应体序列化为可读字符串，诊断失败时用。
+     * 把响应体序列化为可读、安全的短字符串，诊断失败时用。
      * - 对象走 JSON.stringify
-     * - 字符串原样返回（可能是 HTML 拦截/维护页）
+     * - 字符串会过滤不可打印字符
      * - undefined/空记为 <无响应体>
-     * 兜底截断到 1000 字符，防止上游误返回超大 HTML 污染日志。
+     * 兜底截断到 500 字符，防止上游误返回超大 HTML 或压缩二进制污染日志。
      */
     private summarizeBody(body: unknown): string {
         if (body === undefined || body === null || body === '') return '<无响应体>'
-        const text = typeof body === 'string' ? body : JSON.stringify(body)
-        return text.length > 1000 ? `${text.slice(0, 1000)}...(+${text.length - 1000}字符)` : text
+        if (Buffer.isBuffer(body)) {
+            return `<binary response omitted | bytes=${body.length}>`
+        }
+        let text: string
+        try {
+            text = typeof body === 'string' ? body : JSON.stringify(body)
+        } catch {
+            return '<unserializable response omitted>'
+        }
+        return this.safeLogSnippet(text)
+    }
+
+    private safeLogSnippet(value: string): string {
+        const raw = value.replace(/\r?\n/g, ' ')
+        const controlCount = [...raw].filter(char => {
+            const code = char.charCodeAt(0)
+            return (code >= 0 && code < 9) || (code > 13 && code < 32) || code === 65533
+        }).length
+        const controlRatio = raw.length > 0 ? controlCount / raw.length : 0
+        if (controlRatio > 0.05) {
+            return `<binary-like response omitted | chars=${raw.length}>`
+        }
+        const printable = raw.replace(/[^\x09\x20-\x7E\u4E00-\u9FFF，。！？、；：“”‘’（）《》【】]/g, '�')
+        return printable.length > 500 ? `${printable.slice(0, 500)}...(+${printable.length - 500}字符)` : printable
     }
 
     /**
