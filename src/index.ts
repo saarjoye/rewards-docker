@@ -230,11 +230,23 @@ export class MicrosoftRewardsBot {
         this.exitedWorkers = [] // 初始化已退出工作进程数组
     }
 
+    private formatDurationSeconds(value: number): string {
+        const totalSeconds = Math.max(0, Math.round(Number.isFinite(value) ? value : 0))
+        const hours = Math.floor(totalSeconds / 3600)
+        const minutes = Math.floor((totalSeconds % 3600) / 60)
+        const seconds = totalSeconds % 60
+        const parts: string[] = []
+        if (hours > 0) parts.push(`${hours}小时`)
+        if (minutes > 0) parts.push(`${minutes}分钟`)
+        if (seconds > 0 || parts.length === 0) parts.push(`${seconds}秒`)
+        return parts.join('')
+    }
+
     private buildSummaryMessage(accountStats: AccountStats[], runStartTime: number, hadWorkerFailure: boolean): string {
         const totalCollectedPoints = accountStats.reduce((sum, s) => sum + s.collectedPoints, 0)
         const totalInitialPoints = accountStats.reduce((sum, s) => sum + s.initialPoints, 0)
         const totalFinalPoints = accountStats.reduce((sum, s) => sum + s.finalPoints, 0)
-        const totalDurationMinutes = ((Date.now() - runStartTime) / 1000 / 60).toFixed(1)
+        const totalDuration = this.formatDurationSeconds((Date.now() - runStartTime) / 1000)
         const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 19)
 
         const lines: string[] = [
@@ -243,7 +255,7 @@ export class MicrosoftRewardsBot {
             `账户数: ${accountStats.length}`,
             `总收集积分: +${totalCollectedPoints}`,
             `原始总计: ${totalInitialPoints} → 新总计: ${totalFinalPoints}`,
-            `总运行时间: ${totalDurationMinutes}分钟`
+            `总运行时间: ${totalDuration}`
         ]
 
         if (accountStats.length > 0) {
@@ -251,10 +263,10 @@ export class MicrosoftRewardsBot {
             lines.push('账户明细:')
             for (const stat of accountStats) {
                 const status = stat.success ? '成功' : '失败'
-                const duration = Number.isFinite(stat.duration) ? stat.duration.toFixed(1) : String(stat.duration)
+                const duration = this.formatDurationSeconds(stat.duration)
                 const error = stat.error ? ` | ${stat.error}` : ''
                 lines.push(
-                    `${stat.email} | +${stat.collectedPoints} | ${stat.initialPoints}→${stat.finalPoints} | ${duration}秒 | ${status}${error}`
+                    `${stat.email} | +${stat.collectedPoints} | ${stat.initialPoints}→${stat.finalPoints} | ${duration} | ${status}${error}`
                 )
             }
         }
@@ -265,7 +277,7 @@ export class MicrosoftRewardsBot {
     private buildWeComAccountMessage(stat: AccountStats): string {
         const timestamp = new Date().toLocaleString()
         const status = stat.success ? '完成' : '失败'
-        const duration = Number.isFinite(stat.duration) ? stat.duration.toFixed(1) : String(stat.duration)
+        const duration = this.formatDurationSeconds(stat.duration)
         const lines: string[] = [
             `Microsoft Rewards 账号任务${status}`,
             `时间：${timestamp}`,
@@ -273,7 +285,7 @@ export class MicrosoftRewardsBot {
             `任务前总积分：${stat.initialPoints}`,
             `任务后总积分：${stat.finalPoints}`,
             `本次总增加：${stat.collectedPoints}`,
-            `耗时：${duration} 秒`
+            `耗时：${duration}`
         ]
 
         if (stat.taskSummary.length > 0) {

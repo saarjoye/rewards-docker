@@ -211,6 +211,10 @@ function eachDate(start: string, end: string): string[] {
     return dates
 }
 
+function minDate(first: Date, second: Date): Date {
+    return first.getTime() <= second.getTime() ? first : second
+}
+
 function rangeForPreset(
     preset: PointsRangePreset,
     start?: string,
@@ -219,35 +223,37 @@ function rangeForPreset(
 ): { preset: PointsRangePreset; start: string; end: string } {
     const customStart = start ? parseDateKey(start) : null
     const customEnd = end ? parseDateKey(end) : null
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
     if ((preset === 'custom' || customStart || customEnd) && customStart && customEnd) {
         const first = customStart.getTime() <= customEnd.getTime() ? customStart : customEnd
-        const last = customStart.getTime() <= customEnd.getTime() ? customEnd : customStart
-        return { preset: 'custom', start: localDateKey(first), end: localDateKey(last) }
+        const requestedLast = customStart.getTime() <= customEnd.getTime() ? customEnd : customStart
+        const clampedFirst = minDate(first, today)
+        const last = minDate(requestedLast, today)
+        return { preset: 'custom', start: localDateKey(clampedFirst), end: localDateKey(last) }
     }
 
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
     if (preset === 'week') {
         const offset = (today.getDay() + 6) % 7
         const weekStart = addDays(today, -offset)
-        return { preset, start: localDateKey(weekStart), end: localDateKey(addDays(weekStart, 6)) }
+        return { preset, start: localDateKey(weekStart), end: localDateKey(minDate(addDays(weekStart, 6), today)) }
     }
     if (preset === 'quarter') {
         const quarterStartMonth = Math.floor(today.getMonth() / 3) * 3
         const quarterStart = new Date(today.getFullYear(), quarterStartMonth, 1)
         const quarterEnd = new Date(today.getFullYear(), quarterStartMonth + 3, 0)
-        return { preset, start: localDateKey(quarterStart), end: localDateKey(quarterEnd) }
+        return { preset, start: localDateKey(quarterStart), end: localDateKey(minDate(quarterEnd, today)) }
     }
     if (preset === 'year') {
         return {
             preset,
             start: localDateKey(new Date(today.getFullYear(), 0, 1)),
-            end: localDateKey(new Date(today.getFullYear(), 11, 31))
+            end: localDateKey(minDate(new Date(today.getFullYear(), 11, 31), today))
         }
     }
 
     const monthStart = new Date(today.getFullYear(), today.getMonth(), 1)
     const monthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 0)
-    return { preset: 'month', start: localDateKey(monthStart), end: localDateKey(monthEnd) }
+    return { preset: 'month', start: localDateKey(monthStart), end: localDateKey(minDate(monthEnd, today)) }
 }
 
 function emptyHistoryFile(): PointsHistoryFile {
@@ -759,6 +765,15 @@ function aggregateCalendarDay(date: string, records: PointsCalendarRecord[]): Po
     return { date, totalGained, categories, status, records: records.length }
 }
 
+function hasPointRecordValue(record: PointsCalendarRecord): boolean {
+    return (
+        record.todayGained > 0 ||
+        record.runGained > 0 ||
+        sumCategories(record.categories) > 0 ||
+        record.runs.some(run => run.runGained > 0 || sumCategories(run.categories) > 0)
+    )
+}
+
 function normalizeRangePreset(value: string | undefined): PointsRangePreset {
     if (value === 'week' || value === 'month' || value === 'quarter' || value === 'year' || value === 'custom') {
         return value
@@ -784,7 +799,7 @@ export function queryPointsCalendar(
         accountFilter === 'all'
             ? accounts
             : accounts.filter(account => account.id === accountFilter || account.accountHash === accountFilter)
-    const finalAccounts = selectedAccounts.length > 0 ? selectedAccounts : accounts
+    const finalAccounts = selectedAccounts
     const dates = eachDate(range.start, range.end)
     const records: PointsCalendarRecord[] = []
 
@@ -796,6 +811,7 @@ export function queryPointsCalendar(
     }
 
     const days = dates.map(date => aggregateCalendarDay(date, records.filter(record => record.date === date)))
+    const visibleRecords = records.filter(hasPointRecordValue)
     const totalPoints = days.reduce((sum, day) => sum + day.totalGained, 0)
     const averageDailyPoints = dates.length > 0 ? Math.round((totalPoints / dates.length) * 10) / 10 : 0
     const completedDays = days.filter(day => day.status === 'completed' || day.status === 'partial').length
@@ -816,7 +832,7 @@ export function queryPointsCalendar(
             highestPointDay: highest
         },
         days,
-        records: records.sort((a, b) => {
+        records: visibleRecords.sort((a, b) => {
             const dateOrder = b.date.localeCompare(a.date)
             return dateOrder !== 0 ? dateOrder : a.accountLabel.localeCompare(b.accountLabel)
         })

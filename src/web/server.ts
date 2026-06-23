@@ -792,7 +792,7 @@ function sanitizeAccount(account: Account, id: number): PublicAccount {
 
 function pointsCalendarAccounts(accounts: Account[]): PointsCalendarAccount[] {
     return accounts.map((account, index) => ({
-        id: `account-${index + 1}`,
+        id: accountProgressHash(account.email),
         accountHash: accountProgressHash(account.email),
         label: `账号 ${index + 1} · ${maskEmail(account.email) || '未填写邮箱'}`
     }))
@@ -803,6 +803,32 @@ function normalizePointsRangePreset(value: string | null): PointsRangePreset {
         return value
     }
     return 'month'
+}
+
+function todayDateKey(): string {
+    const now = new Date()
+    const year = now.getFullYear()
+    const month = String(now.getMonth() + 1).padStart(2, '0')
+    const day = String(now.getDate()).padStart(2, '0')
+    return `${year}-${month}-${day}`
+}
+
+function pointTodaySummary(accounts: Account[]): Record<string, { todayGained: number; runGained: number }> {
+    const today = todayDateKey()
+    const result = queryPointsCalendar(pointsCalendarAccounts(accounts), {
+        account: 'all',
+        range: 'custom',
+        start: today,
+        end: today
+    })
+    const summary: Record<string, { todayGained: number; runGained: number }> = {}
+    for (const record of result.records) {
+        summary[record.accountId] = {
+            todayGained: Math.max(0, Number(record.todayGained || 0)),
+            runGained: Math.max(0, Number(record.runGained || 0))
+        }
+    }
+    return summary
 }
 
 function loadAccounts(): Account[] {
@@ -1140,6 +1166,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
                 lastRun: readLastRunSummary()
             },
             accounts: accounts.map(sanitizeAccount),
+            pointToday: pointTodaySummary(accounts),
             taskProgress: parseTaskProgress(accounts),
             config: publicConfig(config),
             wecom: publicWeComConfig(config),
@@ -1532,7 +1559,7 @@ function parseTaskProgress(accounts: Account[], lines = readRecentLogLines()): A
         const label = maskEmail(account.email)
         const maskedKey = emailKey(label)
         const progress: AccountTaskProgress = {
-            key: `account-${index + 1}`,
+            key: accountProgressHash(account.email),
             accountLabel: `账号 ${index + 1} · ${label || '未填写邮箱'}`,
             initialPoints: 0,
             currentPoints: 0,
@@ -1636,7 +1663,7 @@ function readStoredTaskProgress(accounts: Account[]): AccountTaskProgress[] {
             }
         }
         return {
-            key: `account-${index + 1}`,
+            key: accountProgressHash(account.email),
             accountLabel: `账号 ${index + 1} · ${label || '未填写邮箱'}`,
             initialPoints: saved?.initialPoints ?? 0,
             currentPoints: saved?.currentPoints ?? saved?.finalPoints ?? 0,
@@ -1846,14 +1873,19 @@ function switchView(view){
   el('pageTitle').textContent = titles[view];
   el('pageSubtitle').textContent = subtitles[view];
   if (view === 'logs') loadLogs().catch(err => showLogMessage(err.message));
-  if (view === 'pointsCalendar') loadPointsCalendar().catch(err => renderPointsCalendarError(err.message));
+  if (view === 'pointsCalendar') {
+    if (pointsCalendarData) renderPointsCalendar();
+    else loadPointsCalendar().catch(err => renderPointsCalendarError(err.message));
+  }
   updateLogPolling(view);
 }
 document.querySelectorAll('.nav-item').forEach(btn => btn.addEventListener('click', () => switchView(btn.dataset.view)));
 el('logoutBtn').addEventListener('click', async () => { await api('/api/logout', {method:'POST', body:'{}'}); location.reload(); });
 function renderAll(){
   el('userBadge').textContent = state.user.username;
-  renderDashboard(); renderAccounts(); renderTasks(); renderPointsCalendar(); renderLogs();
+  renderDashboard(); renderAccounts(); renderTasks();
+  if (currentView !== 'pointsCalendar') renderPointsCalendar();
+  if (currentView !== 'logs') renderLogs();
   if (!(currentView === 'wecom' && wecomDirty && !wecomSaving)) renderWeCom();
   renderSystem();
 }
@@ -1904,11 +1936,53 @@ function sourceLabel(source){
 function accountModeLabel(mode){
   return mode === 'failed' ? '只重跑失败账号' : mode === 'all' ? '强制全量重跑' : mode === 'account' ? '重跑指定账号' : '继续未完成账号';
 }
+function taskEventLine(line){
+  const text = String(line || '').replace(/^\\[[^\\]]+\\]\\s*/, '').trim();
+  const timeMatch = String(line || '').match(/T(\\d{2}:\\d{2}:\\d{2})/);
+  const time = timeMatch ? timeMatch[1] + ' ' : '';
+  const message = text.replace(/^\\[[^\\]]+\\]\\s*/g, '').replace(/\\s+/g, ' ');
+  const gained = message.match(/(?:获取积分|获得积分|获得|本次|总计)[:=：\\s+]*\\+?(\\d+)/);
+  const balance = message.match(/(?:余额|当前总积分|finalPoints|currentPoints)[:=：\\s]*(\\d+)/);
+  if (/账号任务完成|ACCOUNT-END|完成账号/.test(message)) {
+    return time + '账号任务完成' + (gained ? '：本次 +' + gained[1] : '') + (balance ? '，当前总积分 ' + balance[1] : '');
+  }
+  if (/阅读赚取|READ-TO-EARN/.test(message)) {
+    return time + '正在执行 阅读赚取' + (gained ? '，获取积分 +' + gained[1] : '') + (balance ? '，余额 ' + balance[1] : '');
+  }
+  if (/每日签到|DAILY-CHECK-IN/.test(message)) {
+    return time + '每日签到' + (gained ? '：已完成，获取积分 +' + gained[1] : '');
+  }
+  if (/移动搜索|SEARCH-MOBILE|移动端/.test(message)) {
+    return time + '搜索任务：移动搜索' + (gained ? '，获取积分 +' + gained[1] : '');
+  }
+  if (/PC搜索|SEARCH-DESKTOP|桌面端/.test(message)) {
+    return time + '搜索任务：PC搜索' + (gained ? '，获取积分 +' + gained[1] : '');
+  }
+  return time + message.slice(0, 180);
+}
+function recentTaskEvents(r){
+  const lines = Array.isArray(r.recentLog) ? r.recentLog : [];
+  if (!lines.length) return state.stats.lastRun;
+  return lines.slice(-10).reverse().map(taskEventLine).join('\\n');
+}
 function currentPointsLabel(group){
   const current = Number(group.currentPoints || group.finalPoints || 0);
   const initial = Number(group.initialPoints || 0);
-  const delta = current - initial;
-  return current > 0 || initial > 0 ? '当前总积分 '+current+(delta ? '，本次 '+(delta > 0 ? '+' : '')+delta : '') : '当前总积分未获取';
+  const point = state.pointToday?.[group.key] || {};
+  const today = Number(point.todayGained || 0);
+  const run = Number(point.runGained || 0);
+  if (current <= 0 && initial <= 0) return '当前总积分未获取';
+  const parts = ['当前总积分 '+current];
+  if (today > 0) parts.push('今日 +'+today);
+  if (run > 0) {
+    parts.push('本次 +'+run);
+  } else if (initial <= 0 && current > 0) {
+    parts.push('本次未获取基准');
+  } else {
+    const delta = Math.max(0, current - initial);
+    if (delta > 0) parts.push('本次 +'+delta);
+  }
+  return parts.join('，');
 }
 function progressRow(item){
   const total = Number(item.total || 0);
@@ -1934,7 +2008,7 @@ function taskProgress(){
 function runControls(){
   const r = state.runState;
   const modeLabel = r.mode === 'account-check' ? '账号检测' : '执行任务';
-  const recent = Array.isArray(r.recentLog) && r.recentLog.length ? r.recentLog.join('\\n') : state.stats.lastRun;
+  const recent = recentTaskEvents(r);
   const disabled = r.running ? 'disabled' : '';
   const conflict = r.running ? (r.conflictReason || '已有任务正在运行') : '空闲，可启动新任务';
   const accountOptions = state.accounts.map(a => '<option value="'+a.id+'">'+esc(a.maskedEmail || ('账号 '+a.id))+'</option>').join('');
@@ -2019,7 +2093,10 @@ function renderTasks(){
   document.querySelector('#tasks #scheduleForm').addEventListener('submit', saveSchedule);
 }
 function pointsAccountOptions(){
-  const accountOptions = (state.accounts || []).map(a => '<option value="account-'+(Number(a.id)+1)+'">'+esc('账号 '+(Number(a.id)+1)+' · '+a.maskedEmail)+'</option>').join('');
+  const source = pointsCalendarData?.accounts || [];
+  const accountOptions = source.length
+    ? source.map(a => '<option value="'+esc(a.id)+'">'+esc(a.label)+'</option>').join('')
+    : (state.accounts || []).map(a => '<option value="" disabled>'+esc('账号 '+(Number(a.id)+1)+' · '+a.maskedEmail)+'</option>').join('');
   return '<option value="all">全部账号</option>'+accountOptions;
 }
 function renderPointsCalendar(){
@@ -2035,6 +2112,7 @@ function renderPointsCalendar(){
     + '<button id="applyPointsFilterBtn" class="primary-btn">应用筛选</button>'
     + '</div></section>'+body+'</div>';
   el('pointsAccount').value = pointsFilters.account;
+  if (el('pointsAccount').value !== pointsFilters.account) el('pointsAccount').value = 'all';
   el('pointsRange').value = pointsFilters.range;
   el('pointsStart').value = pointsFilters.start || pointsCalendarData?.range?.start || '';
   el('pointsEnd').value = pointsFilters.end || pointsCalendarData?.range?.end || '';
@@ -2043,6 +2121,9 @@ function renderPointsCalendar(){
   el('pointsRange')?.addEventListener('change', event => {
     pointsFilters.range = event.target.value;
   });
+  el('pointsAccount')?.addEventListener('change', event => { pointsFilters.account = event.target.value || 'all'; });
+  el('pointsStart')?.addEventListener('change', event => { pointsFilters.start = event.target.value || ''; });
+  el('pointsEnd')?.addEventListener('change', event => { pointsFilters.end = event.target.value || ''; });
 }
 function pointsCalendarContent(data){
   const summary = data.summary || {};
@@ -2115,8 +2196,10 @@ async function loadPointsCalendar(){
   }
   pointsCalendarData = await api('/api/points-calendar?' + pointsQueryString(), {headers:{}});
   if (pointsCalendarData?.range) {
-    pointsFilters.start = pointsCalendarData.range.start || pointsFilters.start;
-    pointsFilters.end = pointsCalendarData.range.end || pointsFilters.end;
+    if (pointsFilters.range === 'custom') {
+      pointsFilters.start = pointsCalendarData.range.start || pointsFilters.start;
+      pointsFilters.end = pointsCalendarData.range.end || pointsFilters.end;
+    }
   }
   renderPointsCalendar();
 }
