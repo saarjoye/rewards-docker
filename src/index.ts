@@ -54,6 +54,7 @@ import {
     updateRunCheckpoint,
     type RunAccountMode
 } from './util/RunCheckpointStore'
+import type { ServerActionName } from './util/ServerActions'
 interface ExecutionContext {
     isMobile: boolean
     account: Account
@@ -186,10 +187,11 @@ export class MicrosoftRewardsBot {
 
     // 新版 UI（modern dashboard）使用 Next.js Server Actions 而非 REST API。
     // next-action hash 在编译时生成，绑定到具体部署版本（dpl）。
-    // 这里记录当前抓取到的部署 ID，用于在调用前做版本守卫。
+    // 这里记录当前抓取到的部署 ID 和 action hash，用于调用当前 dashboard 部署。
     public serverActions: {
         deploymentId: string | null // 从 dashboard HTML 提取的 dpl（如 "20260612-3"）
-    } = { deploymentId: null }
+        hashes: Partial<Record<ServerActionName, string>>
+    } = { deploymentId: null, hashes: {} }
 
     private pointsCanCollect = 0 // 可收集的积分
 
@@ -973,14 +975,14 @@ export class MicrosoftRewardsBot {
                 }
                 this.panelData = await this.browser.func.getPanelFlyoutData()
 
-                // 新版 UI 用 Next.js Server Actions，需要从 dashboard 页面提取部署 ID
-                // 作为版本守卫（hash 跟部署版本绑定，不一致就降级跳过，避免 400）
-                this.serverActions.deploymentId = await this.browser.func.extractDeploymentId(this.mainMobilePage)
+                // 新版 UI 用 Next.js Server Actions；这里只轻量提取部署 ID。
+                // action hash 等真正执行连击保护/奖励领取时再懒加载解析，避免影响其他主任务启动。
+                this.serverActions = await this.browser.func.extractServerActionRuntimeInfo(this.mainMobilePage, false)
                 if (this.serverActions.deploymentId) {
                     this.logger.info(
                         'main',
                         'SERVER-ACTION',
-                        `新版仪表板部署 ID: ${this.serverActions.deploymentId} | Server Action 支持版本: ${BrowserFunc.SUPPORTED_DEPLOYMENT_ID}`
+                        `新版仪表板部署 ID: ${this.serverActions.deploymentId} | 可用 Server Action: ${Object.keys(this.serverActions.hashes).join(',') || 'none'}`
                     )
                 }
                 // 设置地理位置

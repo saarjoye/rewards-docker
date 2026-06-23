@@ -11,25 +11,18 @@ import type { AppEarnablePoints, BrowserEarnablePoints, MissingSearchPoints } fr
 import type { AppDashboardData } from '../interface/AppDashBoardData'
 import { PanelFlyoutData } from '../interface/PanelFlyoutData'
 import { calculateMissingSearchPoints } from '../util/SearchCounter'
+import {
+    extractDeploymentIdFromHtml,
+    extractScriptUrls,
+    extractServerActionHashResultFromSources,
+    FALLBACK_SERVER_ACTION_HASHES,
+    LAST_KNOWN_SERVER_ACTION_DEPLOYMENT_ID,
+    type ServerActionName,
+    type ServerActionRuntimeInfo
+} from '../util/ServerActions'
 
 export default class BrowserFunc {
     private bot: MicrosoftRewardsBot
-
-    /**
-     * 新版 UI（modern dashboard）基于 Next.js App Router，业务操作走 Server Actions。
-     * next-action hash 在编译时生成，绑定到具体部署版本（dpl）。
-     * 下面是通过网络请求记录得到的当前部署版本的 hash 表；部署更新后 hash 会失效，由调用方做版本守卫。
-     */
-    // 记录时的部署版本 ID（用于和当前页面的 dpl 比对，不一致则降级跳过）
-    public static readonly SUPPORTED_DEPLOYMENT_ID = '20260612-3'
-
-    // Server Action hash 表（在 SUPPORTED_DEPLOYMENT_ID 下记录得到）
-    public static readonly SERVER_ACTION_HASHES = {
-        // 连击保护 toggle：body=[true] 开启 / [false] 关闭
-        toggleStreakProtection: '40eddd39784c87de1e9c077e72117f3ed9a016a2d2',
-        // 领取积分：body=[]
-        claimBonusPoints: '00cf5ba7699f0e920ffcff223f9e48fea78fd49784'
-    } as const
 
     constructor(bot: MicrosoftRewardsBot) {
         this.bot = bot
@@ -421,11 +414,10 @@ export default class BrowserFunc {
     }
 
     /**
-     * 从 dashboard 页面提取 Next.js 部署版本 ID（dpl）。
-     * 新版 UI 的 Server Action hash 跟 dpl 绑定，这里做版本守卫：
-     * 与 SUPPORTED_DEPLOYMENT_ID 一致时返回该 ID；否则返回 null 表示脚本内置 hash 可能失效。
+     * 从 dashboard 页面和静态脚本提取 Next.js Server Action 运行信息。
+     * hash 与 dashboard 部署版本绑定，所以优先动态解析当前页面使用的 hash。
      */
-    async extractDeploymentId(page: Page): Promise<string | null> {
+    async extractServerActionRuntimeInfo(page: Page, includeScripts = true): Promise<ServerActionRuntimeInfo> {
         try {
             // 优先用页面 DOM 提取（已加载时）
             let html: string | null = null
@@ -454,9 +446,38 @@ export default class BrowserFunc {
                 html = typeof response.data === 'string' ? response.data : String(response.data)
             }
 
-            // 从 script src 里提取 dpl（如 ...?dpl=20260612-3）
-            const match = html.match(/dpl=([0-9]+-[0-9]+)/)
-            const deploymentId = match?.[1] ?? null
+            const deploymentId = extractDeploymentIdFromHtml(html)
+            const scriptUrls = extractScriptUrls(html)
+            const sources = [{ name: 'dashboard-html', content: html }]
+
+            for (const scriptUrl of includeScripts ? scriptUrls.slice(0, 30) : []) {
+                try {
+                    const response = await this.bot.axios.request({
+                        url: scriptUrl,
+                        method: 'GET',
+                        headers: {
+                            ...(this.bot.fingerprint?.headers ?? {}),
+                            Cookie: this.buildCookieHeader(this.bot.cookies.mobile, [
+                                'bing.com',
+                                'live.com',
+                                'microsoftonline.com'
+                            ]),
+                            Referer: 'https://rewards.bing.com/dashboard'
+                        },
+                        responseType: 'text',
+                        transformResponse: data => data
+                    })
+
+                    const content = typeof response.data === 'string' ? response.data : String(response.data ?? '')
+                    if (content) sources.push({ name: scriptUrl, content })
+                } catch (error) {
+                    this.bot.logger.debug(
+                        this.bot.isMobile,
+                        'SERVER-ACTION',
+                        `读取 dashboard 脚本失败，已跳过 | script=${new URL(scriptUrl).pathname} | 错误=${error instanceof Error ? error.message : String(error)}`
+                    )
+                }
+            }
 
             if (!deploymentId) {
                 this.bot.logger.warn(
@@ -464,27 +485,47 @@ export default class BrowserFunc {
                     'SERVER-ACTION',
                     '未能从 dashboard 页面提取部署 ID，新版 Server Action 功能将跳过'
                 )
-                return null
+                return { deploymentId: null, hashes: {}, diagnostics: {}, scriptUrls }
             }
 
-            if (deploymentId !== BrowserFunc.SUPPORTED_DEPLOYMENT_ID) {
+            const dynamicResult = extractServerActionHashResultFromSources(sources)
+            const hashes =
+                deploymentId === LAST_KNOWN_SERVER_ACTION_DEPLOYMENT_ID
+                    ? { ...FALLBACK_SERVER_ACTION_HASHES, ...dynamicResult.hashes }
+                    : dynamicResult.hashes
+
+            const detectedActions = Object.keys(hashes)
+            if (detectedActions.length > 0) {
+                this.bot.logger.info(
+                    this.bot.isMobile,
+                    'SERVER-ACTION',
+                    `新版仪表板部署 ID: ${deploymentId} | 已识别 Server Action: ${detectedActions.join(',')}`
+                )
+            } else {
                 this.bot.logger.warn(
                     this.bot.isMobile,
                     'SERVER-ACTION',
-                    `部署版本不匹配 | 当前=${deploymentId} | 支持=${BrowserFunc.SUPPORTED_DEPLOYMENT_ID} | ` +
-                        '微软可能更新了 dashboard，内置的 Server Action hash 可能已失效，相关功能将降级跳过'
+                    `新版仪表板部署 ID: ${deploymentId} | 未识别到可用 Server Action hash，相关功能将降级跳过`
                 )
-                return null
+            }
+            for (const [action, diagnostic] of Object.entries(dynamicResult.diagnostics)) {
+                if (!diagnostic.unique) {
+                    this.bot.logger.warn(
+                        this.bot.isMobile,
+                        'SERVER-ACTION',
+                        `Server Action hash 未唯一确认，已跳过动态调用 | action=${action} | reason=${diagnostic.reason} | candidates=${diagnostic.candidateCount}`
+                    )
+                }
             }
 
-            return deploymentId
+            return { deploymentId, hashes, diagnostics: dynamicResult.diagnostics, scriptUrls }
         } catch (error) {
             this.bot.logger.warn(
                 this.bot.isMobile,
                 'SERVER-ACTION',
-                `提取部署 ID 失败: ${error instanceof Error ? error.message : String(error)}`
+                `提取 Server Action 信息失败: ${error instanceof Error ? error.message : String(error)}`
             )
-            return null
+            return { deploymentId: null, hashes: {}, diagnostics: {}, scriptUrls: [] }
         }
     }
 
@@ -492,28 +533,31 @@ export default class BrowserFunc {
      * 调用新版 dashboard 的 Next.js Server Action。
      * 认证靠 Cookie（无需 requestToken / accessToken），返回的响应是 RSC 流，只看 HTTP 状态码判断成功。
      *
-     * @param actionName SERVER_ACTION_HASHES 中的键名
+     * @param actionName Server Action 名称
      * @param args Server Action 参数数组（如 [true] 开启连击保护；[] 无参数领积分）
      * @param tag 日志标签
      * @returns 成功返回 true，失败/降级返回 false
      */
     async callServerAction(
-        actionName: keyof typeof BrowserFunc.SERVER_ACTION_HASHES,
+        actionName: ServerActionName,
         args: unknown[],
         tag: string
     ): Promise<boolean> {
-        // 版本守卫：部署 ID 不匹配或未提取时，降级跳过（避免带失效 hash 请求导致 400/500）
-        if (this.bot.serverActions.deploymentId !== BrowserFunc.SUPPORTED_DEPLOYMENT_ID) {
+        if (!this.bot.serverActions.hashes[actionName]) {
+            this.bot.serverActions = await this.extractServerActionRuntimeInfo(this.bot.mainMobilePage, true)
+        }
+
+        const deploymentId = this.bot.serverActions.deploymentId
+        const actionHash = this.bot.serverActions.hashes[actionName]
+
+        if (!deploymentId || !actionHash) {
             this.bot.logger.warn(
                 this.bot.isMobile,
                 tag,
-                `跳过：Server Action 部署版本不匹配（当前=${this.bot.serverActions.deploymentId ?? 'null'}, ` +
-                    `支持=${BrowserFunc.SUPPORTED_DEPLOYMENT_ID}），可能是新版 UI 更新或未提取到部署 ID`
+                `跳过：未识别到当前 dashboard 可用的 Server Action hash | action=${actionName} | deployment=${deploymentId ?? 'null'}`
             )
             return false
         }
-
-        const actionHash = BrowserFunc.SERVER_ACTION_HASHES[actionName]
 
         try {
             const request: AxiosRequestConfig = {
@@ -527,7 +571,7 @@ export default class BrowserFunc {
                     // 这里传一个最小化的 dashboard 路由树（通过请求分析得到的结构）
                     'next-router-state-tree':
                         '%5B%22%22%2C%7B%22children%22%3A%5B%22(nav)%22%2C%7B%22children%22%3A%5B%22dashboard%22%2C%7B%22children%22%3A%5B%22__PAGE__%22%2C%7B%7D%2Cnull%2Cnull%2C0%5D%7D%2Cnull%2Cnull%2C0%5D%7D%2Cnull%2Cnull%2C0%5D%7D%2Cnull%2Cnull%2C16%5D',
-                    'x-deployment-id': BrowserFunc.SUPPORTED_DEPLOYMENT_ID,
+                    'x-deployment-id': deploymentId,
                     Referer: 'https://rewards.bing.com/dashboard',
                     Cookie: this.buildCookieHeader(this.bot.cookies.mobile, [
                         'bing.com',
@@ -542,7 +586,7 @@ export default class BrowserFunc {
             this.bot.logger.debug(
                 this.bot.isMobile,
                 tag,
-                `发送 Server Action 请求 | action=${actionName} | hash=${actionHash} | args=${JSON.stringify(args)}`
+                `发送 Server Action 请求 | action=${actionName} | deployment=${deploymentId} | hashPrefix=${actionHash.slice(0, 8)} | args=${JSON.stringify(args)}`
             )
 
             const response = await this.bot.axios.request(request)

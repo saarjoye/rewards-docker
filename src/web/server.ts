@@ -22,6 +22,7 @@ import {
     type StoredRunCheckpointAccount
 } from '../util/RunCheckpointStore'
 import { diagnoseWeCom, testWeCom } from '../logging/WeCom'
+import { readableLogSnippet, stampLogLine, stripAnsi } from './logSanitizer'
 
 type JsonValue = Record<string, unknown> | unknown[] | string | number | boolean | null
 
@@ -162,6 +163,8 @@ interface PublicWeComConfig {
 interface RawLogLine {
     raw: string
     safe: string
+    time?: number
+    seq?: number
 }
 
 interface PublicLogLine {
@@ -317,25 +320,6 @@ function saveSchedule(schedule: string): ScheduleFile {
     writeJsonFile(scheduleFile, next)
     process.env.CRON_SCHEDULE = trimmed
     return next
-}
-
-function stripAnsi(value: string): string {
-    return value.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
-}
-
-function readableLogSnippet(line: string): string {
-    const cleaned = stripAnsi(line).replace(/\r?\n/g, ' ')
-    const chars = [...cleaned]
-    const badCount = chars.filter(char => {
-        const code = char.charCodeAt(0)
-        return (code >= 0 && code < 9) || (code > 13 && code < 32) || code === 65533
-    }).length
-    if (cleaned.length > 0 && badCount / cleaned.length > 0.05) {
-        return `<binary-like log line omitted | chars=${cleaned.length}>`
-    }
-    return cleaned
-        .replace(/[^\x09\x20-\x7E\u4E00-\u9FFF，。！？、；：“”‘’（）《》【】]/g, '�')
-        .slice(0, 1200)
 }
 
 function redactLogLine(line: string): string {
@@ -568,42 +552,6 @@ function localDateKey(date = new Date()): string {
 
 function datedManualRunLogFile(date = localDateKey()): string {
     return path.join(appRoot, 'logs', `manual-run-${date}.log`)
-}
-
-function formatLogTimestamp(date = new Date()): string {
-    const h = String(date.getHours()).padStart(2, '0')
-    const m = String(date.getMinutes()).padStart(2, '0')
-    const s = String(date.getSeconds()).padStart(2, '0')
-    return `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}, ${h}:${m}:${s}`
-}
-
-function parseExistingLogTimestamp(line: string): { date: Date; rest: string } | null {
-    const iso = line.match(/^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z)\]\s*(.*)$/)
-    if (iso?.[1]) {
-        const date = new Date(iso[1])
-        if (Number.isFinite(date.getTime())) return { date, rest: iso[2] ?? '' }
-    }
-
-    const local = line.match(
-        /^\[(\d{1,2})\/(\d{1,2})\/(\d{4}),\s*(\d{1,2}):(\d{2}):(\d{2})\s*(AM|PM)?\]\s*(.*)$/i
-    )
-    if (local) {
-        let hour = Number(local[4])
-        const meridiem = local[7]?.toUpperCase()
-        if (meridiem === 'PM' && hour < 12) hour += 12
-        if (meridiem === 'AM' && hour === 12) hour = 0
-        const date = new Date(Number(local[3]), Number(local[1]) - 1, Number(local[2]), hour, Number(local[5]), Number(local[6]))
-        if (Number.isFinite(date.getTime())) return { date, rest: local[8] ?? '' }
-    }
-
-    return null
-}
-
-function stampLogLine(line: string, fallbackDate = new Date()): string {
-    const existing = parseExistingLogTimestamp(line)
-    const date = existing?.date ?? fallbackDate
-    const rest = existing?.rest ?? line
-    return `[${formatLogTimestamp(date)}] ${rest.trim()}`
 }
 
 function readTextFileTail(file: string, maxBytes = MAX_RUN_LOG_BYTES): string {
@@ -1485,7 +1433,8 @@ function logFileForSource(source: LogSource): string {
 
 function logFilesForSource(source: LogSource): string[] {
     if (source === 'runtime') return [runtimeLogFile]
-    return [datedManualRunLogFile(), manualRunLogFile]
+    const todayFile = datedManualRunLogFile()
+    return fs.existsSync(todayFile) ? [todayFile] : [manualRunLogFile]
 }
 
 function detectLogLevel(line: string): LogLevel {
@@ -1510,15 +1459,15 @@ function normalizeTail(value: string | null): number {
 }
 
 function readRecentLogLines(source: LogSource = 'manual', tail = MAX_RUN_LOG_LINES): RawLogLine[] {
-    const lines = logFilesForSource(source)
-        .flatMap(file =>
+    const lines = normalizeRawLogLines(
+        logFilesForSource(source).flatMap(file =>
             readTextFileTail(file)
                 .split(/\r?\n/)
-                .map(line => ({ raw: stripAnsi(line), safe: redactLogLine(line) }))
-                .filter(line => line.safe.trim().length > 0)
-        )
-        .slice(-tail)
-        .reverse()
+                .map((line, index) => rawLogLineFromText(line, index))
+                .filter((line): line is RawLogLine => Boolean(line))
+        ),
+        tail
+    )
 
     if (lines.length > 0) return lines
 
@@ -1556,12 +1505,46 @@ function fallbackLogLines(tail = MAX_RUN_LOG_LINES): RawLogLine[] {
         merged.push(
             ...content
                 .split(/\r?\n/)
-                .map(line => ({ raw: stripAnsi(line), safe: redactLogLine(line) }))
-                .filter(line => line.safe.trim().length > 0)
+                .map((line, index) => rawLogLineFromText(line, index))
+                .filter((line): line is RawLogLine => Boolean(line))
         )
     }
 
-    return merged.slice(-tail).reverse()
+    return normalizeRawLogLines(merged, tail)
+}
+
+function rawLogLineFromText(line: string, seq = 0): RawLogLine | null {
+    const raw = stripAnsi(line)
+    const safe = redactLogLine(raw)
+    if (safe.trim().length === 0) return null
+    return { raw, safe, time: timestampFromStampedLine(safe), seq }
+}
+
+function normalizeRawLogLines(lines: RawLogLine[], tail: number): RawLogLine[] {
+    const seen = new Set<string>()
+    return [...lines]
+        .filter(line => {
+            const key = line.safe
+            if (seen.has(key)) return false
+            seen.add(key)
+            return true
+        })
+        .sort((a, b) => (b.time ?? 0) - (a.time ?? 0) || (b.seq ?? 0) - (a.seq ?? 0))
+        .slice(0, tail)
+}
+
+function timestampFromStampedLine(line: string): number {
+    const match = line.match(/^\[(\d{4})-(\d{1,2})-(\d{1,2}),\s*(\d{1,2}):(\d{2}):(\d{2})\]/)
+    if (!match) return 0
+    const date = new Date(
+        Number(match[1]),
+        Number(match[2]) - 1,
+        Number(match[3]),
+        Number(match[4]),
+        Number(match[5]),
+        Number(match[6])
+    )
+    return Number.isFinite(date.getTime()) ? date.getTime() : 0
 }
 
 function queryLogs(url: URL): { source: LogSource; level: LogLevel; query: string; tail: number; lines: PublicLogLine[] } {
