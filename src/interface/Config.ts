@@ -11,6 +11,7 @@ export interface Config {
     searchSettings: ConfigSearchSettings
     debugLogs: boolean
     proxy: ConfigProxy
+    giftCardMonitor: ConfigGiftCardMonitor
     consoleLogFilter: LogFilter
     webhook: ConfigWebhook
 }
@@ -54,6 +55,14 @@ export interface ConfigWorkers {
     doMobileSearch: boolean
     doDailyCheckIn: boolean
     doReadToEarn: boolean
+}
+
+export interface ConfigGiftCardMonitor {
+    enabled?: boolean
+    keywords: string[]
+    requireEnoughPoints?: boolean
+    notifyOnce?: boolean
+    shopUrl?: string
 }
 
 // Webhooks

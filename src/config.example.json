@@ -56,6 +56,13 @@
     "proxy": {
         "queryEngine": false
     },
+    "giftCardMonitor": {
+        "enabled": false,
+        "keywords": [],
+        "requireEnoughPoints": false,
+        "notifyOnce": true,
+        "shopUrl": "https://rewards.bing.com/redeem/cn?section=shop"
+    },
     "webhook": {
         "discord": {
             "enabled": false,

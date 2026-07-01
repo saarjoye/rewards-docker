@@ -54,6 +54,7 @@ import {
     updateRunCheckpoint,
     type RunAccountMode
 } from './util/RunCheckpointStore'
+import { monitorGiftCards } from './util/GiftCardMonitor'
 import type { ServerActionName } from './util/ServerActions'
 interface ExecutionContext {
     isMobile: boolean
@@ -391,6 +392,30 @@ export class MicrosoftRewardsBot {
     private updateFormalRunCheckpoint(email: string, patch: Parameters<typeof updateRunCheckpoint>[1]): void {
         if (!isAccountStatusCheckOnly()) {
             updateRunCheckpoint(email, patch)
+        }
+    }
+
+    private async runGiftCardMonitor(accountEmail: string, currentPoints: number): Promise<void> {
+        if (!this.config.giftCardMonitor?.enabled) return
+
+        try {
+            const result = await monitorGiftCards(this, accountEmail, currentPoints)
+            if (!result.checked) {
+                this.logger.info('main', 'GIFT-CARD-MONITOR', result.message)
+                return
+            }
+
+            this.logger.info(
+                'main',
+                'GIFT-CARD-MONITOR',
+                `${result.message} | 目标=${this.config.giftCardMonitor.keywords.join(',') || '未设置'}`
+            )
+        } catch (error) {
+            this.logger.warn(
+                'main',
+                'GIFT-CARD-MONITOR',
+                `礼品卡库存监控失败: ${error instanceof Error ? error.message : String(error)}`
+            )
         }
     }
 
@@ -1428,6 +1453,8 @@ export class MicrosoftRewardsBot {
                     'FLOW',
                     `已收集: +${collectedPoints} | 日常: +${dailyGainedPoints} | 移动端: +${mobileGainedPoints} | 桌面端: +${desktopGainedPoints} | ${accountEmail}`
                 )
+
+                await this.runGiftCardMonitor(accountEmail, finalPoints)
 
                 return {
                     initialPoints,

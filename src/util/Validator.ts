@@ -22,6 +22,14 @@ const DelaySchema = z.object({
 
 const QueryEngineSchema = z.enum(['china', 'google', 'wikipedia', 'reddit', 'local'])
 
+const GiftCardMonitorSchema = z.object({
+    enabled: z.boolean().optional(),
+    keywords: z.array(z.string()),
+    requireEnoughPoints: z.boolean().optional(),
+    notifyOnce: z.boolean().optional(),
+    shopUrl: z.string().optional()
+})
+
 // Webhook
 const WebhookSchema = z.object({
     discord: z
@@ -104,6 +112,7 @@ export const ConfigSchema = z.object({
     proxy: z.object({
         queryEngine: z.boolean()
     }),
+    giftCardMonitor: GiftCardMonitorSchema,
     consoleLogFilter: LogFilterSchema,
     webhook: WebhookSchema
 })
@@ -162,6 +171,13 @@ const defaultConfig: Config = {
     },
     debugLogs: false,
     proxy: { queryEngine: true },
+    giftCardMonitor: {
+        enabled: false,
+        keywords: [],
+        requireEnoughPoints: false,
+        notifyOnce: true,
+        shopUrl: 'https://rewards.bing.com/redeem/cn?section=shop'
+    },
     consoleLogFilter: {
         enabled: false,
         mode: 'whitelist',
