@@ -13,11 +13,15 @@ export interface ServerActionHashDiagnostic {
     reason: 'unique' | 'no-candidate' | 'ambiguous'
 }
 
-export const LAST_KNOWN_SERVER_ACTION_DEPLOYMENT_ID = '20260612-3'
+export const KNOWN_SERVER_ACTION_DEPLOYMENT_IDS = new Set(['20260612-3', '20260626-1', '20260701-3'])
 
 export const FALLBACK_SERVER_ACTION_HASHES: Record<ServerActionName, string> = {
     toggleStreakProtection: '40eddd39784c87de1e9c077e72117f3ed9a016a2d2',
     claimBonusPoints: '00cf5ba7699f0e920ffcff223f9e48fea78fd49784'
+}
+
+export function isKnownServerActionDeployment(deploymentId: string | null | undefined): boolean {
+    return Boolean(deploymentId && KNOWN_SERVER_ACTION_DEPLOYMENT_IDS.has(deploymentId))
 }
 
 const ACTION_KEYWORDS: Record<ServerActionName, string[]> = {
