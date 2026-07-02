@@ -42,6 +42,19 @@ assert.equal(uniqueResult.hashes.claimBonusPoints, bonusHash)
 assert.equal(uniqueResult.diagnostics.toggleStreakProtection.reason, 'unique')
 assert.equal(uniqueResult.diagnostics.claimBonusPoints.reason, 'unique')
 
+const reversedResult = extractServerActionHashResultFromSources([
+    {
+        name: 'chunk.js',
+        content: `
+            const action = createServerReference("${bonusHash}", null, null);
+            export { action as claimBonusPoints };
+        `
+    }
+])
+
+assert.equal(reversedResult.hashes.claimBonusPoints, bonusHash)
+assert.equal(reversedResult.diagnostics.claimBonusPoints.reason, 'unique')
+
 const ambiguousResult = extractServerActionHashResultFromSources([
     {
         name: 'chunk.js',

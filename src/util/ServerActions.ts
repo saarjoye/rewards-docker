@@ -185,6 +185,26 @@ function findDirectActionHashes(content: string, action: ServerActionName): stri
         while ((beforeMatch = beforePattern.exec(content))) {
             if (beforeMatch[1]) hashes.add(beforeMatch[1].toLowerCase())
         }
+
+        const actionNameInArgsPattern = new RegExp(
+            `createServerReference\\(\\s*["'](${HASH_PATTERN.source})["'][^)]{0,240}${escapedKeyword}[^)]{0,240}\\)`,
+            'gi'
+        )
+
+        let actionNameInArgsMatch: RegExpExecArray | null
+        while ((actionNameInArgsMatch = actionNameInArgsPattern.exec(content))) {
+            if (actionNameInArgsMatch[1]) hashes.add(actionNameInArgsMatch[1].toLowerCase())
+        }
+
+        const exportAliasPattern = new RegExp(
+            `(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*createServerReference\\(\\s*["'](${HASH_PATTERN.source})["'][\\s\\S]{0,240}?\\)[\\s\\S]{0,300}?\\b\\1\\s+as\\s+${escapedKeyword}\\b`,
+            'gi'
+        )
+
+        let exportAliasMatch: RegExpExecArray | null
+        while ((exportAliasMatch = exportAliasPattern.exec(content))) {
+            if (exportAliasMatch[2]) hashes.add(exportAliasMatch[2].toLowerCase())
+        }
     }
 
     return [...hashes]

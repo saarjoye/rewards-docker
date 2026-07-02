@@ -13,11 +13,12 @@ RUN_SOURCE="${RUN_SOURCE:-cron}"
 RUN_MODE="${RUN_MODE:-task}"
 RUN_ACCOUNT_MODE="${RUN_ACCOUNT_MODE:-continue}"
 RUN_ACCOUNT_INDEX="${RUN_ACCOUNT_INDEX:-}"
+MANUAL_TASK="${MANUAL_TASK:-}"
 RUN_FAIL_ON_LOCK="${RUN_FAIL_ON_LOCK:-false}"
 SCRIPT_PID="$$"
 CHILD_PID=""
 
-export RUN_SOURCE RUN_MODE RUN_ACCOUNT_MODE RUN_ACCOUNT_INDEX RUN_FAIL_ON_LOCK RUNTIME_LOG_FILE
+export RUN_SOURCE RUN_MODE RUN_ACCOUNT_MODE RUN_ACCOUNT_INDEX MANUAL_TASK RUN_FAIL_ON_LOCK RUNTIME_LOG_FILE
 
 log() {
     echo "[$(date)] [run_daily.sh] $*"
@@ -37,6 +38,7 @@ write_lock_meta() {
   "mode": "$(json_escape "$RUN_MODE")",
   "accountMode": "$(json_escape "$RUN_ACCOUNT_MODE")",
   "accountIndex": "$(json_escape "$RUN_ACCOUNT_INDEX")",
+  "manualTask": "$(json_escape "$MANUAL_TASK")",
   "startedAt": "$(json_escape "$started_at")",
   "skipRandomSleep": "$(json_escape "${SKIP_RANDOM_SLEEP:-false}")",
   "logFile": "$(json_escape "$RUNTIME_LOG_FILE")"

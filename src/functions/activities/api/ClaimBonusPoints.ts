@@ -30,9 +30,17 @@ export class ClaimBonusPoints extends Workers {
                     this.bot.logger.warn(
                         this.bot.isMobile,
                         'CLAIM-BONUS-POINTS',
-                        'Server Action 调用未成功（可能是部署版本不匹配或网络错误），跳过'
+                        'Server Action 调用未成功（可能是部署版本不匹配或网络错误），尝试页面点击兜底'
                     )
-                    return
+                    const clicked = await this.bot.browser.func.clickClaimBonusPointsButton(this.bot.mainMobilePage)
+                    if (!clicked) {
+                        this.bot.logger.warn(
+                            this.bot.isMobile,
+                            'CLAIM-BONUS-POINTS',
+                            'Server Action 和页面点击兜底均未成功，跳过'
+                        )
+                        return
+                    }
                 }
 
                 // 通过余额差确认实际获得积分
@@ -44,7 +52,7 @@ export class ClaimBonusPoints extends Workers {
                     this.bot.logger.info(
                         this.bot.isMobile,
                         'CLAIM-BONUS-POINTS',
-                        `完成领取奖励积分（Server Action） | 获得积分=${this.gainedPoints} | 新余额=${newBalance}`,
+                        `完成领取奖励积分 | 获得积分=${this.gainedPoints} | 新余额=${newBalance}`,
                         'green'
                     )
                 } else {

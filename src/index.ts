@@ -90,6 +90,7 @@ interface RunOptions {
     accountMode: RunAccountMode
     targetAccountIndex?: number
     source: string
+    manualTask?: 'claim-bonus-points'
 }
 
 const executionContext = new AsyncLocalStorage<ExecutionContext>()
@@ -136,12 +137,22 @@ function isAccountStatusCheckOnly(): boolean {
     return process.env.ACCOUNT_STATUS_CHECK_ONLY === 'true'
 }
 
+function currentManualTask(): RunOptions['manualTask'] {
+    return process.env.MANUAL_TASK === 'claim-bonus-points' ? 'claim-bonus-points' : undefined
+}
+
 function currentRunOptions(): RunOptions {
     const statusCheckOnly = isAccountStatusCheckOnly()
+    const manualTask = currentManualTask()
     return {
-        accountMode: statusCheckOnly ? 'all' : parseRunAccountMode(process.env.RUN_ACCOUNT_MODE),
+        accountMode: statusCheckOnly
+            ? 'all'
+            : manualTask && parseRunAccountMode(process.env.RUN_ACCOUNT_MODE) !== 'account'
+              ? 'all'
+              : parseRunAccountMode(process.env.RUN_ACCOUNT_MODE),
         targetAccountIndex: parsePositiveInteger(process.env.RUN_ACCOUNT_INDEX),
-        source: process.env.RUN_SOURCE || 'local'
+        source: process.env.RUN_SOURCE || 'local',
+        manualTask
     }
 }
 
@@ -506,7 +517,7 @@ export class MicrosoftRewardsBot {
     async run(): Promise<void> {
         const runStartTime = Date.now()
 
-        if (this.config.clusters > 1 && !cluster.isPrimary) {
+        if (this.config.clusters > 1 && !cluster.isPrimary && !currentManualTask()) {
             this.runWorker(runStartTime)
             return
         }
@@ -534,6 +545,7 @@ export class MicrosoftRewardsBot {
             'RUN-START',
             `启动微软奖励脚本 | v${pkg.version} | 运行模式: ${selection.mode}${
                 selection.targetAccountIndex ? `#${selection.targetAccountIndex}` : ''
+            }${options.manualTask === 'claim-bonus-points' ? ' | 手动任务: 立即领取奖励积分' : ''
             } | 待执行账户: ${totalAccounts}/${this.accounts.length} | 已跳过: ${selection.skipped.length} | 上次中断: ${
                 selection.interrupted
             } | 集群数: ${this.config.clusters}`
@@ -551,7 +563,7 @@ export class MicrosoftRewardsBot {
         }
 
         // 如果集群数大于1，则使用多进程模式
-        if (this.config.clusters > 1) {
+        if (this.config.clusters > 1 && !options.manualTask) {
             // 主进程逻辑
             await this.runMaster(accountsToRun, runStartTime)
         } else {
@@ -1200,6 +1212,45 @@ export class MicrosoftRewardsBot {
                         this.currentDetailTask = null
                     }
                 }
+                const completeManualClaimBonusTask = async (): Promise<{
+                    initialPoints: number
+                    finalPoints: number
+                    collectedPoints: number
+                    taskSummary: AccountTaskSummary[]
+                }> => {
+                    this.logger.info('main', 'MANUAL-TASK', '手动任务：仅执行领取奖励积分')
+                    await runPointTask('领取奖励积分', async () => this.workers.doClaimBonusPoints(data))
+                    const finalPoints = await getLatestPoints(Number(this.userData.currentPoints ?? initialPoints))
+                    const collectedPoints = Math.max(0, finalPoints - initialPoints)
+                    this.userData.currentPoints = finalPoints
+                    updateAccountPointTotals(accountEmail, {
+                        currentPoints: finalPoints,
+                        finalPoints
+                    })
+                    updateAccountRunState(accountEmail, {
+                        currentTask: '立即领取奖励积分完成',
+                        currentStage: 'done',
+                        currentMessage: `本次运行增加 ${collectedPoints} 分`
+                    })
+                    updateTaskProgress(accountEmail, 'daily', {
+                        completed: collectedPoints,
+                        total: collectedPoints,
+                        gained: collectedPoints,
+                        status: '已完成'
+                    })
+                    this.logger.info(
+                        'main',
+                        'MANUAL-TASK',
+                        `立即领取奖励积分完成 | 获得积分=${collectedPoints} | 初始=${initialPoints} | 当前=${finalPoints}`,
+                        collectedPoints > 0 ? 'green' : 'yellow'
+                    )
+                    return {
+                        initialPoints,
+                        finalPoints,
+                        collectedPoints,
+                        taskSummary
+                    }
+                }
                 const skipAppTokenTask = (label: string): void => {
                     const detailKey = taskDetailKey(label)
                     taskSummary.push({
@@ -1219,6 +1270,10 @@ export class MicrosoftRewardsBot {
                         message: 'App访问令牌不可用'
                     })
                     this.logger.warn('main', 'FLOW', `${label}已跳过：App访问令牌不可用，后续搜索继续执行`)
+                }
+
+                if (currentRunOptions().manualTask === 'claim-bonus-points') {
+                    return await completeManualClaimBonusTask()
                 }
 
                 // Ensure streak protection is true if enabled

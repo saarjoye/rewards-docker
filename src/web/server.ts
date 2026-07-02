@@ -93,6 +93,7 @@ interface ScheduleFile {
 type RunMode = 'task' | 'account-check'
 type RunSource = 'cron' | 'web' | 'startup' | 'unknown'
 type RunAccountMode = 'continue' | 'failed' | 'all' | 'account'
+type ManualTask = 'claim-bonus-points'
 type LogSource = 'manual' | 'runtime'
 type LogLevel = 'all' | 'error' | 'warn' | 'info' | 'debug'
 
@@ -102,6 +103,7 @@ interface RunState {
     mode?: RunMode
     accountMode?: RunAccountMode
     accountIndex?: number
+    manualTask?: ManualTask
     pid?: number
     startedAt?: string
     finishedAt?: string
@@ -119,6 +121,7 @@ interface RunLockMeta {
     source?: RunSource
     mode?: RunMode
     accountMode?: RunAccountMode
+    manualTask?: string
     accountIndex?: string
     startedAt?: string
     skipRandomSleep?: string
@@ -393,7 +396,7 @@ function collectRunOutput(chunk: Buffer | string, stream: NodeJS.WriteStream): v
 
 function startScriptRun(
     mode: RunMode,
-    options: { accountMode?: RunAccountMode; accountIndex?: number } = {}
+    options: { accountMode?: RunAccountMode; accountIndex?: number; manualTask?: ManualTask } = {}
 ): RunState {
     if (runState.running) {
         return runState
@@ -405,6 +408,7 @@ function startScriptRun(
     }
     const accountMode = mode === 'account-check' ? 'all' : options.accountMode ?? 'continue'
     const accountIndex = accountMode === 'account' ? options.accountIndex : undefined
+    const manualTask = mode === 'task' ? options.manualTask : undefined
     if (accountMode === 'account' && !accountIndex) {
         throw new Error('指定账号模式需要选择账号序号')
     }
@@ -419,13 +423,19 @@ function startScriptRun(
             RUN_MODE: mode,
             RUN_ACCOUNT_MODE: accountMode,
             ...(accountIndex ? { RUN_ACCOUNT_INDEX: String(accountIndex) } : {}),
+            ...(manualTask ? { MANUAL_TASK: manualTask } : {}),
             RUN_FAIL_ON_LOCK: 'true',
             RUNTIME_LOG_FILE: runtimeLogFile,
             ...(mode === 'account-check' ? { ACCOUNT_STATUS_CHECK_ONLY: 'true' } : {})
         }
     })
 
-    const label = mode === 'account-check' ? '账号状态检测' : `手动运行（${accountModeLabel(accountMode)}）`
+    const label =
+        mode === 'account-check'
+            ? '账号状态检测'
+            : manualTask
+              ? `${manualTaskLabel(manualTask)}（${accountModeLabel(accountMode)}）`
+              : `手动运行（${accountModeLabel(accountMode)}）`
     const startedLine = stampLogLine(`${label}已启动，PID ${child.pid}`)
     runState = {
         running: true,
@@ -433,6 +443,7 @@ function startScriptRun(
         mode,
         accountMode,
         accountIndex,
+        manualTask,
         pid: child.pid,
         startedAt: new Date().toISOString(),
         exitCode: null,
@@ -617,6 +628,18 @@ function normalizeRunAccountMode(value: unknown): RunAccountMode {
     }
 }
 
+function normalizeManualTask(value: unknown): ManualTask | undefined {
+    switch (String(value ?? '').trim().toLowerCase()) {
+        case 'claim-bonus-points':
+            return 'claim-bonus-points'
+        case '':
+        case 'undefined':
+            return undefined
+        default:
+            throw new Error('未知手动任务类型')
+    }
+}
+
 function readPidFile(file: string): number | undefined {
     try {
         const raw = fs.readFileSync(file, 'utf8').trim()
@@ -646,6 +669,7 @@ function readRunLockMeta(): RunLockMeta | null {
         source,
         mode,
         accountMode: normalizeRunAccountMode(meta.accountMode),
+        manualTask: typeof meta.manualTask === 'string' ? meta.manualTask : undefined,
         accountIndex: typeof meta.accountIndex === 'string' ? meta.accountIndex : undefined,
         startedAt: typeof meta.startedAt === 'string' ? meta.startedAt : undefined,
         skipRandomSleep: typeof meta.skipRandomSleep === 'string' ? meta.skipRandomSleep : undefined,
@@ -672,6 +696,7 @@ function mergedRunState(): RunState {
     const source = meta?.source ?? runState.source ?? (externalRunning ? 'unknown' : undefined)
     const mode = meta?.mode ?? runState.mode
     const accountMode = meta?.accountMode ?? runState.accountMode
+    const manualTask = normalizeManualTask(meta?.manualTask ?? runState.manualTask)
     const accountIndex = positiveInteger(meta?.accountIndex) ?? runState.accountIndex
     const conflictReason = running
         ? `已有${sourceLabel(source)}${modeLabel(mode)}正在运行${pid ? `，PID ${pid}` : ''}`
@@ -683,6 +708,7 @@ function mergedRunState(): RunState {
         source,
         mode,
         accountMode,
+        manualTask,
         accountIndex,
         pid,
         startedAt,
@@ -713,6 +739,15 @@ function sourceLabel(source?: RunSource): string {
 
 function modeLabel(mode?: RunMode): string {
     return mode === 'account-check' ? '账号检测' : '执行任务'
+}
+
+function manualTaskLabel(task?: ManualTask): string {
+    switch (task) {
+        case 'claim-bonus-points':
+            return '立即领取奖励积分'
+        default:
+            return '手动任务'
+    }
 }
 
 function accountModeLabel(mode?: RunAccountMode): string {
@@ -1262,7 +1297,8 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
             const body = (await readBody(req)) as Record<string, unknown>
             const accountMode = normalizeRunAccountMode(body.accountMode)
             const accountIndex = positiveInteger(body.accountIndex)
-            sendJson(res, 200, { ok: true, runState: startScriptRun('task', { accountMode, accountIndex }) })
+            const manualTask = normalizeManualTask(body.manualTask)
+            sendJson(res, 200, { ok: true, runState: startScriptRun('task', { accountMode, accountIndex, manualTask }) })
         } catch (error) {
             sendJson(res, 400, {
                 error: 'RUN_FAILED',
@@ -2334,8 +2370,10 @@ function renderTasks(){
   const c = state.config;
   const g = c.giftCardMonitor || {};
   const keywords = Array.isArray(g.keywords) ? g.keywords.join('\\n') : '';
+  const disabled = state.runState?.running ? 'disabled' : '';
+  const accountOptions = (state.accounts || []).map(a => '<option value="'+(Number(a.id)+1)+'">账号 '+(Number(a.id)+1)+' · '+esc(a.maskedEmail)+'</option>').join('');
   el('tasks').innerHTML = '<div class="content-grid">'+scheduleForm()+'<form id="taskForm">'
-    + '<section class="card section"><h2>任务配置</h2><p class="section-note">保存后会写入本地配置文件。</p><div class="switch-row">'+taskToggles()+'</div><div class="form-grid" style="margin-top:16px">'+field('clusters','集群数',c.clusters,'number')+field('globalTimeout','全局超时',c.globalTimeout)+field('searchDelayMin','搜索最小延迟',c.searchSettings.searchDelay.min)+field('searchDelayMax','搜索最大延迟',c.searchSettings.searchDelay.max)+field('readDelayMin','阅读最小延迟',c.searchSettings.readDelay.min)+field('readDelayMax','阅读最大延迟',c.searchSettings.readDelay.max)+'</div></section>'
+    + '<section class="card section"><div class="toolbar"><div><h2>任务配置</h2><p class="section-note">保存后会写入本地配置文件。</p></div><div class="top-actions"><select id="claimBonusAccount" '+disabled+'><option value="all">全部账号</option>'+accountOptions+'</select><button type="button" id="claimBonusNowBtn" class="primary-btn" '+disabled+'>立即领取奖励积分</button></div></div><div class="switch-row">'+taskToggles()+'</div><div class="form-grid" style="margin-top:16px">'+field('clusters','集群数',c.clusters,'number')+field('globalTimeout','全局超时',c.globalTimeout)+field('searchDelayMin','搜索最小延迟',c.searchSettings.searchDelay.min)+field('searchDelayMax','搜索最大延迟',c.searchSettings.searchDelay.max)+field('readDelayMin','阅读最小延迟',c.searchSettings.readDelay.min)+field('readDelayMax','阅读最大延迟',c.searchSettings.readDelay.max)+'</div></section>'
     + '<section class="card section"><h2>礼品卡监控</h2><p class="section-note">按关键词监控积分商城礼品卡；发现可兑换目标时复用已启用的推送通道发送消息。</p><div class="switch-row">'
     + '<label class="toggle"><span>启用礼品卡监控</span><input type="checkbox" name="giftCardMonitorEnabled" '+(g.enabled?'checked':'')+'></label>'
     + '<label class="toggle"><span>仅在积分足够时推送</span><input type="checkbox" name="giftCardRequireEnoughPoints" '+(g.requireEnoughPoints?'checked':'')+'></label>'
@@ -2346,6 +2384,7 @@ function renderTasks(){
     + '</div><div class="modal-actions"><button class="primary-btn">保存配置</button></div></section></form></div>';
   document.querySelector('#taskForm').addEventListener('submit', saveConfig);
   document.querySelector('#tasks #scheduleForm').addEventListener('submit', saveSchedule);
+  document.querySelector('#claimBonusNowBtn')?.addEventListener('click', claimBonusNow);
 }
 function pointsAccountOptions(){
   const source = pointsCalendarData?.accounts || [];
@@ -2632,6 +2671,21 @@ async function runOnceNow(){
     const accountMode = el('runAccountMode')?.value || 'continue';
     const accountIndex = Number(el('runAccountIndex')?.value || 0);
     await api('/api/run', {method:'POST', body:JSON.stringify({accountMode, accountIndex})});
+  } catch (error) {
+    alert(error.message);
+  }
+  await loadState();
+  updateRunPolling();
+  switchView('dashboard');
+}
+async function claimBonusNow(){
+  try {
+    const accountValue = el('claimBonusAccount')?.value || 'all';
+    const accountIndex = Number(accountValue || 0);
+    const body = accountValue === 'all'
+      ? {accountMode:'all', manualTask:'claim-bonus-points'}
+      : {accountMode:'account', accountIndex, manualTask:'claim-bonus-points'};
+    await api('/api/run', {method:'POST', body:JSON.stringify(body)});
   } catch (error) {
     alert(error.message);
   }

@@ -617,6 +617,138 @@ export default class BrowserFunc {
         }
     }
 
+    async clickClaimBonusPointsButton(page: Page): Promise<boolean> {
+        try {
+            await page.goto('https://rewards.bing.com/dashboard', { waitUntil: 'domcontentloaded', timeout: 15000 })
+                .catch(() => {})
+            await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {})
+
+            const result = await page.evaluate(() => {
+                const normalizeText = (value: string | null | undefined) => (value ?? '').replace(/\s+/g, ' ').trim()
+                const isVisible = (el: Element) => {
+                    const element = el as HTMLElement
+                    const rect = element.getBoundingClientRect()
+                    const style = window.getComputedStyle(element)
+                    return (
+                        rect.width > 0 &&
+                        rect.height > 0 &&
+                        style.visibility !== 'hidden' &&
+                        style.display !== 'none' &&
+                        style.pointerEvents !== 'none'
+                    )
+                }
+                const isDisabled = (el: Element) => {
+                    const element = el as HTMLButtonElement | HTMLAnchorElement
+                    return (
+                        (element as HTMLButtonElement).disabled === true ||
+                        el.getAttribute('aria-disabled') === 'true' ||
+                        el.getAttribute('disabled') !== null
+                    )
+                }
+                const claimWords = [
+                    'claim',
+                    'redeem',
+                    'collect',
+                    '领取',
+                    '立即领取',
+                    '领取积分',
+                    '领取奖励',
+                    '领取奖励积分',
+                    '奖励积分'
+                ]
+                const pointClaimMarkers = [
+                    'pointclaim',
+                    'pointclaim-banner',
+                    'pointclaimcard',
+                    'claimable_points',
+                    'bonus_points',
+                    'PointClaim'
+                ]
+                const selector = [
+                    'button',
+                    'a',
+                    '[role="button"]',
+                    '[data-testid]',
+                    '[aria-label]',
+                    '[title]'
+                ].join(',')
+                const candidates = Array.from(document.querySelectorAll(selector))
+                    .filter(el => !isDisabled(el) && isVisible(el))
+                    .map(el => {
+                        const element = el as HTMLElement
+                        const text = normalizeText(
+                            [
+                                element.innerText,
+                                element.textContent,
+                                el.getAttribute('aria-label'),
+                                el.getAttribute('title'),
+                                el.getAttribute('data-testid'),
+                                el.id,
+                                el.className?.toString()
+                            ].join(' ')
+                        )
+                        const context = normalizeText(
+                            [
+                                text,
+                                el.closest('[data-testid], section, article, div')?.textContent,
+                                el.closest('[data-testid], section, article, div')?.getAttribute('data-testid'),
+                                el.closest('[class], [id]')?.className?.toString(),
+                                el.closest('[class], [id]')?.id
+                            ].join(' ')
+                        )
+                        const lowerText = text.toLowerCase()
+                        const lowerContext = context.toLowerCase()
+                        const hasClaimWord = claimWords.some(word => lowerText.includes(word.toLowerCase()))
+                        const hasPointClaimMarker = pointClaimMarkers.some(marker =>
+                            lowerContext.includes(marker.toLowerCase())
+                        )
+                        const mentionsPoints = /积分|points?|奖励|bonus/i.test(context)
+                        let score = 0
+                        if (hasClaimWord) score += 50
+                        if (hasPointClaimMarker) score += 40
+                        if (mentionsPoints) score += 20
+                        if (el.tagName.toLowerCase() === 'button') score += 10
+                        return { el, text, score }
+                    })
+                    .filter(candidate => candidate.score >= 60)
+                    .sort((a, b) => b.score - a.score)
+
+                const target = candidates[0]
+                if (!target) {
+                    return { clicked: false, reason: 'no-button' }
+                }
+
+                target.el.scrollIntoView({ block: 'center', inline: 'center' })
+                ;(target.el as HTMLElement).click()
+                return { clicked: true, text: target.text.slice(0, 80), score: target.score }
+            })
+
+            if (!result.clicked) {
+                this.bot.logger.warn(
+                    this.bot.isMobile,
+                    'CLAIM-BONUS-POINTS',
+                    `页面点击兜底未找到可点击的奖励领取按钮 | reason=${result.reason}`
+                )
+                return false
+            }
+
+            this.bot.logger.info(
+                this.bot.isMobile,
+                'CLAIM-BONUS-POINTS',
+                `已点击 dashboard 奖励领取按钮 | 文本="${result.text ?? ''}" | score=${result.score ?? 0}`
+            )
+            await this.bot.utils.wait(this.bot.utils.randomDelay(3000, 6000))
+            return true
+        } catch (error) {
+            this.bot.logger.warn(
+                this.bot.isMobile,
+                'CLAIM-BONUS-POINTS',
+                `页面点击兜底领取失败: ${error instanceof Error ? error.message : String(error)}`
+            )
+            return false
+        }
+    }
+
     async closeBrowser(browser: BrowserContext, email: string) {
         const rootBrowser = (browser as any).browser?.() || null
 
