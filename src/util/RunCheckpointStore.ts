@@ -217,6 +217,56 @@ export function selectAccountsForRun<T extends { email: string }>(
     }
 }
 
+export function selectAccountsWithoutCheckpoint<T extends { email: string }>(
+    accounts: T[],
+    options: {
+        mode: RunAccountMode
+        targetAccountIndex?: number
+    }
+): RunCheckpointSelection<T> {
+    const selected: T[] = []
+    const skipped: T[] = []
+
+    accounts.forEach((account, index) => {
+        const accountIndex = index + 1
+        const shouldRun = options.mode === 'account' ? accountIndex === options.targetAccountIndex : true
+
+        if (shouldRun) {
+            selected.push(account)
+        } else {
+            skipped.push(account)
+        }
+    })
+
+    return {
+        mode: options.mode,
+        targetAccountIndex: options.targetAccountIndex,
+        selected,
+        skipped,
+        interrupted: 0
+    }
+}
+
+export function syncRunCheckpointFromAccountCheck(
+    email: string,
+    result: {
+        hasPendingTasks: boolean
+        message: string
+        runSource?: string
+        pid?: number
+    }
+): void {
+    updateRunCheckpoint(email, {
+        state: result.hasPendingTasks ? 'pending' : 'completed',
+        currentTask: result.hasPendingTasks ? '等待继续执行' : '账号任务完成',
+        currentStep: 'account-check',
+        lastMessage: result.message,
+        runSource: result.runSource,
+        runMode: 'continue',
+        pid: result.pid
+    })
+}
+
 export function updateRunCheckpoint(
     email: string,
     patch: Partial<Omit<StoredRunCheckpointAccount, 'accountHash' | 'updatedAt'>>
@@ -236,6 +286,11 @@ export function updateRunCheckpoint(
 
     if (patch.state === 'running') {
         account.startedAt = patch.startedAt ?? account.startedAt ?? now
+        delete account.finishedAt
+        delete account.error
+    }
+    if (patch.state === 'pending') {
+        delete account.startedAt
         delete account.finishedAt
         delete account.error
     }

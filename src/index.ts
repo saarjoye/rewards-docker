@@ -51,11 +51,14 @@ import { updateAccountStatus } from './util/AccountStatusStore'
 import {
     markRunningCheckpointsInterrupted,
     selectAccountsForRun,
+    selectAccountsWithoutCheckpoint,
+    syncRunCheckpointFromAccountCheck,
     updateRunCheckpoint,
     type RunAccountMode
 } from './util/RunCheckpointStore'
 import { monitorGiftCards } from './util/GiftCardMonitor'
 import type { ServerActionName } from './util/ServerActions'
+import type { AppEarnablePoints, BrowserEarnablePoints, MissingSearchPoints } from './interface/Points'
 interface ExecutionContext {
     isMobile: boolean
     account: Account
@@ -157,9 +160,13 @@ function currentRunOptions(): RunOptions {
 }
 
 function markFormalRunInterrupted(message: string): void {
-    if (!isAccountStatusCheckOnly()) {
+    if (isFormalRunCheckpointEnabled()) {
         markRunningCheckpointsInterrupted(message)
     }
+}
+
+function isFormalRunCheckpointEnabled(): boolean {
+    return !isAccountStatusCheckOnly() && !currentManualTask()
 }
 
 interface UserData {
@@ -401,9 +408,66 @@ export class MicrosoftRewardsBot {
     }
 
     private updateFormalRunCheckpoint(email: string, patch: Parameters<typeof updateRunCheckpoint>[1]): void {
-        if (!isAccountStatusCheckOnly()) {
+        if (isFormalRunCheckpointEnabled()) {
             updateRunCheckpoint(email, patch)
         }
+    }
+
+    private syncAccountCheckRunCheckpoint(
+        email: string,
+        data: DashboardData,
+        browserEarnable: BrowserEarnablePoints,
+        appEarnable: AppEarnablePoints,
+        searchCounters: MissingSearchPoints
+    ): { hasPendingTasks: boolean; message: string } {
+        const pending: string[] = []
+        const workers = this.config.workers
+        const addPoints = (enabled: boolean, label: string, points: number): void => {
+            const safePoints = Math.max(0, Number(points || 0))
+            if (enabled && safePoints > 0) {
+                pending.push(`${label} ${safePoints}分`)
+            }
+        }
+
+        addPoints(Boolean(workers.doDesktopSearch), 'PC搜索', browserEarnable.desktopSearchPoints)
+        addPoints(Boolean(workers.doMobileSearch), '移动搜索', browserEarnable.mobileSearchPoints)
+        addPoints(Boolean(workers.doDailySet), '每日任务', browserEarnable.dailySetPoints)
+        addPoints(Boolean(workers.doMorePromotions), '更多推广', browserEarnable.morePromotionsPoints)
+        addPoints(Boolean(workers.doDailyCheckIn), '每日签到', appEarnable.checkIn)
+        addPoints(Boolean(workers.doReadToEarn), '阅读赚取', appEarnable.readToEarn)
+
+        const pointClaim = data.pointClaimBannerPromotion
+        const claimablePoints = Math.max(
+            0,
+            Number(pointClaim?.attributes?.claimable_points ?? 0) ||
+                Number(pointClaim?.pointProgressMax ?? 0) - Number(pointClaim?.pointProgress ?? 0)
+        )
+        if (workers.doClaimBonusPoints && pointClaim && !pointClaim.complete && claimablePoints > 0) {
+            pending.push(`奖励积分 ${claimablePoints}分`)
+        }
+
+        if (
+            workers.doMobileSearch &&
+            ['missing-counter', 'empty-counter', 'invalid-counter'].includes(searchCounters.mobileStatus)
+        ) {
+            pending.push('移动搜索额度未确认')
+        }
+
+        const hasPendingTasks = pending.length > 0
+        const preview = pending.slice(0, 4).join('、')
+        const more = pending.length > 4 ? ` 等${pending.length}项` : ''
+        const message = hasPendingTasks
+            ? `账号刷新：检测到未完成任务（${preview}${more}），等待继续执行`
+            : '账号刷新：dashboard 已无可执行任务，今日已完成'
+
+        syncRunCheckpointFromAccountCheck(email, {
+            hasPendingTasks,
+            message,
+            runSource: process.env.RUN_SOURCE || 'local',
+            pid: process.pid
+        })
+
+        return { hasPendingTasks, message }
     }
 
     private async runGiftCardMonitor(accountEmail: string, currentPoints: number): Promise<void> {
@@ -523,14 +587,12 @@ export class MicrosoftRewardsBot {
         }
 
         const options = currentRunOptions()
-        const selection = isAccountStatusCheckOnly()
-            ? {
+        const selection =
+            isAccountStatusCheckOnly() || options.manualTask
+            ? selectAccountsWithoutCheckpoint(this.accounts, {
                   mode: options.accountMode,
-                  targetAccountIndex: options.targetAccountIndex,
-                  selected: this.accounts,
-                  skipped: [],
-                  interrupted: 0
-              }
+                  targetAccountIndex: options.targetAccountIndex
+              })
             : selectAccountsForRun(this.accounts, {
                   mode: options.accountMode,
                   targetAccountIndex: options.targetAccountIndex,
@@ -1118,6 +1180,13 @@ export class MicrosoftRewardsBot {
                 )
 
                 if (isAccountStatusCheckOnly()) {
+                    this.syncAccountCheckRunCheckpoint(
+                        accountEmail,
+                        data,
+                        browserEarnable,
+                        appEarnable,
+                        initialSearchCounters
+                    )
                     updateAccountStatus(accountEmail, {
                         state: 'success',
                         stage: 'status-check',
