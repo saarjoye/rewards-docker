@@ -1,4 +1,10 @@
-export type DashboardFailureKind = 'network' | 'auth' | 'rate-limit' | 'server' | 'invalid-response'
+export type DashboardFailureKind =
+    | 'network'
+    | 'auth'
+    | 'rate-limit'
+    | 'server'
+    | 'endpoint-unavailable'
+    | 'invalid-response'
 
 export interface DashboardFailureDetails {
     stage: 'dashboard'

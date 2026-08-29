@@ -1,4 +1,4 @@
-import type { Counters } from '../interface/DashboardData'
+import type { Counters, DashboardFieldAvailability, DashboardFieldStatus } from '../interface/DashboardData'
 import type { MissingSearchPoints, SearchCounterInfo, SearchCounterSource } from '../interface/Points'
 
 type CounterItem = {
@@ -105,12 +105,20 @@ export function analyzeSearchCounter(
 export function calculateMissingSearchPoints(
     counters: Partial<Counters> | Record<string, unknown> | null | undefined,
     isMobile: boolean,
-    source: SearchCounterSource = 'dashboard'
+    source: SearchCounterSource = 'dashboard',
+    availability?: Pick<DashboardFieldAvailability, 'mobileSearch' | 'pcSearch'>
 ): MissingSearchPoints {
     const safeCounters = (counters ?? {}) as Record<string, unknown>
-    const mobileCounter = analyzeSearchCounter(safeCounters.mobileSearch, 'mobileSearch', source)
-    const desktopCounter = analyzeSearchCounter(safeCounters.pcSearch, 'pcSearch[0]', source, 0)
-    const edgeCounter = analyzeSearchCounter(safeCounters.pcSearch, 'pcSearch[1]', source, 1)
+    const counterValue = (key: 'mobileSearch' | 'pcSearch', status?: DashboardFieldStatus): unknown => {
+        if (status === 'missing' || status === 'fallback') return undefined
+        if (status === 'invalid') return {}
+        return safeCounters[key]
+    }
+    const mobileItems = counterValue('mobileSearch', availability?.mobileSearch)
+    const pcItems = counterValue('pcSearch', availability?.pcSearch)
+    const mobileCounter = analyzeSearchCounter(mobileItems, 'mobileSearch', source)
+    const desktopCounter = analyzeSearchCounter(pcItems, 'pcSearch[0]', source, 0)
+    const edgeCounter = analyzeSearchCounter(pcItems, 'pcSearch[1]', source, 1)
 
     const mobilePoints = mobileCounter.status === 'ok' ? mobileCounter.remaining : 0
     const desktopPoints = desktopCounter.status === 'ok' ? desktopCounter.remaining : 0

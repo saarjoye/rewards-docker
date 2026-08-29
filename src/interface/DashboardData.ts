@@ -1,4 +1,18 @@
+export type DashboardFieldStatus = 'available' | 'missing' | 'invalid' | 'fallback'
+
+export interface DashboardFieldAvailability {
+    pcSearch: DashboardFieldStatus
+    mobileSearch: DashboardFieldStatus
+    dailySetPromotions: DashboardFieldStatus
+    promotionalItems: DashboardFieldStatus
+    morePromotions: DashboardFieldStatus
+    morePromotionsWithoutPromotionalItems: DashboardFieldStatus
+    punchCards: DashboardFieldStatus
+    country: DashboardFieldStatus
+}
+
 export interface DashboardData {
+    dashboardFieldAvailability: DashboardFieldAvailability
     userStatus: UserStatus
     userWarnings: unknown[]
     promotionalItem: PromotionalItem

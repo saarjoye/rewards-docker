@@ -25,7 +25,7 @@ import { sendDiscord, flushDiscordQueue } from './logging/Discord'
 import { sendNtfy, flushNtfyQueue } from './logging/Ntfy'
 import { sendPushPlus, flushPushPlusQueue } from './logging/PushPlus'
 import { sendWeCom, flushWeComQueue } from './logging/WeCom'
-import type { DashboardData } from './interface/DashboardData'
+import type { DashboardData, DashboardFieldAvailability } from './interface/DashboardData'
 import type { AppDashboardData } from './interface/AppDashBoardData'
 import { PanelFlyoutData } from './interface/PanelFlyoutData'
 import {
@@ -191,8 +191,11 @@ export class MicrosoftRewardsBot {
     public requestToken = '' // 请求令牌
     public cookies: { mobile: Cookie[]; desktop: Cookie[] } // 移动端和桌面端的cookies
     public fingerprint!: BrowserFingerprintWithHeaders // 浏览器指纹
-    public currentDetailTask: { key: string; label: string; group: 'daily' | 'mobile' | 'desktop' | 'activity' } | null =
-        null
+    public currentDetailTask: {
+        key: string
+        label: string
+        group: 'daily' | 'mobile' | 'desktop' | 'activity'
+    } | null = null
     private currentPointRunId: string | null = null
     private dashboardPointsKnown = false
 
@@ -318,7 +321,12 @@ export class MicrosoftRewardsBot {
         return getCurrentContext().isMobile
     }
 
-    public recordPointGain(label: string, gained: number, newBalance: number, task: 'daily' | 'mobile' | 'desktop' = 'daily'): void {
+    public recordPointGain(
+        label: string,
+        gained: number,
+        newBalance: number,
+        task: 'daily' | 'mobile' | 'desktop' = 'daily'
+    ): void {
         const accountEmail = this.userData.accountEmail
         const safeGained = Math.max(0, Number.isFinite(Number(gained)) ? Number(gained) : 0)
         const safeBalance = Math.max(
@@ -363,7 +371,10 @@ export class MicrosoftRewardsBot {
         if (task !== 'daily') return
 
         const initialPoints = Math.max(0, Number(this.userData.initialPoints ?? 0))
-        const dailyGained = initialPoints > 0 ? Math.max(0, safeBalance - initialPoints) : Math.max(0, Number(this.userData.gainedPoints ?? 0))
+        const dailyGained =
+            initialPoints > 0
+                ? Math.max(0, safeBalance - initialPoints)
+                : Math.max(0, Number(this.userData.gainedPoints ?? 0))
         updateTaskProgress(accountEmail, 'daily', {
             completed: dailyGained,
             total: dailyGained,
@@ -400,6 +411,21 @@ export class MicrosoftRewardsBot {
         addPoints(Boolean(workers.doMorePromotions), '更多推广', browserEarnable.morePromotionsPoints)
         addPoints(Boolean(workers.doDailyCheckIn), '每日签到', appEarnable.checkIn)
         addPoints(Boolean(workers.doReadToEarn), '阅读赚取', appEarnable.readToEarn)
+        const addUnavailable = (
+            enabled: boolean,
+            label: string,
+            fields: (keyof DashboardFieldAvailability)[]
+        ): void => {
+            if (enabled && fields.some(field => data.dashboardFieldAvailability[field] !== 'available')) {
+                pending.push(`${label}数据未确认`)
+            }
+        }
+        addUnavailable(Boolean(workers.doDesktopSearch), 'PC搜索', ['pcSearch'])
+        addUnavailable(Boolean(workers.doDailySet), '每日任务', ['dailySetPromotions'])
+        addUnavailable(Boolean(workers.doMorePromotions), '更多推广', [
+            'morePromotions',
+            'morePromotionsWithoutPromotionalItems'
+        ])
 
         const pointClaim = data.pointClaimBannerPromotion
         const claimablePoints = Math.max(
@@ -542,16 +568,16 @@ export class MicrosoftRewardsBot {
         const options = currentRunOptions()
         const selection =
             isAccountStatusCheckOnly() || options.manualTask
-            ? selectAccountsWithoutCheckpoint(this.accounts, {
-                  mode: options.accountMode,
-                  targetAccountIndex: options.targetAccountIndex
-              })
-            : selectAccountsForRun(this.accounts, {
-                  mode: options.accountMode,
-                  targetAccountIndex: options.targetAccountIndex,
-                  runSource: options.source,
-                  pid: process.pid
-              })
+                ? selectAccountsWithoutCheckpoint(this.accounts, {
+                      mode: options.accountMode,
+                      targetAccountIndex: options.targetAccountIndex
+                  })
+                : selectAccountsForRun(this.accounts, {
+                      mode: options.accountMode,
+                      targetAccountIndex: options.targetAccountIndex,
+                      runSource: options.source,
+                      pid: process.pid
+                  })
         const accountsToRun = selection.selected
         const totalAccounts = accountsToRun.length
 
@@ -560,7 +586,8 @@ export class MicrosoftRewardsBot {
             'RUN-START',
             `启动微软奖励脚本 | v${pkg.version} | 运行模式: ${selection.mode}${
                 selection.targetAccountIndex ? `#${selection.targetAccountIndex}` : ''
-            }${options.manualTask === 'claim-bonus-points' ? ' | 手动任务: 立即领取奖励积分' : ''
+            }${
+                options.manualTask === 'claim-bonus-points' ? ' | 手动任务: 立即领取奖励积分' : ''
             } | 待执行账户: ${totalAccounts}/${this.accounts.length} | 已跳过: ${selection.skipped.length} | 上次中断: ${
                 selection.interrupted
             } | 集群数: ${this.config.clusters}`
@@ -728,20 +755,15 @@ export class MicrosoftRewardsBot {
                 updateAccountStatus(accountEmail, {
                     state: 'checking',
                     stage: 'account-start',
-                    lastMessage:
-                        isAccountStatusCheckOnly()
-                            ? '开始检测账号登录状态'
-                            : '任务前置登录验证'
+                    lastMessage: isAccountStatusCheckOnly() ? '开始检测账号登录状态' : '任务前置登录验证'
                 })
                 this.updateFormalRunCheckpoint(accountEmail, {
                     state: 'running',
-                    currentTask:
-                        isAccountStatusCheckOnly() ? '账号状态检测' : '任务前置登录验证',
+                    currentTask: isAccountStatusCheckOnly() ? '账号状态检测' : '任务前置登录验证',
                     currentStep: 'account-start',
-                    lastMessage:
-                        isAccountStatusCheckOnly()
-                            ? '开始检测账号登录状态'
-                            : '正式任务开始前登录并读取 dashboard',
+                    lastMessage: isAccountStatusCheckOnly()
+                        ? '开始检测账号登录状态'
+                        : '正式任务开始前登录并读取 dashboard',
                     runSource: process.env.RUN_SOURCE || 'local',
                     runMode: currentRunOptions().accountMode,
                     pid: process.pid
@@ -767,8 +789,9 @@ export class MicrosoftRewardsBot {
                 const collectedPoints = result.collectedPoints
                 const accountInitialPoints = result.initialPoints
                 const accountFinalPoints = result.finalPoints
-                const statusMessage =
-                    isAccountStatusCheckOnly() ? '账号状态检测通过' : `任务已完成，本次增加 ${collectedPoints} 分`
+                const statusMessage = isAccountStatusCheckOnly()
+                    ? '账号状态检测通过'
+                    : `任务已完成，本次增加 ${collectedPoints} 分`
                 updateAccountStatus(accountEmail, {
                     state: 'success',
                     stage: isAccountStatusCheckOnly() ? 'status-check' : 'account-end',
@@ -842,11 +865,7 @@ export class MicrosoftRewardsBot {
                         error: message
                     })
                 }
-                this.logger.error(
-                    'main',
-                    'ACCOUNT-ERROR',
-                    `${accountEmail}: ${message}`
-                )
+                this.logger.error('main', 'ACCOUNT-ERROR', `${accountEmail}: ${message}`)
 
                 const stat: AccountStats = {
                     email: accountEmail,
@@ -902,18 +921,15 @@ export class MicrosoftRewardsBot {
                 mobileSession = await this.browserFactory.createBrowser(account)
                 const initialContext: BrowserContext = mobileSession.context
                 this.mainMobilePage = await initialContext.newPage()
+                this.browser.func.prepareDashboardCapture(this.mainMobilePage, account.geoLocale)
 
                 this.logger.info('main', 'BROWSER', `移动浏览器已启动 | ${accountEmail}`)
 
                 this.updateFormalRunCheckpoint(accountEmail, {
                     state: 'running',
-                    currentTask:
-                        isAccountStatusCheckOnly() ? '账号状态检测' : '任务前置登录验证',
+                    currentTask: isAccountStatusCheckOnly() ? '账号状态检测' : '任务前置登录验证',
                     currentStep: 'login',
-                    lastMessage:
-                        isAccountStatusCheckOnly()
-                            ? '正在验证账号登录'
-                            : '正式任务前置登录验证',
+                    lastMessage: isAccountStatusCheckOnly() ? '正在验证账号登录' : '正式任务前置登录验证',
                     runSource: process.env.RUN_SOURCE || 'local',
                     runMode: currentRunOptions().accountMode,
                     pid: process.pid
@@ -922,15 +938,11 @@ export class MicrosoftRewardsBot {
                 updateAccountStatus(accountEmail, {
                     state: 'valid',
                     stage: 'login',
-                    lastMessage:
-                        isAccountStatusCheckOnly()
-                            ? '登录验证通过'
-                            : '任务前置登录验证通过'
+                    lastMessage: isAccountStatusCheckOnly() ? '登录验证通过' : '任务前置登录验证通过'
                 })
                 this.updateFormalRunCheckpoint(accountEmail, {
                     state: 'running',
-                    currentTask:
-                        isAccountStatusCheckOnly() ? '账号状态检测' : '任务前置登录验证',
+                    currentTask: isAccountStatusCheckOnly() ? '账号状态检测' : '任务前置登录验证',
                     currentStep: 'dashboard',
                     lastMessage: '登录通过，正在读取 dashboard',
                     runSource: process.env.RUN_SOURCE || 'local',
@@ -959,7 +971,7 @@ export class MicrosoftRewardsBot {
                 this.cookies.mobile = await initialContext.cookies()
                 this.fingerprint = mobileSession.fingerprint
 
-                const data: DashboardData = await this.browser.func.getDashboardData()
+                const data: DashboardData = await this.browser.func.getDashboardData(account.geoLocale)
                 const initialPoints = data.userStatus.availablePoints
                 this.userData.initialPoints = initialPoints
                 this.userData.currentPoints = initialPoints
@@ -994,7 +1006,8 @@ export class MicrosoftRewardsBot {
                 // 设置地理位置
                 this.userData.geoLocale =
                     account.geoLocale === 'auto' ? data.userProfile.attributes.country : account.geoLocale.toLowerCase()
-                if (this.userData.geoLocale.length > 2) {
+                const hasKnownGeoLocale = this.userData.geoLocale !== 'unknown'
+                if (this.userData.geoLocale !== 'unknown' && this.userData.geoLocale.length > 2) {
                     this.logger.warn(
                         'main',
                         'GEO-LOCALE',
@@ -1018,19 +1031,25 @@ export class MicrosoftRewardsBot {
                 })
                 this.updateFormalRunCheckpoint(accountEmail, {
                     state: 'running',
-                    currentTask:
-                        isAccountStatusCheckOnly() ? '账号状态检测' : '任务执行中',
+                    currentTask: isAccountStatusCheckOnly() ? '账号状态检测' : '任务执行中',
                     currentStep: 'dashboard',
                     lastMessage: `dashboard 已读取，当前积分 ${initialPoints}`,
                     runSource: process.env.RUN_SOURCE || 'local',
                     runMode: currentRunOptions().accountMode,
                     pid: process.pid
                 })
-                const initialSearchCounters = this.browser.func.missingSearchPoints(data.userStatus.counters, true)
+                const initialSearchCounters = this.browser.func.missingSearchPoints(
+                    data.userStatus.counters,
+                    true,
+                    data.dashboardFieldAvailability
+                )
                 const initialMobileSearch = initialSearchCounters.mobileCounter
                 const initialPcSearch = data.userStatus.counters.pcSearch?.[0]
                 const initialMobileUnrecognized = ['missing-counter', 'empty-counter', 'invalid-counter'].includes(
                     initialSearchCounters.mobileStatus
+                )
+                const initialPcUnrecognized = ['missing-counter', 'empty-counter', 'invalid-counter'].includes(
+                    initialSearchCounters.desktopCounter.status
                 )
                 const initialMobileProgress = initialMobileSearch.completed
                 const initialPcProgress = initialPcSearch?.pointProgress ?? 0
@@ -1050,15 +1069,16 @@ export class MicrosoftRewardsBot {
                             completed: initialPcProgress,
                             total: initialPcSearch?.pointProgressMax ?? 0,
                             gained: 0,
-                            status:
-                                initialPcSearch && initialPcSearch.pointProgress < initialPcSearch.pointProgressMax
-                                    ? '进行中'
-                                    : '已完成'
+                            status: initialPcUnrecognized
+                                ? '未识别到搜索额度'
+                                : initialPcSearch && initialPcSearch.pointProgress < initialPcSearch.pointProgressMax
+                                  ? '进行中'
+                                  : '已完成'
                         }
                     })
                 }
 
-                const browserEarnable = await this.browser.func.getBrowserEarnablePoints()
+                const browserEarnable = await this.browser.func.getBrowserEarnablePoints(data)
                 const appEarnable = hasAppAccessToken
                     ? await this.browser.func.getAppEarnablePoints().catch(error => {
                           this.logger.warn(
@@ -1223,13 +1243,13 @@ export class MicrosoftRewardsBot {
                         taskSummary
                     }
                 }
-                const skipAppTokenTask = (label: string): void => {
+                const skipAppTask = (label: string, reason: string): void => {
                     const detailKey = taskDetailKey(label)
                     taskSummary.push({
                         key: 'daily',
                         label,
                         gained: 0,
-                        status: '已跳过：App访问令牌不可用'
+                        status: `已跳过：${reason}`
                     })
                     updateTaskDetail(accountEmail, {
                         key: detailKey,
@@ -1239,9 +1259,39 @@ export class MicrosoftRewardsBot {
                         total: 0,
                         gained: 0,
                         status: '已跳过',
-                        message: 'App访问令牌不可用'
+                        message: reason
                     })
-                    this.logger.warn('main', 'FLOW', `${label}已跳过：App访问令牌不可用，后续搜索继续执行`)
+                    this.logger.warn('main', 'FLOW', `${label}已跳过：${reason}，后续搜索继续执行`)
+                }
+                const skipDashboardFieldTask = (
+                    label: string,
+                    fields: (keyof DashboardFieldAvailability)[]
+                ): boolean => {
+                    const unavailable = fields.filter(field => data.dashboardFieldAvailability[field] !== 'available')
+                    if (unavailable.length === 0) return false
+
+                    const reason = unavailable
+                        .map(field => `${field}=${data.dashboardFieldAvailability[field]}`)
+                        .join(',')
+                    const detailKey = taskDetailKey(label)
+                    taskSummary.push({
+                        key: 'daily',
+                        label,
+                        gained: 0,
+                        status: `已跳过：dashboard 字段不可用（${reason}）`
+                    })
+                    updateTaskDetail(accountEmail, {
+                        key: detailKey,
+                        label,
+                        group: 'activity',
+                        completed: 0,
+                        total: 0,
+                        gained: 0,
+                        status: '已跳过',
+                        message: `dashboard 字段不可用（${reason}）`
+                    })
+                    this.logger.warn('main', 'FLOW', `${label}已跳过：dashboard 字段不可用 | ${reason}`)
+                    return true
                 }
 
                 if (currentRunOptions().manualTask === 'claim-bonus-points') {
@@ -1255,39 +1305,58 @@ export class MicrosoftRewardsBot {
                 if (this.config.workers.doClaimBonusPoints) {
                     await runPointTask('领取奖励积分', async () => this.workers.doClaimBonusPoints(data))
                 }
-                if (this.config.workers.doAppPromotions && appData) {
+                if (this.config.workers.doAppPromotions && appData && hasKnownGeoLocale) {
                     await runPointTask('App 活动', async () => this.workers.doAppPromotions(appData))
                 } else if (this.config.workers.doAppPromotions) {
-                    skipAppTokenTask('App 活动')
-                }
-                if (this.config.workers.doDailySet) {
-                    await runPointTask('每日任务', async () => this.workers.doDailySet(data, this.mainMobilePage))
-                }
-                if (this.config.workers.doSpecialPromotions) {
-                    await runPointTask('特殊活动', async () => this.workers.doSpecialPromotions(data))
-                }
-                if (this.config.workers.doMorePromotions) {
-                    await runPointTask('更多推广', async () =>
-                        this.workers.doMorePromotions(data, this.mainMobilePage)
+                    skipAppTask(
+                        'App 活动',
+                        !hasKnownGeoLocale
+                            ? 'dashboard 未提供有效地区'
+                            : hasAppAccessToken
+                              ? 'App仪表盘不可用'
+                              : 'App访问令牌不可用'
                     )
                 }
-                if (this.config.workers.doDailyCheckIn && hasAppAccessToken) {
+                if (this.config.workers.doDailySet) {
+                    if (!skipDashboardFieldTask('每日任务', ['dailySetPromotions'])) {
+                        await runPointTask('每日任务', async () => this.workers.doDailySet(data, this.mainMobilePage))
+                    }
+                }
+                if (this.config.workers.doSpecialPromotions) {
+                    if (!skipDashboardFieldTask('特殊活动', ['promotionalItems'])) {
+                        await runPointTask('特殊活动', async () => this.workers.doSpecialPromotions(data))
+                    }
+                }
+                if (this.config.workers.doMorePromotions) {
+                    if (
+                        !skipDashboardFieldTask('更多推广', ['morePromotions', 'morePromotionsWithoutPromotionalItems'])
+                    ) {
+                        await runPointTask('更多推广', async () =>
+                            this.workers.doMorePromotions(data, this.mainMobilePage)
+                        )
+                    }
+                }
+                if (this.config.workers.doDailyCheckIn && hasAppAccessToken && hasKnownGeoLocale) {
                     await runPointTask('每日签到', async () => this.activities.doDailyCheckIn())
                 } else if (this.config.workers.doDailyCheckIn) {
-                    skipAppTokenTask('每日签到')
+                    skipAppTask('每日签到', hasKnownGeoLocale ? 'App访问令牌不可用' : 'dashboard 未提供有效地区')
                 }
-                if (this.config.workers.doReadToEarn && hasAppAccessToken) {
+                if (this.config.workers.doReadToEarn && hasAppAccessToken && hasKnownGeoLocale) {
                     await runPointTask('阅读赚取', async () => this.activities.doReadToEarn())
                 } else if (this.config.workers.doReadToEarn) {
-                    skipAppTokenTask('阅读赚取')
+                    skipAppTask('阅读赚取', hasKnownGeoLocale ? 'App访问令牌不可用' : 'dashboard 未提供有效地区')
                 }
                 if (this.config.workers.doPunchCards) {
-                    await runPointTask('打卡活动', async () => this.workers.doPunchCards(data, this.mainMobilePage))
+                    if (!skipDashboardFieldTask('打卡活动', ['punchCards'])) {
+                        await runPointTask('打卡活动', async () => this.workers.doPunchCards(data, this.mainMobilePage))
+                    }
                 }
 
                 const searchPoints = await this.browser.func.getSearchPoints()
                 let missingSearchPoints = this.browser.func.missingSearchPoints(searchPoints, true)
-                if (['missing-counter', 'empty-counter', 'invalid-counter'].includes(missingSearchPoints.mobileStatus)) {
+                if (
+                    ['missing-counter', 'empty-counter', 'invalid-counter'].includes(missingSearchPoints.mobileStatus)
+                ) {
                     this.logger.warn(
                         'main',
                         'SEARCH-COUNTER',
@@ -1326,7 +1395,10 @@ export class MicrosoftRewardsBot {
                 }
                 const searchStartPoints = await getLatestPoints(Number(this.userData.currentPoints ?? initialPoints))
                 this.userData.currentPoints = searchStartPoints
-                updateAccountPointTotals(accountEmail, { currentPoints: searchStartPoints, finalPoints: searchStartPoints })
+                updateAccountPointTotals(accountEmail, {
+                    currentPoints: searchStartPoints,
+                    finalPoints: searchStartPoints
+                })
 
                 this.cookies.mobile = await initialContext.cookies()
                 const mobileSearchMessage = ['missing-counter', 'empty-counter', 'invalid-counter'].includes(
@@ -1359,7 +1431,9 @@ export class MicrosoftRewardsBot {
                 let desktopGainedPoints = 0
                 let otherGainedPoints = 0
                 if (searchGainedPoints > 0 && estimatedSearchPoints > 0) {
-                    mobileGainedPoints = Math.round((searchGainedPoints * Math.max(0, mobilePoints)) / estimatedSearchPoints)
+                    mobileGainedPoints = Math.round(
+                        (searchGainedPoints * Math.max(0, mobilePoints)) / estimatedSearchPoints
+                    )
                     desktopGainedPoints = searchGainedPoints - mobileGainedPoints
                 } else if (searchGainedPoints > 0 && mobilePoints > 0) {
                     mobileGainedPoints = searchGainedPoints
@@ -1397,6 +1471,9 @@ export class MicrosoftRewardsBot {
                 const finalMobileUnrecognized = ['missing-counter', 'empty-counter', 'invalid-counter'].includes(
                     finalSearchCounters.mobileStatus
                 )
+                const finalPcUnrecognized = ['missing-counter', 'empty-counter', 'invalid-counter'].includes(
+                    finalSearchCounters.desktopCounter.status
+                )
                 const finalMobileTotal = finalMobileSearch.total || initialMobileSearch.total || 0
                 const finalPcTotal = finalPcSearch?.pointProgressMax ?? initialPcSearch?.pointProgressMax ?? 0
                 const finalMobileCompleted = Math.max(
@@ -1422,10 +1499,11 @@ export class MicrosoftRewardsBot {
                         completed: finalPcCompleted,
                         total: finalPcTotal,
                         gained: desktopGainedPoints,
-                        status:
-                            finalPcTotal > 0 && finalPcCompleted < finalPcTotal
-                                ? '进行中'
-                                : '已完成'
+                        status: finalPcUnrecognized
+                            ? '未识别到搜索额度'
+                            : finalPcTotal > 0 && finalPcCompleted < finalPcTotal
+                              ? '进行中'
+                              : '已完成'
                     },
                     daily: {
                         completed: dailyGainedPoints,
@@ -1453,7 +1531,7 @@ export class MicrosoftRewardsBot {
                     completed: finalPcCompleted,
                     total: finalPcTotal,
                     gained: desktopGainedPoints,
-                    status: '已完成'
+                    status: finalPcUnrecognized ? '未识别到搜索额度' : '已完成'
                 })
                 if (otherGainedPoints > 0) {
                     taskSummary.push({

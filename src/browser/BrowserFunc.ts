@@ -1,10 +1,10 @@
-import type { BrowserContext, Cookie, Page } from 'patchright'
+import type { BrowserContext, Cookie, Page, Response } from 'patchright'
 import type { AxiosRequestConfig } from 'axios'
 
 import type { MicrosoftRewardsBot } from '../index'
 import { saveSessionData } from '../util/Load'
 
-import type { Counters, DashboardData } from './../interface/DashboardData'
+import type { Counters, DashboardData, DashboardFieldAvailability } from './../interface/DashboardData'
 import type { AppUserData } from '../interface/AppUserData'
 import type { XboxDashboardData } from './../interface/XboxDashboardData'
 import type { AppEarnablePoints, BrowserEarnablePoints, MissingSearchPoints } from '../interface/Points'
@@ -12,12 +12,19 @@ import type { AppDashboardData } from '../interface/AppDashBoardData'
 import { PanelFlyoutData } from '../interface/PanelFlyoutData'
 import { calculateMissingSearchPoints } from '../util/SearchCounter'
 import {
+    axiosFinalUrl,
+    axiosRedirected,
     responseContentType,
     responseTopLevelFields,
     safeAxiosDiagnostic,
     type SafeHttpDiagnostic
 } from '../util/Axios'
-import { dashboardFromApiPayload, dashboardFromFlightEntries, dashboardFromHtml } from '../util/DashboardParser'
+import {
+    dashboardFromApiPayload,
+    dashboardFromFlightEntries,
+    dashboardFromHtml,
+    validateDashboardData
+} from '../util/DashboardParser'
 import { DashboardFetchError } from '../util/DashboardError'
 import {
     extractDeploymentIdFromHtml,
@@ -29,25 +36,69 @@ import {
     type ServerActionRuntimeInfo
 } from '../util/ServerActions'
 
+interface CapturedDashboard {
+    data: DashboardData
+    path: string
+    status: number
+    contentType: string | null
+    topLevelFields: string[]
+}
+
+interface DashboardCaptureState {
+    candidate: CapturedDashboard | null
+    candidateCount: number
+    geoLocale?: string
+    pending: Set<Promise<void>>
+}
+
 export default class BrowserFunc {
     private bot: MicrosoftRewardsBot
+    private dashboardCaptures = new WeakMap<Page, DashboardCaptureState>()
+    private lastDashboardFieldAvailability: DashboardFieldAvailability | undefined
 
     constructor(bot: MicrosoftRewardsBot) {
         this.bot = bot
+    }
+
+    prepareDashboardCapture(page: Page, geoLocale?: string): void {
+        const existing = this.dashboardCaptures.get(page)
+        if (existing) {
+            existing.geoLocale = geoLocale
+            return
+        }
+
+        const state: DashboardCaptureState = {
+            candidate: null,
+            candidateCount: 0,
+            geoLocale,
+            pending: new Set<Promise<void>>()
+        }
+        this.lastDashboardFieldAvailability = undefined
+        this.dashboardCaptures.set(page, state)
+
+        page.on('response', response => {
+            const pending = this.captureDashboardResponse(response, state)
+            state.pending.add(pending)
+            void pending.finally(() => state.pending.delete(pending))
+        })
     }
 
     /**
      * 获取用户桌面仪表板数据
      * @returns {DashboardData} 用户必应奖励仪表板数据对象
      */
-    async getDashboardData(): Promise<DashboardData> {
-        const apiPath = '/api/getuserinfo?type=1'
+    async getDashboardData(geoLocale?: string): Promise<DashboardData> {
+        geoLocale ??= this.bot.userData?.geoLocale
+        const apiPath = '/api/getuserinfo'
+        const page = this.bot.mainMobilePage
+        const dashboardOrigin = this.dashboardOrigin(page)
+        const apiUrl = `${dashboardOrigin}${apiPath}?type=1`
         let apiFailure: SafeHttpDiagnostic
         let apiReason: string
 
         try {
             const request: AxiosRequestConfig = {
-                url: `https://rewards.bing.com${apiPath}`,
+                url: apiUrl,
                 method: 'GET',
                 headers: {
                     ...(this.bot.fingerprint?.headers ?? {}),
@@ -56,14 +107,15 @@ export default class BrowserFunc {
                         'live.com',
                         'microsoftonline.com'
                     ]),
-                    Referer: 'https://rewards.bing.com/',
-                    Origin: 'https://rewards.bing.com'
+                    Referer: `${dashboardOrigin}/`,
+                    Origin: dashboardOrigin
                 }
             }
 
             const response = await this.bot.axios.request(request)
             const contentType = responseContentType(response.headers)
             const topLevelFields = responseTopLevelFields(response.data)
+            const parsed = dashboardFromApiPayload(response.data, { geoLocale })
             this.logDashboardDiagnostic('api', {
                 path: apiPath,
                 status: response.status,
@@ -72,30 +124,25 @@ export default class BrowserFunc {
                 topLevelFields,
                 htmlLength: null,
                 pageUrl: null,
-                pageTitle: null
+                pageTitle: null,
+                parserReason: parsed.reason,
+                finalUrl: axiosFinalUrl(response),
+                redirected: axiosRedirected(response, apiUrl),
+                flightEntryCount: null,
+                captureCount: null
             })
 
-            if (!contentType?.toLowerCase().includes('json')) {
-                apiFailure = {
-                    status: response.status,
-                    code: null,
-                    contentType,
-                    topLevelFields,
-                    category: 'invalid-response'
-                }
-                apiReason = `API content-type 非 JSON (${contentType ?? 'missing'})`
-            } else {
-                const parsed = dashboardFromApiPayload(response.data)
-                if (parsed.data) return parsed.data
-                apiFailure = {
-                    status: response.status,
-                    code: null,
-                    contentType,
-                    topLevelFields,
-                    category: 'invalid-response'
-                }
-                apiReason = parsed.reason
+            if (parsed.data) return parsed.data
+            apiFailure = {
+                status: response.status,
+                code: null,
+                contentType,
+                topLevelFields,
+                category: 'invalid-response',
+                finalUrl: axiosFinalUrl(response),
+                redirected: axiosRedirected(response, apiUrl)
             }
+            apiReason = parsed.reason
         } catch (error) {
             apiFailure = safeAxiosDiagnostic(error)
             apiReason = this.describeDashboardFailure(apiFailure)
@@ -107,7 +154,12 @@ export default class BrowserFunc {
                 topLevelFields: apiFailure.topLevelFields,
                 htmlLength: null,
                 pageUrl: null,
-                pageTitle: null
+                pageTitle: null,
+                parserReason: apiReason,
+                finalUrl: apiFailure.finalUrl,
+                redirected: apiFailure.redirected,
+                flightEntryCount: null,
+                captureCount: null
             })
         }
 
@@ -118,38 +170,68 @@ export default class BrowserFunc {
         )
 
         const fallbackReasons: string[] = []
-        const page = this.bot.mainMobilePage
         if (page && !page.isClosed()) {
-            try {
-                const [html, title, flightEntries] = await Promise.all([
-                    page.content(),
-                    page.title().catch(() => ''),
-                    page.evaluate(() => Reflect.get(globalThis, '__next_f') ?? []).catch(() => [])
-                ])
-                this.logDashboardDiagnostic('page', {
-                    path: '/dashboard',
-                    status: null,
-                    code: null,
-                    contentType: 'text/html',
-                    topLevelFields: [],
-                    htmlLength: html.length,
-                    pageUrl: this.safePageUrl(page.url()),
-                    pageTitle: this.safePageTitle(title)
-                })
+            this.prepareDashboardCapture(page, geoLocale)
 
-                const flight = dashboardFromFlightEntries(flightEntries)
-                if (flight.data) return flight.data
-                const htmlResult = dashboardFromHtml(html)
-                if (htmlResult.data) return htmlResult.data
-                fallbackReasons.push(`当前页面：${flight.reason}；${htmlResult.reason}`)
-            } catch {
-                fallbackReasons.push('当前页面内容读取失败')
+            const captured = await this.getCapturedDashboard(page)
+            if (captured) {
+                this.logCapturedDashboard(captured, page)
+                return captured.data
+            }
+
+            const parsePage = async (label: string): Promise<DashboardData | null> => {
+                try {
+                    const [html, title, flightEntries] = await Promise.all([
+                        page.content(),
+                        page.title().catch(() => ''),
+                        page.evaluate(() => Reflect.get(globalThis, '__next_f') ?? []).catch(() => [])
+                    ])
+                    this.logDashboardDiagnostic('page', {
+                        path: '/dashboard',
+                        status: null,
+                        code: null,
+                        contentType: 'text/html',
+                        topLevelFields: [],
+                        htmlLength: html.length,
+                        pageUrl: this.safePageUrl(page.url()),
+                        pageTitle: this.safePageTitle(title),
+                        parserReason: null,
+                        finalUrl: null,
+                        redirected: null,
+                        flightEntryCount: Array.isArray(flightEntries) ? flightEntries.length : 0,
+                        captureCount: this.dashboardCaptures.get(page)?.candidateCount ?? 0
+                    })
+
+                    const flight = dashboardFromFlightEntries(flightEntries, { geoLocale })
+                    if (flight.data) return flight.data
+                    const htmlResult = dashboardFromHtml(html, { geoLocale })
+                    if (htmlResult.data) return htmlResult.data
+                    fallbackReasons.push(`${label}：${flight.reason}；${htmlResult.reason}`)
+                } catch {
+                    fallbackReasons.push(`${label}内容读取失败`)
+                }
+                return null
+            }
+
+            const currentPageData = await parsePage('当前页面')
+            if (currentPageData) return currentPageData
+
+            if (apiFailure.status === 404) {
+                await page.reload({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null)
+                await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => null)
+                const reloadedCapture = await this.getCapturedDashboard(page)
+                if (reloadedCapture) {
+                    this.logCapturedDashboard(reloadedCapture, page)
+                    return reloadedCapture.data
+                }
+                const reloadedPageData = await parsePage('页面重载')
+                if (reloadedPageData) return reloadedPageData
             }
         }
 
         try {
             const response = await this.bot.axios.request({
-                url: 'https://rewards.bing.com/dashboard',
+                url: `${dashboardOrigin}/dashboard`,
                 method: 'GET',
                 headers: {
                     ...(this.bot.fingerprint?.headers ?? {}),
@@ -158,7 +240,7 @@ export default class BrowserFunc {
                         'live.com',
                         'microsoftonline.com'
                     ]),
-                    Referer: 'https://rewards.bing.com/'
+                    Referer: `${dashboardOrigin}/`
                 },
                 responseType: 'text',
                 transformResponse: data => data
@@ -172,9 +254,14 @@ export default class BrowserFunc {
                 topLevelFields: [],
                 htmlLength: html.length,
                 pageUrl: page && !page.isClosed() ? this.safePageUrl(page.url()) : null,
-                pageTitle: null
+                pageTitle: null,
+                parserReason: null,
+                finalUrl: axiosFinalUrl(response),
+                redirected: axiosRedirected(response, `${dashboardOrigin}/dashboard`),
+                flightEntryCount: null,
+                captureCount: null
             })
-            const parsed = dashboardFromHtml(html)
+            const parsed = dashboardFromHtml(html, { geoLocale })
             if (parsed.data) return parsed.data
             fallbackReasons.push(`HTML 请求：${parsed.reason}`)
         } catch (error) {
@@ -187,7 +274,12 @@ export default class BrowserFunc {
                 topLevelFields: diagnostic.topLevelFields,
                 htmlLength: null,
                 pageUrl: page && !page.isClosed() ? this.safePageUrl(page.url()) : null,
-                pageTitle: null
+                pageTitle: null,
+                parserReason: null,
+                finalUrl: diagnostic.finalUrl,
+                redirected: diagnostic.redirected,
+                flightEntryCount: null,
+                captureCount: null
             })
             fallbackReasons.push(`HTML 请求：${this.describeDashboardFailure(diagnostic)}`)
         }
@@ -206,6 +298,102 @@ export default class BrowserFunc {
         })
     }
 
+    private dashboardOrigin(page: Page | undefined): string {
+        const candidates = [page && !page.isClosed() ? page.url() : null, this.bot.config.baseURL]
+        for (const candidate of candidates) {
+            if (typeof candidate !== 'string') continue
+            try {
+                const url = new URL(candidate)
+                const host = url.hostname.toLowerCase()
+                const trustedHost = host === 'rewards.bing.com' || host === 'rewards.microsoft.com'
+                const trustedPath =
+                    (host.endsWith('.bing.com') || host.endsWith('.microsoft.com')) &&
+                    (url.pathname.includes('/dashboard') || url.pathname.includes('/rewards'))
+                if (url.protocol === 'https:' && (trustedHost || trustedPath)) return url.origin
+            } catch {
+                // Try the next trusted local candidate.
+            }
+        }
+        return 'https://rewards.bing.com'
+    }
+
+    private async captureDashboardResponse(response: Response, state: DashboardCaptureState): Promise<void> {
+        try {
+            const request = response.request()
+            const resourceType = request.resourceType()
+            if (resourceType !== 'xhr' && resourceType !== 'fetch') return
+
+            const url = new URL(response.url())
+            const expectedOrigin = new URL(this.bot.config.baseURL).origin
+            const frameOrigin = (() => {
+                try {
+                    return new URL(request.frame().url()).origin
+                } catch {
+                    return null
+                }
+            })()
+            if (url.protocol !== 'https:' || (url.origin !== expectedOrigin && url.origin !== frameOrigin)) return
+            if (response.status() < 200 || response.status() >= 300) return
+
+            const headers = response.headers()
+            const contentLength = Number(headers['content-length'] ?? 0)
+            if (Number.isFinite(contentLength) && contentLength > 2_000_000) return
+
+            const body = await response.body()
+            if (body.length === 0 || body.length > 2_000_000) return
+
+            let payload: unknown
+            try {
+                payload = JSON.parse(body.toString('utf8')) as unknown
+            } catch {
+                return
+            }
+
+            state.candidateCount += 1
+            const wrapped = dashboardFromApiPayload(payload, { geoLocale: state.geoLocale })
+            const direct = wrapped.data ? null : validateDashboardData(payload, { geoLocale: state.geoLocale })
+            const data = wrapped.data ?? (direct?.valid ? direct.data : null)
+            if (!data) return
+
+            state.candidate = {
+                data,
+                path: url.pathname.slice(0, 300),
+                status: response.status(),
+                contentType: responseContentType(headers),
+                topLevelFields: responseTopLevelFields(payload)
+            }
+        } catch {
+            // Browser response capture is opportunistic; the normal fallback chain reports failures.
+        }
+    }
+
+    private async getCapturedDashboard(page: Page): Promise<CapturedDashboard | null> {
+        const state = this.dashboardCaptures.get(page)
+        if (!state) return null
+        for (let pass = 0; pass < 2 && state.pending.size > 0; pass += 1) {
+            await Promise.allSettled([...state.pending])
+        }
+        return state.candidate
+    }
+
+    private logCapturedDashboard(captured: CapturedDashboard, page: Page): void {
+        this.logDashboardDiagnostic('capture', {
+            path: captured.path,
+            status: captured.status,
+            code: null,
+            contentType: captured.contentType,
+            topLevelFields: captured.topLevelFields,
+            htmlLength: null,
+            pageUrl: this.safePageUrl(page.url()),
+            pageTitle: null,
+            parserReason: 'ok',
+            finalUrl: null,
+            redirected: null,
+            flightEntryCount: null,
+            captureCount: this.dashboardCaptures.get(page)?.candidateCount ?? 0
+        })
+    }
+
     private describeDashboardFailure(diagnostic: SafeHttpDiagnostic): string {
         switch (diagnostic.category) {
             case 'auth':
@@ -214,6 +402,8 @@ export default class BrowserFunc {
                 return 'API 请求受限 (429)'
             case 'server':
                 return `API 服务端错误 (${diagnostic.status})`
+            case 'endpoint-unavailable':
+                return 'dashboard endpoint unavailable'
             case 'network':
                 return `API 网络错误 (${diagnostic.code ?? 'unknown'})`
             case 'invalid-response':
@@ -222,7 +412,7 @@ export default class BrowserFunc {
     }
 
     private logDashboardDiagnostic(
-        source: 'api' | 'page' | 'html',
+        source: 'api' | 'page' | 'html' | 'capture',
         diagnostic: {
             path: string
             status: number | null
@@ -232,12 +422,17 @@ export default class BrowserFunc {
             htmlLength: number | null
             pageUrl: string | null
             pageTitle: string | null
+            parserReason: string | null
+            finalUrl: string | null
+            redirected: boolean | null
+            flightEntryCount: number | null
+            captureCount: number | null
         }
     ): void {
         this.bot.logger.debug(
             this.bot.isMobile,
             'GET-DASHBOARD-DATA',
-            `source=${source} | path=${diagnostic.path} | status=${diagnostic.status ?? 'n/a'} | axiosCode=${diagnostic.code ?? 'n/a'} | contentType=${diagnostic.contentType ?? 'n/a'} | topLevelFields=${diagnostic.topLevelFields.join(',') || 'none'} | htmlLength=${diagnostic.htmlLength ?? 'n/a'} | pageUrl=${diagnostic.pageUrl ?? 'n/a'} | pageTitle=${diagnostic.pageTitle ?? 'n/a'}`
+            `source=${source} | path=${diagnostic.path} | status=${diagnostic.status ?? 'n/a'} | axiosCode=${diagnostic.code ?? 'n/a'} | contentType=${diagnostic.contentType ?? 'n/a'} | topLevelFields=${diagnostic.topLevelFields.join(',') || 'none'} | parserReason=${diagnostic.parserReason ?? 'n/a'} | htmlLength=${diagnostic.htmlLength ?? 'n/a'} | flightEntries=${diagnostic.flightEntryCount ?? 'n/a'} | capturedCandidates=${diagnostic.captureCount ?? 'n/a'} | finalUrl=${diagnostic.finalUrl ?? 'n/a'} | redirected=${diagnostic.redirected ?? 'n/a'} | pageUrl=${diagnostic.pageUrl ?? 'n/a'} | pageTitle=${diagnostic.pageTitle ?? 'n/a'}`
         )
     }
 
@@ -259,7 +454,7 @@ export default class BrowserFunc {
             .slice(0, 160)
     }
 
-  /**
+    /**
      * Fetch user panel flyout data
      * @returns {PanelFlyoutData} Object of user bing rewards dashboard data
      */
@@ -352,12 +547,16 @@ export default class BrowserFunc {
      */
     async getSearchPoints(): Promise<Counters> {
         const dashboardData = await this.getDashboardData() // 始终获取最新数据
-
+        this.lastDashboardFieldAvailability = dashboardData.dashboardFieldAvailability
         return dashboardData.userStatus.counters
     }
 
-    missingSearchPoints(counters: Counters, isMobile: boolean): MissingSearchPoints {
-        return calculateMissingSearchPoints(counters, isMobile, 'dashboard')
+    missingSearchPoints(
+        counters: Counters,
+        isMobile: boolean,
+        availability = this.lastDashboardFieldAvailability
+    ): MissingSearchPoints {
+        return calculateMissingSearchPoints(counters, isMobile, 'dashboard', availability)
     }
 
     async getMobileSearchPointsFallback(isMobile: boolean): Promise<MissingSearchPoints | null> {
@@ -397,7 +596,12 @@ export default class BrowserFunc {
         const html = typeof response.data === 'string' ? response.data : ''
         const parsed = dashboardFromHtml(html)
         if (!parsed.data) return null
-        return calculateMissingSearchPoints(parsed.data.userStatus.counters, isMobile, 'dashboard-html')
+        return calculateMissingSearchPoints(
+            parsed.data.userStatus.counters,
+            isMobile,
+            'dashboard-html',
+            parsed.data.dashboardFieldAvailability
+        )
     }
 
     private getPanelFlyoutSearchPoints(isMobile: boolean): MissingSearchPoints | null {
@@ -447,9 +651,9 @@ export default class BrowserFunc {
     /**
      * 获取通过网页浏览器可赚取的总积分
      */
-    async getBrowserEarnablePoints(): Promise<BrowserEarnablePoints> {
+    async getBrowserEarnablePoints(dashboardData?: DashboardData): Promise<BrowserEarnablePoints> {
         try {
-            const data = await this.getDashboardData()
+            const data = dashboardData ?? (await this.getDashboardData())
 
             const desktopSearchPoints =
                 data.userStatus.counters.pcSearch?.reduce(
@@ -657,10 +861,9 @@ export default class BrowserFunc {
             }
 
             const dynamicResult = extractServerActionHashResultFromSources(sources)
-            const hashes =
-                isKnownServerActionDeployment(deploymentId)
-                    ? { ...FALLBACK_SERVER_ACTION_HASHES, ...dynamicResult.hashes }
-                    : dynamicResult.hashes
+            const hashes = isKnownServerActionDeployment(deploymentId)
+                ? { ...FALLBACK_SERVER_ACTION_HASHES, ...dynamicResult.hashes }
+                : dynamicResult.hashes
 
             const detectedActions = Object.keys(hashes)
             if (detectedActions.length > 0) {
@@ -706,11 +909,7 @@ export default class BrowserFunc {
      * @param tag 日志标签
      * @returns 成功返回 true，失败/降级返回 false
      */
-    async callServerAction(
-        actionName: ServerActionName,
-        args: unknown[],
-        tag: string
-    ): Promise<boolean> {
+    async callServerAction(actionName: ServerActionName, args: unknown[], tag: string): Promise<boolean> {
         if (!this.bot.serverActions.hashes[actionName]) {
             this.bot.serverActions = await this.extractServerActionRuntimeInfo(this.bot.mainMobilePage, true)
         }
@@ -787,7 +986,8 @@ export default class BrowserFunc {
 
     async clickClaimBonusPointsButton(page: Page): Promise<boolean> {
         try {
-            await page.goto('https://rewards.bing.com/dashboard', { waitUntil: 'domcontentloaded', timeout: 15000 })
+            await page
+                .goto('https://rewards.bing.com/dashboard', { waitUntil: 'domcontentloaded', timeout: 15000 })
                 .catch(() => {})
             await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {})
 
@@ -885,7 +1085,9 @@ export default class BrowserFunc {
                     el.getAttribute('aria-disabled') === 'true' ||
                     el.getAttribute('disabled') !== null
                 const dialogRoots = Array.from(
-                    document.querySelectorAll('[role="dialog"],[aria-modal="true"],[class*="modal" i],[class*="dialog" i],[class*="drawer" i]')
+                    document.querySelectorAll(
+                        '[role="dialog"],[aria-modal="true"],[class*="modal" i],[class*="dialog" i],[class*="drawer" i]'
+                    )
                 ).filter(isVisible)
                 const roots = dialogRoots.length > 0 ? dialogRoots : [document.body]
                 const candidates = roots
@@ -918,7 +1120,9 @@ export default class BrowserFunc {
 
                 const target = candidates[0]
                 if (!target) {
-                    const dialogText = dialogRoots.map(root => normalizeText(root.textContent).slice(0, 160)).join(' | ')
+                    const dialogText = dialogRoots
+                        .map(root => normalizeText(root.textContent).slice(0, 160))
+                        .join(' | ')
                     return { clicked: false, reason: 'no-confirm-button', dialogText }
                 }
 
@@ -975,11 +1179,7 @@ export default class BrowserFunc {
 
                 this.bot.logger.info(this.bot.isMobile, 'CLOSE-BROWSER', '浏览器已干净地关闭！')
             } catch {
-                this.bot.logger.warn(
-                    this.bot.isMobile,
-                    'CLOSE-BROWSER',
-                    '关闭时遇到错误，但进程正在退出。'
-                )
+                this.bot.logger.warn(this.bot.isMobile, 'CLOSE-BROWSER', '关闭时遇到错误，但进程正在退出。')
             }
         }
     }

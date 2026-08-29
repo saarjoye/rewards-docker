@@ -13,6 +13,38 @@ export interface SafeHttpDiagnostic {
     contentType: string | null
     topLevelFields: string[]
     category: DashboardFailureKind
+    finalUrl: string | null
+    redirected: boolean | null
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+export function safeHttpUrl(rawUrl: unknown): string | null {
+    if (typeof rawUrl !== 'string') return null
+    try {
+        const url = new URL(rawUrl)
+        return `${url.origin}${url.pathname}`.slice(0, 300)
+    } catch {
+        return null
+    }
+}
+
+export function axiosFinalUrl(value: unknown): string | null {
+    if (!isRecord(value)) return null
+    const request = isRecord(value.request) ? value.request : null
+    const response = isRecord(value.response) ? value.response : null
+    const nestedRequest = response && isRecord(response.request) ? response.request : request
+    const nestedResponse = nestedRequest && isRecord(nestedRequest.res) ? nestedRequest.res : null
+    return safeHttpUrl(nestedRequest?.responseURL ?? nestedResponse?.responseUrl)
+}
+
+export function axiosRedirected(value: unknown, originalUrl: string): boolean | null {
+    const finalUrl = axiosFinalUrl(value)
+    const safeOriginal = safeHttpUrl(originalUrl)
+    if (!finalUrl || !safeOriginal) return null
+    return finalUrl !== safeOriginal
 }
 
 export function responseContentType(headers: unknown): string | null {
@@ -40,6 +72,7 @@ export function responseTopLevelFields(data: unknown): string[] {
 
 export function classifyHttpFailure(status: number | null): DashboardFailureKind {
     if (status === 401 || status === 403) return 'auth'
+    if (status === 404) return 'endpoint-unavailable'
     if (status === 429) return 'rate-limit'
     if (status !== null && status >= 500) return 'server'
     return status === null ? 'network' : 'invalid-response'
@@ -47,16 +80,27 @@ export function classifyHttpFailure(status: number | null): DashboardFailureKind
 
 export function safeAxiosDiagnostic(error: unknown): SafeHttpDiagnostic {
     if (!axios.isAxiosError(error)) {
-        return { status: null, code: null, contentType: null, topLevelFields: [], category: 'network' }
+        return {
+            status: null,
+            code: null,
+            contentType: null,
+            topLevelFields: [],
+            category: 'network',
+            finalUrl: null,
+            redirected: null
+        }
     }
 
     const status = error.response?.status ?? null
+    const originalUrl = typeof error.config?.url === 'string' ? error.config.url : ''
     return {
         status,
         code: typeof error.code === 'string' ? error.code.slice(0, 80) : null,
         contentType: responseContentType(error.response?.headers),
         topLevelFields: responseTopLevelFields(error.response?.data),
-        category: classifyHttpFailure(status)
+        category: classifyHttpFailure(status),
+        finalUrl: axiosFinalUrl(error),
+        redirected: originalUrl ? axiosRedirected(error, originalUrl) : null
     }
 }
 

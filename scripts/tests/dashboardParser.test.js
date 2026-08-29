@@ -5,6 +5,7 @@ const {
     dashboardFromHtml,
     validateDashboardData
 } = require('../../dist/util/DashboardParser')
+const { calculateMissingSearchPoints } = require('../../dist/util/SearchCounter')
 
 function dashboard(points = 1234) {
     return {
@@ -31,6 +32,29 @@ assert.match(missing.reason, /缺少 dashboard/)
 
 assert.equal(validateDashboardData({ userStatus: { availablePoints: 0 } }).valid, false)
 
+const partial = dashboardFromApiPayload(
+    {
+        dashboard: {
+            userStatus: { availablePoints: 456, counters: { pcSearch: [] } }
+        }
+    },
+    { geoLocale: 'US' }
+)
+assert.equal(partial.data.userStatus.availablePoints, 456)
+assert.deepEqual(partial.data.userStatus.counters.mobileSearch, [])
+assert.equal(partial.data.dashboardFieldAvailability.mobileSearch, 'missing')
+assert.equal(partial.data.dashboardFieldAvailability.pcSearch, 'available')
+assert.equal(partial.data.dashboardFieldAvailability.dailySetPromotions, 'missing')
+assert.equal(partial.data.dashboardFieldAvailability.country, 'fallback')
+assert.equal(partial.data.userProfile.attributes.country, 'us')
+const partialSearch = calculateMissingSearchPoints(
+    partial.data.userStatus.counters,
+    true,
+    'dashboard',
+    partial.data.dashboardFieldAvailability
+)
+assert.equal(partialSearch.mobileStatus, 'missing-counter')
+
 const legacyValue = dashboard(2345)
 legacyValue.promotionalItems.push({ title: 'brace } and semicolon; inside a string' })
 const legacy = dashboardFromHtml(`<script>var dashboard = ${JSON.stringify(legacyValue)};</script>`)
@@ -49,7 +73,7 @@ assert.equal(runtimeFlight.data.userStatus.availablePoints, 3456)
 
 const invalidModern = dashboardFromHtml('<script>self.__next_f.push([1,"1:{\\"page\\":\\"dashboard\\"}\\n"])</script>')
 assert.equal(invalidModern.data, null)
-assert.match(invalidModern.reason, /未找到完整合法/)
+assert.match(invalidModern.reason, /未找到核心字段合法/)
 
 const ambiguous = dashboardFromFlightEntries([
     [1, `1:${JSON.stringify(dashboard(1))}\n`],

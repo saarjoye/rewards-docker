@@ -1,4 +1,4 @@
-import type { DashboardData } from '../interface/DashboardData'
+import type { DashboardData, DashboardFieldAvailability, DashboardFieldStatus } from '../interface/DashboardData'
 
 export type DashboardDataSource = 'api' | 'legacy-html' | 'next-flight'
 
@@ -6,6 +6,11 @@ export interface DashboardParseResult {
     data: DashboardData | null
     source: DashboardDataSource | null
     reason: string
+    flightEntryCount?: number
+}
+
+export interface DashboardValidationOptions {
+    geoLocale?: string
 }
 
 interface BalancedJson {
@@ -25,7 +30,38 @@ function hasFiniteNonNegativeNumber(value: unknown): value is number {
     return typeof value === 'number' && Number.isFinite(value) && value >= 0
 }
 
-export function validateDashboardData(value: unknown): { valid: true; data: DashboardData } | { valid: false; reason: string } {
+function fieldStatus(value: unknown, valid: (candidate: unknown) => boolean): DashboardFieldStatus {
+    if (value === undefined || value === null) return 'missing'
+    return valid(value) ? 'available' : 'invalid'
+}
+
+function validRecordArray(value: unknown): value is Record<string, unknown>[] {
+    return Array.isArray(value) && value.every(isRecord)
+}
+
+function validSearchCounterArray(value: unknown): boolean {
+    if (!Array.isArray(value)) return false
+    return value.every(counter => {
+        if (!isRecord(counter)) return false
+        if (
+            !hasFiniteNonNegativeNumber(counter.pointProgress) ||
+            !hasFiniteNonNegativeNumber(counter.pointProgressMax)
+        ) {
+            return false
+        }
+        return counter.pointProgress <= counter.pointProgressMax
+    })
+}
+
+function fallbackCountry(geoLocale: string | undefined): string {
+    const candidate = geoLocale?.trim()
+    return candidate && candidate.toLowerCase() !== 'auto' ? candidate.toLowerCase() : 'unknown'
+}
+
+export function validateDashboardData(
+    value: unknown,
+    options: DashboardValidationOptions = {}
+): { valid: true; data: DashboardData } | { valid: false; reason: string } {
     if (!isRecord(value)) return { valid: false, reason: 'dashboard 不是对象' }
 
     const userStatus = value.userStatus
@@ -36,70 +72,90 @@ export function validateDashboardData(value: unknown): { valid: true; data: Dash
 
     const counters = userStatus.counters
     if (!isRecord(counters)) return { valid: false, reason: '缺少 userStatus.counters' }
-    if (!Array.isArray(counters.pcSearch) || !Array.isArray(counters.mobileSearch)) {
-        return { valid: false, reason: '搜索 counters 不完整' }
-    }
-    for (const counter of [...counters.pcSearch, ...counters.mobileSearch]) {
-        if (!isRecord(counter)) return { valid: false, reason: '搜索 counter 不是对象' }
-        if (!hasFiniteNonNegativeNumber(counter.pointProgress) || !hasFiniteNonNegativeNumber(counter.pointProgressMax)) {
-            return { valid: false, reason: '搜索 counter 进度非法' }
-        }
-        if (counter.pointProgress > counter.pointProgressMax) {
-            return { valid: false, reason: '搜索 counter 进度超过上限' }
-        }
-    }
-
-    if (!isRecord(value.dailySetPromotions)) return { valid: false, reason: '缺少 dailySetPromotions' }
-    if (!Object.values(value.dailySetPromotions).every(Array.isArray)) {
-        return { valid: false, reason: 'dailySetPromotions 日期项不是数组' }
-    }
-    for (const field of [
-        'promotionalItems',
-        'morePromotions',
-        'morePromotionsWithoutPromotionalItems',
-        'punchCards'
-    ]) {
-        if (!Array.isArray(value[field])) return { valid: false, reason: `缺少 ${field}` }
-        if (!(value[field] as unknown[]).every(isRecord)) return { valid: false, reason: `${field} 包含非法项目` }
-    }
 
     const userProfile = value.userProfile
-    if (
-        !isRecord(userProfile) ||
-        !isRecord(userProfile.attributes) ||
-        typeof userProfile.attributes.country !== 'string' ||
-        userProfile.attributes.country.trim().length === 0
-    ) {
-        return { valid: false, reason: '缺少 userProfile.attributes.country' }
+    const attributes = isRecord(userProfile) && isRecord(userProfile.attributes) ? userProfile.attributes : {}
+    const countryValue = attributes.country
+    const countryAvailable = typeof countryValue === 'string' && countryValue.trim().length > 0
+
+    const availability: DashboardFieldAvailability = {
+        pcSearch: fieldStatus(counters.pcSearch, validSearchCounterArray),
+        mobileSearch: fieldStatus(counters.mobileSearch, validSearchCounterArray),
+        dailySetPromotions: fieldStatus(
+            value.dailySetPromotions,
+            candidate => isRecord(candidate) && Object.values(candidate).every(items => validRecordArray(items))
+        ),
+        promotionalItems: fieldStatus(value.promotionalItems, validRecordArray),
+        morePromotions: fieldStatus(value.morePromotions, validRecordArray),
+        morePromotionsWithoutPromotionalItems: fieldStatus(
+            value.morePromotionsWithoutPromotionalItems,
+            validRecordArray
+        ),
+        punchCards: fieldStatus(value.punchCards, validRecordArray),
+        country: countryAvailable ? 'available' : countryValue === undefined ? 'fallback' : 'invalid'
     }
 
-    return { valid: true, data: value as unknown as DashboardData }
+    const normalized = {
+        ...value,
+        dashboardFieldAvailability: availability,
+        userStatus: {
+            ...userStatus,
+            counters: {
+                ...counters,
+                pcSearch: availability.pcSearch === 'available' ? counters.pcSearch : [],
+                mobileSearch: availability.mobileSearch === 'available' ? counters.mobileSearch : []
+            }
+        },
+        dailySetPromotions: availability.dailySetPromotions === 'available' ? value.dailySetPromotions : {},
+        promotionalItems: availability.promotionalItems === 'available' ? value.promotionalItems : [],
+        morePromotions: availability.morePromotions === 'available' ? value.morePromotions : [],
+        morePromotionsWithoutPromotionalItems:
+            availability.morePromotionsWithoutPromotionalItems === 'available'
+                ? value.morePromotionsWithoutPromotionalItems
+                : [],
+        punchCards: availability.punchCards === 'available' ? value.punchCards : [],
+        userProfile: {
+            ...(isRecord(userProfile) ? userProfile : {}),
+            attributes: {
+                ...attributes,
+                country: countryAvailable ? countryValue.trim() : fallbackCountry(options.geoLocale)
+            }
+        }
+    }
+
+    return { valid: true, data: normalized as unknown as DashboardData }
 }
 
-export function dashboardFromApiPayload(payload: unknown): DashboardParseResult {
+export function dashboardFromApiPayload(
+    payload: unknown,
+    options: DashboardValidationOptions = {}
+): DashboardParseResult {
     if (!isRecord(payload) || !Object.prototype.hasOwnProperty.call(payload, 'dashboard')) {
         return { data: null, source: null, reason: 'API 响应缺少 dashboard 字段' }
     }
 
-    const validation = validateDashboardData(payload.dashboard)
+    const validation = validateDashboardData(payload.dashboard, options)
     return validation.valid
         ? { data: validation.data, source: 'api', reason: 'ok' }
         : { data: null, source: null, reason: `API dashboard 校验失败：${validation.reason}` }
 }
 
-export function dashboardFromFlightEntries(entries: unknown): DashboardParseResult {
+export function dashboardFromFlightEntries(
+    entries: unknown,
+    options: DashboardValidationOptions = {}
+): DashboardParseResult {
     const roots: unknown[] = []
     collectDecodedValues(entries, roots, 0, new Set<unknown>())
-    return findUniqueDashboard(roots, 'next-flight')
+    return findUniqueDashboard(roots, 'next-flight', options)
 }
 
-export function dashboardFromHtml(html: string): DashboardParseResult {
+export function dashboardFromHtml(html: string, options: DashboardValidationOptions = {}): DashboardParseResult {
     if (!html) return { data: null, source: null, reason: 'dashboard HTML 为空' }
 
     const legacy = extractLegacyDashboard(html)
     if (legacy !== null) {
-        const validation = validateDashboardData(legacy)
-        if (validation.valid) return { data: validation.data, source: 'legacy-html', reason: 'ok' }
+        const validation = validateDashboardData(legacy, options)
+        if (validation.valid) return { data: validation.data, source: 'legacy-html', reason: 'ok', flightEntryCount: 0 }
     }
 
     const entries = extractNextFlightPushEntries(html)
@@ -107,14 +163,19 @@ export function dashboardFromHtml(html: string): DashboardParseResult {
         return {
             data: null,
             source: null,
-            reason: legacy === null ? '未找到旧版 dashboard 或 Next.js Flight 数据' : '旧版 dashboard 数据不完整'
+            reason: legacy === null ? '未找到旧版 dashboard 或 Next.js Flight 数据' : '旧版 dashboard 核心数据不完整',
+            flightEntryCount: 0
         }
     }
 
-    return dashboardFromFlightEntries(entries)
+    return { ...dashboardFromFlightEntries(entries, options), flightEntryCount: entries.length }
 }
 
-function findUniqueDashboard(roots: unknown[], source: DashboardDataSource): DashboardParseResult {
+function findUniqueDashboard(
+    roots: unknown[],
+    source: DashboardDataSource,
+    options: DashboardValidationOptions
+): DashboardParseResult {
     const candidates: DashboardData[] = []
     const signatures = new Set<string>()
     const visited = new Set<unknown>()
@@ -129,7 +190,7 @@ function findUniqueDashboard(roots: unknown[], source: DashboardDataSource): Das
             visited.add(value)
         }
 
-        const validation = validateDashboardData(value)
+        const validation = validateDashboardData(value, options)
         if (validation.valid) {
             const signature = JSON.stringify(validation.data)
             if (!signatures.has(signature)) {
@@ -150,7 +211,7 @@ function findUniqueDashboard(roots: unknown[], source: DashboardDataSource): Das
 
     if (candidates.length === 1 && candidates[0]) return { data: candidates[0], source, reason: 'ok' }
     if (candidates.length > 1) return { data: null, source: null, reason: '发现多个不一致的合法 dashboard 候选' }
-    return { data: null, source: null, reason: 'Next.js Flight 中未找到完整合法的 DashboardData' }
+    return { data: null, source: null, reason: 'Next.js Flight 中未找到核心字段合法的 DashboardData' }
 }
 
 function collectDecodedValues(value: unknown, output: unknown[], depth: number, visited: Set<unknown>): void {
