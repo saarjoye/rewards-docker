@@ -44,7 +44,6 @@ import {
     pointCategoryFor,
     recordPointRunGain,
     startPointRun,
-    updatePointRunBaseline,
     type PointRunStatus
 } from './util/PointsHistoryStore'
 import { updateAccountStatus } from './util/AccountStatusStore'
@@ -59,6 +58,18 @@ import {
 import { monitorGiftCards } from './util/GiftCardMonitor'
 import type { ServerActionName } from './util/ServerActions'
 import type { AppEarnablePoints, BrowserEarnablePoints, MissingSearchPoints } from './interface/Points'
+import { dashboardFailureDetails, isDashboardFetchError } from './util/DashboardError'
+import {
+    calculateKnownPointTotals,
+    buildWeComAccountMessage,
+    dashboardAccountFailure,
+    formatAccountError,
+    formatAccountPoints,
+    genericAccountFailure,
+    resolveRunExitCode,
+    type AccountStats,
+    type AccountTaskSummary
+} from './util/RunSummary'
 interface ExecutionContext {
     isMobile: boolean
     account: Account
@@ -67,26 +78,6 @@ interface ExecutionContext {
 interface BrowserSession {
     context: BrowserContext
     fingerprint: BrowserFingerprintWithHeaders
-}
-
-interface AccountStats {
-    email: string
-    initialPoints: number
-    finalPoints: number
-    collectedPoints: number
-    taskSummary: AccountTaskSummary[]
-    duration: number
-    success: boolean
-    error?: string
-}
-
-interface AccountTaskSummary {
-    key: 'daily' | 'mobile' | 'desktop' | 'other'
-    label: string
-    completed?: number
-    total?: number
-    gained: number
-    status: string
 }
 
 interface RunOptions {
@@ -203,6 +194,7 @@ export class MicrosoftRewardsBot {
     public currentDetailTask: { key: string; label: string; group: 'daily' | 'mobile' | 'desktop' | 'activity' } | null =
         null
     private currentPointRunId: string | null = null
+    private dashboardPointsKnown = false
 
     // 新版 UI（modern dashboard）使用 Next.js Server Actions 而非 REST API。
     // next-action hash 在编译时生成，绑定到具体部署版本（dpl）。
@@ -264,18 +256,18 @@ export class MicrosoftRewardsBot {
     }
 
     private buildSummaryMessage(accountStats: AccountStats[], runStartTime: number, hadWorkerFailure: boolean): string {
-        const totalCollectedPoints = accountStats.reduce((sum, s) => sum + s.collectedPoints, 0)
-        const totalInitialPoints = accountStats.reduce((sum, s) => sum + s.initialPoints, 0)
-        const totalFinalPoints = accountStats.reduce((sum, s) => sum + s.finalPoints, 0)
+        const totals = calculateKnownPointTotals(accountStats)
         const totalDuration = this.formatDurationSeconds((Date.now() - runStartTime) / 1000)
         const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 19)
+        const statusFailed = resolveRunExitCode(accountStats, hadWorkerFailure) === 1
 
         const lines: string[] = [
             `每日积分摘要 | ${timestamp}`,
-            `状态: ${hadWorkerFailure ? '异常' : '完成'}`,
+            `状态: ${statusFailed ? '异常' : '完成'}`,
             `账户数: ${accountStats.length}`,
-            `总收集积分: +${totalCollectedPoints}`,
-            `原始总计: ${totalInitialPoints} → 新总计: ${totalFinalPoints}`,
+            `已知账户总收集积分: +${totals.collectedPoints}`,
+            `已知账户积分总计: ${totals.initialPoints} → ${totals.finalPoints}`,
+            `积分未知账户: ${totals.unknownAccounts}`,
             `总运行时间: ${totalDuration}`
         ]
 
@@ -285,10 +277,9 @@ export class MicrosoftRewardsBot {
             for (const stat of accountStats) {
                 const status = stat.success ? '成功' : '失败'
                 const duration = this.formatDurationSeconds(stat.duration)
-                const error = stat.error ? ` | ${stat.error}` : ''
-                lines.push(
-                    `${stat.email} | +${stat.collectedPoints} | ${stat.initialPoints}→${stat.finalPoints} | ${duration} | ${status}${error}`
-                )
+                const errorText = formatAccountError(stat.error)
+                const error = errorText ? ` | ${errorText}` : ''
+                lines.push(`${stat.email} | ${formatAccountPoints(stat).compact} | ${duration} | ${status}${error}`)
             }
         }
 
@@ -297,34 +288,8 @@ export class MicrosoftRewardsBot {
 
     private buildWeComAccountMessage(stat: AccountStats): string {
         const timestamp = new Date().toLocaleString()
-        const status = stat.success ? '完成' : '失败'
         const duration = this.formatDurationSeconds(stat.duration)
-        const lines: string[] = [
-            `Microsoft Rewards 账号任务${status}`,
-            `时间：${timestamp}`,
-            `账号：${stat.email}`,
-            `任务前总积分：${stat.initialPoints}`,
-            `任务后总积分：${stat.finalPoints}`,
-            `本次总增加：${stat.collectedPoints}`,
-            `耗时：${duration}`
-        ]
-
-        if (stat.taskSummary.length > 0) {
-            lines.push('')
-            lines.push('任务明细：')
-            for (const task of stat.taskSummary) {
-                const progress =
-                    task.total !== undefined && task.completed !== undefined ? ` | 进度 ${task.completed}/${task.total}` : ''
-                lines.push(`- ${task.label}：+${task.gained} 分${progress} | ${task.status}`)
-            }
-        }
-
-        if (stat.error) {
-            lines.push('')
-            lines.push(`错误：${stat.error}`)
-        }
-
-        return lines.join('\n')
+        return buildWeComAccountMessage(stat, timestamp, duration)
     }
 
     private async sendWeComAccountSummary(stat: AccountStats): Promise<void> {
@@ -510,18 +475,6 @@ export class MicrosoftRewardsBot {
         }
     }
 
-    private safeUpdatePointRunBaseline(email: string, beforePoints: number): void {
-        try {
-            updatePointRunBaseline(email, this.currentPointRunId, beforePoints)
-        } catch (error) {
-            this.logger.warn(
-                'main',
-                'POINTS-HISTORY',
-                `积分历史基准更新失败: ${error instanceof Error ? error.message : String(error)}`
-            )
-        }
-    }
-
     private safeEnsurePointRunCategoryMinimum(
         email: string,
         label: string,
@@ -651,6 +604,7 @@ export class MicrosoftRewardsBot {
             worker.on('message', (msg: { __ipcLog?: IpcLog; __stats?: AccountStats[] }) => {
                 if (msg.__stats) {
                     allAccountStats.push(...msg.__stats)
+                    if (msg.__stats.some(stat => !stat.success)) hadWorkerFailure = true
                 }
 
                 const log = msg.__ipcLog
@@ -697,22 +651,20 @@ export class MicrosoftRewardsBot {
             )
 
             if (this.activeWorkers <= 0) {
-                const totalCollectedPoints = allAccountStats.reduce((sum, s) => sum + s.collectedPoints, 0)
-                const totalInitialPoints = allAccountStats.reduce((sum, s) => sum + s.initialPoints, 0)
-                const totalFinalPoints = allAccountStats.reduce((sum, s) => sum + s.finalPoints, 0)
+                const totals = calculateKnownPointTotals(allAccountStats)
                 const totalDurationMinutes = ((Date.now() - runStartTime) / 1000 / 60).toFixed(1)
 
                 this.logger.info(
                     'main',
                     'RUN-END',
-                    `已完成所有账户 | 已处理账户: ${allAccountStats.length} | 总收集积分: +${totalCollectedPoints} | 原始总计: ${totalInitialPoints} → 新总计: ${totalFinalPoints} | 总运行时间: ${totalDurationMinutes}分钟`,
-                    'green'
+                    `已完成所有账户 | 已处理账户: ${allAccountStats.length} | 已知账户总收集积分: +${totals.collectedPoints} | 已知账户积分: ${totals.initialPoints} → ${totals.finalPoints} | 积分未知账户: ${totals.unknownAccounts} | 总运行时间: ${totalDurationMinutes}分钟`,
+                    resolveRunExitCode(allAccountStats, hadWorkerFailure) === 1 ? 'yellow' : 'green'
                 )
 
                 await this.sendPushPlusSummary(allAccountStats, runStartTime, hadWorkerFailure)
                 await flushAllWebhooks()
 
-                process.exit(hadWorkerFailure ? 1 : 0)
+                process.exit(resolveRunExitCode(allAccountStats, hadWorkerFailure))
             }
         }
 
@@ -765,16 +717,13 @@ export class MicrosoftRewardsBot {
             const accountStartTime = Date.now()
             const accountEmail = account.email
             this.currentPointRunId = null
+            this.dashboardPointsKnown = false
             this.userData.userName = this.utils.getEmailUsername(accountEmail)
             this.userData.accountEmail = accountEmail
             this.userData.timezoneOffset = String(-new Date().getTimezoneOffset())
             this.userData.initialPoints = 0
             this.userData.currentPoints = 0
             this.userData.gainedPoints = 0
-            if (!isAccountStatusCheckOnly()) {
-                this.currentPointRunId = this.safeStartPointRun(accountEmail, 0)
-            }
-
             try {
                 updateAccountStatus(accountEmail, {
                     state: 'checking',
@@ -812,134 +761,87 @@ export class MicrosoftRewardsBot {
 
                 this.axios = new AxiosClient(account.proxy)
 
-                const result:
-                    | {
-                          initialPoints: number
-                          finalPoints: number
-                          collectedPoints: number
-                          taskSummary: AccountTaskSummary[]
-                      }
-                    | undefined = await this.Main(account).catch(error => {
-                    void this.logger.error(
-                        true,
-                        'FLOW',
-                        `${accountEmail} 的移动流程失败: ${error instanceof Error ? error.message : String(error)}`
-                    )
-                    return undefined
-                })
+                const result = await this.Main(account)
 
                 const durationSeconds = ((Date.now() - accountStartTime) / 1000).toFixed(1)
+                const collectedPoints = result.collectedPoints
+                const accountInitialPoints = result.initialPoints
+                const accountFinalPoints = result.finalPoints
+                const statusMessage =
+                    isAccountStatusCheckOnly() ? '账号状态检测通过' : `任务已完成，本次增加 ${collectedPoints} 分`
+                updateAccountStatus(accountEmail, {
+                    state: 'success',
+                    stage: isAccountStatusCheckOnly() ? 'status-check' : 'account-end',
+                    lastMessage: statusMessage
+                })
+                this.updateFormalRunCheckpoint(accountEmail, {
+                    state: 'completed',
+                    currentTask: isAccountStatusCheckOnly() ? '账号状态检测完成' : '账号任务完成',
+                    currentStep: isAccountStatusCheckOnly() ? 'status-check' : 'account-end',
+                    lastMessage: statusMessage,
+                    runSource: process.env.RUN_SOURCE || 'local',
+                    runMode: currentRunOptions().accountMode,
+                    pid: process.pid
+                })
+                this.finishCurrentPointRun(accountEmail, 'completed', {
+                    beforePoints: accountInitialPoints,
+                    afterPoints: accountFinalPoints,
+                    runGained: collectedPoints,
+                    taskSummary: result.taskSummary
+                })
 
-                if (result) {
-                    const collectedPoints = result.collectedPoints ?? 0
-                    const accountInitialPoints = result.initialPoints ?? 0
-                    const accountFinalPoints = result.finalPoints ?? accountInitialPoints + collectedPoints
-                    const statusMessage =
-                        isAccountStatusCheckOnly()
-                            ? '账号状态检测通过'
-                            : `任务已完成，本次增加 ${collectedPoints} 分`
-                    updateAccountStatus(accountEmail, {
-                        state: 'success',
-                        stage: isAccountStatusCheckOnly() ? 'status-check' : 'account-end',
-                        lastMessage: statusMessage
-                    })
-                    this.updateFormalRunCheckpoint(accountEmail, {
-                        state: 'completed',
-                        currentTask:
-                            isAccountStatusCheckOnly() ? '账号状态检测完成' : '账号任务完成',
-                        currentStep:
-                            isAccountStatusCheckOnly() ? 'status-check' : 'account-end',
-                        lastMessage: statusMessage,
-                        runSource: process.env.RUN_SOURCE || 'local',
-                        runMode: currentRunOptions().accountMode,
-                        pid: process.pid
-                    })
-                    this.finishCurrentPointRun(accountEmail, 'completed', {
-                        beforePoints: accountInitialPoints,
-                        afterPoints: accountFinalPoints,
-                        runGained: collectedPoints,
-                        taskSummary: result.taskSummary
-                    })
-
-                    const stat: AccountStats = {
-                        email: accountEmail,
-                        initialPoints: accountInitialPoints,
-                        finalPoints: accountFinalPoints,
-                        collectedPoints: collectedPoints,
-                        taskSummary: result.taskSummary,
-                        duration: parseFloat(durationSeconds),
-                        success: true
-                    }
-                    accountStats.push(stat)
-
-                    this.logger.info(
-                        'main',
-                        'ACCOUNT-END',
-                        `已完成账户: ${accountEmail} | 总计: +${collectedPoints} | 原始: ${accountInitialPoints} → 新值: ${accountFinalPoints} | 持续时间: ${durationSeconds}秒`,
-                        'green'
-                    )
-                    await this.sendWeComAccountSummary(stat)
-                } else {
-                    updateAccountStatus(accountEmail, {
-                        state: 'error',
-                        stage: 'account-flow',
-                        lastMessage: '账号流程失败，请查看运行日志',
-                        error: '流程失败'
-                    })
-                    this.updateFormalRunCheckpoint(accountEmail, {
-                        state: 'failed',
-                        currentTask: '账号流程失败',
-                        currentStep: 'account-flow',
-                        lastMessage: '账号流程失败，请查看运行日志',
-                        error: '流程失败',
-                        runSource: process.env.RUN_SOURCE || 'local',
-                        runMode: currentRunOptions().accountMode,
-                        pid: process.pid
-                    })
-                    this.finishCurrentPointRun(accountEmail, 'failed', {
-                        beforePoints: this.userData.initialPoints,
-                        afterPoints: this.userData.currentPoints,
-                        runGained: Math.max(0, Number(this.userData.currentPoints ?? 0) - Number(this.userData.initialPoints ?? 0)),
-                        error: '流程失败'
-                    })
-                    const stat: AccountStats = {
-                        email: accountEmail,
-                        initialPoints: 0,
-                        finalPoints: 0,
-                        collectedPoints: 0,
-                        taskSummary: [],
-                        duration: parseFloat(durationSeconds),
-                        success: false,
-                        error: '流程失败'
-                    }
-                    accountStats.push(stat)
-                    await this.sendWeComAccountSummary(stat)
+                const stat: AccountStats = {
+                    email: accountEmail,
+                    initialPoints: accountInitialPoints,
+                    finalPoints: accountFinalPoints,
+                    collectedPoints,
+                    taskSummary: result.taskSummary,
+                    duration: parseFloat(durationSeconds),
+                    success: true
                 }
+                accountStats.push(stat)
+
+                this.logger.info(
+                    'main',
+                    'ACCOUNT-END',
+                    `已完成账户: ${accountEmail} | 总计: +${collectedPoints} | 原始: ${accountInitialPoints} → 新值: ${accountFinalPoints} | 持续时间: ${durationSeconds}秒`,
+                    'green'
+                )
+                await this.sendWeComAccountSummary(stat)
             } catch (error) {
                 const durationSeconds = ((Date.now() - accountStartTime) / 1000).toFixed(1)
                 const message = error instanceof Error ? error.message : String(error)
+                const failure = isDashboardFetchError(error)
+                    ? dashboardAccountFailure(dashboardFailureDetails(error))
+                    : genericAccountFailure('account-error', message)
+                const initialPoints = this.dashboardPointsKnown ? this.userData.initialPoints : null
+                const finalPoints = this.dashboardPointsKnown ? this.userData.currentPoints : null
+                const collectedPoints =
+                    initialPoints === null || finalPoints === null ? null : Math.max(0, finalPoints - initialPoints)
                 updateAccountStatus(accountEmail, {
                     state: 'error',
-                    stage: 'account-error',
+                    stage: failure.stage,
                     lastMessage: message,
                     error: message
                 })
                 this.updateFormalRunCheckpoint(accountEmail, {
                     state: 'failed',
                     currentTask: '账号异常',
-                    currentStep: 'account-error',
+                    currentStep: failure.stage,
                     lastMessage: message,
                     error: message,
                     runSource: process.env.RUN_SOURCE || 'local',
                     runMode: currentRunOptions().accountMode,
                     pid: process.pid
                 })
-                this.finishCurrentPointRun(accountEmail, 'failed', {
-                    beforePoints: this.userData.initialPoints,
-                    afterPoints: this.userData.currentPoints,
-                    runGained: Math.max(0, Number(this.userData.currentPoints ?? 0) - Number(this.userData.initialPoints ?? 0)),
-                    error: message
-                })
+                if (initialPoints !== null && finalPoints !== null && collectedPoints !== null) {
+                    this.finishCurrentPointRun(accountEmail, 'failed', {
+                        beforePoints: initialPoints,
+                        afterPoints: finalPoints,
+                        runGained: collectedPoints,
+                        error: message
+                    })
+                }
                 this.logger.error(
                     'main',
                     'ACCOUNT-ERROR',
@@ -948,13 +850,13 @@ export class MicrosoftRewardsBot {
 
                 const stat: AccountStats = {
                     email: accountEmail,
-                    initialPoints: 0,
-                    finalPoints: 0,
-                    collectedPoints: 0,
+                    initialPoints,
+                    finalPoints,
+                    collectedPoints,
                     taskSummary: [],
                     duration: parseFloat(durationSeconds),
                     success: false,
-                    error: message
+                    error: failure
                 }
                 accountStats.push(stat)
                 await this.sendWeComAccountSummary(stat)
@@ -962,9 +864,7 @@ export class MicrosoftRewardsBot {
         }
 
         if (this.config.clusters <= 1 && cluster.isPrimary) {
-            const totalCollectedPoints = accountStats.reduce((sum, s) => sum + s.collectedPoints, 0)
-            const totalInitialPoints = accountStats.reduce((sum, s) => sum + s.initialPoints, 0)
-            const totalFinalPoints = accountStats.reduce((sum, s) => sum + s.finalPoints, 0)
+            const totals = calculateKnownPointTotals(accountStats)
             const totalDurationMinutes = ((Date.now() - runStartTime) / 1000 / 60).toFixed(1)
             const hadWorkerFailure = accountStats.some(s => !s.success)
 
@@ -972,13 +872,13 @@ export class MicrosoftRewardsBot {
             this.logger.info(
                 'main',
                 'RUN-END',
-                `${runSummary} | 已处理账户: ${accountStats.length} | 总收集积分: +${totalCollectedPoints} | 原始总计: ${totalInitialPoints} → 新总计: ${totalFinalPoints} | 总运行时间: ${totalDurationMinutes}分钟`,
+                `${runSummary} | 已处理账户: ${accountStats.length} | 已知账户总收集积分: +${totals.collectedPoints} | 已知账户积分: ${totals.initialPoints} → ${totals.finalPoints} | 积分未知账户: ${totals.unknownAccounts} | 总运行时间: ${totalDurationMinutes}分钟`,
                 hadWorkerFailure ? 'yellow' : 'green'
             )
 
             await this.sendPushPlusSummary(accountStats, runStartTime, hadWorkerFailure)
             await flushAllWebhooks()
-            process.exit(hadWorkerFailure ? 1 : 0)
+            process.exit(resolveRunExitCode(accountStats, hadWorkerFailure))
         }
 
         return accountStats
@@ -1060,6 +960,13 @@ export class MicrosoftRewardsBot {
                 this.fingerprint = mobileSession.fingerprint
 
                 const data: DashboardData = await this.browser.func.getDashboardData()
+                const initialPoints = data.userStatus.availablePoints
+                this.userData.initialPoints = initialPoints
+                this.userData.currentPoints = initialPoints
+                this.dashboardPointsKnown = true
+                if (!isAccountStatusCheckOnly()) {
+                    this.currentPointRunId = this.safeStartPointRun(accountEmail, initialPoints)
+                }
                 let appData: AppDashboardData | null = null
                 if (hasAppAccessToken) {
                     try {
@@ -1095,13 +1002,9 @@ export class MicrosoftRewardsBot {
                     )
                 }
 
-                this.userData.initialPoints = data.userStatus.availablePoints
-                this.userData.currentPoints = data.userStatus.availablePoints
-                const initialPoints = this.userData.initialPoints ?? 0
                 const taskSummary: AccountTaskSummary[] = []
                 let dailyGainedPoints = 0
                 if (!isAccountStatusCheckOnly()) {
-                    this.safeUpdatePointRunBaseline(accountEmail, initialPoints)
                     resetAccountRunProgress(accountEmail, {
                         initialPoints,
                         currentPoints: initialPoints,

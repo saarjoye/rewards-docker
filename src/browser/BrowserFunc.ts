@@ -12,6 +12,14 @@ import type { AppDashboardData } from '../interface/AppDashBoardData'
 import { PanelFlyoutData } from '../interface/PanelFlyoutData'
 import { calculateMissingSearchPoints } from '../util/SearchCounter'
 import {
+    responseContentType,
+    responseTopLevelFields,
+    safeAxiosDiagnostic,
+    type SafeHttpDiagnostic
+} from '../util/Axios'
+import { dashboardFromApiPayload, dashboardFromFlightEntries, dashboardFromHtml } from '../util/DashboardParser'
+import { DashboardFetchError } from '../util/DashboardError'
+import {
     extractDeploymentIdFromHtml,
     extractScriptUrls,
     extractServerActionHashResultFromSources,
@@ -33,9 +41,13 @@ export default class BrowserFunc {
      * @returns {DashboardData} 用户必应奖励仪表板数据对象
      */
     async getDashboardData(): Promise<DashboardData> {
+        const apiPath = '/api/getuserinfo?type=1'
+        let apiFailure: SafeHttpDiagnostic
+        let apiReason: string
+
         try {
             const request: AxiosRequestConfig = {
-                url: 'https://rewards.bing.com/api/getuserinfo?type=1',
+                url: `https://rewards.bing.com${apiPath}`,
                 method: 'GET',
                 headers: {
                     ...(this.bot.fingerprint?.headers ?? {}),
@@ -50,41 +62,201 @@ export default class BrowserFunc {
             }
 
             const response = await this.bot.axios.request(request)
+            const contentType = responseContentType(response.headers)
+            const topLevelFields = responseTopLevelFields(response.data)
+            this.logDashboardDiagnostic('api', {
+                path: apiPath,
+                status: response.status,
+                code: null,
+                contentType,
+                topLevelFields,
+                htmlLength: null,
+                pageUrl: null,
+                pageTitle: null
+            })
 
-            if (response.data?.dashboard) {
-                return response.data.dashboard as DashboardData
+            if (!contentType?.toLowerCase().includes('json')) {
+                apiFailure = {
+                    status: response.status,
+                    code: null,
+                    contentType,
+                    topLevelFields,
+                    category: 'invalid-response'
+                }
+                apiReason = `API content-type 非 JSON (${contentType ?? 'missing'})`
+            } else {
+                const parsed = dashboardFromApiPayload(response.data)
+                if (parsed.data) return parsed.data
+                apiFailure = {
+                    status: response.status,
+                    code: null,
+                    contentType,
+                    topLevelFields,
+                    category: 'invalid-response'
+                }
+                apiReason = parsed.reason
             }
-            throw new Error('Dashboard data missing from API response')
         } catch (error) {
-            this.bot.logger.warn(this.bot.isMobile, 'GET-DASHBOARD-DATA', 'API失败，尝试HTML回退方案')
+            apiFailure = safeAxiosDiagnostic(error)
+            apiReason = this.describeDashboardFailure(apiFailure)
+            this.logDashboardDiagnostic('api', {
+                path: apiPath,
+                status: apiFailure.status,
+                code: apiFailure.code,
+                contentType: apiFailure.contentType,
+                topLevelFields: apiFailure.topLevelFields,
+                htmlLength: null,
+                pageUrl: null,
+                pageTitle: null
+            })
+        }
 
-            // 尝试使用仪表板页面的脚本
+        this.bot.logger.warn(
+            this.bot.isMobile,
+            'GET-DASHBOARD-DATA',
+            `API dashboard 不可用，尝试页面回退 | kind=${apiFailure.category} | reason=${apiReason}`
+        )
+
+        const fallbackReasons: string[] = []
+        const page = this.bot.mainMobilePage
+        if (page && !page.isClosed()) {
             try {
-                const request: AxiosRequestConfig = {
-                    url: this.bot.config.baseURL,
-                    method: 'GET',
-                    headers: {
-                        ...(this.bot.fingerprint?.headers ?? {}),
-                        Cookie: this.buildCookieHeader(this.bot.cookies.mobile),
-                        Referer: 'https://rewards.bing.com/',
-                        Origin: 'https://rewards.bing.com'
-                    }
-                }
+                const [html, title, flightEntries] = await Promise.all([
+                    page.content(),
+                    page.title().catch(() => ''),
+                    page.evaluate(() => Reflect.get(globalThis, '__next_f') ?? []).catch(() => [])
+                ])
+                this.logDashboardDiagnostic('page', {
+                    path: '/dashboard',
+                    status: null,
+                    code: null,
+                    contentType: 'text/html',
+                    topLevelFields: [],
+                    htmlLength: html.length,
+                    pageUrl: this.safePageUrl(page.url()),
+                    pageTitle: this.safePageTitle(title)
+                })
 
-                const response = await this.bot.axios.request(request)
-                const match = response.data.match(/var\s+dashboard\s*=\s*({.*?});/s)
-
-                if (!match?.[1]) {
-                    throw new Error('在HTML中未找到仪表板脚本')
-                }
-
-                return JSON.parse(match[1]) as DashboardData
-            } catch (fallbackError) {
-                // 如果两者都失败
-                this.bot.logger.error(this.bot.isMobile, 'GET-DASHBOARD-DATA', '获取仪表板数据失败')
-                throw fallbackError
+                const flight = dashboardFromFlightEntries(flightEntries)
+                if (flight.data) return flight.data
+                const htmlResult = dashboardFromHtml(html)
+                if (htmlResult.data) return htmlResult.data
+                fallbackReasons.push(`当前页面：${flight.reason}；${htmlResult.reason}`)
+            } catch {
+                fallbackReasons.push('当前页面内容读取失败')
             }
         }
+
+        try {
+            const response = await this.bot.axios.request({
+                url: 'https://rewards.bing.com/dashboard',
+                method: 'GET',
+                headers: {
+                    ...(this.bot.fingerprint?.headers ?? {}),
+                    Cookie: this.buildCookieHeader(this.bot.cookies.mobile, [
+                        'bing.com',
+                        'live.com',
+                        'microsoftonline.com'
+                    ]),
+                    Referer: 'https://rewards.bing.com/'
+                },
+                responseType: 'text',
+                transformResponse: data => data
+            })
+            const html = typeof response.data === 'string' ? response.data : ''
+            this.logDashboardDiagnostic('html', {
+                path: '/dashboard',
+                status: response.status,
+                code: null,
+                contentType: responseContentType(response.headers),
+                topLevelFields: [],
+                htmlLength: html.length,
+                pageUrl: page && !page.isClosed() ? this.safePageUrl(page.url()) : null,
+                pageTitle: null
+            })
+            const parsed = dashboardFromHtml(html)
+            if (parsed.data) return parsed.data
+            fallbackReasons.push(`HTML 请求：${parsed.reason}`)
+        } catch (error) {
+            const diagnostic = safeAxiosDiagnostic(error)
+            this.logDashboardDiagnostic('html', {
+                path: '/dashboard',
+                status: diagnostic.status,
+                code: diagnostic.code,
+                contentType: diagnostic.contentType,
+                topLevelFields: diagnostic.topLevelFields,
+                htmlLength: null,
+                pageUrl: page && !page.isClosed() ? this.safePageUrl(page.url()) : null,
+                pageTitle: null
+            })
+            fallbackReasons.push(`HTML 请求：${this.describeDashboardFailure(diagnostic)}`)
+        }
+
+        const fallbackReason = fallbackReasons.join(' | ').slice(0, 800) || '页面回退未返回可校验的 dashboard'
+        this.bot.logger.error(
+            this.bot.isMobile,
+            'GET-DASHBOARD-DATA',
+            `dashboard 获取失败 | apiKind=${apiFailure.category} | apiStatus=${apiFailure.status ?? 'n/a'} | fallback=${fallbackReason}`
+        )
+        throw new DashboardFetchError({
+            apiStatus: apiFailure.status,
+            apiFailureKind: apiFailure.category,
+            apiReason,
+            fallbackReason
+        })
+    }
+
+    private describeDashboardFailure(diagnostic: SafeHttpDiagnostic): string {
+        switch (diagnostic.category) {
+            case 'auth':
+                return `API 鉴权失败 (${diagnostic.status})`
+            case 'rate-limit':
+                return 'API 请求受限 (429)'
+            case 'server':
+                return `API 服务端错误 (${diagnostic.status})`
+            case 'network':
+                return `API 网络错误 (${diagnostic.code ?? 'unknown'})`
+            case 'invalid-response':
+                return `API 响应格式错误 (${diagnostic.status ?? 'unknown'})`
+        }
+    }
+
+    private logDashboardDiagnostic(
+        source: 'api' | 'page' | 'html',
+        diagnostic: {
+            path: string
+            status: number | null
+            code: string | null
+            contentType: string | null
+            topLevelFields: string[]
+            htmlLength: number | null
+            pageUrl: string | null
+            pageTitle: string | null
+        }
+    ): void {
+        this.bot.logger.debug(
+            this.bot.isMobile,
+            'GET-DASHBOARD-DATA',
+            `source=${source} | path=${diagnostic.path} | status=${diagnostic.status ?? 'n/a'} | axiosCode=${diagnostic.code ?? 'n/a'} | contentType=${diagnostic.contentType ?? 'n/a'} | topLevelFields=${diagnostic.topLevelFields.join(',') || 'none'} | htmlLength=${diagnostic.htmlLength ?? 'n/a'} | pageUrl=${diagnostic.pageUrl ?? 'n/a'} | pageTitle=${diagnostic.pageTitle ?? 'n/a'}`
+        )
+    }
+
+    private safePageUrl(rawUrl: string): string {
+        try {
+            const url = new URL(rawUrl)
+            return `${url.origin === 'null' ? `${url.protocol}//` : url.origin}${url.pathname}`.slice(0, 300)
+        } catch {
+            return 'unavailable'
+        }
+    }
+
+    private safePageTitle(title: string): string {
+        return title
+            .replace(/[\r\n\t]+/g, ' ')
+            .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '<redacted-email>')
+            .replace(/\b(token|code|authorization|cookie)\s*[:=]\s*\S+/gi, '$1=<redacted>')
+            .trim()
+            .slice(0, 160)
     }
 
   /**
@@ -223,13 +395,9 @@ export default class BrowserFunc {
 
         const response = await this.bot.axios.request(request)
         const html = typeof response.data === 'string' ? response.data : ''
-        const match = html.match(/var\s+dashboard\s*=\s*({.*?});/s)
-        if (!match?.[1]) {
-            return null
-        }
-
-        const dashboard = JSON.parse(match[1]) as DashboardData
-        return calculateMissingSearchPoints(dashboard.userStatus?.counters, isMobile, 'dashboard-html')
+        const parsed = dashboardFromHtml(html)
+        if (!parsed.data) return null
+        return calculateMissingSearchPoints(parsed.data.userStatus.counters, isMobile, 'dashboard-html')
     }
 
     private getPanelFlyoutSearchPoints(isMobile: boolean): MissingSearchPoints | null {
@@ -786,7 +954,7 @@ export default class BrowserFunc {
     }
 
     async closeBrowser(browser: BrowserContext, email: string) {
-        const rootBrowser = (browser as any).browser?.() || null
+        const rootBrowser = browser.browser?.() ?? null
 
         try {
             // Try to save cookies
@@ -806,7 +974,7 @@ export default class BrowserFunc {
                 }
 
                 this.bot.logger.info(this.bot.isMobile, 'CLOSE-BROWSER', '浏览器已干净地关闭！')
-            } catch (closeError) {
+            } catch {
                 this.bot.logger.warn(
                     this.bot.isMobile,
                     'CLOSE-BROWSER',

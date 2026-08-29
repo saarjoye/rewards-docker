@@ -4,6 +4,7 @@ dist/
 .dev/
 node_modules/
 .codex-output/
+.codex-notes/
 agent.md
 design-web-ui.pen
 design-web-ui.png

@@ -5,6 +5,60 @@ import { HttpsProxyAgent } from 'https-proxy-agent'
 import { SocksProxyAgent } from 'socks-proxy-agent'
 import { URL } from 'url'
 import type { AccountProxy } from '../interface/Account'
+import type { DashboardFailureKind } from './DashboardError'
+
+export interface SafeHttpDiagnostic {
+    status: number | null
+    code: string | null
+    contentType: string | null
+    topLevelFields: string[]
+    category: DashboardFailureKind
+}
+
+export function responseContentType(headers: unknown): string | null {
+    if (!headers || typeof headers !== 'object') return null
+    const headerRecord = headers as Record<string, unknown>
+    const getter = headerRecord.get
+    const fromGetter = typeof getter === 'function' ? getter.call(headers, 'content-type') : undefined
+    const key = Object.keys(headerRecord).find(name => name.toLowerCase() === 'content-type')
+    const value = fromGetter ?? (key ? headerRecord[key] : undefined)
+    return typeof value === 'string' ? value.slice(0, 160) : null
+}
+
+export function responseTopLevelFields(data: unknown): string[] {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return []
+    const safeFields = Object.keys(data as Record<string, unknown>)
+        .sort()
+        .slice(0, 30)
+        .map(field =>
+            /cookie|authorization|token|password|oauth|secret|verification|requestcode/i.test(field)
+                ? '<redacted-field>'
+                : field.slice(0, 80)
+        )
+    return [...new Set(safeFields)]
+}
+
+export function classifyHttpFailure(status: number | null): DashboardFailureKind {
+    if (status === 401 || status === 403) return 'auth'
+    if (status === 429) return 'rate-limit'
+    if (status !== null && status >= 500) return 'server'
+    return status === null ? 'network' : 'invalid-response'
+}
+
+export function safeAxiosDiagnostic(error: unknown): SafeHttpDiagnostic {
+    if (!axios.isAxiosError(error)) {
+        return { status: null, code: null, contentType: null, topLevelFields: [], category: 'network' }
+    }
+
+    const status = error.response?.status ?? null
+    return {
+        status,
+        code: typeof error.code === 'string' ? error.code.slice(0, 80) : null,
+        contentType: responseContentType(error.response?.headers),
+        topLevelFields: responseTopLevelFields(error.response?.data),
+        category: classifyHttpFailure(status)
+    }
+}
 
 class AxiosClient {
     private instance: AxiosInstance
