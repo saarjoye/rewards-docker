@@ -5,8 +5,6 @@ FROM m.daocloud.io/docker.io/library/node:24-slim AS builder
 
 WORKDIR /usr/src/microsoft-rewards-script
 
-ENV PLAYWRIGHT_BROWSERS_PATH=0
-
 # Copy package files
 COPY package.json package-lock.json tsconfig.json ./
 
@@ -17,16 +15,24 @@ RUN npm ci --ignore-scripts
 COPY . .
 RUN npm run build
 
-# Remove build dependencies, and reinstall only runtime dependencies
-RUN rm -rf node_modules \
-    && npm ci --omit=dev --ignore-scripts \
-    && npm cache clean --force
+###############################################################################
+# Stage 2: Production dependencies and browser
+###############################################################################
+FROM m.daocloud.io/docker.io/library/node:24-slim AS production-deps
 
-# Install Chromium Headless Shell, and cleanup
-RUN npx patchright install --with-deps --only-shell chromium 
+WORKDIR /usr/src/microsoft-rewards-script
+
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
+COPY package.json package-lock.json ./
+
+# Keep runtime dependencies and Chromium independent from application source.
+RUN npm ci --omit=dev --ignore-scripts \
+    && npm cache clean --force
+RUN npx patchright install --only-shell chromium
 
 ###############################################################################
-# Stage 2: Runtime
+# Stage 3: Runtime
 ###############################################################################
 FROM m.daocloud.io/docker.io/library/node:24-slim AS runtime
 
@@ -35,7 +41,7 @@ WORKDIR /usr/src/microsoft-rewards-script
 # Set production environment variables
 ENV NODE_ENV=production \
     TZ=UTC \
-    PLAYWRIGHT_BROWSERS_PATH=0 \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     FORCE_HEADLESS=1 \
     WEB_UI_HOST=0.0.0.0 \
     WEB_UI_PORT=3000
@@ -77,10 +83,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libdouble-conversion3 \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
 
-# Copy compiled application and dependencies from builder stage
+# Copy compiled application, production dependencies, and browser separately
+# so source-only changes can reuse the large dependency layers.
 COPY --from=builder /usr/src/microsoft-rewards-script/dist ./dist
-COPY --from=builder /usr/src/microsoft-rewards-script/package*.json ./
-COPY --from=builder /usr/src/microsoft-rewards-script/node_modules ./node_modules
+COPY --from=production-deps /usr/src/microsoft-rewards-script/package*.json ./
+COPY --from=production-deps /usr/src/microsoft-rewards-script/node_modules ./node_modules
+COPY --from=production-deps /ms-playwright /ms-playwright
 
 # Copy config example into the image so entrypoint can use it as a fallback
 # when the user hasn't mounted their own config.json

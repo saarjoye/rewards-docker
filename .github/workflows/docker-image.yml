@@ -32,6 +32,8 @@ jobs:
         with:
           context: .
           push: true
+          cache-from: type=gha,scope=rewards-docker-app
+          cache-to: type=gha,mode=max,scope=rewards-docker-app
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.description=Microsoft Rewards Script Web UI Docker image
