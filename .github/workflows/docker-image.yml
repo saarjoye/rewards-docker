@@ -17,6 +17,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Validate Compose configuration
+        run: docker compose config --quiet
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 

@@ -37,10 +37,18 @@
 * 设置时区`TZ` 
 * 设置调度`CRON_SCHEDULE` （默认为每天7点执行一次）
 * 保持`RUN_ON_START=true`
-4. 启动容器
+4. 首次部署或 Patchright 版本更新后，安装与当前镜像匹配的 Chromium Headless Shell
+~~~
+docker compose --profile setup run --rm browser-install
+~~~
+5. 启动容器
 ~~~
 docker compose up -d 
 ~~~
+
+浏览器保存在 Compose 命名卷 `playwright-browsers` 中，不包含在应用镜像内，后续更新应用镜像无需重复下载。`docker compose down` 会保留该卷；`docker compose down -v` 会同时删除浏览器，下次启动奖励任务前必须重新执行安装命令。浏览器缺失或版本不匹配时 Web 后台仍可启动，但奖励任务会明确报错并返回失败。
+
+主服务和浏览器安装服务共用 `REWARDS_IMAGE`；未设置时使用默认 GHCR 镜像。切换镜像仓库时只需设置该变量，两个服务会保持相同应用与 Patchright 版本。
 
 ## 注意事项 ##
 - 如果出现无法自动登录情况，请在代码执行登录过程中手动完成网页的登录，等待代码自动完成剩下流程。登录信息保存在sessions目录（需要多备份），后续运行根据该目录的会话文件来运行。

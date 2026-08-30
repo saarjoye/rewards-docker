@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-export PLAYWRIGHT_BROWSERS_PATH=0
+export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-/ms-playwright}"
 export TZ="${TZ:-UTC}"
 
 cd /usr/src/microsoft-rewards-script
+
+# Do not start a Rewards run until the matching browser revision is available.
+node scripts/docker/check-browser.js
 
 LOCKFILE="${RUN_LOCK_FILE:-/tmp/run_daily.lock}"
 LOCK_META_FILE="${RUN_LOCK_META_FILE:-/tmp/run_daily.lock.meta}"

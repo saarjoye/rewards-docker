@@ -1,6 +1,6 @@
 services:
     microsoft-rewards-script:
-        image: ghcr.io/saarjoye/rewards-docker-app:latest
+        image: ${REWARDS_IMAGE:-ghcr.io/saarjoye/rewards-docker-app:latest}
         container_name: microsoft-rewards-script
         restart: unless-stopped
         ports:
@@ -9,6 +9,7 @@ services:
             - ./config:/usr/src/microsoft-rewards-script/dist/config
             - ./sessions:/usr/src/microsoft-rewards-script/dist/browser/sessions
             - ./logs:/usr/src/microsoft-rewards-script/logs
+            - playwright-browsers:/ms-playwright:ro
         environment:
             TZ: "Asia/Shanghai"
             NODE_ENV: "production"
@@ -17,6 +18,7 @@ services:
             WEB_AUTH_FILE: "/usr/src/microsoft-rewards-script/dist/config/web-auth.json"
             WEB_ADMIN_USER: ${WEB_ADMIN_USER:-}
             WEB_ADMIN_PASSWORD: ${WEB_ADMIN_PASSWORD:-}
+            PLAYWRIGHT_BROWSERS_PATH: "/ms-playwright"
 
             CRON_SCHEDULE: "0 7 * * *"
             RUN_ON_START: "false"
@@ -91,3 +93,25 @@ services:
 
         security_opt:
             - no-new-privileges:true
+
+    browser-install:
+        image: ${REWARDS_IMAGE:-ghcr.io/saarjoye/rewards-docker-app:latest}
+        profiles:
+            - setup
+        restart: "no"
+        environment:
+            PLAYWRIGHT_BROWSERS_PATH: "/ms-playwright"
+        volumes:
+            - playwright-browsers:/ms-playwright
+        entrypoint:
+            - node
+            - ./node_modules/patchright/cli.js
+        command:
+            - install
+            - --only-shell
+            - chromium
+        security_opt:
+            - no-new-privileges:true
+
+volumes:
+    playwright-browsers:

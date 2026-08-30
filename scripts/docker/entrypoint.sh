@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 set -e
 
-# Ensure Playwright uses preinstalled browsers
-export PLAYWRIGHT_BROWSERS_PATH=0
+# Browser binaries live in a persistent volume and are installed separately.
+export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-/ms-playwright}"
 
 SCRIPT_DIR="/usr/src/microsoft-rewards-script"
 DIST_DIR="$SCRIPT_DIR/dist"
+
+# Keep the Web UI available for setup, but make a missing browser visible.
+node "$SCRIPT_DIR/scripts/docker/check-browser.js" --warn-only
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. Timezone: default to UTC if not provided

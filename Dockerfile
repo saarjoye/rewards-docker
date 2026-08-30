@@ -16,20 +16,17 @@ COPY . .
 RUN npm run build
 
 ###############################################################################
-# Stage 2: Production dependencies and browser
+# Stage 2: Production dependencies
 ###############################################################################
 FROM m.daocloud.io/docker.io/library/node:24-slim AS production-deps
 
 WORKDIR /usr/src/microsoft-rewards-script
 
-ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-
 COPY package.json package-lock.json ./
 
-# Keep runtime dependencies and Chromium independent from application source.
+# Keep runtime dependencies independent from application source.
 RUN npm ci --omit=dev --ignore-scripts \
     && npm cache clean --force
-RUN npx patchright install --only-shell chromium
 
 ###############################################################################
 # Stage 3: Runtime
@@ -83,12 +80,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libdouble-conversion3 \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
 
-# Copy compiled application, production dependencies, and browser separately
-# so source-only changes can reuse the large dependency layers.
+# Copy compiled application and production dependencies separately so
+# source-only changes can reuse the dependency layer.
 COPY --from=builder /usr/src/microsoft-rewards-script/dist ./dist
 COPY --from=production-deps /usr/src/microsoft-rewards-script/package*.json ./
 COPY --from=production-deps /usr/src/microsoft-rewards-script/node_modules ./node_modules
-COPY --from=production-deps /ms-playwright /ms-playwright
 
 # Copy config example into the image so entrypoint can use it as a fallback
 # when the user hasn't mounted their own config.json
@@ -104,6 +100,7 @@ RUN mkdir -p ./dist/config \
 
 # Copy runtime scripts with proper permissions from the start
 COPY --chmod=755 scripts/docker/run_daily.sh ./scripts/docker/run_daily.sh
+COPY --chmod=644 scripts/docker/check-browser.js ./scripts/docker/check-browser.js
 COPY --chmod=755 scripts/docker/log-forwarder.sh ./scripts/docker/log-forwarder.sh
 COPY --chmod=755 scripts/docker/schedule.sh ./scripts/docker/schedule.sh
 COPY --chmod=644 src/crontab.template /etc/cron.d/microsoft-rewards-cron.template
