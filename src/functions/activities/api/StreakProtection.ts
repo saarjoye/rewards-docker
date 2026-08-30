@@ -45,16 +45,16 @@ export class StreakProtection extends Workers {
                 __RequestVerificationToken: this.bot.requestToken
             })
 
+            const targetUrl = 'https://rewards.bing.com/api/togglestreakasync?X-Requested-With=XMLHttpRequest'
+            const fingerprintHeaders = { ...this.bot.fingerprint.headers }
+            delete fingerprintHeaders['Cookie']
+            delete fingerprintHeaders['cookie']
             const request: AxiosRequestConfig = {
-                url: 'https://rewards.bing.com/api/togglestreakasync?X-Requested-With=XMLHttpRequest',
+                url: targetUrl,
                 method: 'POST',
                 headers: {
-                    ...(this.bot.fingerprint?.headers ?? {}),
-                    Cookie: this.bot.browser.func.buildCookieHeader(this.bot.cookies.mobile, [
-                        'bing.com',
-                        'live.com',
-                        'microsoftonline.com'
-                    ]),
+                    ...fingerprintHeaders,
+                    Cookie: this.bot.browser.func.buildCookieHeaderForUrl(this.bot.cookies.mobile, targetUrl),
                     Referer: 'https://rewards.bing.com/',
                     Origin: 'https://rewards.bing.com'
                 },

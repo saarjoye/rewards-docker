@@ -11,6 +11,7 @@ import type { BasePromotion } from '../../../interface/DashboardData'
 
 export class SearchOnBing extends Workers {
     private bingHome = 'https://bing.com'
+    private reportActivityUrl = 'https://rewards.bing.com/api/reportactivity?X-Requested-With=XMLHttpRequest'
 
     private cookieHeader: string = ''
 
@@ -33,9 +34,9 @@ export class SearchOnBing extends Workers {
         )
 
         try {
-            this.cookieHeader = this.bot.browser.func.buildCookieHeader(
+            this.cookieHeader = this.bot.browser.func.buildCookieHeaderForUrl(
                 this.bot.isMobile ? this.bot.cookies.mobile : this.bot.cookies.desktop,
-                ['bing.com', 'live.com', 'microsoftonline.com']
+                this.reportActivityUrl
             )
 
             const fingerprintHeaders = { ...this.bot.fingerprint.headers }
@@ -196,10 +197,10 @@ export class SearchOnBing extends Workers {
             })
 
             const request: AxiosRequestConfig = {
-                url: 'https://rewards.bing.com/api/reportactivity?X-Requested-With=XMLHttpRequest',
+                url: this.reportActivityUrl,
                 method: 'POST',
                 headers: {
-                    ...(this.bot.fingerprint?.headers ?? {}),
+                    ...this.fingerprintHeader,
                     Cookie: this.cookieHeader,
                     Referer: 'https://rewards.bing.com/',
                     Origin: 'https://rewards.bing.com'

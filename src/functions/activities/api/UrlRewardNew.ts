@@ -41,9 +41,10 @@ export class UrlRewardNew extends Workers {
         )
 
         try {
-            this.cookieHeader = this.bot.browser.func.buildCookieHeader(
+            const targetUrl = 'https://cn.bing.com/msrewards/api/v1/reportactivity'
+            this.cookieHeader = this.bot.browser.func.buildCookieHeaderForUrl(
                 this.bot.isMobile ? this.bot.cookies.mobile : this.bot.cookies.desktop,
-                ['bing.com', 'live.com', 'microsoftonline.com']
+                targetUrl
             )
 
             const fingerprintHeaders = { ...this.bot.fingerprint.headers }
@@ -75,14 +76,14 @@ export class UrlRewardNew extends Workers {
             )
 
             const request: AxiosRequestConfig = {
-                url: 'https://cn.bing.com/msrewards/api/v1/reportactivity',
+                url: targetUrl,
                 method: 'POST',
-                // headers: {
-                //     ...(this.bot.fingerprint?.headers ?? {}),
-                //     Accept: '*/*',
-                //     "Content-Type": 'text/plain;charset=UTF-8',
-                //     Origin: 'https://www.bing.com',
-                // },
+                headers: {
+                    ...this.fingerprintHeader,
+                    Cookie: this.cookieHeader,
+                    Origin: 'https://cn.bing.com',
+                    Referer: 'https://cn.bing.com/'
+                },
                 data: jsonData
             }
 

@@ -68,9 +68,10 @@ export class ClaimBonusPoints extends Workers {
             }
 
             // 旧版 UI：走 REST API（需要 requestToken）
-            this.cookieHeader = this.bot.browser.func.buildCookieHeader(
+            const targetUrl = 'https://rewards.bing.com/api/claimallpointsasync?X-Requested-With=XMLHttpRequest'
+            this.cookieHeader = this.bot.browser.func.buildCookieHeaderForUrl(
                 this.bot.isMobile ? this.bot.cookies.mobile : this.bot.cookies.desktop,
-                ['bing.com', 'live.com', 'microsoftonline.com']
+                targetUrl
             )
 
             const fingerprintHeaders = { ...this.bot.fingerprint.headers }
@@ -96,10 +97,10 @@ export class ClaimBonusPoints extends Workers {
             )
 
             const request: AxiosRequestConfig = {
-                url: 'https://rewards.bing.com/api/claimallpointsasync?X-Requested-With=XMLHttpRequest',
+                url: targetUrl,
                 method: 'POST',
                 headers: {
-                    ...(this.bot.fingerprint?.headers ?? {}),
+                    ...this.fingerprintHeader,
                     Cookie: this.cookieHeader,
                     Referer: 'https://rewards.bing.com/',
                     Origin: 'https://rewards.bing.com'

@@ -23,9 +23,10 @@ export class Quiz extends Workers {
         )
 
         try {
-            this.cookieHeader = this.bot.browser.func.buildCookieHeader(
+            const targetUrl = 'https://www.bing.com/bingqa/ReportActivity?ajaxreq=1'
+            this.cookieHeader = this.bot.browser.func.buildCookieHeaderForUrl(
                 this.bot.isMobile ? this.bot.cookies.mobile : this.bot.cookies.desktop,
-                ['bing.com', 'live.com', 'microsoftonline.com']
+                targetUrl
             )
 
             const fingerprintHeaders = { ...this.bot.fingerprint.headers }
@@ -76,7 +77,7 @@ export class Quiz extends Workers {
                         }
 
                         const request: AxiosRequestConfig = {
-                            url: 'https://www.bing.com/bingqa/ReportActivity?ajaxreq=1',
+                            url: targetUrl,
                             method: 'POST',
                             headers: {
                                 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',

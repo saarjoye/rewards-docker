@@ -1,4 +1,4 @@
-import type { BrowserContext, Cookie, Page, Response } from 'patchright'
+import type { APIRequestContext, BrowserContext, Cookie, Page, Response } from 'patchright'
 import type { AxiosRequestConfig } from 'axios'
 
 import type { MicrosoftRewardsBot } from '../index'
@@ -14,8 +14,10 @@ import { calculateMissingSearchPoints } from '../util/SearchCounter'
 import {
     axiosFinalUrl,
     axiosRedirected,
+    classifyHttpFailure,
     responseContentType,
     responseTopLevelFields,
+    safeHttpUrl,
     safeAxiosDiagnostic,
     type SafeHttpDiagnostic
 } from '../util/Axios'
@@ -49,6 +51,14 @@ interface DashboardCaptureState {
     candidateCount: number
     geoLocale?: string
     pending: Set<Promise<void>>
+}
+
+interface BrowserContextHttpResponse {
+    status: number
+    headers: Record<string, string>
+    body: string
+    finalUrl: string | null
+    redirected: boolean | null
 }
 
 export default class BrowserFunc {
@@ -97,52 +107,87 @@ export default class BrowserFunc {
         let apiReason: string
 
         try {
-            const request: AxiosRequestConfig = {
-                url: apiUrl,
-                method: 'GET',
-                headers: {
-                    ...(this.bot.fingerprint?.headers ?? {}),
-                    Cookie: this.buildCookieHeader(this.bot.cookies.mobile, [
-                        'bing.com',
-                        'live.com',
-                        'microsoftonline.com'
-                    ]),
-                    Referer: `${dashboardOrigin}/`,
-                    Origin: dashboardOrigin
+            const browserResponse = await this.requestWithBrowserContext(page, apiUrl, {
+                Referer: `${dashboardOrigin}/`,
+                Origin: dashboardOrigin
+            })
+            let status: number
+            let headers: unknown
+            let data: unknown
+            let finalUrl: string | null
+            let redirected: boolean | null
+
+            if (browserResponse) {
+                status = browserResponse.status
+                headers = browserResponse.headers
+                finalUrl = browserResponse.finalUrl
+                redirected = browserResponse.redirected
+                try {
+                    data = JSON.parse(browserResponse.body)
+                } catch {
+                    data = browserResponse.body
                 }
+            } else {
+                const response = await this.bot.axios.request({
+                    url: apiUrl,
+                    method: 'GET',
+                    headers: {
+                        ...this.fingerprintHeadersWithoutCookie(),
+                        Cookie: this.buildCookieHeaderForUrl(this.bot.cookies.mobile, apiUrl),
+                        Referer: `${dashboardOrigin}/`,
+                        Origin: dashboardOrigin
+                    }
+                })
+                status = response.status
+                headers = response.headers
+                data = response.data
+                finalUrl = axiosFinalUrl(response)
+                redirected = axiosRedirected(response, apiUrl)
             }
 
-            const response = await this.bot.axios.request(request)
-            const contentType = responseContentType(response.headers)
-            const topLevelFields = responseTopLevelFields(response.data)
-            const parsed = dashboardFromApiPayload(response.data, { geoLocale })
+            const contentType = responseContentType(headers)
+            const topLevelFields = responseTopLevelFields(data)
+            const parsed = dashboardFromApiPayload(data, { geoLocale })
+            const successfulStatus = status >= 200 && status < 300
+            const failureCategory = successfulStatus ? 'invalid-response' : classifyHttpFailure(status)
+            const diagnosticReason = successfulStatus
+                ? parsed.reason
+                : this.describeDashboardFailure({
+                      status,
+                      code: null,
+                      contentType,
+                      topLevelFields,
+                      category: failureCategory,
+                      finalUrl,
+                      redirected
+                  })
             this.logDashboardDiagnostic('api', {
                 path: apiPath,
-                status: response.status,
+                status,
                 code: null,
                 contentType,
                 topLevelFields,
                 htmlLength: null,
                 pageUrl: null,
                 pageTitle: null,
-                parserReason: parsed.reason,
-                finalUrl: axiosFinalUrl(response),
-                redirected: axiosRedirected(response, apiUrl),
+                parserReason: diagnosticReason,
+                finalUrl,
+                redirected,
                 flightEntryCount: null,
                 captureCount: null
             })
 
-            if (parsed.data) return parsed.data
+            if (successfulStatus && parsed.data) return parsed.data
             apiFailure = {
-                status: response.status,
+                status,
                 code: null,
                 contentType,
                 topLevelFields,
-                category: 'invalid-response',
-                finalUrl: axiosFinalUrl(response),
-                redirected: axiosRedirected(response, apiUrl)
+                category: failureCategory,
+                finalUrl,
+                redirected
             }
-            apiReason = parsed.reason
+            apiReason = diagnosticReason
         } catch (error) {
             apiFailure = safeAxiosDiagnostic(error)
             apiReason = this.describeDashboardFailure(apiFailure)
@@ -230,34 +275,52 @@ export default class BrowserFunc {
         }
 
         try {
-            const response = await this.bot.axios.request({
-                url: `${dashboardOrigin}/dashboard`,
-                method: 'GET',
-                headers: {
-                    ...(this.bot.fingerprint?.headers ?? {}),
-                    Cookie: this.buildCookieHeader(this.bot.cookies.mobile, [
-                        'bing.com',
-                        'live.com',
-                        'microsoftonline.com'
-                    ]),
-                    Referer: `${dashboardOrigin}/`
-                },
-                responseType: 'text',
-                transformResponse: data => data
+            const dashboardUrl = `${dashboardOrigin}/dashboard`
+            const browserResponse = await this.requestWithBrowserContext(page, dashboardUrl, {
+                Referer: `${dashboardOrigin}/`
             })
-            const html = typeof response.data === 'string' ? response.data : ''
+            let status: number
+            let headers: unknown
+            let html: string
+            let finalUrl: string | null
+            let redirected: boolean | null
+
+            if (browserResponse) {
+                status = browserResponse.status
+                headers = browserResponse.headers
+                html = browserResponse.body
+                finalUrl = browserResponse.finalUrl
+                redirected = browserResponse.redirected
+            } else {
+                const response = await this.bot.axios.request({
+                    url: dashboardUrl,
+                    method: 'GET',
+                    headers: {
+                        ...this.fingerprintHeadersWithoutCookie(),
+                        Cookie: this.buildCookieHeaderForUrl(this.bot.cookies.mobile, dashboardUrl),
+                        Referer: `${dashboardOrigin}/`
+                    },
+                    responseType: 'text',
+                    transformResponse: data => data
+                })
+                status = response.status
+                headers = response.headers
+                html = typeof response.data === 'string' ? response.data : ''
+                finalUrl = axiosFinalUrl(response)
+                redirected = axiosRedirected(response, dashboardUrl)
+            }
             this.logDashboardDiagnostic('html', {
                 path: '/dashboard',
-                status: response.status,
+                status,
                 code: null,
-                contentType: responseContentType(response.headers),
+                contentType: responseContentType(headers),
                 topLevelFields: [],
                 htmlLength: html.length,
                 pageUrl: page && !page.isClosed() ? this.safePageUrl(page.url()) : null,
                 pageTitle: null,
                 parserReason: null,
-                finalUrl: axiosFinalUrl(response),
-                redirected: axiosRedirected(response, `${dashboardOrigin}/dashboard`),
+                finalUrl,
+                redirected,
                 flightEntryCount: null,
                 captureCount: null
             })
@@ -315,6 +378,48 @@ export default class BrowserFunc {
             }
         }
         return 'https://rewards.bing.com'
+    }
+
+    private dashboardRequestContext(page: Page | undefined): APIRequestContext | null {
+        if (!page || page.isClosed()) return null
+        try {
+            const request = page.context().request
+            return request && typeof request.get === 'function' ? request : null
+        } catch {
+            return null
+        }
+    }
+
+    private async requestWithBrowserContext(
+        page: Page | undefined,
+        targetUrl: string,
+        headers: Record<string, string>
+    ): Promise<BrowserContextHttpResponse | null> {
+        const request = this.dashboardRequestContext(page)
+        if (!request) return null
+
+        const response = await request.get(targetUrl, {
+            headers,
+            failOnStatusCode: false
+        })
+        try {
+            const finalUrl = safeHttpUrl(response.url())
+            return {
+                status: response.status(),
+                headers: response.headers(),
+                body: await response.text(),
+                finalUrl,
+                redirected: finalUrl === null ? null : finalUrl !== safeHttpUrl(targetUrl)
+            }
+        } finally {
+            await response.dispose()
+        }
+    }
+
+    private fingerprintHeadersWithoutCookie(): Record<string, string> {
+        return Object.fromEntries(
+            Object.entries(this.bot.fingerprint?.headers ?? {}).filter(([name]) => name.toLowerCase() !== 'cookie')
+        )
     }
 
     private async captureDashboardResponse(response: Response, state: DashboardCaptureState): Promise<void> {
@@ -460,16 +565,14 @@ export default class BrowserFunc {
      */
     async getPanelFlyoutData(): Promise<PanelFlyoutData> {
         try {
+            const targetUrl =
+                'https://cn.bing.com/rewards/panelflyout/getuserinfo?channel=BingFlyout&partnerId=BingRewards'
             const request: AxiosRequestConfig = {
-                url: 'https://cn.bing.com/rewards/panelflyout/getuserinfo?channel=BingFlyout&partnerId=BingRewards',
+                url: targetUrl,
                 method: 'GET',
                 headers: {
-                    ...(this.bot.fingerprint?.headers ?? {}),
-                    Cookie: this.buildCookieHeader(this.bot.cookies.mobile, [
-                        'bing.com',
-                        'live.com',
-                        'microsoftonline.com'
-                    ]),
+                    ...this.fingerprintHeadersWithoutCookie(),
+                    Cookie: this.buildCookieHeaderForUrl(this.bot.cookies.mobile, targetUrl),
                     Origin: 'https://cn.bing.com'
                 }
             }
@@ -581,19 +684,28 @@ export default class BrowserFunc {
     }
 
     private async getDashboardHtmlSearchPoints(isMobile: boolean): Promise<MissingSearchPoints | null> {
-        const request: AxiosRequestConfig = {
-            url: this.bot.config.baseURL,
-            method: 'GET',
-            headers: {
-                ...(this.bot.fingerprint?.headers ?? {}),
-                Cookie: this.buildCookieHeader(this.bot.cookies.mobile),
-                Referer: 'https://rewards.bing.com/',
-                Origin: 'https://rewards.bing.com'
+        const targetUrl = this.bot.config.baseURL
+        const browserResponse = await this.requestWithBrowserContext(this.bot.mainMobilePage, targetUrl, {
+            Referer: 'https://rewards.bing.com/',
+            Origin: 'https://rewards.bing.com'
+        })
+        let html: string
+        if (browserResponse) {
+            html = browserResponse.body
+        } else {
+            const request: AxiosRequestConfig = {
+                url: targetUrl,
+                method: 'GET',
+                headers: {
+                    ...this.fingerprintHeadersWithoutCookie(),
+                    Cookie: this.buildCookieHeaderForUrl(this.bot.cookies.mobile, targetUrl),
+                    Referer: 'https://rewards.bing.com/',
+                    Origin: 'https://rewards.bing.com'
+                }
             }
+            const response = await this.bot.axios.request(request)
+            html = typeof response.data === 'string' ? response.data : ''
         }
-
-        const response = await this.bot.axios.request(request)
-        const html = typeof response.data === 'string' ? response.data : ''
         const parsed = dashboardFromHtml(html)
         if (!parsed.data) return null
         return calculateMissingSearchPoints(
@@ -799,23 +911,27 @@ export default class BrowserFunc {
                 html = null
             }
 
-            // DOM 没拿到时用 axios 直接请求页面
+            // DOM 没拿到时优先复用 BrowserContext Cookie jar，请求 API 不可用时再降级到 axios。
             if (!html) {
-                const request: AxiosRequestConfig = {
-                    url: 'https://rewards.bing.com/dashboard',
-                    method: 'GET',
-                    headers: {
-                        ...(this.bot.fingerprint?.headers ?? {}),
-                        Cookie: this.buildCookieHeader(this.bot.cookies.mobile, [
-                            'bing.com',
-                            'live.com',
-                            'microsoftonline.com'
-                        ]),
-                        Referer: 'https://rewards.bing.com/'
+                const dashboardUrl = 'https://rewards.bing.com/dashboard'
+                const browserResponse = await this.requestWithBrowserContext(page, dashboardUrl, {
+                    Referer: 'https://rewards.bing.com/'
+                })
+                if (browserResponse) {
+                    html = browserResponse.body
+                } else {
+                    const request: AxiosRequestConfig = {
+                        url: dashboardUrl,
+                        method: 'GET',
+                        headers: {
+                            ...this.fingerprintHeadersWithoutCookie(),
+                            Cookie: this.buildCookieHeaderForUrl(this.bot.cookies.mobile, dashboardUrl),
+                            Referer: 'https://rewards.bing.com/'
+                        }
                     }
+                    const response = await this.bot.axios.request(request)
+                    html = typeof response.data === 'string' ? response.data : String(response.data)
                 }
-                const response = await this.bot.axios.request(request)
-                html = typeof response.data === 'string' ? response.data : String(response.data)
             }
 
             const deploymentId = extractDeploymentIdFromHtml(html)
@@ -828,12 +944,8 @@ export default class BrowserFunc {
                         url: scriptUrl,
                         method: 'GET',
                         headers: {
-                            ...(this.bot.fingerprint?.headers ?? {}),
-                            Cookie: this.buildCookieHeader(this.bot.cookies.mobile, [
-                                'bing.com',
-                                'live.com',
-                                'microsoftonline.com'
-                            ]),
+                            ...this.fingerprintHeadersWithoutCookie(),
+                            Cookie: this.buildCookieHeaderForUrl(this.bot.cookies.mobile, scriptUrl),
                             Referer: 'https://rewards.bing.com/dashboard'
                         },
                         responseType: 'text',
@@ -927,8 +1039,9 @@ export default class BrowserFunc {
         }
 
         try {
+            const targetUrl = 'https://rewards.bing.com/dashboard'
             const request: AxiosRequestConfig = {
-                url: 'https://rewards.bing.com/dashboard',
+                url: targetUrl,
                 method: 'POST',
                 headers: {
                     Accept: 'text/x-component',
@@ -940,11 +1053,7 @@ export default class BrowserFunc {
                         '%5B%22%22%2C%7B%22children%22%3A%5B%22(nav)%22%2C%7B%22children%22%3A%5B%22dashboard%22%2C%7B%22children%22%3A%5B%22__PAGE__%22%2C%7B%7D%2Cnull%2Cnull%2C0%5D%7D%2Cnull%2Cnull%2C0%5D%7D%2Cnull%2Cnull%2C0%5D%7D%2Cnull%2Cnull%2C16%5D',
                     'x-deployment-id': deploymentId,
                     Referer: 'https://rewards.bing.com/dashboard',
-                    Cookie: this.buildCookieHeader(this.bot.cookies.mobile, [
-                        'bing.com',
-                        'live.com',
-                        'microsoftonline.com'
-                    ])
+                    Cookie: this.buildCookieHeaderForUrl(this.bot.cookies.mobile, targetUrl)
                 },
                 // Server Action 参数序列化为 JSON 数组字符串
                 data: JSON.stringify(args)
@@ -1184,21 +1293,43 @@ export default class BrowserFunc {
         }
     }
 
-    buildCookieHeader(cookies: Cookie[], allowedDomains?: string[]): string {
-        return [
-            ...new Map(
-                cookies
-                    .filter(c => {
-                        if (!allowedDomains || allowedDomains.length === 0) return true
-                        return (
-                            typeof c.domain === 'string' &&
-                            allowedDomains.some(d => c.domain.toLowerCase().endsWith(d.toLowerCase()))
-                        )
-                    })
-                    .map(c => [c.name, c])
-            ).values()
-        ]
-            .map(c => `${c.name}=${c.value}`)
+    buildCookieHeaderForUrl(cookies: Cookie[], targetUrl: string): string {
+        let url: URL
+        try {
+            url = new URL(targetUrl)
+        } catch {
+            throw new TypeError('Cookie Header target must be a valid HTTP(S) URL')
+        }
+        if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+            throw new TypeError(`Cookie Header target must use HTTP(S): ${url.protocol}`)
+        }
+
+        const hostname = url.hostname.toLowerCase()
+        const requestPath = url.pathname || '/'
+        const now = Date.now() / 1000
+
+        return cookies
+            .map((cookie, index) => ({ cookie, index }))
+            .filter(({ cookie }) => {
+                const rawDomain = cookie.domain.toLowerCase()
+                const domainCookie = rawDomain.startsWith('.')
+                const cookieDomain = domainCookie ? rawDomain.slice(1) : rawDomain
+                const domainMatches = domainCookie
+                    ? hostname === cookieDomain || hostname.endsWith(`.${cookieDomain}`)
+                    : hostname === cookieDomain
+                if (!domainMatches) return false
+
+                const cookiePath = cookie.path
+                const pathMatches =
+                    requestPath === cookiePath ||
+                    (requestPath.startsWith(cookiePath) &&
+                        (cookiePath.endsWith('/') || requestPath.charAt(cookiePath.length) === '/'))
+                if (!pathMatches) return false
+                if (cookie.secure && url.protocol !== 'https:') return false
+                return cookie.expires === -1 || cookie.expires > now
+            })
+            .sort((left, right) => right.cookie.path.length - left.cookie.path.length || left.index - right.index)
+            .map(({ cookie }) => `${cookie.name}=${cookie.value}`)
             .join('; ')
     }
 }

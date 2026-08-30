@@ -206,16 +206,16 @@ export async function monitorGiftCards(
         return { checked: false, matches: [], notified: [], message: '礼品卡监控未设置关键词' }
     }
 
+    const targetUrl = config.shopUrl?.trim() || DEFAULT_SHOP_URL
+    const fingerprintHeaders = { ...(bot.fingerprint?.headers ?? {}) }
+    delete fingerprintHeaders['Cookie']
+    delete fingerprintHeaders['cookie']
     const request: AxiosRequestConfig = {
-        url: config.shopUrl?.trim() || DEFAULT_SHOP_URL,
+        url: targetUrl,
         method: 'GET',
         headers: {
-            ...(bot.fingerprint?.headers ?? {}),
-            Cookie: bot.browser.func.buildCookieHeader(bot.cookies.mobile, [
-                'bing.com',
-                'live.com',
-                'microsoftonline.com'
-            ]),
+            ...fingerprintHeaders,
+            Cookie: bot.browser.func.buildCookieHeaderForUrl(bot.cookies.mobile, targetUrl),
             Referer: 'https://rewards.bing.com/dashboard'
         },
         responseType: 'text',

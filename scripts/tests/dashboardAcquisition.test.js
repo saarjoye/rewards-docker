@@ -42,6 +42,16 @@ function axiosError(status, code = 'ERR_BAD_RESPONSE') {
     }
 }
 
+function apiResponse({ status, contentType, body, url = 'https://rewards.bing.com/api/getuserinfo?type=1', onDispose }) {
+    return {
+        status: () => status,
+        headers: () => ({ 'content-type': contentType }),
+        text: async () => body,
+        url: () => url,
+        dispose: async () => onDispose?.()
+    }
+}
+
 function fakeBot(apiResult, fallbackResult = '<html>modern but incomplete</html>') {
     const logs = []
     let apiRequests = 0
@@ -110,6 +120,41 @@ async function expectFailure(apiResult, expectedStatus, expectedKind) {
     })
     assert.equal((await new BrowserFunc(textPlainBot).getDashboardData()).userStatus.availablePoints, 1001)
     assert.match(textPlainBot.logs.join('\n'), /contentType=text\/plain/)
+
+    let contextRequestOptions
+    let contextResponseDisposed = false
+    const contextDashboard = dashboard(1003)
+    delete contextDashboard.userStatus.counters.mobileSearch
+    const contextBot = fakeBot(axiosError(500))
+    contextBot.fingerprint = { headers: { Cookie: 'FINGERPRINT-COOKIE-CANARY' } }
+    contextBot.mainMobilePage = {
+        isClosed: () => false,
+        url: () => 'https://rewards.bing.com/dashboard',
+        context: () => ({
+            request: {
+                get: async (_url, options) => {
+                    contextRequestOptions = options
+                    return apiResponse({
+                        status: 200,
+                        contentType: 'text/plain; charset=utf-8',
+                        body: JSON.stringify({ dashboard: contextDashboard }),
+                        onDispose: () => {
+                            contextResponseDisposed = true
+                        }
+                    })
+                }
+            }
+        })
+    }
+    const contextResult = await new BrowserFunc(contextBot).getDashboardData('CN')
+    assert.equal(contextResult.userStatus.availablePoints, 1003)
+    assert.equal(contextResult.dashboardFieldAvailability.mobileSearch, 'missing')
+    assert.deepEqual(contextResult.userStatus.counters.mobileSearch, [])
+    assert.equal(contextBot.apiRequests, 0)
+    assert.equal(contextRequestOptions.headers.Cookie, undefined)
+    assert.equal(contextRequestOptions.headers.cookie, undefined)
+    assert.equal(contextResponseDisposed, true)
+    assert.equal(contextBot.logs.join('\n').includes('FINGERPRINT-COOKIE-CANARY'), false)
 
     const fallbackDashboard = dashboard(777)
     const fallbackHtml = `<script>self.__next_f.push(${JSON.stringify([1, `1:${JSON.stringify(fallbackDashboard)}\n`])})</script>`
@@ -190,6 +235,59 @@ async function expectFailure(apiResult, expectedStatus, expectedKind) {
     }
     assert.match(pageLogs, /pageUrl=https:\/\/rewards\.bing\.com\/dashboard/)
     assert.match(pageLogs, /pageTitle=Rewards <redacted-email> token=<redacted>/)
+
+    const retryEvents = []
+    const retryListeners = new Map()
+    let contextApiRequests = 0
+    let reloads = 0
+    const context404Bot = fakeBot(axiosError(500))
+    const context404Page = {
+        isClosed: () => false,
+        on: (event, listener) => {
+            retryEvents.push(`listener:${event}`)
+            retryListeners.set(event, listener)
+        },
+        context: () => ({
+            request: {
+                get: async () => {
+                    retryEvents.push('context-get')
+                    contextApiRequests += 1
+                    return apiResponse({
+                        status: 404,
+                        contentType: 'application/json',
+                        body: JSON.stringify({ error: 'synthetic-not-found' })
+                    })
+                }
+            }
+        }),
+        content: async () => '<html>incomplete modern dashboard</html>',
+        title: async () => 'Rewards',
+        evaluate: async () => [],
+        url: () => 'https://rewards.bing.com/dashboard',
+        waitForLoadState: async () => {},
+        reload: async () => {
+            retryEvents.push('reload')
+            reloads += 1
+            retryListeners.get('response')({
+                request: () => ({
+                    resourceType: () => 'xhr',
+                    frame: () => ({ url: () => 'https://rewards.bing.com/dashboard' })
+                }),
+                url: () => 'https://rewards.bing.com/api/getuserinfo',
+                status: () => 200,
+                headers: () => ({ 'content-type': 'text/plain; charset=utf-8' }),
+                body: async () => Buffer.from(JSON.stringify({ dashboard: dashboard(2001) }))
+            })
+        }
+    }
+    context404Bot.mainMobilePage = context404Page
+    const context404Func = new BrowserFunc(context404Bot)
+    context404Func.prepareDashboardCapture(context404Page, 'CN')
+    assert.equal((await context404Func.getDashboardData('CN')).userStatus.availablePoints, 2001)
+    assert.equal(contextApiRequests, 1)
+    assert.equal(reloads, 1)
+    assert.ok(retryEvents.indexOf('listener:response') < retryEvents.indexOf('context-get'))
+    assert.ok(retryEvents.indexOf('context-get') < retryEvents.indexOf('reload'))
 
     const listeners = new Map()
     const captureBot = fakeBot(axiosError(404))
