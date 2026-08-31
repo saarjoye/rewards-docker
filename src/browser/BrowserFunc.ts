@@ -2,7 +2,6 @@ import type { APIRequestContext, BrowserContext, Cookie, Page, Response } from '
 import type { AxiosRequestConfig } from 'axios'
 
 import type { MicrosoftRewardsBot } from '../index'
-import { saveSessionData } from '../util/Load'
 
 import type { Counters, DashboardData, DashboardFieldAvailability } from './../interface/DashboardData'
 import type { AppUserData } from '../interface/AppUserData'
@@ -99,13 +98,14 @@ export default class BrowserFunc {
      * 获取用户桌面仪表板数据
      * @returns {DashboardData} 用户必应奖励仪表板数据对象
      */
-    async getDashboardData(geoLocale?: string): Promise<DashboardData> {
+    async getDashboardData(geoLocale?: string, pageOverride?: Page): Promise<DashboardData> {
         this.cachedPanelFlyoutData = null
         geoLocale ??= this.bot.userData?.geoLocale
         const apiPath = '/api/getuserinfo'
-        const page = this.bot.mainMobilePage
+        const page = pageOverride ?? this.bot.mainMobilePage
         const dashboardOrigin = this.dashboardOrigin(page)
         const apiUrl = `${dashboardOrigin}${apiPath}?type=1`
+        const fallbackCookies = await this.cookiesForPage(page)
         let apiFailure: SafeHttpDiagnostic
         let apiReason: string
 
@@ -136,7 +136,7 @@ export default class BrowserFunc {
                     method: 'GET',
                     headers: {
                         ...this.fingerprintHeadersWithoutCookie(),
-                        Cookie: this.buildCookieHeaderForUrl(this.bot.cookies.mobile, apiUrl),
+                        Cookie: this.buildCookieHeaderForUrl(fallbackCookies, apiUrl),
                         Referer: `${dashboardOrigin}/`,
                         Origin: dashboardOrigin
                     }
@@ -152,18 +152,23 @@ export default class BrowserFunc {
             const topLevelFields = responseTopLevelFields(data)
             const parsed = dashboardFromApiPayload(data, { geoLocale })
             const successfulStatus = status >= 200 && status < 300
-            const failureCategory = successfulStatus ? 'invalid-response' : classifyHttpFailure(status)
-            const diagnosticReason = successfulStatus
-                ? parsed.reason
-                : this.describeDashboardFailure({
-                      status,
-                      code: null,
-                      contentType,
-                      topLevelFields,
-                      category: failureCategory,
-                      finalUrl,
-                      redirected
-                  })
+            const failureCategory = this.isAuthenticationUrl(finalUrl)
+                ? 'auth'
+                : successfulStatus
+                  ? 'invalid-response'
+                  : classifyHttpFailure(status)
+            const diagnosticReason =
+                failureCategory === 'auth' || !successfulStatus
+                    ? this.describeDashboardFailure({
+                          status,
+                          code: null,
+                          contentType,
+                          topLevelFields,
+                          category: failureCategory,
+                          finalUrl,
+                          redirected
+                      })
+                    : parsed.reason
             this.logDashboardDiagnostic('api', {
                 path: apiPath,
                 status,
@@ -193,6 +198,7 @@ export default class BrowserFunc {
             apiReason = diagnosticReason
         } catch (error) {
             apiFailure = safeAxiosDiagnostic(error)
+            if (this.isAuthenticationUrl(apiFailure.finalUrl)) apiFailure.category = 'auth'
             apiReason = this.describeDashboardFailure(apiFailure)
             this.logDashboardDiagnostic('api', {
                 path: apiPath,
@@ -300,7 +306,7 @@ export default class BrowserFunc {
                     method: 'GET',
                     headers: {
                         ...this.fingerprintHeadersWithoutCookie(),
-                        Cookie: this.buildCookieHeaderForUrl(this.bot.cookies.mobile, dashboardUrl),
+                        Cookie: this.buildCookieHeaderForUrl(fallbackCookies, dashboardUrl),
                         Referer: `${dashboardOrigin}/`
                     },
                     responseType: 'text',
@@ -352,7 +358,7 @@ export default class BrowserFunc {
 
         if (apiFailure.category === 'endpoint-unavailable' || apiFailure.category === 'invalid-response') {
             const flyoutReasons: string[] = []
-            for (const targetUrl of this.panelFlyoutFallbackUrls(geoLocale)) {
+            for (const targetUrl of this.panelFlyoutFallbackUrls(geoLocale, fallbackCookies)) {
                 const target = new URL(targetUrl)
                 try {
                     const functionalHeaders = {
@@ -379,7 +385,7 @@ export default class BrowserFunc {
                             headers: {
                                 ...this.fingerprintHeadersWithoutCookie(),
                                 ...functionalHeaders,
-                                Cookie: this.buildCookieHeaderForUrl(this.bot.cookies.mobile, targetUrl)
+                                Cookie: this.buildCookieHeaderForUrl(fallbackCookies, targetUrl)
                             },
                             maxRedirects: 0,
                             validateStatus: () => true
@@ -497,10 +503,25 @@ export default class BrowserFunc {
         return 'https://rewards.bing.com'
     }
 
-    private panelFlyoutFallbackUrls(geoLocale?: string): string[] {
+    private isAuthenticationUrl(rawUrl: string | null): boolean {
+        if (!rawUrl) return false
+        try {
+            const hostname = new URL(rawUrl).hostname.toLowerCase()
+            return (
+                hostname === 'login.live.com' ||
+                hostname === 'login.microsoft.com' ||
+                hostname === 'login.microsoftonline.com' ||
+                hostname === 'account.live.com'
+            )
+        } catch {
+            return false
+        }
+    }
+
+    private panelFlyoutFallbackUrls(geoLocale?: string, cookies: Cookie[] = this.bot.cookies.mobile): string[] {
         const path = '/rewards/panelflyout/getuserinfo?channel=BingFlyout&partnerId=BingRewards'
         const normalizedLocale = geoLocale?.trim().toLowerCase()
-        const cookieDomains = this.bot.cookies.mobile.map(cookie => cookie.domain.replace(/^\./, '').toLowerCase())
+        const cookieDomains = cookies.map(cookie => cookie.domain.replace(/^\./, '').toLowerCase())
         const preferChina =
             normalizedLocale === 'cn' ||
             ((normalizedLocale === undefined || normalizedLocale === '' || normalizedLocale === 'auto') &&
@@ -517,6 +538,15 @@ export default class BrowserFunc {
             return request && typeof request.get === 'function' ? request : null
         } catch {
             return null
+        }
+    }
+
+    private async cookiesForPage(page: Page | undefined): Promise<Cookie[]> {
+        if (!page || page.isClosed()) return this.bot.cookies.mobile
+        try {
+            return await page.context().cookies()
+        } catch {
+            return this.bot.cookies.mobile
         }
     }
 
@@ -1403,29 +1433,19 @@ export default class BrowserFunc {
     }
 
     async closeBrowser(browser: BrowserContext, email: string) {
+        void email
         const rootBrowser = browser.browser?.() ?? null
 
         try {
-            // Try to save cookies
-            const cookies = await browser.cookies()
-            this.bot.logger.debug(this.bot.isMobile, 'CLOSE-BROWSER', `Saving ${cookies.length} cookies.`)
-            await saveSessionData(this.bot.config.sessionPath, cookies, email, this.bot.isMobile)
+            await browser.close()
 
-            await this.bot.utils.wait(2000)
-        } catch (error) {
-            this.bot.logger.error(this.bot.isMobile, 'CLOSE-BROWSER', `保存会话失败: ${error}`)
-        } finally {
-            try {
-                await browser.close()
-
-                if (rootBrowser) {
-                    await rootBrowser.close().catch(() => {})
-                }
-
-                this.bot.logger.info(this.bot.isMobile, 'CLOSE-BROWSER', '浏览器已干净地关闭！')
-            } catch {
-                this.bot.logger.warn(this.bot.isMobile, 'CLOSE-BROWSER', '关闭时遇到错误，但进程正在退出。')
+            if (rootBrowser) {
+                await rootBrowser.close().catch(() => {})
             }
+
+            this.bot.logger.info(this.bot.isMobile, 'CLOSE-BROWSER', '浏览器已干净地关闭！')
+        } catch {
+            this.bot.logger.warn(this.bot.isMobile, 'CLOSE-BROWSER', '关闭时遇到错误，但进程正在退出。')
         }
     }
 

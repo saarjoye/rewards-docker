@@ -16,9 +16,14 @@ https://pixelscan.net/
 https://www.browserscan.net/
 */
 
-interface BrowserCreationResult {
+export interface BrowserCreationOptions {
+    loadStoredSession?: boolean
+}
+
+export interface BrowserCreationResult {
     context: BrowserContext
     fingerprint: BrowserFingerprintWithHeaders
+    loadedSessionCookies: boolean
 }
 
 class Browser {
@@ -46,7 +51,7 @@ class Browser {
     }
 
     // 创建浏览器实例
-    async createBrowser(account: Account): Promise<BrowserCreationResult> {
+    async createBrowser(account: Account, options: BrowserCreationOptions = {}): Promise<BrowserCreationResult> {
         let browser: rebrowser.Browser
         try {
             // 配置代理服务器
@@ -106,8 +111,8 @@ class Browser {
             // 设置默认超时时间
             context.setDefaultTimeout(this.bot.utils.stringToNumber(this.bot.config?.globalTimeout ?? 30000))
 
-            // 添加保存的cookies
-            await context.addCookies(sessionData.cookies)
+            const storedCookies = options.loadStoredSession === false ? [] : sessionData.cookies
+            await context.addCookies(storedCookies)
 
             // 如果需要保存指纹数据
             if (
@@ -125,7 +130,11 @@ class Browser {
             )
             this.bot.logger.debug(this.bot.isMobile, 'BROWSER-FINGERPRINT', JSON.stringify(fingerprint))
 
-            return { context: context as unknown as BrowserContext, fingerprint }
+            return {
+                context: context as unknown as BrowserContext,
+                fingerprint,
+                loadedSessionCookies: storedCookies.length > 0
+            }
         } catch (error) {
             await browser.close().catch(() => {}) // 出错时关闭浏览器
             throw error

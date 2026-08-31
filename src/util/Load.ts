@@ -1,5 +1,6 @@
 import type { Cookie } from 'patchright'
 import type { BrowserFingerprintWithHeaders } from 'fingerprint-generator'
+import { randomBytes } from 'crypto'
 import fs from 'fs'
 import path from 'path'
 
@@ -98,7 +99,18 @@ export async function saveSessionData(
             await fs.promises.mkdir(sessionDir, { recursive: true })
         }
 
-        await fs.promises.writeFile(path.join(sessionDir, cookiesFileName), JSON.stringify(cookies))
+        const cookieFile = path.join(sessionDir, cookiesFileName)
+        const temporaryFile = path.join(
+            sessionDir,
+            `.${cookiesFileName}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`
+        )
+
+        try {
+            await fs.promises.writeFile(temporaryFile, JSON.stringify(cookies), { encoding: 'utf8', flag: 'wx' })
+            await fs.promises.rename(temporaryFile, cookieFile)
+        } finally {
+            await fs.promises.unlink(temporaryFile).catch(() => {})
+        }
 
         return sessionDir
     } catch (error) {

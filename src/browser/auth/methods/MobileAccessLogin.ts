@@ -3,6 +3,10 @@ import { randomBytes } from 'crypto'
 import { URLSearchParams } from 'url'
 
 import type { MicrosoftRewardsBot } from '../../../index'
+import { responseTopLevelFields } from '../../../util/Axios'
+import { safeUrlForLog } from '../../../util/LogSanitizer'
+
+type ContinueAuthentication = () => Promise<boolean>
 
 export class MobileAccessLogin {
     private clientId = '0000000040170455'
@@ -11,17 +15,20 @@ export class MobileAccessLogin {
     private tokenUrl = 'https://login.microsoftonline.com/consumers/oauth2/v2.0/token'
     private scope = 'service::prod.rewardsplatform.microsoft.com::MBI_SSL'
     private maxTimeout = 180_000 // 3min
+    private fidoStallTimeout = 20_000
 
     // Selectors for handling Passkey prompt during OAuth
     private readonly selectors = {
         secondaryButton: 'button[data-testid="secondaryButton"]',
+        otherWaysToSignIn: '[data-testid="viewFooter"] [role="button"]',
         passKeyError: '[data-testid="registrationImg"]',
         passKeyVideo: '[data-testid="biometricVideo"]'
     } as const
 
     constructor(
         private bot: MicrosoftRewardsBot,
-        private page: Page
+        private page: Page,
+        private continueAuthentication: ContinueAuthentication
     ) {}
 
     private async checkSelector(selector: string): Promise<boolean> {
@@ -31,18 +38,35 @@ export class MobileAccessLogin {
             .catch(() => false)
     }
 
-    private async handlePasskeyPrompt(): Promise<void> {
+    private isFidoUrl(url: URL): boolean {
+        return url.hostname === 'login.microsoft.com' && /\/consumers\/fido\/get\/?$/i.test(url.pathname)
+    }
+
+    private async handlePasskeyPrompt(url: URL): Promise<boolean> {
         try {
-            // Handle Passkey prompt - click secondary button to skip
             const hasPasskeyError = await this.checkSelector(this.selectors.passKeyError)
             const hasPasskeyVideo = await this.checkSelector(this.selectors.passKeyVideo)
-            if (hasPasskeyError || hasPasskeyVideo) {
-                this.bot.logger.info(this.bot.isMobile, 'LOGIN-APP', '在OAuth页面上发现Passkey提示，跳过')
+            const atFidoRoute = this.isFidoUrl(url)
+            if (!atFidoRoute && !hasPasskeyError && !hasPasskeyVideo) return false
+
+            this.bot.logger.info(this.bot.isMobile, 'LOGIN-APP', '检测到 FIDO/Passkey 流程，尝试其他登录方式')
+            const hasSecondaryButton = await this.checkSelector(this.selectors.secondaryButton)
+            const hasOtherWays = await this.checkSelector(this.selectors.otherWaysToSignIn)
+            if (hasSecondaryButton) {
                 await this.bot.browser.utils.ghostClick(this.page, this.selectors.secondaryButton)
                 await this.page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {})
+                return true
             }
+
+            if (hasOtherWays) {
+                await this.bot.browser.utils.ghostClick(this.page, this.selectors.otherWaysToSignIn)
+                await this.page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {})
+                return true
+            }
+
+            return await this.continueAuthentication()
         } catch {
-            // 忽略提示处理中的错误
+            return false
         }
     }
 
@@ -80,21 +104,27 @@ export class MobileAccessLogin {
             const start = Date.now()
             let code = ''
             let lastUrl = ''
+            let lastProgressAt = Date.now()
 
             while (Date.now() - start < this.maxTimeout) {
                 const currentUrl = this.page.url()
 
                 // 仅在URL更改时记录（高信号，无垃圾信息）
                 if (currentUrl !== lastUrl) {
-                    this.bot.logger.debug(this.bot.isMobile, 'LOGIN-APP', `OAuth轮询URL已更改 → ${currentUrl}`)
+                    this.bot.logger.debug(
+                        this.bot.isMobile,
+                        'LOGIN-APP',
+                        `OAuth轮询URL已更改 → ${safeUrlForLog(currentUrl)}`
+                    )
                     lastUrl = currentUrl
+                    lastProgressAt = Date.now()
                 }
 
                 if (currentUrl.startsWith('chrome-error://')) {
                     this.bot.logger.warn(
                         this.bot.isMobile,
                         'LOGIN-APP',
-                        `OAuth页面打开失败，当前URL=${currentUrl}；将跳过App专属任务并继续搜索任务`
+                        `OAuth页面打开失败，当前URL=${safeUrlForLog(currentUrl)}；将跳过App专属任务并继续搜索任务`
                     )
                     break
                 }
@@ -111,13 +141,31 @@ export class MobileAccessLogin {
                         }
                     }
 
-                    // 如果出现Passkey提示则处理
-                    await this.handlePasskeyPrompt()
+                    const atLoginHost =
+                        url.hostname === 'login.live.com' ||
+                        url.hostname === 'login.microsoft.com' ||
+                        url.hostname === 'account.live.com'
+                    const atFidoRoute = this.isFidoUrl(url)
+                    const progressed = atFidoRoute
+                        ? await this.handlePasskeyPrompt(url)
+                        : atLoginHost
+                          ? await this.continueAuthentication()
+                          : false
+
+                    if (progressed && (!atFidoRoute || this.page.url() !== currentUrl)) lastProgressAt = Date.now()
+                    if (atFidoRoute && Date.now() - lastProgressAt >= this.fidoStallTimeout) {
+                        this.bot.logger.warn(
+                            this.bot.isMobile,
+                            'LOGIN-APP',
+                            'FIDO 页面无法切换到其他登录方式，提前停止 OAuth 等待'
+                        )
+                        break
+                    }
                 } catch {
                     this.bot.logger.debug(
                         this.bot.isMobile,
                         'LOGIN-APP',
-                        `轮询期间URL无效: ${String(currentUrl)}`
+                        `轮询期间URL无效: ${safeUrlForLog(String(currentUrl))}`
                     )
                 }
 
@@ -131,7 +179,7 @@ export class MobileAccessLogin {
                     `未获取到移动OAuth代码，已等待 ${Math.round((Date.now() - start) / 1000)}秒；App活动/签到/阅读将跳过，搜索任务继续执行`
                 )
 
-                this.bot.logger.debug(this.bot.isMobile, 'LOGIN-APP', `最终页面URL: ${this.page.url()}`)
+                this.bot.logger.debug(this.bot.isMobile, 'LOGIN-APP', `最终页面URL: ${safeUrlForLog(this.page.url())}`)
 
                 return ''
             }
@@ -152,14 +200,14 @@ export class MobileAccessLogin {
             })
 
             const token = (response?.data?.access_token as string) ?? ''
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                'LOGIN-APP',
+                `令牌响应 | status=${response?.status ?? 'n/a'} | fields=${responseTopLevelFields(response?.data).join(',') || 'none'}`
+            )
 
             if (!token) {
                 this.bot.logger.warn(this.bot.isMobile, 'LOGIN-APP', '令牌响应中没有access_token')
-                this.bot.logger.debug(
-                    this.bot.isMobile,
-                    'LOGIN-APP',
-                    `令牌响应负载: ${JSON.stringify(response?.data)}`
-                )
                 return ''
             }
 
