@@ -3,6 +3,7 @@ import fs from 'fs'
 import path from 'path'
 
 import { accountProgressHash } from './TaskProgressStore'
+import { localDateKey } from './DateUtils'
 
 export type PointCategoryKey =
     | 'pcSearch'
@@ -173,14 +174,6 @@ function addCategory(categories: PointCategoryTotals, category: PointCategoryKey
 function numberValue(value: unknown, fallback = 0): number {
     const parsed = Number(value)
     return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : fallback
-}
-
-export function localDateKey(date = new Date()): string {
-    return [
-        date.getFullYear(),
-        String(date.getMonth() + 1).padStart(2, '0'),
-        String(date.getDate()).padStart(2, '0')
-    ].join('-')
 }
 
 function parseDateKey(value: string): Date | null {

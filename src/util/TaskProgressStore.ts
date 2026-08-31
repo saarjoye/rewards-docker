@@ -2,6 +2,8 @@ import crypto from 'crypto'
 import fs from 'fs'
 import path from 'path'
 
+import { localDateKey } from './DateUtils'
+
 export interface StoredTaskProgressItem {
     completed: number
     total: number
@@ -42,7 +44,7 @@ export type ProgressTaskKey = 'desktop' | 'mobile' | 'daily'
 const progressFile = path.join(process.cwd(), 'logs', 'task-progress.json')
 
 function todayKey(): string {
-    return new Date().toISOString().slice(0, 10)
+    return localDateKey()
 }
 
 function emptyItem(status = '等待运行'): StoredTaskProgressItem {

@@ -7,6 +7,7 @@ import { URL } from 'url'
 
 import pkg from '../../package.json'
 import { ConfigSchema, AccountSchema, validateConfig } from '../util/Validator'
+import { localDateKey } from '../util/DateUtils'
 import type { Account } from '../interface/Account'
 import type { Config, ConfigWorkers, ConfigGiftCardMonitor, WebhookWeComConfig } from '../interface/Config'
 import { accountProgressHash, readTaskProgressFile } from '../util/TaskProgressStore'
@@ -572,13 +573,6 @@ function maskEmail(email: string): string {
     if (!domain) return email ? `${email.slice(0, 2)}***` : ''
     const left = name.length <= 2 ? `${name[0] ?? ''}***` : `${name.slice(0, 2)}***${name.slice(-1)}`
     return `${left}@${domain}`
-}
-
-function localDateKey(date = new Date()): string {
-    const year = date.getFullYear()
-    const month = String(date.getMonth() + 1).padStart(2, '0')
-    const day = String(date.getDate()).padStart(2, '0')
-    return `${year}-${month}-${day}`
 }
 
 function datedManualRunLogFile(date = localDateKey()): string {
@@ -1345,7 +1339,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
 
     if (url.pathname === '/api/logs/download' && req.method === 'GET') {
         const result = queryLogs(url)
-        const filename = `mrs-${result.source}-redacted-${new Date().toISOString().slice(0, 10)}.log`
+        const filename = `mrs-${result.source}-redacted-${localDateKey()}.log`
         res.statusCode = 200
         res.setHeader('Content-Type', 'text/plain; charset=utf-8')
         res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)

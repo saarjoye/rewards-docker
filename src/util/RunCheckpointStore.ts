@@ -2,6 +2,7 @@ import fs from 'fs'
 import path from 'path'
 
 import { accountProgressHash } from './TaskProgressStore'
+import { localDateKey } from './DateUtils'
 
 export type RunAccountMode = 'continue' | 'failed' | 'all' | 'account'
 export type RunCheckpointState = 'pending' | 'running' | 'completed' | 'failed' | 'interrupted' | 'skipped'
@@ -39,12 +40,7 @@ export interface RunCheckpointSelection<T> {
 const checkpointFile = path.join(process.cwd(), 'logs', 'run-checkpoint.json')
 
 function todayKey(): string {
-    const now = new Date()
-    return [
-        now.getFullYear(),
-        String(now.getMonth() + 1).padStart(2, '0'),
-        String(now.getDate()).padStart(2, '0')
-    ].join('-')
+    return localDateKey()
 }
 
 function emptyCheckpointFile(): StoredRunCheckpointFile {

@@ -5,6 +5,7 @@ import path from 'path'
 import { sendDiscord } from './Discord'
 import { sendNtfy } from './Ntfy'
 import type { MicrosoftRewardsBot } from '../index'
+import { localDateKey } from '../util/DateUtils'
 import { errorDiagnostic } from '../util/ErrorDiagnostic'
 import type { LogFilter } from '../interface/Config'
 
@@ -62,7 +63,7 @@ function ensureLogDirectory(): string {
  */
 function getLogFilePath(): string {
     const logDir = ensureLogDirectory()
-    const today = new Date().toISOString().split('T')[0] // YYYY-MM-DD格式
+    const today = localDateKey()
     return path.join(logDir, `${today}.log`)
 }
 
