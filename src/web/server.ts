@@ -24,7 +24,6 @@ import {
 } from '../util/RunCheckpointStore'
 import { diagnoseWeCom, testWeCom } from '../logging/WeCom'
 import { readableLogSnippet, stampLogLine, stripAnsi } from './logSanitizer'
-import { sanitizeLogMessage } from '../util/LogSanitizer'
 
 type JsonValue = Record<string, unknown> | unknown[] | string | number | boolean | null
 
@@ -348,7 +347,7 @@ function saveSchedule(schedule: string): ScheduleFile {
 }
 
 function redactLogLine(line: string): string {
-    return sanitizeLogMessage(stampLogLine(readableLogSnippet(line)))
+    return stampLogLine(readableLogSnippet(line))
         .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, email => maskEmail(email))
         .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{16,}/gi, 'Bearer [REDACTED]')
         .replace(

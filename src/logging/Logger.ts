@@ -7,7 +7,6 @@ import { sendNtfy } from './Ntfy'
 import type { MicrosoftRewardsBot } from '../index'
 import { localDateKey } from '../util/DateUtils'
 import { errorDiagnostic } from '../util/ErrorDiagnostic'
-import { sanitizeLogMessage } from '../util/LogSanitizer'
 import type { LogFilter } from '../interface/Config'
 
 export type Platform = boolean | 'main'
@@ -110,7 +109,7 @@ export class Logger {
         color?: ColorKey
     ): void {
         const now = new Date().toLocaleString()
-        const formatted = sanitizeLogMessage(formatMessage(message))
+        const formatted = formatMessage(message)
 
         const userName = this.bot.userData.userName ? this.bot.userData.userName : '主进程'
 

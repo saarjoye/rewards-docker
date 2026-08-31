@@ -59,8 +59,6 @@ import { monitorGiftCards } from './util/GiftCardMonitor'
 import type { ServerActionName } from './util/ServerActions'
 import type { AppEarnablePoints, BrowserEarnablePoints, MissingSearchPoints } from './interface/Points'
 import { dashboardFailureDetails, isDashboardFetchError } from './util/DashboardError'
-import { isSessionValidationError } from './util/SessionValidationError'
-import { withSingleSessionRepair } from './util/SingleSessionRepair'
 import {
     calculateKnownPointTotals,
     buildWeComAccountMessage,
@@ -80,7 +78,6 @@ interface ExecutionContext {
 interface BrowserSession {
     context: BrowserContext
     fingerprint: BrowserFingerprintWithHeaders
-    loadedSessionCookies: boolean
 }
 
 interface RunOptions {
@@ -921,49 +918,12 @@ export class MicrosoftRewardsBot {
         try {
             return await executionContext.run({ isMobile: true, account }, async () => {
                 this.accessToken = ''
-                let initialContext: BrowserContext
-                let loadedStoredSession = false
+                mobileSession = await this.browserFactory.createBrowser(account)
+                const initialContext: BrowserContext = mobileSession.context
+                this.mainMobilePage = await initialContext.newPage()
+                this.browser.func.prepareDashboardCapture(this.mainMobilePage, account.geoLocale)
 
-                const authenticateSession = async (loadStoredSession: boolean): Promise<DashboardData> => {
-                    mobileSession = await this.browserFactory.createBrowser(account, { loadStoredSession })
-                    loadedStoredSession = mobileSession.loadedSessionCookies
-                    initialContext = mobileSession.context
-                    this.mainMobilePage = await initialContext.newPage()
-                    this.browser.func.prepareDashboardCapture(this.mainMobilePage, account.geoLocale)
-                    this.logger.info('main', 'BROWSER', `移动浏览器已启动 | storedSession=${loadedStoredSession}`)
-                    return await this.login.login(this.mainMobilePage, account, {
-                        rejectStoredSessionChallenge: loadStoredSession && loadedStoredSession
-                    })
-                }
-
-                const data = await withSingleSessionRepair(
-                    async loadStoredSession => {
-                        try {
-                            return await authenticateSession(loadStoredSession)
-                        } catch (error) {
-                            if (mobileSession) {
-                                await this.browser.func
-                                    .closeBrowser(mobileSession.context, accountEmail)
-                                    .catch(() => {})
-                                mobileSession = null
-                            }
-                            throw error
-                        }
-                    },
-                    error => loadedStoredSession && isSessionValidationError(error),
-                    error => {
-                        const reason = isSessionValidationError(error) ? error.reason : 'unknown'
-                        this.logger.warn(
-                            'main',
-                            'SESSION-REPAIR',
-                            `持久会话验证失败，使用全新浏览器上下文重建一次 | reason=${reason}`
-                        )
-                    }
-                )
-
-                if (!mobileSession) throw new Error('认证成功后缺少移动浏览器会话')
-                const authenticatedMobileSession = mobileSession
-                initialContext = authenticatedMobileSession.context
+                this.logger.info('main', 'BROWSER', `移动浏览器已启动 | ${accountEmail}`)
 
                 this.updateFormalRunCheckpoint(accountEmail, {
                     state: 'running',
@@ -974,6 +934,7 @@ export class MicrosoftRewardsBot {
                     runMode: currentRunOptions().accountMode,
                     pid: process.pid
                 })
+                await this.login.login(this.mainMobilePage, account)
                 updateAccountStatus(accountEmail, {
                     state: 'valid',
                     stage: 'login',
@@ -990,7 +951,7 @@ export class MicrosoftRewardsBot {
                 })
 
                 try {
-                    this.accessToken = await this.login.getAppAccessToken(this.mainMobilePage, account)
+                    this.accessToken = await this.login.getAppAccessToken(this.mainMobilePage, accountEmail)
                 } catch (error) {
                     this.logger.error(
                         'main',
@@ -1008,8 +969,9 @@ export class MicrosoftRewardsBot {
                 }
 
                 this.cookies.mobile = await initialContext.cookies()
-                this.fingerprint = authenticatedMobileSession.fingerprint
+                this.fingerprint = mobileSession.fingerprint
 
+                const data: DashboardData = await this.browser.func.getDashboardData(account.geoLocale)
                 const initialPoints = data.userStatus.availablePoints
                 this.userData.initialPoints = initialPoints
                 this.userData.currentPoints = initialPoints
@@ -1453,7 +1415,7 @@ export class MicrosoftRewardsBot {
                 const { mobilePoints, desktopPoints } = await this.searchManager.doSearches(
                     data,
                     missingSearchPoints,
-                    authenticatedMobileSession,
+                    mobileSession,
                     account,
                     accountEmail
                 )

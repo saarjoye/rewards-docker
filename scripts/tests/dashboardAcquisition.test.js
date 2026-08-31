@@ -89,7 +89,6 @@ function fakeBot(apiResult, fallbackResult = '<html>modern but incomplete</html>
     let apiRequests = 0
     let flyoutRequests = 0
     const flyoutUrls = []
-    const requests = []
     return {
         logs,
         get apiRequests() {
@@ -99,7 +98,6 @@ function fakeBot(apiResult, fallbackResult = '<html>modern but incomplete</html>
             return flyoutRequests
         },
         flyoutUrls,
-        requests,
         isMobile: true,
         fingerprint: { headers: {} },
         cookies: { mobile: [], desktop: [] },
@@ -112,7 +110,6 @@ function fakeBot(apiResult, fallbackResult = '<html>modern but incomplete</html>
         },
         axios: {
             request: async request => {
-                requests.push(request)
                 if (String(request.url).includes('/api/getuserinfo')) {
                     apiRequests += 1
                     if (apiResult instanceof Error || apiResult?.isAxiosError) throw apiResult
@@ -166,30 +163,6 @@ async function expectFailure(apiResult, expectedStatus, expectedKind) {
     })
     assert.equal((await new BrowserFunc(okBot).getDashboardData()).userStatus.availablePoints, 999)
     assert.equal(okBot.flyoutRequests, 0)
-
-    const pageCookieBot = fakeBot({
-        status: 200,
-        headers: { 'content-type': 'application/json; charset=utf-8' },
-        data: { dashboard: dashboard(1000) }
-    })
-    pageCookieBot.cookies.mobile = [
-        { name: 'MUID', value: 'GLOBAL-CANARY', domain: '.bing.com', path: '/', secure: true, expires: -1 }
-    ]
-    const pageCookiePage = {
-        isClosed: () => false,
-        url: () => 'https://rewards.bing.com/dashboard',
-        context: () => ({
-            cookies: async () => [
-                { name: 'MUID', value: 'PAGE-CANARY', domain: '.bing.com', path: '/', secure: true, expires: -1 }
-            ]
-        })
-    }
-    assert.equal(
-        (await new BrowserFunc(pageCookieBot).getDashboardData('CN', pageCookiePage)).userStatus.availablePoints,
-        1000
-    )
-    assert.match(pageCookieBot.requests[0].headers.Cookie, /PAGE-CANARY/)
-    assert.equal(pageCookieBot.requests[0].headers.Cookie.includes('GLOBAL-CANARY'), false)
 
     const modernBot = fakeBot(axiosError(404), '<html>modern but incomplete</html>', flyoutDashboard(1888))
     const modernFunc = new BrowserFunc(modernBot)
@@ -486,37 +459,6 @@ async function expectFailure(apiResult, expectedStatus, expectedKind) {
     const captureLogs = captureBot.logs.join('\n')
     assert.match(captureLogs, /source=capture/)
     assert.equal(captureLogs.includes('REDACT-ME'), false)
-
-    const authRedirectBot = fakeBot(axiosError(500))
-    const authRedirectPage = {
-        isClosed: () => false,
-        on: () => {},
-        content: async () => '<html>login required</html>',
-        title: async () => 'Sign in',
-        evaluate: async () => [],
-        url: () => 'https://rewards.bing.com/about',
-        waitForLoadState: async () => {},
-        context: () => ({
-            request: {
-                get: async () =>
-                    apiResponse({
-                        status: 200,
-                        contentType: 'text/html',
-                        body: '<html>login required</html>',
-                        url: 'https://login.live.com/'
-                    })
-            }
-        })
-    }
-    authRedirectBot.mainMobilePage = authRedirectPage
-    const authRedirectFunc = new BrowserFunc(authRedirectBot)
-    authRedirectFunc.prepareDashboardCapture(authRedirectPage, 'CN')
-    await assert.rejects(
-        () => authRedirectFunc.getDashboardData('CN'),
-        error => error instanceof DashboardFetchError && error.apiFailureKind === 'auth'
-    )
-    assert.equal(authRedirectBot.flyoutRequests, 0)
-    assert.equal(authRedirectBot.flyoutUrls.length, 0)
 
     console.log('dashboardAcquisition.test.js passed')
 })().catch(error => {

@@ -1,7 +1,6 @@
 import type { Page } from 'patchright'
 import type { MicrosoftRewardsBot } from '../../index'
 import { saveSessionData } from '../../util/Load'
-import { SessionValidationError } from '../../util/SessionValidationError'
 
 import { MobileAccessLogin } from './methods/MobileAccessLogin'
 import { EmailLogin } from './methods/EmailLogin'
@@ -11,9 +10,8 @@ import { CodeLogin } from './methods/GetACodeLogin'
 import { RecoveryLogin } from './methods/RecoveryEmailLogin'
 
 import type { Account } from '../../interface/Account'
-import type { DashboardData } from '../../interface/DashboardData'
 
-export type LoginState =
+type LoginState =
     | 'EMAIL_INPUT'
     | 'PASSWORD_INPUT'
     | 'SIGN_IN_ANOTHER_WAY'
@@ -22,9 +20,6 @@ export type LoginState =
     | 'PASSKEY_VIDEO'
     | 'KMSI_PROMPT'
     | 'LOGGED_IN'
-    | 'REWARDS_DASHBOARD'
-    | 'REWARDS_UNVERIFIED'
-    | 'MICROSOFT_ACCOUNT'
     | 'RECOVERY_EMAIL_INPUT'
     | 'ACCOUNT_LOCKED'
     | 'ERROR_ALERT'
@@ -35,10 +30,6 @@ export type LoginState =
     | 'OTP_CODE_ENTRY'
     | 'UNKNOWN'
     | 'CHROMEWEBDATA_ERROR'
-
-export interface LoginOptions {
-    rejectStoredSessionChallenge?: boolean
-}
 
 export class Login {
     emailLogin: EmailLogin
@@ -83,7 +74,7 @@ export class Login {
         this.recoveryLogin = new RecoveryLogin(this.bot)
     }
 
-    async login(page: Page, account: Account, options: LoginOptions = {}): Promise<DashboardData> {
+    async login(page: Page, account: Account) {
         try {
             this.bot.logger.info(this.bot.isMobile, 'LOGIN', '开始登录流程')
 
@@ -100,7 +91,6 @@ export class Login {
             let iteration = 0
             let previousState: LoginState = 'UNKNOWN'
             let sameStateCount = 0
-            let reachedAuthenticatedPage = false
 
             while (iteration < maxIterations) {
                 if (page.isClosed()) throw new Error('页面意外关闭')
@@ -139,19 +129,8 @@ export class Login {
                 }
                 previousState = state
 
-                if (
-                    options.rejectStoredSessionChallenge &&
-                    (this.isAuthenticationChallenge(state) || state === 'REWARDS_UNVERIFIED')
-                ) {
-                    throw new SessionValidationError(
-                        'stored-session-challenge',
-                        `持久会话已失效，出现认证状态 ${state}`
-                    )
-                }
-
-                if (state === 'LOGGED_IN' || state === 'REWARDS_DASHBOARD' || state === 'MICROSOFT_ACCOUNT') {
-                    this.bot.logger.info(this.bot.isMobile, 'LOGIN', '已到达登录验证候选页面')
-                    reachedAuthenticatedPage = true
+                if (state === 'LOGGED_IN') {
+                    this.bot.logger.info(this.bot.isMobile, 'LOGIN', '登录成功')
                     break
                 }
 
@@ -163,11 +142,11 @@ export class Login {
                 await this.bot.utils.wait(1000)
             }
 
-            if (!reachedAuthenticatedPage) {
-                throw new SessionValidationError('rewards-session-invalid', '登录超时：未到达可验证的登录页面')
+            if (iteration >= maxIterations) {
+                throw new Error('登录超时: 超过最大迭代次数')
             }
 
-            return await this.finalizeLogin(page, account)
+            await this.finalizeLogin(page, account.email)
         } catch (error) {
             this.bot.logger.error(
                 this.bot.isMobile,
@@ -193,6 +172,11 @@ export class Login {
         if (isLocked) {
             this.bot.logger.debug(this.bot.isMobile, 'DETECT-STATE', '账户锁定选择器被发现')
             return 'ACCOUNT_LOCKED'
+        }
+
+        if (url.hostname === 'rewards.bing.com' || url.hostname === 'account.microsoft.com') {
+            this.bot.logger.debug(this.bot.isMobile, 'DETECT-STATE', '在奖励/账户页面，假设已登录')
+            return 'LOGGED_IN'
         }
 
         const stateChecks: Array<[string, LoginState]> = [
@@ -244,32 +228,6 @@ export class Login {
         let foundStates = results.filter((s): s is LoginState => s !== null)
 
         if (foundStates.length === 0) {
-            const normalizedPath = url.pathname.replace(/\/+$/, '') || '/'
-            if (url.hostname === 'rewards.bing.com' && normalizedPath === '/dashboard') {
-                this.bot.logger.debug(this.bot.isMobile, 'DETECT-STATE', '到达 Rewards dashboard 候选页面')
-                return 'REWARDS_DASHBOARD'
-            }
-
-            if (
-                url.hostname === 'rewards.bing.com' &&
-                (normalizedPath === '/about' || normalizedPath === '/createuser')
-            ) {
-                this.bot.logger.debug(this.bot.isMobile, 'DETECT-STATE', '到达未验证的 Rewards 普通页面')
-                return 'REWARDS_UNVERIFIED'
-            }
-
-            if (url.hostname === 'account.microsoft.com') {
-                this.bot.logger.debug(this.bot.isMobile, 'DETECT-STATE', '到达 Microsoft 账户候选页面')
-                return 'MICROSOFT_ACCOUNT'
-            }
-
-            const atBingHome =
-                (url.hostname === 'www.bing.com' || url.hostname === 'cn.bing.com') && normalizedPath === '/'
-            if (atBingHome && (await this.checkSelector(page, this.selectors.bingProfile))) {
-                this.bot.logger.debug(this.bot.isMobile, 'DETECT-STATE', 'Bing 首页存在已登录用户标识')
-                return 'LOGGED_IN'
-            }
-
             this.bot.logger.debug(this.bot.isMobile, 'DETECT-STATE', '未找到匹配的状态')
             return 'UNKNOWN'
         }
@@ -323,24 +281,6 @@ export class Login {
             .catch(() => false)
     }
 
-    private isAuthenticationChallenge(state: LoginState): boolean {
-        return [
-            'EMAIL_INPUT',
-            'PASSWORD_INPUT',
-            'SIGN_IN_ANOTHER_WAY',
-            'SIGN_IN_ANOTHER_WAY_EMAIL',
-            'PASSKEY_ERROR',
-            'PASSKEY_VIDEO',
-            'KMSI_PROMPT',
-            'RECOVERY_EMAIL_INPUT',
-            '2FA_TOTP',
-            'LOGIN_PASSWORDLESS',
-            'GET_A_CODE',
-            'GET_A_CODE_2',
-            'OTP_CODE_ENTRY'
-        ].includes(state)
-    }
-
     private async handleState(state: LoginState, page: Page, account: Account): Promise<boolean> {
         this.bot.logger.debug(this.bot.isMobile, 'HANDLE-STATE', `处理状态: ${state}`)
 
@@ -359,8 +299,6 @@ export class Login {
             }
 
             case 'LOGGED_IN':
-            case 'REWARDS_DASHBOARD':
-            case 'MICROSOFT_ACCOUNT':
                 return true
 
             case 'EMAIL_INPUT': {
@@ -619,79 +557,88 @@ export class Login {
         }
     }
 
-    private async finalizeLogin(page: Page, account: Account): Promise<DashboardData> {
-        this.bot.logger.info(this.bot.isMobile, 'LOGIN', '验证登录结果')
+    private async finalizeLogin(page: Page, email: string) {
+        this.bot.logger.info(this.bot.isMobile, 'LOGIN', '完成登录')
+
+        await page.goto(this.bot.config.baseURL, { waitUntil: 'networkidle', timeout: 10000 }).catch(() => {})
+
+        const loginRewardsSuccess = new URL(page.url()).hostname === 'rewards.bing.com'
+        if (loginRewardsSuccess) {
+            this.bot.logger.info(this.bot.isMobile, 'LOGIN', '成功登录Microsoft Rewards')
+        } else {
+            this.bot.logger.warn(this.bot.isMobile, 'LOGIN', '无法验证奖励仪表板，假定登录有效')
+        }
+
         this.bot.logger.info(this.bot.isMobile, 'LOGIN', '开始Bing会话验证')
-        await this.verifyBingSession(page, account)
+        await this.verifyBingSession(page)
 
         this.bot.logger.info(this.bot.isMobile, 'LOGIN', '开始奖励会话验证')
-        this.bot.browser.func.prepareDashboardCapture(page, account.geoLocale)
         await this.getRewardsSession(page)
-
-        let dashboard: DashboardData
-        try {
-            dashboard = await this.bot.browser.func.getDashboardData(account.geoLocale, page)
-        } catch (error) {
-            const message = error instanceof Error ? error.message : String(error)
-            throw new SessionValidationError('dashboard-session-invalid', `Rewards 数据验证失败：${message}`)
-        }
 
         const browser = page.context()
         const cookies = await browser.cookies()
         this.bot.logger.debug(this.bot.isMobile, 'LOGIN', `检索到 ${cookies.length} 个cookie`)
-        await saveSessionData(this.bot.config.sessionPath, cookies, account.email, this.bot.isMobile)
+        await saveSessionData(this.bot.config.sessionPath, cookies, email, this.bot.isMobile)
 
-        this.bot.logger.info(this.bot.isMobile, 'LOGIN', '登录验证完成，会话已原子保存')
-        return dashboard
+        this.bot.logger.info(this.bot.isMobile, 'LOGIN', '登录完成，会话已保存')
     }
 
-    async verifyBingSession(page: Page, account: Account): Promise<void> {
+    async verifyBingSession(page: Page) {
         const url =
             'https://www.bing.com/fd/auth/signin?action=interactive&provider=windows_live_id&return_url=https%3A%2F%2Fwww.bing.com%2F'
-        const loopMax = 15
+        const loopMax = 5
 
         this.bot.logger.info(this.bot.isMobile, 'LOGIN-BING', '验证Bing会话')
 
-        await page.goto(url, { waitUntil: 'networkidle', timeout: 10000 }).catch(() => {})
+        try {
+            await page.goto(url, { waitUntil: 'networkidle', timeout: 10000 }).catch(() => {})
 
-        for (let i = 0; i < loopMax; i++) {
-            if (page.isClosed()) break
+            for (let i = 0; i < loopMax; i++) {
+                if (page.isClosed()) break
 
-            this.bot.logger.debug(this.bot.isMobile, 'LOGIN-BING', `验证循环 ${i + 1}/${loopMax}`)
+                this.bot.logger.debug(this.bot.isMobile, 'LOGIN-BING', `验证循环 ${i + 1}/${loopMax}`)
 
-            const state = await this.detectCurrentState(page, account)
+                const state = await this.detectCurrentState(page)
+                if (state === 'PASSKEY_ERROR') {
+                    this.bot.logger.info(this.bot.isMobile, 'LOGIN-BING', '忽略Passkey错误状态')
+                    await this.bot.browser.utils.ghostClick(page, this.selectors.secondaryButton)
+                }
 
-            const u = new URL(page.url())
-            const normalizedPath = u.pathname.replace(/\/+$/, '') || '/'
-            const atBingHome = (u.hostname === 'www.bing.com' || u.hostname === 'cn.bing.com') && normalizedPath === '/'
-            this.bot.logger.debug(
+                const u = new URL(page.url())
+                const atBingHome = u.hostname === 'cn.bing.com' && u.pathname === '/'
+                this.bot.logger.debug(
+                    this.bot.isMobile,
+                    'LOGIN-BING',
+                    `在Bing首页: ${atBingHome} (${u.hostname}${u.pathname})`
+                )
+
+                if (atBingHome) {
+                    await this.bot.browser.utils.tryDismissAllMessages(page).catch(() => {})
+
+                    const signedIn = await page
+                        .waitForSelector(this.selectors.bingProfile, { timeout: 3000 })
+                        .then(() => true)
+                        .catch(() => false)
+
+                    this.bot.logger.debug(this.bot.isMobile, 'LOGIN-BING', `找到个人资料元素: ${signedIn}`)
+
+                    if (signedIn || this.bot.isMobile) {
+                        this.bot.logger.info(this.bot.isMobile, 'LOGIN-BING', 'Bing会话验证成功')
+                        return
+                    }
+                }
+
+                await this.bot.utils.wait(1000)
+            }
+
+            this.bot.logger.warn(this.bot.isMobile, 'LOGIN-BING', '无法验证Bing会话，仍然继续')
+        } catch (error) {
+            this.bot.logger.warn(
                 this.bot.isMobile,
                 'LOGIN-BING',
-                `在Bing首页: ${atBingHome} (${u.hostname}${u.pathname})`
+                `验证错误: ${error instanceof Error ? error.message : String(error)}`
             )
-
-            if (atBingHome) {
-                await this.bot.browser.utils.tryDismissAllMessages(page).catch(() => {})
-
-                const signedIn = await this.checkSelector(page, this.selectors.bingProfile)
-
-                this.bot.logger.debug(this.bot.isMobile, 'LOGIN-BING', `找到个人资料元素: ${signedIn}`)
-
-                if (signedIn) {
-                    this.bot.logger.info(this.bot.isMobile, 'LOGIN-BING', 'Bing会话验证成功')
-                    return
-                }
-            }
-
-            if (this.isAuthenticationChallenge(state)) {
-                const shouldContinue = await this.handleState(state, page, account)
-                if (!shouldContinue) break
-            }
-
-            await this.bot.utils.wait(1000)
         }
-
-        throw new SessionValidationError('bing-session-invalid', 'Bing 会话验证失败：未找到已登录用户标识')
     }
 
     private async getRewardsSession(page: Page) {
@@ -744,7 +691,11 @@ export class Login {
 
                     if (token) {
                         this.bot.requestToken = token
-                        this.bot.logger.info(this.bot.isMobile, 'GET-REWARD-SESSION', '请求令牌已获取')
+                        this.bot.logger.info(
+                            this.bot.isMobile,
+                            'GET-REWARD-SESSION',
+                            `请求令牌已获取: ${token.substring(0, 10)}...`
+                        )
                         return
                     }
 
@@ -757,12 +708,7 @@ export class Login {
                         return
                     }
 
-                    this.bot.logger.warn(
-                        this.bot.isMobile,
-                        'GET-REWARD-SESSION',
-                        '旧版 dashboard 未找到 RequestVerificationToken，相关旧版活动将跳过'
-                    )
-                    return
+                    this.bot.logger.debug(this.bot.isMobile, 'GET-REWARD-SESSION', '页面上未找到令牌')
                 } else {
                     this.bot.logger.debug(
                         this.bot.isMobile,
@@ -774,22 +720,30 @@ export class Login {
                 await this.bot.utils.wait(1000)
             }
 
-            throw new SessionValidationError('rewards-session-invalid', 'Rewards 会话验证失败：未进入 dashboard')
+            if (this.bot.rewardsVersion === 'modern') {
+                this.bot.logger.info(
+                    this.bot.isMobile,
+                    'GET-REWARD-SESSION',
+                    '现代仪表板未找到 RequestVerificationToken，继续使用 Cookie / Server Action 流程'
+                )
+            } else {
+                this.bot.logger.warn(
+                    this.bot.isMobile,
+                    'GET-REWARD-SESSION',
+                    '未找到RequestVerificationToken，旧版 REST 活动将跳过'
+                )
+            }
         } catch (error) {
-            if (error instanceof SessionValidationError) throw error
-            const message = error instanceof Error ? error.message : String(error)
-            this.bot.logger.error(this.bot.isMobile, 'GET-REWARD-SESSION', `验证错误: ${message}`)
-            throw new SessionValidationError('rewards-session-invalid', `Rewards 会话验证失败：${message}`)
+            throw this.bot.logger.error(
+                this.bot.isMobile,
+                'GET-REWARD-SESSION',
+                `致命错误: ${error instanceof Error ? error.message : String(error)}`
+            )
         }
     }
 
-    async getAppAccessToken(page: Page, account: Account): Promise<string> {
+    async getAppAccessToken(page: Page, email: string) {
         this.bot.logger.info(this.bot.isMobile, 'GET-APP-TOKEN', '请求移动访问令牌')
-        const continueAuthentication = async (): Promise<boolean> => {
-            const state = await this.detectCurrentState(page, account)
-            if (!this.isAuthenticationChallenge(state)) return false
-            return await this.handleState(state, page, account)
-        }
-        return await new MobileAccessLogin(this.bot, page, continueAuthentication).get(account.email)
+        return await new MobileAccessLogin(this.bot, page).get(email)
     }
 }

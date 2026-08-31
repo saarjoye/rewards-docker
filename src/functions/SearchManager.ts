@@ -9,7 +9,6 @@ import { updateAccountRunState, updateSearchTaskProgress, updateTaskDetail, upda
 interface BrowserSession {
     context: BrowserContext
     fingerprint: BrowserFingerprintWithHeaders
-    loadedSessionCookies: boolean
 }
 
 interface SearchResults {
@@ -608,7 +607,10 @@ export class SearchManager {
 
         await this.bot['login'].login(this.bot.mainDesktopPage, account)
 
-        this.bot.logger.info('main', 'SEARCH-DESKTOP-LOGIN', '登录与会话验证通过')
+        this.bot.logger.info('main', 'SEARCH-DESKTOP-LOGIN', '登录通过，正在验证')
+        this.bot.logger.debug('main', 'SEARCH-DESKTOP-LOGIN', 'verifyBingSession')
+
+        await this.bot['login'].verifyBingSession(this.bot.mainDesktopPage)
         this.bot.cookies.desktop = await session.context.cookies()
 
         this.bot.logger.debug('main', 'SEARCH-DESKTOP-LOGIN', 'Cookie已存储')
