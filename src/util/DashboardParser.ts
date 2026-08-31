@@ -1,6 +1,6 @@
 import type { DashboardData, DashboardFieldAvailability, DashboardFieldStatus } from '../interface/DashboardData'
 
-export type DashboardDataSource = 'api' | 'legacy-html' | 'next-flight'
+export type DashboardDataSource = 'api' | 'legacy-html' | 'next-flight' | 'bing-flyout'
 
 export interface DashboardParseResult {
     data: DashboardData | null
@@ -140,6 +140,80 @@ export function dashboardFromApiPayload(
         : { data: null, source: null, reason: `API dashboard 校验失败：${validation.reason}` }
 }
 
+export function dashboardFromFlyoutPayload(
+    payload: unknown,
+    options: DashboardValidationOptions = {}
+): DashboardParseResult {
+    if (!isRecord(payload)) {
+        return { data: null, source: null, reason: 'Bing flyout 响应不是对象' }
+    }
+    if (payload.isError === true) {
+        return { data: null, source: null, reason: 'Bing flyout 返回错误状态' }
+    }
+
+    const userInfo = payload.userInfo
+    const flyout = payload.flyoutResult
+    if (!isRecord(userInfo) || !isRecord(flyout)) {
+        return { data: null, source: null, reason: 'Bing flyout 缺少用户或活动数据' }
+    }
+
+    const flyoutStatus = flyout.userStatus
+    if (!isRecord(flyoutStatus)) {
+        return { data: null, source: null, reason: 'Bing flyout 缺少 userStatus' }
+    }
+    const rewardsUser =
+        payload.isRewardsUser === true || userInfo.isRewardsUser === true || flyoutStatus.isRewardsUser === true
+    if (!rewardsUser) {
+        return { data: null, source: null, reason: 'Bing flyout 未确认 Rewards 用户状态' }
+    }
+
+    const availablePoints = hasFiniteNonNegativeNumber(flyoutStatus.availablePoints)
+        ? flyoutStatus.availablePoints
+        : userInfo.balance
+    const sourceCounters = isRecord(flyoutStatus.counters) ? flyoutStatus.counters : {}
+    const highValuePromotions = recordArrays(flyout, ['highValueActionPromotions'])
+    const additionalPromotions = recordArrays(flyout, [
+        'edgeHighValueActionPromotions',
+        'exploreOnBingPromotions',
+        'exploreOnOutlookPromotions',
+        'onboardingChecklistPromotions'
+    ])
+    const promotionalItems =
+        highValuePromotions === undefined && additionalPromotions === undefined
+            ? undefined
+            : uniqueRecords([...(highValuePromotions ?? []), ...(additionalPromotions ?? [])])
+    const profile = isRecord(userInfo.profile) ? userInfo.profile : flyout.profile
+
+    const candidate = {
+        ...flyout,
+        userStatus: {
+            ...flyoutStatus,
+            availablePoints,
+            counters: {
+                ...sourceCounters,
+                pcSearch: sourceCounters.pcSearch ?? sourceCounters.PCSearch,
+                mobileSearch: sourceCounters.mobileSearch ?? sourceCounters.MobileSearch,
+                activityAndQuiz: sourceCounters.activityAndQuiz ?? sourceCounters.ActivityAndQuiz,
+                dailyPoint: sourceCounters.dailyPoint ?? sourceCounters.DailyPoint
+            }
+        },
+        userWarnings: [],
+        promotionalItem: highValuePromotions?.[0],
+        promotionalItems,
+        dailySetPromotions: flyout.dailySetPromotions,
+        morePromotions: flyout.morePromotions,
+        morePromotionsWithoutPromotionalItems: Array.isArray(flyout.morePromotions) ? [] : undefined,
+        punchCards: flyout.punchCards,
+        componentImpressionPromotions: flyout.impressionPromotions,
+        userProfile: profile
+    }
+
+    const validation = validateDashboardData(candidate, options)
+    return validation.valid
+        ? { data: validation.data, source: 'bing-flyout', reason: 'ok' }
+        : { data: null, source: null, reason: `Bing flyout dashboard 校验失败：${validation.reason}` }
+}
+
 export function dashboardFromFlightEntries(
     entries: unknown,
     options: DashboardValidationOptions = {}
@@ -212,6 +286,28 @@ function findUniqueDashboard(
     if (candidates.length === 1 && candidates[0]) return { data: candidates[0], source, reason: 'ok' }
     if (candidates.length > 1) return { data: null, source: null, reason: '发现多个不一致的合法 dashboard 候选' }
     return { data: null, source: null, reason: 'Next.js Flight 中未找到核心字段合法的 DashboardData' }
+}
+
+function recordArrays(record: Record<string, unknown>, keys: string[]): Record<string, unknown>[] | undefined {
+    const values = keys.map(key => record[key]).filter(value => value !== undefined)
+    if (values.length === 0) return undefined
+    if (!values.every(validRecordArray)) return undefined
+    return values.flatMap(value => value as Record<string, unknown>[])
+}
+
+function uniqueRecords(records: Record<string, unknown>[]): Record<string, unknown>[] {
+    const seen = new Set<string>()
+    return records.filter((record, index) => {
+        const identifier =
+            typeof record.offerId === 'string'
+                ? `offer:${record.offerId}`
+                : typeof record.hash === 'string'
+                  ? `hash:${record.hash}`
+                  : `index:${index}`
+        if (seen.has(identifier)) return false
+        seen.add(identifier)
+        return true
+    })
 }
 
 function collectDecodedValues(value: unknown, output: unknown[], depth: number, visited: Set<unknown>): void {

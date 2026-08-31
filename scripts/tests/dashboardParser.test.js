@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict')
 const {
     dashboardFromApiPayload,
+    dashboardFromFlyoutPayload,
     dashboardFromFlightEntries,
     dashboardFromHtml,
     validateDashboardData
@@ -70,6 +71,55 @@ assert.equal(flight.source, 'next-flight')
 
 const runtimeFlight = dashboardFromFlightEntries([[1, flightPayload]])
 assert.equal(runtimeFlight.data.userStatus.availablePoints, 3456)
+
+const flyoutPayload = {
+    isRewardsUser: true,
+    userInfo: {
+        isRewardsUser: true,
+        balance: 4567,
+        profile: { attributes: { country: 'US' } }
+    },
+    flyoutResult: {
+        userStatus: {
+            isRewardsUser: true,
+            availablePoints: 4567,
+            counters: {
+                PCSearch: [{ pointProgress: 10, pointProgressMax: 30 }],
+                MobileSearch: [{ pointProgress: 5, pointProgressMax: 20 }]
+            }
+        },
+        highValueActionPromotions: [{ offerId: 'high-value-1' }],
+        edgeHighValueActionPromotions: [{ offerId: 'high-value-2' }],
+        dailySetPromotions: { '08/31/2026': [{ offerId: 'daily-1' }] },
+        morePromotions: [{ offerId: 'more-1' }],
+        impressionPromotions: []
+    }
+}
+const flyout = dashboardFromFlyoutPayload(flyoutPayload)
+assert.equal(flyout.source, 'bing-flyout')
+assert.equal(flyout.data.userStatus.availablePoints, 4567)
+assert.equal(flyout.data.userStatus.counters.pcSearch[0].pointProgressMax, 30)
+assert.equal(flyout.data.userStatus.counters.mobileSearch[0].pointProgressMax, 20)
+assert.deepEqual(
+    flyout.data.promotionalItems.map(item => item.offerId),
+    ['high-value-1', 'high-value-2']
+)
+assert.equal(flyout.data.dashboardFieldAvailability.dailySetPromotions, 'available')
+assert.equal(flyout.data.dashboardFieldAvailability.morePromotions, 'available')
+assert.equal(flyout.data.dashboardFieldAvailability.morePromotionsWithoutPromotionalItems, 'available')
+assert.equal(flyout.data.dashboardFieldAvailability.punchCards, 'missing')
+assert.equal(flyout.data.userProfile.attributes.country, 'US')
+
+const flyoutBalanceFallback = structuredClone(flyoutPayload)
+delete flyoutBalanceFallback.flyoutResult.userStatus.availablePoints
+assert.equal(dashboardFromFlyoutPayload(flyoutBalanceFallback).data.userStatus.availablePoints, 4567)
+
+const flyoutWithoutPoints = structuredClone(flyoutPayload)
+delete flyoutWithoutPoints.flyoutResult.userStatus.availablePoints
+delete flyoutWithoutPoints.userInfo.balance
+const invalidFlyout = dashboardFromFlyoutPayload(flyoutWithoutPoints)
+assert.equal(invalidFlyout.data, null)
+assert.match(invalidFlyout.reason, /availablePoints/)
 
 const invalidModern = dashboardFromHtml('<script>self.__next_f.push([1,"1:{\\"page\\":\\"dashboard\\"}\\n"])</script>')
 assert.equal(invalidModern.data, null)

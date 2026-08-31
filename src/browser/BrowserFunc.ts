@@ -23,6 +23,7 @@ import {
 } from '../util/Axios'
 import {
     dashboardFromApiPayload,
+    dashboardFromFlyoutPayload,
     dashboardFromFlightEntries,
     dashboardFromHtml,
     validateDashboardData
@@ -65,6 +66,7 @@ export default class BrowserFunc {
     private bot: MicrosoftRewardsBot
     private dashboardCaptures = new WeakMap<Page, DashboardCaptureState>()
     private lastDashboardFieldAvailability: DashboardFieldAvailability | undefined
+    private cachedPanelFlyoutData: PanelFlyoutData | null = null
 
     constructor(bot: MicrosoftRewardsBot) {
         this.bot = bot
@@ -98,6 +100,7 @@ export default class BrowserFunc {
      * @returns {DashboardData} 用户必应奖励仪表板数据对象
      */
     async getDashboardData(geoLocale?: string): Promise<DashboardData> {
+        this.cachedPanelFlyoutData = null
         geoLocale ??= this.bot.userData?.geoLocale
         const apiPath = '/api/getuserinfo'
         const page = this.bot.mainMobilePage
@@ -347,6 +350,120 @@ export default class BrowserFunc {
             fallbackReasons.push(`HTML 请求：${this.describeDashboardFailure(diagnostic)}`)
         }
 
+        if (apiFailure.category === 'endpoint-unavailable' || apiFailure.category === 'invalid-response') {
+            const flyoutReasons: string[] = []
+            for (const targetUrl of this.panelFlyoutFallbackUrls(geoLocale)) {
+                const target = new URL(targetUrl)
+                try {
+                    const functionalHeaders = {
+                        Accept: 'application/json',
+                        Referer: `${target.origin}/`,
+                        Origin: target.origin
+                    }
+                    const browserResponse = await this.requestWithBrowserContext(page, targetUrl, functionalHeaders)
+                    let status: number
+                    let headers: unknown
+                    let payload: unknown
+                    let finalUrl: string | null
+                    let redirected: boolean | null
+                    if (browserResponse) {
+                        status = browserResponse.status
+                        headers = browserResponse.headers
+                        payload = browserResponse.body
+                        finalUrl = browserResponse.finalUrl
+                        redirected = browserResponse.redirected
+                    } else {
+                        const response = await this.bot.axios.request({
+                            url: targetUrl,
+                            method: 'GET',
+                            headers: {
+                                ...this.fingerprintHeadersWithoutCookie(),
+                                ...functionalHeaders,
+                                Cookie: this.buildCookieHeaderForUrl(this.bot.cookies.mobile, targetUrl)
+                            },
+                            maxRedirects: 0,
+                            validateStatus: () => true
+                        })
+                        status = response.status
+                        headers = response.headers
+                        payload = response.data
+                        finalUrl = axiosFinalUrl(response)
+                        redirected = axiosRedirected(response, targetUrl)
+                    }
+                    if (typeof payload === 'string') {
+                        try {
+                            payload = JSON.parse(payload)
+                        } catch {
+                            // The parser below reports a safe structural reason.
+                        }
+                    }
+                    const successfulStatus = status >= 200 && status < 300
+                    const parsed = dashboardFromFlyoutPayload(payload, { geoLocale })
+                    const parserReason = successfulStatus
+                        ? parsed.reason
+                        : this.describeDashboardFailure({
+                              status,
+                              code: null,
+                              contentType: responseContentType(headers),
+                              topLevelFields: responseTopLevelFields(payload),
+                              category: classifyHttpFailure(status),
+                              finalUrl,
+                              redirected
+                          })
+                    this.logDashboardDiagnostic('flyout', {
+                        path: target.pathname,
+                        status,
+                        code: null,
+                        contentType: responseContentType(headers),
+                        topLevelFields: responseTopLevelFields(payload),
+                        htmlLength: null,
+                        pageUrl: null,
+                        pageTitle: null,
+                        parserReason,
+                        finalUrl,
+                        redirected,
+                        flightEntryCount: null,
+                        captureCount: null
+                    })
+
+                    if (successfulStatus && parsed.data) {
+                        this.cachedPanelFlyoutData = payload as PanelFlyoutData
+                        const unavailableFields = Object.entries(parsed.data.dashboardFieldAvailability)
+                            .filter(([, availability]) => availability !== 'available')
+                            .map(([field, availability]) => `${field}=${availability}`)
+                            .join(',')
+                        this.bot.logger.warn(
+                            this.bot.isMobile,
+                            'GET-DASHBOARD-DATA',
+                            `使用 Bing flyout dashboard 降级 | host=${target.hostname} | unavailableFields=${unavailableFields || 'none'}`
+                        )
+                        return parsed.data
+                    }
+                    flyoutReasons.push(`${target.hostname}：${parserReason}`)
+                } catch (error) {
+                    const diagnostic = safeAxiosDiagnostic(error)
+                    const reason = this.describeDashboardFailure(diagnostic)
+                    this.logDashboardDiagnostic('flyout', {
+                        path: target.pathname,
+                        status: diagnostic.status,
+                        code: diagnostic.code,
+                        contentType: diagnostic.contentType,
+                        topLevelFields: diagnostic.topLevelFields,
+                        htmlLength: null,
+                        pageUrl: null,
+                        pageTitle: null,
+                        parserReason: reason,
+                        finalUrl: diagnostic.finalUrl,
+                        redirected: diagnostic.redirected,
+                        flightEntryCount: null,
+                        captureCount: null
+                    })
+                    flyoutReasons.push(`${target.hostname}：${reason}`)
+                }
+            }
+            fallbackReasons.push(`Bing flyout：${flyoutReasons.join('；') || '未返回可校验数据'}`)
+        }
+
         const fallbackReason = fallbackReasons.join(' | ').slice(0, 800) || '页面回退未返回可校验的 dashboard'
         this.bot.logger.error(
             this.bot.isMobile,
@@ -378,6 +495,19 @@ export default class BrowserFunc {
             }
         }
         return 'https://rewards.bing.com'
+    }
+
+    private panelFlyoutFallbackUrls(geoLocale?: string): string[] {
+        const path = '/rewards/panelflyout/getuserinfo?channel=BingFlyout&partnerId=BingRewards'
+        const normalizedLocale = geoLocale?.trim().toLowerCase()
+        const cookieDomains = this.bot.cookies.mobile.map(cookie => cookie.domain.replace(/^\./, '').toLowerCase())
+        const preferChina =
+            normalizedLocale === 'cn' ||
+            ((normalizedLocale === undefined || normalizedLocale === '' || normalizedLocale === 'auto') &&
+                cookieDomains.includes('cn.bing.com') &&
+                !cookieDomains.includes('www.bing.com'))
+        const hosts = preferChina ? ['cn.bing.com', 'www.bing.com'] : ['www.bing.com', 'cn.bing.com']
+        return hosts.map(host => `https://${host}${path}`)
     }
 
     private dashboardRequestContext(page: Page | undefined): APIRequestContext | null {
@@ -517,7 +647,7 @@ export default class BrowserFunc {
     }
 
     private logDashboardDiagnostic(
-        source: 'api' | 'page' | 'html' | 'capture',
+        source: 'api' | 'page' | 'html' | 'capture' | 'flyout',
         diagnostic: {
             path: string
             status: number | null
@@ -564,6 +694,12 @@ export default class BrowserFunc {
      * @returns {PanelFlyoutData} Object of user bing rewards dashboard data
      */
     async getPanelFlyoutData(): Promise<PanelFlyoutData> {
+        if (this.cachedPanelFlyoutData) {
+            const cached = this.cachedPanelFlyoutData
+            this.cachedPanelFlyoutData = null
+            return cached
+        }
+
         try {
             const targetUrl =
                 'https://cn.bing.com/rewards/panelflyout/getuserinfo?channel=BingFlyout&partnerId=BingRewards'

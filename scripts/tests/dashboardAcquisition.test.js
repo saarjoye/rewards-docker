@@ -15,6 +15,32 @@ function dashboard(points = 888) {
     }
 }
 
+function flyoutDashboard(points = 1888) {
+    return {
+        isRewardsUser: true,
+        accessToken: 'FLYOUT-TOKEN-CANARY',
+        userInfo: {
+            isRewardsUser: true,
+            balance: points,
+            profile: { attributes: { country: 'CN' } }
+        },
+        flyoutResult: {
+            userStatus: {
+                isRewardsUser: true,
+                availablePoints: points,
+                counters: {
+                    PCSearch: [{ pointProgress: 10, pointProgressMax: 30 }],
+                    MobileSearch: [{ pointProgress: 5, pointProgressMax: 20 }]
+                }
+            },
+            highValueActionPromotions: [{ offerId: 'flyout-promo-1' }],
+            dailySetPromotions: {},
+            morePromotions: [],
+            impressionPromotions: []
+        }
+    }
+}
+
 function axiosError(status, code = 'ERR_BAD_RESPONSE') {
     return {
         isAxiosError: true,
@@ -42,7 +68,13 @@ function axiosError(status, code = 'ERR_BAD_RESPONSE') {
     }
 }
 
-function apiResponse({ status, contentType, body, url = 'https://rewards.bing.com/api/getuserinfo?type=1', onDispose }) {
+function apiResponse({
+    status,
+    contentType,
+    body,
+    url = 'https://rewards.bing.com/api/getuserinfo?type=1',
+    onDispose
+}) {
     return {
         status: () => status,
         headers: () => ({ 'content-type': contentType }),
@@ -52,14 +84,20 @@ function apiResponse({ status, contentType, body, url = 'https://rewards.bing.co
     }
 }
 
-function fakeBot(apiResult, fallbackResult = '<html>modern but incomplete</html>') {
+function fakeBot(apiResult, fallbackResult = '<html>modern but incomplete</html>', flyoutResult = axiosError(404)) {
     const logs = []
     let apiRequests = 0
+    let flyoutRequests = 0
+    const flyoutUrls = []
     return {
         logs,
         get apiRequests() {
             return apiRequests
         },
+        get flyoutRequests() {
+            return flyoutRequests
+        },
+        flyoutUrls,
         isMobile: true,
         fingerprint: { headers: {} },
         cookies: { mobile: [], desktop: [] },
@@ -76,6 +114,18 @@ function fakeBot(apiResult, fallbackResult = '<html>modern but incomplete</html>
                     apiRequests += 1
                     if (apiResult instanceof Error || apiResult?.isAxiosError) throw apiResult
                     return apiResult
+                }
+                if (String(request.url).includes('/rewards/panelflyout/getuserinfo')) {
+                    flyoutRequests += 1
+                    flyoutUrls.push(String(request.url))
+                    const result =
+                        typeof flyoutResult === 'function' ? await flyoutResult(request, flyoutRequests) : flyoutResult
+                    if (result instanceof Error || result?.isAxiosError) throw result
+                    return {
+                        status: 200,
+                        headers: { 'content-type': 'application/json; charset=utf-8' },
+                        data: result
+                    }
                 }
                 if (fallbackResult instanceof Error || fallbackResult?.isAxiosError) throw fallbackResult
                 return {
@@ -112,6 +162,94 @@ async function expectFailure(apiResult, expectedStatus, expectedKind) {
         data: { dashboard: dashboard(999) }
     })
     assert.equal((await new BrowserFunc(okBot).getDashboardData()).userStatus.availablePoints, 999)
+    assert.equal(okBot.flyoutRequests, 0)
+
+    const modernBot = fakeBot(axiosError(404), '<html>modern but incomplete</html>', flyoutDashboard(1888))
+    const modernFunc = new BrowserFunc(modernBot)
+    const modernResult = await modernFunc.getDashboardData('CN')
+    assert.equal(modernResult.userStatus.availablePoints, 1888)
+    assert.equal(modernResult.userStatus.counters.pcSearch[0].pointProgressMax, 30)
+    assert.equal(modernResult.dashboardFieldAvailability.punchCards, 'missing')
+    assert.equal(modernBot.flyoutRequests, 1)
+    assert.match(modernBot.flyoutUrls[0], /^https:\/\/cn\.bing\.com\//)
+    assert.match(modernBot.logs.join('\n'), /使用 Bing flyout dashboard 降级/)
+    assert.equal(modernBot.logs.join('\n').includes('FLYOUT-TOKEN-CANARY'), false)
+    assert.equal((await modernFunc.getPanelFlyoutData()).flyoutResult.userStatus.availablePoints, 1888)
+    assert.equal(modernBot.flyoutRequests, 1)
+
+    const globalModernBot = fakeBot(axiosError(404), '<html>modern but incomplete</html>', flyoutDashboard(1889))
+    assert.equal((await new BrowserFunc(globalModernBot).getDashboardData('US')).userStatus.availablePoints, 1889)
+    assert.equal(globalModernBot.flyoutRequests, 1)
+    assert.match(globalModernBot.flyoutUrls[0], /^https:\/\/www\.bing\.com\//)
+
+    const contextFlyoutRequests = []
+    const contextFlyoutBot = fakeBot(axiosError(500))
+    const contextFlyoutPage = {
+        isClosed: () => false,
+        on: () => {},
+        context: () => ({
+            request: {
+                get: async (url, options) => {
+                    contextFlyoutRequests.push({ url, options })
+                    if (String(url).includes('/api/getuserinfo')) {
+                        return apiResponse({
+                            status: 404,
+                            contentType: 'application/json',
+                            body: JSON.stringify({ error: 'synthetic-not-found' }),
+                            url
+                        })
+                    }
+                    if (String(url).includes('/rewards/panelflyout/getuserinfo')) {
+                        return apiResponse({
+                            status: 200,
+                            contentType: 'application/json',
+                            body: JSON.stringify(flyoutDashboard(1891)),
+                            url
+                        })
+                    }
+                    return apiResponse({
+                        status: 200,
+                        contentType: 'text/html; charset=utf-8',
+                        body: '<html>modern but incomplete</html>',
+                        url
+                    })
+                }
+            }
+        }),
+        content: async () => '<html>modern but incomplete</html>',
+        title: async () => 'Rewards',
+        evaluate: async () => [],
+        url: () => 'https://rewards.bing.com/dashboard',
+        waitForLoadState: async () => {},
+        reload: async () => {}
+    }
+    contextFlyoutBot.mainMobilePage = contextFlyoutPage
+    const contextFlyoutResult = await new BrowserFunc(contextFlyoutBot).getDashboardData('US')
+    assert.equal(contextFlyoutResult.userStatus.availablePoints, 1891)
+    const contextFlyoutRequest = contextFlyoutRequests.find(request =>
+        request.url.includes('/rewards/panelflyout/getuserinfo')
+    )
+    assert.ok(contextFlyoutRequest)
+    assert.match(contextFlyoutRequest.url, /^https:\/\/www\.bing\.com\//)
+    assert.equal(contextFlyoutRequest.options.headers.Cookie, undefined)
+    assert.equal(contextFlyoutRequest.options.headers.cookie, undefined)
+    assert.equal(contextFlyoutBot.apiRequests, 0)
+    assert.equal(contextFlyoutBot.flyoutRequests, 0)
+
+    const incompleteFlyout = flyoutDashboard(1890)
+    delete incompleteFlyout.flyoutResult.userStatus.availablePoints
+    delete incompleteFlyout.userInfo.balance
+    const incompleteFlyoutBot = fakeBot(axiosError(404), '<html>modern but incomplete</html>', incompleteFlyout)
+    await assert.rejects(
+        () => new BrowserFunc(incompleteFlyoutBot).getDashboardData('CN'),
+        error => {
+            assert.ok(error instanceof DashboardFetchError)
+            assert.match(error.fallbackReason, /Bing flyout/)
+            assert.equal(error.message.includes('积分 0'), false)
+            return true
+        }
+    )
+    assert.equal(incompleteFlyoutBot.flyoutRequests, 2)
 
     const textPlainBot = fakeBot({
         status: 200,
@@ -163,6 +301,7 @@ async function expectFailure(apiResult, expectedStatus, expectedKind) {
         fallbackHtml
     )
     assert.equal((await new BrowserFunc(fallbackBot).getDashboardData()).userStatus.availablePoints, 777)
+    assert.equal(fallbackBot.flyoutRequests, 0)
 
     await expectFailure(
         { status: 200, headers: { 'content-type': 'application/json' }, data: { profile: {} } },
