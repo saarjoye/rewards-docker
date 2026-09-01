@@ -1,6 +1,6 @@
 {
     "name": "microsoft-rewards-script",
-    "version": "3.1.6.3",
+    "version": "3.1.6.4",
     "description": "Automatically do tasks for Microsoft Rewards but in TS!",
     "author": "Netsky",
     "license": "GPL-3.0-or-later",
@@ -21,7 +21,7 @@
         "lint:fix": "eslint . --fix",
         "format": "prettier --write .",
         "format:check": "prettier --check .",
-        "test:dashboard": "node scripts/tests/cookieHeader.test.js && node scripts/tests/dashboardParser.test.js && node scripts/tests/dashboardAcquisition.test.js && node scripts/tests/searchCounterStatus.test.js && node scripts/tests/axiosTimeout.test.js && node scripts/tests/loginStateDetection.test.js && node scripts/tests/searchFailureState.test.js && node scripts/tests/runAccountRequest.test.js && node scripts/tests/runCheckpointSelection.test.js && node scripts/tests/runSummary.test.js && npm run test:task-progress",
+        "test:dashboard": "node scripts/tests/cookieHeader.test.js && node scripts/tests/dashboardParser.test.js && node scripts/tests/dashboardAcquisition.test.js && node scripts/tests/searchCounterStatus.test.js && node scripts/tests/axiosTimeout.test.js && node scripts/tests/loginStateDetection.test.js && node scripts/tests/loginFailurePropagation.test.js && node scripts/tests/searchFailureState.test.js && node scripts/tests/runAccountRequest.test.js && node scripts/tests/runCheckpointSelection.test.js && node scripts/tests/runSummary.test.js && npm run test:task-progress",
         "test:task-progress": "node scripts/tests/localDateBoundary.test.js && node scripts/tests/webTaskProgressState.test.js",
         "clear-diagnostics": "rimraf diagnostics",
         "clear-sessions": "node ./scripts/main/clearSessions.js",

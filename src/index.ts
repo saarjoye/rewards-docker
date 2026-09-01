@@ -14,7 +14,7 @@ import Utils from './util/Utils'
 import { loadAccounts, loadConfig } from './util/Load'
 import { checkNodeVersion } from './util/Validator'
 
-import { Login } from './browser/auth/Login'
+import { Login, LoginStateError } from './browser/auth/Login'
 import { Workers } from './functions/Workers'
 import Activities from './functions/Activities'
 import { SearchManager } from './functions/SearchManager'
@@ -33,6 +33,7 @@ import {
     resetAccountRunProgress,
     taskDetailKey,
     updateAccountPointTotals,
+    updateAccountRunFailure,
     updateAccountRunState,
     updateAccountTaskProgress,
     updateSearchTaskFailure,
@@ -43,6 +44,7 @@ import {
     ensurePointRunCategoryMinimum,
     finishPointRun,
     pointCategoryFor,
+    recordPointFailure,
     recordPointRunGain,
     startPointRun,
     type PointRunStatus
@@ -61,6 +63,7 @@ import type { ServerActionName } from './util/ServerActions'
 import type { AppEarnablePoints, BrowserEarnablePoints, MissingSearchPoints } from './interface/Points'
 import { dashboardFailureDetails, isDashboardFetchError } from './util/DashboardError'
 import { SearchTaskError } from './util/SearchTaskError'
+import { ensureSuccessfulLogin } from './util/AuthenticatedFlow'
 import {
     calculateKnownPointTotals,
     buildWeComAccountMessage,
@@ -537,6 +540,7 @@ export class MicrosoftRewardsBot {
             runGained?: number
             taskSummary?: AccountTaskSummary[]
             error?: string
+            failureStage?: string
         } = {}
     ): void {
         if (isAccountStatusCheckOnly() || !this.currentPointRunId) return
@@ -548,6 +552,7 @@ export class MicrosoftRewardsBot {
                 afterPoints: patch.afterPoints,
                 runGained: patch.runGained,
                 taskSummary: patch.taskSummary,
+                failureStage: patch.failureStage,
                 error: patch.error
             })
         } catch (error) {
@@ -848,12 +853,21 @@ export class MicrosoftRewardsBot {
                 await this.sendWeComAccountSummary(stat)
             } catch (error) {
                 const durationSeconds = ((Date.now() - accountStartTime) / 1000).toFixed(1)
-                const message = error instanceof Error ? error.message : String(error)
+                const message =
+                    error instanceof LoginStateError
+                        ? `登录失败 | 状态=${error.loginState} | 阶段=${error.loginStage} | 位置=${
+                              error.url || `${error.host}${error.path}` || 'unknown'
+                          } | 原因=${error.errorMessage}`
+                        : error instanceof Error
+                          ? error.message
+                          : String(error)
                 const failure = isDashboardFetchError(error)
                     ? dashboardAccountFailure(dashboardFailureDetails(error))
                     : error instanceof SearchTaskError
                       ? genericAccountFailure(error.stage, message)
-                      : genericAccountFailure('account-error', message)
+                      : error instanceof LoginStateError
+                        ? genericAccountFailure(error.loginStage, message)
+                        : genericAccountFailure('account-error', message)
                 const failedTaskSummary: AccountTaskSummary[] =
                     error instanceof SearchTaskError
                         ? [
@@ -877,9 +891,10 @@ export class MicrosoftRewardsBot {
                     lastMessage: message,
                     error: message
                 })
+                updateAccountRunFailure(accountEmail, failure.stage, message)
                 this.updateFormalRunCheckpoint(accountEmail, {
                     state: 'failed',
-                    currentTask: '账号异常',
+                    currentTask: error instanceof LoginStateError ? '登录验证失败' : '账号异常',
                     currentStep: failure.stage,
                     lastMessage: message,
                     error: message,
@@ -893,8 +908,26 @@ export class MicrosoftRewardsBot {
                         afterPoints: finalPoints,
                         runGained: collectedPoints,
                         taskSummary: failedTaskSummary,
+                        failureStage: failure.stage,
                         error: message
                     })
+                } else {
+                    try {
+                        recordPointFailure(accountEmail, {
+                            stage: failure.stage,
+                            error: message,
+                            source: process.env.RUN_SOURCE || 'local',
+                            pid: process.pid
+                        })
+                    } catch (historyError) {
+                        this.logger.warn(
+                            'main',
+                            'POINTS-HISTORY',
+                            `账号失败阶段记录失败: ${
+                                historyError instanceof Error ? historyError.message : String(historyError)
+                            }`
+                        )
+                    }
                 }
                 this.logger.error('main', 'ACCOUNT-ERROR', `${maskAccountEmail(accountEmail)}: ${message}`)
 
@@ -949,8 +982,9 @@ export class MicrosoftRewardsBot {
         try {
             return await executionContext.run({ isMobile: true, account }, async () => {
                 this.accessToken = ''
-                mobileSession = await this.browserFactory.createBrowser(account)
-                const initialContext: BrowserContext = mobileSession.context
+                const activeMobileSession = await this.browserFactory.createBrowser(account)
+                mobileSession = activeMobileSession
+                const initialContext: BrowserContext = activeMobileSession.context
                 this.mainMobilePage = await initialContext.newPage()
                 this.browser.func.prepareDashboardCapture(this.mainMobilePage, account.geoLocale)
 
@@ -965,7 +999,7 @@ export class MicrosoftRewardsBot {
                     runMode: currentRunOptions().accountMode,
                     pid: process.pid
                 })
-                await this.login.login(this.mainMobilePage, account)
+                await ensureSuccessfulLogin(() => this.login.login(this.mainMobilePage, account))
                 updateAccountStatus(accountEmail, {
                     state: 'valid',
                     stage: 'login',
@@ -1000,7 +1034,7 @@ export class MicrosoftRewardsBot {
                 }
 
                 this.cookies.mobile = await initialContext.cookies()
-                this.fingerprint = mobileSession.fingerprint
+                this.fingerprint = activeMobileSession.fingerprint
 
                 const data: DashboardData = await this.browser.func.getDashboardData(account.geoLocale)
                 const initialPoints = data.userStatus.availablePoints
@@ -1478,7 +1512,7 @@ export class MicrosoftRewardsBot {
                 const { mobilePoints, desktopPoints } = await this.searchManager.doSearches(
                     data,
                     missingSearchPoints,
-                    mobileSession,
+                    activeMobileSession,
                     account,
                     accountEmail
                 )

@@ -192,6 +192,44 @@ export function updateAccountRunState(
     writeProgressFile(data)
 }
 
+export function updateAccountRunFailure(email: string, stage: string, message: string): void {
+    const data = readProgressFile()
+    const account = getAccount(data, email)
+    const now = new Date().toISOString()
+    const safeStage = sanitizeProgressMessage(stage) || 'account-error'
+    const safeMessage = sanitizeProgressMessage(message)
+    const isLoginFailure = safeStage.startsWith('login-') || safeStage.startsWith('bing-session-')
+    const detailKey = isLoginFailure ? 'login-failure' : 'account-failure'
+    const label = isLoginFailure ? '登录验证' : '账号运行'
+
+    account.currentTask = `${label}失败`
+    account.currentStage = safeStage
+    account.currentMessage = safeMessage
+
+    let detail = account.details.find(item => item.key === detailKey)
+    if (!detail) {
+        detail = {
+            key: detailKey,
+            label,
+            group: 'activity',
+            completed: 0,
+            total: 0,
+            gained: 0,
+            status: '失败',
+            message: safeMessage,
+            updatedAt: now
+        }
+        account.details.push(detail)
+    } else {
+        detail.status = '失败'
+        detail.message = safeMessage
+        detail.updatedAt = now
+    }
+
+    account.updatedAt = now
+    writeProgressFile(data)
+}
+
 export function updateTaskDetail(
     email: string,
     detail: Pick<StoredTaskProgressDetail, 'key' | 'label' | 'group'> & Partial<StoredTaskProgressDetail>

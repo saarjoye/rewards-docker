@@ -31,14 +31,116 @@ export type LoginState =
     | 'UNKNOWN'
     | 'CHROMEWEBDATA_ERROR'
 
+export const LOGIN_ERROR_ALERT_SELECTOR = 'div[role="alert"]:not(#wcpConsentBannerCtrl):not(#__next-route-announcer__)'
+
+export interface LoginErrorSnapshot {
+    innerText: string
+    textContent: string
+    ariaLabel: string
+    title: string
+    errorMessage: string
+    url: string
+    host: string
+    path: string
+}
+
+interface DetectedLoginState {
+    state: LoginState
+    errorSnapshot?: LoginErrorSnapshot
+}
+
+interface LoginStateErrorOptions extends Partial<LoginErrorSnapshot> {
+    loginStage?: string
+}
+
+function sanitizeLoginDiagnosticText(value: unknown): string {
+    return String(value ?? '')
+        .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[REDACTED_EMAIL]')
+        .replace(
+            /([?&](?:code|access_token|refresh_token|id_token|state|RequestVerificationToken)=)[^&\s]+/gi,
+            '$1[REDACTED]'
+        )
+        .replace(/\b(password|passwd|pwd|token|secret|cookie|authorization)(\s*[:=]\s*)([^\s|]+)/gi, '$1$2[REDACTED]')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 500)
+}
+
+function loginLocation(rawUrl: string): Pick<LoginErrorSnapshot, 'url' | 'host' | 'path'> {
+    try {
+        const parsed = new URL(rawUrl)
+        const path = parsed.pathname || '/'
+        return { url: `${parsed.protocol}//${parsed.host}${path}`, host: parsed.hostname, path }
+    } catch {
+        return { url: '', host: '', path: '' }
+    }
+}
+
+export async function captureLoginErrorSnapshot(
+    page: Page,
+    selector = LOGIN_ERROR_ALERT_SELECTOR
+): Promise<LoginErrorSnapshot | null> {
+    const alerts = page.locator(selector)
+    const count = await alerts.count().catch(() => 0)
+    const candidates: Array<Omit<LoginErrorSnapshot, 'errorMessage' | 'url' | 'host' | 'path'>> = []
+
+    for (let index = 0; index < count; index++) {
+        const alert = alerts.nth(index)
+        if (!(await alert.isVisible().catch(() => false))) continue
+
+        const [innerText, textContent, ariaLabel, title] = await Promise.all([
+            alert.innerText().catch(() => ''),
+            alert.textContent().catch(() => ''),
+            alert.getAttribute('aria-label').catch(() => ''),
+            alert.getAttribute('title').catch(() => '')
+        ])
+        candidates.push({
+            innerText: sanitizeLoginDiagnosticText(innerText),
+            textContent: sanitizeLoginDiagnosticText(textContent),
+            ariaLabel: sanitizeLoginDiagnosticText(ariaLabel),
+            title: sanitizeLoginDiagnosticText(title)
+        })
+    }
+
+    if (candidates.length === 0) return null
+
+    const selected =
+        candidates.find(candidate =>
+            [candidate.innerText, candidate.textContent, candidate.ariaLabel, candidate.title].some(Boolean)
+        ) ?? candidates[0]
+    if (!selected) return null
+
+    const location = loginLocation(page.url())
+    const readable = selected.innerText || selected.textContent || selected.ariaLabel || selected.title
+    const errorMessage =
+        readable ||
+        (location.host === 'rewards.bing.com'
+            ? 'Rewards 页面检测到 ERROR_ALERT，但未读取到错误文案'
+            : 'Microsoft 登录页面检测到 ERROR_ALERT，但未读取到错误文案')
+
+    return { ...selected, errorMessage, ...location }
+}
+
 export class LoginStateError extends Error {
-    constructor(
-        public readonly loginState: LoginState,
-        message: string,
-        public readonly loginStage = `login-${loginState.toLowerCase().replace(/_/g, '-')}`
-    ) {
-        super(message)
+    public readonly loginState: LoginState
+    public readonly loginStage: string
+    public readonly errorMessage: string
+    public readonly url: string
+    public readonly host: string
+    public readonly path: string
+
+    constructor(loginState: LoginState, message: string, options: string | LoginStateErrorOptions = {}) {
+        const details = typeof options === 'string' ? { loginStage: options } : options
+        const fallbackMessage = sanitizeLoginDiagnosticText(message) || `登录状态 ${loginState} 失败`
+        const errorMessage = sanitizeLoginDiagnosticText(details.errorMessage) || fallbackMessage
+        super(errorMessage)
         this.name = 'LoginStateError'
+        this.loginState = loginState
+        this.loginStage = details.loginStage ?? `login-${loginState.toLowerCase().replace(/_/g, '-')}`
+        this.errorMessage = errorMessage
+        this.url = details.url ?? ''
+        this.host = details.host ?? ''
+        this.path = details.path ?? ''
     }
 }
 
@@ -78,7 +180,7 @@ export class Login {
         recoveryEmail: '[data-testid="proof-confirmation"]',
         passwordIcon: '[data-testid="tile"]:has(svg path[d*="M11.78 10.22a.75.75"])',
         accountLocked: '#serviceAbuseLandingTitle',
-        errorAlert: 'div[role="alert"]',
+        errorAlert: LOGIN_ERROR_ALERT_SELECTOR,
         passwordEntry: '[data-testid="passwordEntry"]',
         emailEntry: 'input#usernameEntry',
         kmsiVideo: '[data-testid="kmsiVideo"]',
@@ -130,7 +232,8 @@ export class Login {
                 iteration++
                 this.bot.logger.debug(this.bot.isMobile, 'LOGIN', `状态检查迭代 ${iteration}/${maxIterations}`)
 
-                const state = await this.detectCurrentState(page, account)
+                const detection = await this.detectCurrentState(page, account)
+                const state = detection.state
                 this.bot.logger.debug(this.bot.isMobile, 'LOGIN', `当前状态: ${state}`)
 
                 if (state !== previousState && previousState !== 'UNKNOWN') {
@@ -162,7 +265,7 @@ export class Login {
                     break
                 }
 
-                const shouldContinue = await this.handleState(state, page, account)
+                const shouldContinue = await this.handleState(detection, page, account)
                 if (!shouldContinue) {
                     throw new LoginStateError(state, `登录失败或中止于状态: ${state}`)
                 }
@@ -171,11 +274,10 @@ export class Login {
             }
 
             if (iteration >= maxIterations) {
-                throw new LoginStateError(
-                    previousState,
-                    `登录超时: 超过最大迭代次数，最后状态: ${previousState}`,
-                    'login-timeout'
-                )
+                throw new LoginStateError(previousState, `登录超时: 超过最大迭代次数，最后状态: ${previousState}`, {
+                    loginStage: 'login-timeout',
+                    ...loginLocation(page.url())
+                })
             }
 
             await this.finalizeLogin(page, account.email)
@@ -189,7 +291,7 @@ export class Login {
         }
     }
 
-    private async detectCurrentState(page: Page, account?: Account): Promise<LoginState> {
+    private async detectCurrentState(page: Page, account?: Account): Promise<DetectedLoginState> {
         await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {})
 
         const url = new URL(page.url())
@@ -197,17 +299,17 @@ export class Login {
 
         if (url.hostname === 'chromewebdata') {
             this.bot.logger.warn(this.bot.isMobile, 'DETECT-STATE', '检测到chromewebdata错误页面')
-            return 'CHROMEWEBDATA_ERROR'
+            return { state: 'CHROMEWEBDATA_ERROR' }
         }
 
         const isLocked = await this.checkSelector(page, this.selectors.accountLocked)
         if (isLocked) {
             this.bot.logger.debug(this.bot.isMobile, 'DETECT-STATE', '账户锁定选择器被发现')
-            return 'ACCOUNT_LOCKED'
+            return { state: 'ACCOUNT_LOCKED' }
         }
 
+        const errorSnapshot = await captureLoginErrorSnapshot(page, this.selectors.errorAlert)
         const stateChecks: Array<[string, LoginState]> = [
-            [this.selectors.errorAlert, 'ERROR_ALERT'],
             [this.selectors.passwordEntry, 'PASSWORD_INPUT'],
             [this.selectors.emailEntry, 'EMAIL_INPUT'],
             [this.selectors.recoveryEmail, 'RECOVERY_EMAIL_INPUT'],
@@ -230,6 +332,8 @@ export class Login {
                 return visible ? state : null
             })
         )
+
+        if (errorSnapshot) results.push('ERROR_ALERT')
 
         const visibleStates = results.filter((s): s is LoginState => s !== null)
         if (visibleStates.length > 0) {
@@ -259,12 +363,12 @@ export class Login {
             (url.hostname === 'rewards.bing.com' || url.hostname === 'account.microsoft.com')
         ) {
             this.bot.logger.debug(this.bot.isMobile, 'DETECT-STATE', '奖励/账户页面未发现登录错误，判定已登录')
-            return 'LOGGED_IN'
+            return { state: 'LOGGED_IN' }
         }
 
         if (foundStates.length === 0) {
             this.bot.logger.debug(this.bot.isMobile, 'DETECT-STATE', '未找到匹配的状态')
-            return 'UNKNOWN'
+            return { state: 'UNKNOWN' }
         }
 
         if (foundStates.includes('ERROR_ALERT')) {
@@ -273,11 +377,18 @@ export class Login {
                 'DETECT-STATE',
                 `发现ERROR_ALERT - 主机名: ${url.hostname}, 有2FA: ${foundStates.includes('2FA_TOTP')}`
             )
-            return 'ERROR_ALERT'
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                'DETECT-STATE',
+                `ERROR_ALERT 快照 | 状态=ERROR_ALERT | 位置=${errorSnapshot?.host || 'unknown'}${
+                    errorSnapshot?.path || ''
+                } | 文案=${errorSnapshot?.errorMessage || '未捕获'}`
+            )
+            return errorSnapshot ? { state: 'ERROR_ALERT', errorSnapshot } : { state: 'ERROR_ALERT' }
         }
         const selected = selectDetectedLoginState(foundStates)
         this.bot.logger.debug(this.bot.isMobile, 'DETECT-STATE', `按优先级选择状态: ${selected}`)
-        return selected
+        return { state: selected }
     }
 
     private async checkSelector(page: Page, selector: string): Promise<boolean> {
@@ -287,21 +398,35 @@ export class Login {
             .catch(() => false)
     }
 
-    private async handleState(state: LoginState, page: Page, account: Account): Promise<boolean> {
+    private async handleState(detection: DetectedLoginState, page: Page, account: Account): Promise<boolean> {
+        const state = detection.state
         this.bot.logger.debug(this.bot.isMobile, 'HANDLE-STATE', `处理状态: ${state}`)
 
         switch (state) {
             case 'ACCOUNT_LOCKED': {
                 const msg = '此账户已被锁定！从配置中移除并重新启动！'
                 this.bot.logger.error(this.bot.isMobile, 'LOGIN', msg)
-                throw new LoginStateError(state, msg)
+                throw new LoginStateError(state, msg, { ...loginLocation(page.url()) })
             }
 
             case 'ERROR_ALERT': {
-                const alertEl = page.locator(this.selectors.errorAlert)
-                const errorMsg = await alertEl.innerText().catch(() => '未知错误')
-                this.bot.logger.error(this.bot.isMobile, 'LOGIN', `账户错误: ${errorMsg}`)
-                throw new LoginStateError(state, `微软登录错误: ${errorMsg}`)
+                const snapshot = detection.errorSnapshot ?? {
+                    innerText: '',
+                    textContent: '',
+                    ariaLabel: '',
+                    title: '',
+                    errorMessage: 'Rewards 页面检测到 ERROR_ALERT，但未读取到错误文案',
+                    ...loginLocation(page.url())
+                }
+                this.bot.logger.error(
+                    this.bot.isMobile,
+                    'LOGIN',
+                    `登录错误 | 状态=${state} | 阶段=login-error-alert | 位置=${snapshot.host}${snapshot.path} | 文案=${snapshot.errorMessage}`
+                )
+                throw new LoginStateError(state, snapshot.errorMessage, {
+                    ...snapshot,
+                    loginStage: 'login-error-alert'
+                })
             }
 
             case 'LOGGED_IN':
@@ -487,7 +612,10 @@ export class Login {
             }
 
             case 'PASSKEY_ERROR': {
-                throw new LoginStateError(state, '微软登录通行密钥流程返回错误')
+                throw new LoginStateError(state, '微软登录通行密钥流程返回错误', {
+                    loginStage: 'login-passkey-error',
+                    ...loginLocation(page.url())
+                })
             }
 
             case 'PASSKEY_VIDEO': {
@@ -595,16 +723,27 @@ export class Login {
 
                 this.bot.logger.debug(this.bot.isMobile, 'LOGIN-BING', `验证循环 ${i + 1}/${loopMax}`)
 
-                const state = await this.detectCurrentState(page)
+                const detection = await this.detectCurrentState(page)
+                const state = detection.state
                 if (state === 'PASSKEY_ERROR') {
-                    throw new LoginStateError(state, 'Bing 会话验证遇到通行密钥错误', 'bing-session-passkey-error')
+                    throw new LoginStateError(state, 'Bing 会话验证遇到通行密钥错误', {
+                        loginStage: 'bing-session-passkey-error',
+                        ...loginLocation(page.url())
+                    })
                 }
                 if (state === 'ERROR_ALERT') {
-                    const message = await page
-                        .locator(this.selectors.errorAlert)
-                        .innerText()
-                        .catch(() => '未知错误')
-                    throw new LoginStateError(state, `Bing 会话验证遇到登录错误: ${message}`, 'bing-session-error')
+                    const snapshot = detection.errorSnapshot ?? {
+                        innerText: '',
+                        textContent: '',
+                        ariaLabel: '',
+                        title: '',
+                        errorMessage: 'Bing 会话检测到 ERROR_ALERT，但未读取到错误文案',
+                        ...loginLocation(page.url())
+                    }
+                    throw new LoginStateError(state, snapshot.errorMessage, {
+                        ...snapshot,
+                        loginStage: 'bing-session-error'
+                    })
                 }
 
                 const u = new URL(page.url())
@@ -634,7 +773,10 @@ export class Login {
                 await this.bot.utils.wait(1000)
             }
 
-            throw new LoginStateError('UNKNOWN', 'Bing 会话验证超时，未确认登录状态', 'bing-session-timeout')
+            throw new LoginStateError('UNKNOWN', 'Bing 会话验证超时，未确认登录状态', {
+                loginStage: 'bing-session-timeout',
+                ...loginLocation(page.url())
+            })
         } catch (error) {
             this.bot.logger.error(
                 this.bot.isMobile,

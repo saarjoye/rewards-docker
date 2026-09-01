@@ -44,7 +44,20 @@ export interface PointRunRecord {
     categories: PointCategoryTotals
     status: PointRunStatus
     taskSummary: PointTaskSummaryLike[]
+    failureStage?: string
     error?: string
+}
+
+export interface PointFailureRecord {
+    id: string
+    date: string
+    accountHash: string
+    accountLabel: string
+    source: string
+    pid: number
+    failedAt: string
+    stage: string
+    error: string
 }
 
 export interface PointDayRecord {
@@ -65,6 +78,7 @@ export interface PointsHistoryFile {
     version: 1
     updatedAt: string
     days: PointDayRecord[]
+    failures: PointFailureRecord[]
 }
 
 export interface PointsCalendarAccount {
@@ -250,7 +264,7 @@ function rangeForPreset(
 }
 
 function emptyHistoryFile(): PointsHistoryFile {
-    return { version: 1, updatedAt: new Date().toISOString(), days: [] }
+    return { version: 1, updatedAt: new Date().toISOString(), days: [], failures: [] }
 }
 
 function sanitizeText(value: string): string {
@@ -319,7 +333,24 @@ function normalizeRun(input: Partial<PointRunRecord>, day: PointDayRecord): Poin
         categories: normalizeCategories(input.categories),
         status: normalizeStatus(input.status),
         taskSummary: normalizeTaskSummary(input.taskSummary),
+        failureStage: typeof input.failureStage === 'string' ? sanitizeText(input.failureStage) : undefined,
         error: typeof input.error === 'string' ? sanitizeText(input.error) : undefined
+    }
+}
+
+function normalizeFailure(input: Partial<PointFailureRecord>): PointFailureRecord | null {
+    if (typeof input.accountHash !== 'string' || typeof input.stage !== 'string') return null
+    const date = typeof input.date === 'string' ? input.date : localDateKey()
+    return {
+        id: typeof input.id === 'string' ? input.id : newRunId(input.accountHash, date),
+        date,
+        accountHash: input.accountHash,
+        accountLabel: typeof input.accountLabel === 'string' ? sanitizeText(input.accountLabel) : '账号',
+        source: typeof input.source === 'string' ? sanitizeText(input.source) : '',
+        pid: numberValue(input.pid),
+        failedAt: typeof input.failedAt === 'string' ? input.failedAt : new Date().toISOString(),
+        stage: sanitizeText(input.stage),
+        error: sanitizeText(String(input.error ?? '账号运行失败'))
     }
 }
 
@@ -348,14 +379,18 @@ function readHistoryFile(): PointsHistoryFile {
         if (!fs.existsSync(historyFile)) return emptyHistoryFile()
         const parsed = JSON.parse(fs.readFileSync(historyFile, 'utf8')) as Partial<PointsHistoryFile>
         const days = Array.isArray(parsed.days)
-            ? parsed.days
-                  .map(day => normalizeDay(day))
-                  .filter((day): day is PointDayRecord => Boolean(day))
+            ? parsed.days.map(day => normalizeDay(day)).filter((day): day is PointDayRecord => Boolean(day))
+            : []
+        const failures = Array.isArray(parsed.failures)
+            ? parsed.failures
+                  .map(failure => normalizeFailure(failure))
+                  .filter((failure): failure is PointFailureRecord => Boolean(failure))
             : []
         return {
             version: 1,
             updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : new Date().toISOString(),
-            days
+            days,
+            failures
         }
     } catch {
         return emptyHistoryFile()
@@ -467,7 +502,8 @@ function recomputeDay(day: PointDayRecord): void {
     })[0]
     const categories = sortedRuns.reduce((total, run) => addCategories(total, run.categories), emptyCategories())
     const runGained = sortedRuns.reduce((sum, run) => sum + Math.max(0, Number(run.runGained ?? 0)), 0)
-    const beforePoints = day.beforePoints > 0 ? day.beforePoints : firstWithPoints?.beforePoints ?? sortedRuns[0]?.beforePoints ?? 0
+    const beforePoints =
+        day.beforePoints > 0 ? day.beforePoints : (firstWithPoints?.beforePoints ?? sortedRuns[0]?.beforePoints ?? 0)
     const afterPoints = latest?.afterPoints ?? day.afterPoints ?? beforePoints
     const totalByBalance = beforePoints > 0 ? Math.max(0, afterPoints - beforePoints) : 0
     const todayGained = Math.max(totalByBalance, runGained, sumCategories(categories))
@@ -497,7 +533,11 @@ function taskKeyToCategory(key: string | undefined): PointCategoryKey | null {
     return null
 }
 
-export function pointCategoryFor(label: string, task: 'daily' | 'mobile' | 'desktop' = 'daily', detailLabel = ''): PointCategoryKey {
+export function pointCategoryFor(
+    label: string,
+    task: 'daily' | 'mobile' | 'desktop' = 'daily',
+    detailLabel = ''
+): PointCategoryKey {
     if (task === 'desktop') return 'pcSearch'
     if (task === 'mobile') return 'mobileSearch'
 
@@ -517,7 +557,36 @@ export function readPointsHistoryFile(): PointsHistoryFile {
     return readHistoryFile()
 }
 
-export function startPointRun(email: string, beforePoints: number, options: { source?: string; pid?: number } = {}): string {
+export function recordPointFailure(
+    email: string,
+    failure: { stage: string; error: string; source?: string; pid?: number }
+): string {
+    return withHistoryLock(() => {
+        const data = readHistoryFile()
+        const date = localDateKey()
+        const accountHash = accountProgressHash(email)
+        const id = newRunId(accountHash, date)
+        data.failures.push({
+            id,
+            date,
+            accountHash,
+            accountLabel: accountLabel(email),
+            source: sanitizeText(failure.source ?? ''),
+            pid: numberValue(failure.pid),
+            failedAt: new Date().toISOString(),
+            stage: sanitizeText(failure.stage),
+            error: sanitizeText(failure.error)
+        })
+        writeHistoryFile(data)
+        return id
+    })
+}
+
+export function startPointRun(
+    email: string,
+    beforePoints: number,
+    options: { source?: string; pid?: number } = {}
+): string {
     return withHistoryLock(() => {
         const data = readHistoryFile()
         const date = localDateKey()
@@ -655,6 +724,7 @@ export function finishPointRun(
         afterPoints?: number
         runGained?: number
         taskSummary?: PointTaskSummaryLike[]
+        failureStage?: string
         error?: string
     }
 ): void {
@@ -667,7 +737,8 @@ export function finishPointRun(
 
         const beforePoints = numberValue(patch.beforePoints, run.beforePoints)
         const afterPoints = numberValue(patch.afterPoints, run.afterPoints)
-        const runGained = patch.runGained !== undefined ? numberValue(patch.runGained) : Math.max(0, afterPoints - beforePoints)
+        const runGained =
+            patch.runGained !== undefined ? numberValue(patch.runGained) : Math.max(0, afterPoints - beforePoints)
         const summary = normalizeTaskSummary(patch.taskSummary)
         const existingCategoryTotal = sumCategories(run.categories)
 
@@ -677,6 +748,7 @@ export function finishPointRun(
         run.finishedAt = new Date().toISOString()
         run.status = statusFromTaskSummary(patch.status, summary)
         run.taskSummary = [...run.taskSummary, ...summary]
+        if (patch.failureStage) run.failureStage = sanitizeText(patch.failureStage)
         if (patch.error) run.error = sanitizeText(patch.error)
 
         if (existingCategoryTotal === 0 && summary.length > 0) {
@@ -803,7 +875,12 @@ export function queryPointsCalendar(
         }
     }
 
-    const days = dates.map(date => aggregateCalendarDay(date, records.filter(record => record.date === date)))
+    const days = dates.map(date =>
+        aggregateCalendarDay(
+            date,
+            records.filter(record => record.date === date)
+        )
+    )
     const visibleRecords = records.filter(hasPointRecordValue)
     const totalPoints = days.reduce((sum, day) => sum + day.totalGained, 0)
     const averageDailyPoints = dates.length > 0 ? Math.round((totalPoints / dates.length) * 10) / 10 : 0
