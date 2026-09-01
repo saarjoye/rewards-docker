@@ -50,10 +50,7 @@ function emptyCheckpointFile(): StoredRunCheckpointFile {
 function sanitizeText(value: string): string {
     return value
         .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[REDACTED_EMAIL]')
-        .replace(
-            /\b(password|passwd|pwd|token|secret|cookie|authorization)(\s*[:=]\s*)([^\s|]+)/gi,
-            '$1$2[REDACTED]'
-        )
+        .replace(/\b(password|passwd|pwd|token|secret|cookie|authorization)(\s*[:=]\s*)([^\s|]+)/gi, '$1$2[REDACTED]')
 }
 
 function isCheckpointState(value: unknown): value is RunCheckpointState {
@@ -162,6 +159,7 @@ export function selectAccountsForRun<T extends { email: string }>(
         pid?: number
     }
 ): RunCheckpointSelection<T> {
+    validateRunAccountIndex(accounts.length, options.mode, options.targetAccountIndex)
     const data = readCheckpointFile()
     const selected: T[] = []
     const skipped: T[] = []
@@ -220,6 +218,7 @@ export function selectAccountsWithoutCheckpoint<T extends { email: string }>(
         targetAccountIndex?: number
     }
 ): RunCheckpointSelection<T> {
+    validateRunAccountIndex(accounts.length, options.mode, options.targetAccountIndex)
     const selected: T[] = []
     const skipped: T[] = []
 
@@ -240,6 +239,16 @@ export function selectAccountsWithoutCheckpoint<T extends { email: string }>(
         selected,
         skipped,
         interrupted: 0
+    }
+}
+
+export function validateRunAccountIndex(accountCount: number, mode: RunAccountMode, targetAccountIndex?: number): void {
+    if (mode !== 'account') return
+    if (!Number.isInteger(targetAccountIndex)) {
+        throw new Error('指定账号模式需要提供 1 基账号序号')
+    }
+    if ((targetAccountIndex as number) < 1 || (targetAccountIndex as number) > accountCount) {
+        throw new Error(`运行账号序号超出范围：必须在 1..${accountCount} 之间`)
     }
 }
 

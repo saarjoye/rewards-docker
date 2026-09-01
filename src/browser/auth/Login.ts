@@ -11,7 +11,7 @@ import { RecoveryLogin } from './methods/RecoveryEmailLogin'
 
 import type { Account } from '../../interface/Account'
 
-type LoginState =
+export type LoginState =
     | 'EMAIL_INPUT'
     | 'PASSWORD_INPUT'
     | 'SIGN_IN_ANOTHER_WAY'
@@ -30,6 +30,38 @@ type LoginState =
     | 'OTP_CODE_ENTRY'
     | 'UNKNOWN'
     | 'CHROMEWEBDATA_ERROR'
+
+export class LoginStateError extends Error {
+    constructor(
+        public readonly loginState: LoginState,
+        message: string,
+        public readonly loginStage = `login-${loginState.toLowerCase().replace(/_/g, '-')}`
+    ) {
+        super(message)
+        this.name = 'LoginStateError'
+    }
+}
+
+export function selectDetectedLoginState(foundStates: LoginState[]): LoginState {
+    if (foundStates.includes('ERROR_ALERT')) return 'ERROR_ALERT'
+
+    const priorities: LoginState[] = [
+        'ACCOUNT_LOCKED',
+        'PASSKEY_ERROR',
+        'PASSKEY_VIDEO',
+        'KMSI_PROMPT',
+        'PASSWORD_INPUT',
+        'EMAIL_INPUT',
+        'SIGN_IN_ANOTHER_WAY',
+        'SIGN_IN_ANOTHER_WAY_EMAIL',
+        'OTP_CODE_ENTRY',
+        'GET_A_CODE',
+        'GET_A_CODE_2',
+        'LOGIN_PASSWORDLESS',
+        '2FA_TOTP'
+    ]
+    return priorities.find(state => foundStates.includes(state)) ?? foundStates[0] ?? 'UNKNOWN'
+}
 
 export class Login {
     emailLogin: EmailLogin
@@ -113,11 +145,7 @@ export class Login {
                         `相同状态计数: ${sameStateCount}/4 状态为 "${state}"`
                     )
                     if (sameStateCount >= 4) {
-                        this.bot.logger.warn(
-                            this.bot.isMobile,
-                            'LOGIN',
-                            `在状态 "${state}" 停滞4次循环，刷新页面`
-                        )
+                        this.bot.logger.warn(this.bot.isMobile, 'LOGIN', `在状态 "${state}" 停滞4次循环，刷新页面`)
                         await page.reload({ waitUntil: 'domcontentloaded' })
                         await this.bot.utils.wait(3000)
                         sameStateCount = 0
@@ -136,14 +164,18 @@ export class Login {
 
                 const shouldContinue = await this.handleState(state, page, account)
                 if (!shouldContinue) {
-                    throw new Error(`登录失败或中止于状态: ${state}`)
+                    throw new LoginStateError(state, `登录失败或中止于状态: ${state}`)
                 }
 
                 await this.bot.utils.wait(1000)
             }
 
             if (iteration >= maxIterations) {
-                throw new Error('登录超时: 超过最大迭代次数')
+                throw new LoginStateError(
+                    previousState,
+                    `登录超时: 超过最大迭代次数，最后状态: ${previousState}`,
+                    'login-timeout'
+                )
             }
 
             await this.finalizeLogin(page, account.email)
@@ -172,11 +204,6 @@ export class Login {
         if (isLocked) {
             this.bot.logger.debug(this.bot.isMobile, 'DETECT-STATE', '账户锁定选择器被发现')
             return 'ACCOUNT_LOCKED'
-        }
-
-        if (url.hostname === 'rewards.bing.com' || url.hostname === 'account.microsoft.com') {
-            this.bot.logger.debug(this.bot.isMobile, 'DETECT-STATE', '在奖励/账户页面，假设已登录')
-            return 'LOGGED_IN'
         }
 
         const stateChecks: Array<[string, LoginState]> = [
@@ -225,7 +252,15 @@ export class Login {
             results.push(codeState)
         }
 
-        let foundStates = results.filter((s): s is LoginState => s !== null)
+        const foundStates = results.filter((s): s is LoginState => s !== null)
+
+        if (
+            foundStates.length === 0 &&
+            (url.hostname === 'rewards.bing.com' || url.hostname === 'account.microsoft.com')
+        ) {
+            this.bot.logger.debug(this.bot.isMobile, 'DETECT-STATE', '奖励/账户页面未发现登录错误，判定已登录')
+            return 'LOGGED_IN'
+        }
 
         if (foundStates.length === 0) {
             this.bot.logger.debug(this.bot.isMobile, 'DETECT-STATE', '未找到匹配的状态')
@@ -238,40 +273,11 @@ export class Login {
                 'DETECT-STATE',
                 `发现ERROR_ALERT - 主机名: ${url.hostname}, 有2FA: ${foundStates.includes('2FA_TOTP')}`
             )
-            if (url.hostname !== 'login.live.com') {
-                foundStates = foundStates.filter(s => s !== 'ERROR_ALERT')
-            }
-            if (foundStates.includes('2FA_TOTP')) {
-                foundStates = foundStates.filter(s => s !== 'ERROR_ALERT')
-            }
-            if (foundStates.includes('ERROR_ALERT')) return 'ERROR_ALERT'
+            return 'ERROR_ALERT'
         }
-
-        const priorities: LoginState[] = [
-            'ACCOUNT_LOCKED',
-            'PASSKEY_VIDEO',
-            'PASSKEY_ERROR',
-            'KMSI_PROMPT',
-            'PASSWORD_INPUT',
-            'EMAIL_INPUT',
-            'SIGN_IN_ANOTHER_WAY', // 优先选择密码选项而不是邮箱验证码
-            'SIGN_IN_ANOTHER_WAY_EMAIL',
-            'OTP_CODE_ENTRY',
-            'GET_A_CODE',
-            'GET_A_CODE_2',
-            'LOGIN_PASSWORDLESS',
-            '2FA_TOTP'
-        ]
-
-        for (const priority of priorities) {
-            if (foundStates.includes(priority)) {
-                this.bot.logger.debug(this.bot.isMobile, 'DETECT-STATE', `按优先级选择状态: ${priority}`)
-                return priority
-            }
-        }
-
-        this.bot.logger.debug(this.bot.isMobile, 'DETECT-STATE', `返回第一个找到的状态: ${foundStates[0]}`)
-        return foundStates[0] as LoginState
+        const selected = selectDetectedLoginState(foundStates)
+        this.bot.logger.debug(this.bot.isMobile, 'DETECT-STATE', `按优先级选择状态: ${selected}`)
+        return selected
     }
 
     private async checkSelector(page: Page, selector: string): Promise<boolean> {
@@ -288,14 +294,14 @@ export class Login {
             case 'ACCOUNT_LOCKED': {
                 const msg = '此账户已被锁定！从配置中移除并重新启动！'
                 this.bot.logger.error(this.bot.isMobile, 'LOGIN', msg)
-                throw new Error(msg)
+                throw new LoginStateError(state, msg)
             }
 
             case 'ERROR_ALERT': {
                 const alertEl = page.locator(this.selectors.errorAlert)
                 const errorMsg = await alertEl.innerText().catch(() => '未知错误')
                 this.bot.logger.error(this.bot.isMobile, 'LOGIN', `账户错误: ${errorMsg}`)
-                throw new Error(`微软登录错误: ${errorMsg}`)
+                throw new LoginStateError(state, `微软登录错误: ${errorMsg}`)
             }
 
             case 'LOGGED_IN':
@@ -333,11 +339,7 @@ export class Login {
                     this.bot.logger.info(this.bot.isMobile, 'LOGIN', '找到"其他登录方式"链接')
                     await this.bot.browser.utils.ghostClick(page, this.selectors.otherWaysToSignIn)
                     await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {
-                        this.bot.logger.debug(
-                            this.bot.isMobile,
-                            'LOGIN',
-                            '点击其他方式后网络空闲超时'
-                        )
+                        this.bot.logger.debug(this.bot.isMobile, 'LOGIN', '点击其他方式后网络空闲超时')
                     })
                     this.bot.logger.info(this.bot.isMobile, 'LOGIN', '"其他登录方式"已点击')
                     return true
@@ -484,8 +486,11 @@ export class Login {
                 return true
             }
 
-            case 'PASSKEY_VIDEO':
             case 'PASSKEY_ERROR': {
+                throw new LoginStateError(state, '微软登录通行密钥流程返回错误')
+            }
+
+            case 'PASSKEY_VIDEO': {
                 this.bot.logger.info(this.bot.isMobile, 'LOGIN', '跳过Passkey提示')
                 await this.bot.browser.utils.ghostClick(page, this.selectors.secondaryButton)
                 await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {
@@ -506,11 +511,7 @@ export class Login {
             }
 
             case 'OTP_CODE_ENTRY': {
-                this.bot.logger.info(
-                    this.bot.isMobile,
-                    'LOGIN',
-                    '检测到OTP代码输入页面，尝试查找密码选项'
-                )
+                this.bot.logger.info(this.bot.isMobile, 'LOGIN', '检测到OTP代码输入页面，尝试查找密码选项')
 
                 // 我的修复: 点击"使用您的密码"页脚
                 const footerLink = await page
@@ -543,11 +544,7 @@ export class Login {
 
             case 'UNKNOWN': {
                 const url = new URL(page.url())
-                this.bot.logger.warn(
-                    this.bot.isMobile,
-                    'LOGIN',
-                    `在 ${url.hostname}${url.pathname} 的未知状态，等待中`
-                )
+                this.bot.logger.warn(this.bot.isMobile, 'LOGIN', `在 ${url.hostname}${url.pathname} 的未知状态，等待中`)
                 return true
             }
 
@@ -600,12 +597,18 @@ export class Login {
 
                 const state = await this.detectCurrentState(page)
                 if (state === 'PASSKEY_ERROR') {
-                    this.bot.logger.info(this.bot.isMobile, 'LOGIN-BING', '忽略Passkey错误状态')
-                    await this.bot.browser.utils.ghostClick(page, this.selectors.secondaryButton)
+                    throw new LoginStateError(state, 'Bing 会话验证遇到通行密钥错误', 'bing-session-passkey-error')
+                }
+                if (state === 'ERROR_ALERT') {
+                    const message = await page
+                        .locator(this.selectors.errorAlert)
+                        .innerText()
+                        .catch(() => '未知错误')
+                    throw new LoginStateError(state, `Bing 会话验证遇到登录错误: ${message}`, 'bing-session-error')
                 }
 
                 const u = new URL(page.url())
-                const atBingHome = u.hostname === 'cn.bing.com' && u.pathname === '/'
+                const atBingHome = ['cn.bing.com', 'www.bing.com'].includes(u.hostname) && u.pathname === '/'
                 this.bot.logger.debug(
                     this.bot.isMobile,
                     'LOGIN-BING',
@@ -631,13 +634,14 @@ export class Login {
                 await this.bot.utils.wait(1000)
             }
 
-            this.bot.logger.warn(this.bot.isMobile, 'LOGIN-BING', '无法验证Bing会话，仍然继续')
+            throw new LoginStateError('UNKNOWN', 'Bing 会话验证超时，未确认登录状态', 'bing-session-timeout')
         } catch (error) {
-            this.bot.logger.warn(
+            this.bot.logger.error(
                 this.bot.isMobile,
                 'LOGIN-BING',
                 `验证错误: ${error instanceof Error ? error.message : String(error)}`
             )
+            throw error
         }
     }
 

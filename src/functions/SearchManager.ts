@@ -4,7 +4,14 @@ import { MicrosoftRewardsBot, executionContext } from '../index'
 import type { DashboardData } from '../interface/DashboardData'
 import type { Account } from '../interface/Account'
 import type { MissingSearchPoints, SearchCounterInfo, SearchCounterStatus } from '../interface/Points'
-import { updateAccountRunState, updateSearchTaskProgress, updateTaskDetail, updateTaskProgress } from '../util/TaskProgressStore'
+import {
+    updateAccountRunState,
+    updateSearchTaskFailure,
+    updateSearchTaskProgress,
+    updateTaskDetail,
+    updateTaskProgress
+} from '../util/TaskProgressStore'
+import { SearchTaskError, toSearchTaskError, type SearchFailureStage } from '../util/SearchTaskError'
 
 interface BrowserSession {
     context: BrowserContext
@@ -57,6 +64,38 @@ export class SearchManager {
 
     private isCounterUnrecognized(status: SearchCounterStatus): boolean {
         return ['missing-counter', 'empty-counter', 'invalid-counter'].includes(status)
+    }
+
+    private desktopRemaining(points: MissingSearchPoints): number {
+        return Math.max(0, points.desktopPoints) + Math.max(0, points.edgePoints)
+    }
+
+    private desktopTotal(points: MissingSearchPoints): number {
+        return Math.max(0, points.desktopCounter.total) + Math.max(0, points.edgeCounter.total)
+    }
+
+    private throwSearchFailure(
+        error: unknown,
+        stage: SearchFailureStage,
+        task: 'mobile' | 'desktop',
+        accountEmail: string,
+        total: number
+    ): never {
+        const failure = toSearchTaskError(error, stage, task, 0, total)
+        const progress = updateSearchTaskFailure(accountEmail, task, {
+            completed: failure.completed,
+            total: failure.total,
+            message: failure.message
+        })
+        if (progress.completed === failure.completed && progress.total === failure.total) throw failure
+        throw new SearchTaskError(
+            failure.stage,
+            failure.task,
+            failure.message,
+            progress.completed,
+            progress.total,
+            failure.loginState
+        )
     }
 
     private mobileSkipStatus(missingSearchPoints: MissingSearchPoints): string {
@@ -112,10 +151,11 @@ export class SearchManager {
         account: Account,
         accountEmail: string
     ): Promise<SearchResults> {
+        const desktopRemaining = this.desktopRemaining(missingSearchPoints)
         this.bot.logger.info(
             'main',
             'SEARCH-MANAGER',
-            `开始 | 账户=${accountEmail} | 移动端缺失=${missingSearchPoints.mobilePoints} | 桌面端缺失=${missingSearchPoints.desktopPoints}`
+            `开始 | 账户=${accountEmail} | 移动端缺失=${missingSearchPoints.mobilePoints} | 桌面端缺失=${desktopRemaining}`
         )
         if (!this.isCounterUnrecognized(missingSearchPoints.mobileStatus)) {
             updateSearchTaskProgress(
@@ -130,8 +170,8 @@ export class SearchManager {
             accountEmail,
             'desktop',
             0,
-            missingSearchPoints.desktopPoints,
-            missingSearchPoints.desktopPoints
+            desktopRemaining,
+            Math.max(this.desktopTotal(missingSearchPoints), desktopRemaining)
         )
         const mobileCounter = this.progressFromCounter(
             missingSearchPoints.mobileCounter,
@@ -140,11 +180,11 @@ export class SearchManager {
         const desktopCounter = this.searchCounterProgress(data, 'desktop')
 
         const doMobile = this.bot.config.workers.doMobileSearch && missingSearchPoints.mobilePoints > 0
-        const doDesktop = this.bot.config.workers.doDesktopSearch && missingSearchPoints.desktopPoints > 0
+        const doDesktop = this.bot.config.workers.doDesktopSearch && desktopRemaining > 0
 
         const mobileStatus = this.mobileSkipStatus(missingSearchPoints)
         const desktopStatus = this.bot.config.workers.doDesktopSearch
-            ? missingSearchPoints.desktopPoints > 0
+            ? desktopRemaining > 0
                 ? 'run'
                 : 'skip-no-points'
             : 'skip-disabled'
@@ -157,7 +197,7 @@ export class SearchManager {
         this.bot.logger.info(
             'main',
             'SEARCH-MANAGER',
-            `桌面端: ${desktopStatus} (启用=${this.bot.config.workers.doDesktopSearch}, 缺失=${missingSearchPoints.desktopPoints})`
+            `桌面端: ${desktopStatus} (启用=${this.bot.config.workers.doDesktopSearch}, 缺失=${desktopRemaining})`
         )
         updateTaskProgress(accountEmail, 'mobile', {
             completed: mobileCounter.completed,
@@ -192,7 +232,7 @@ export class SearchManager {
 
         if (!doMobile && !doDesktop) {
             const bothWorkersEnabled = this.bot.config.workers.doMobileSearch && this.bot.config.workers.doDesktopSearch
-            const bothNoPoints = missingSearchPoints.mobilePoints <= 0 && missingSearchPoints.desktopPoints <= 0
+            const bothNoPoints = missingSearchPoints.mobilePoints <= 0 && desktopRemaining <= 0
             const hasUnrecognizedMobileCounter = mobileStatus === 'skip-counter-missing'
 
             if (hasUnrecognizedMobileCounter) {
@@ -202,11 +242,7 @@ export class SearchManager {
                     `未识别到移动搜索 counter，已跳过移动搜索诊断 | reason=${missingSearchPoints.mobileStatus} | source=${missingSearchPoints.source} | keys=${missingSearchPoints.counterKeys.join(',') || 'none'}`
                 )
             } else if (bothWorkersEnabled && bothNoPoints) {
-                this.bot.logger.info(
-                    'main',
-                    'SEARCH-MANAGER',
-                    '所有搜索已跳过：移动端或桌面端没有剩余积分。'
-                )
+                this.bot.logger.info('main', 'SEARCH-MANAGER', '所有搜索已跳过：移动端或桌面端没有剩余积分。')
             } else {
                 this.bot.logger.info('main', 'SEARCH-MANAGER', '没有安排搜索（已禁用或没有积分）。')
             }
@@ -263,15 +299,16 @@ export class SearchManager {
         accountEmail: string,
         executionContext: any
     ): Promise<SearchResults> {
+        const desktopRemaining = this.desktopRemaining(missingSearchPoints)
         this.bot.logger.info('main', 'SEARCH-MANAGER', '并行开始')
         this.bot.logger.debug(
             'main',
             'SEARCH-MANAGER',
-            `并行配置 | 账户=${accountEmail} | 移动端缺失=${missingSearchPoints.mobilePoints} | 桌面端缺失=${missingSearchPoints.desktopPoints}`
+            `并行配置 | 账户=${accountEmail} | 移动端缺失=${missingSearchPoints.mobilePoints} | 桌面端缺失=${desktopRemaining}`
         )
 
         const shouldDoMobile = this.bot.config.workers.doMobileSearch && missingSearchPoints.mobilePoints > 0
-        const shouldDoDesktop = this.bot.config.workers.doDesktopSearch && missingSearchPoints.desktopPoints > 0
+        const shouldDoDesktop = this.bot.config.workers.doDesktopSearch && desktopRemaining > 0
 
         this.bot.logger.debug(
             'main',
@@ -281,15 +318,15 @@ export class SearchManager {
 
         let desktopSession: BrowserSession | null = null
         let mobileContextClosed = false
+        const promises: Promise<number>[] = []
 
         try {
-            const promises: Promise<number>[] = []
             const searchTypes: string[] = []
             if (shouldDoMobile && shouldDoDesktop) {
                 updateAccountRunState(accountEmail, {
                     currentTask: '并行搜索',
                     currentStage: 'search',
-                    currentMessage: `移动剩余 ${missingSearchPoints.mobilePoints}，PC剩余 ${missingSearchPoints.desktopPoints}`
+                    currentMessage: `移动剩余 ${missingSearchPoints.mobilePoints}，PC剩余 ${desktopRemaining}`
                 })
             }
 
@@ -301,11 +338,7 @@ export class SearchManager {
                         currentMessage: `正在执行移动搜索，目标 ${missingSearchPoints.mobilePoints}`
                     })
                 }
-                this.bot.logger.debug(
-                    'main',
-                    'SEARCH-MANAGER',
-                    `安排移动端 | 目标=${missingSearchPoints.mobilePoints}`
-                )
+                this.bot.logger.debug('main', 'SEARCH-MANAGER', `安排移动端 | 目标=${missingSearchPoints.mobilePoints}`)
                 searchTypes.push('Mobile')
                 promises.push(
                     this.doMobileSearch(data, missingSearchPoints, mobileSession, accountEmail, executionContext).then(
@@ -340,7 +373,7 @@ export class SearchManager {
                     updateAccountRunState(accountEmail, {
                         currentTask: 'PC搜索',
                         currentStage: 'desktop-search',
-                        currentMessage: `正在执行PC搜索，目标 ${missingSearchPoints.desktopPoints}`
+                        currentMessage: `正在执行PC搜索，目标 ${desktopRemaining}`
                     })
                 }
                 this.bot.logger.info('main', 'SEARCH-MANAGER', '桌面端登录开始')
@@ -350,7 +383,7 @@ export class SearchManager {
                     `桌面端登录 | 账户=${accountEmail} | 代理=${account.proxy ?? 'none'}`
                 )
                 desktopSession = await executionContext.run({ isMobile: false, accountEmail }, async () =>
-                    this.createDesktopSession(account, accountEmail)
+                    this.createDesktopSession(account, accountEmail, desktopRemaining)
                 )
                 this.bot.logger.info('main', 'SEARCH-MANAGER', '桌面端登录完成')
             } else {
@@ -359,11 +392,7 @@ export class SearchManager {
             }
 
             if (shouldDoDesktop && desktopSession) {
-                this.bot.logger.debug(
-                    'main',
-                    'SEARCH-MANAGER',
-                    `安排桌面端 | 目标=${missingSearchPoints.desktopPoints}`
-                )
+                this.bot.logger.debug('main', 'SEARCH-MANAGER', `安排桌面端 | 目标=${desktopRemaining}`)
                 searchTypes.push('Desktop')
                 promises.push(
                     this.doDesktopSearch(
@@ -377,8 +406,8 @@ export class SearchManager {
                             accountEmail,
                             'desktop',
                             points,
-                            Math.max(0, missingSearchPoints.desktopPoints - points),
-                            missingSearchPoints.desktopPoints
+                            Math.max(0, desktopRemaining - points),
+                            desktopRemaining
                         )
                         this.bot.logger.info(
                             'main',
@@ -413,6 +442,11 @@ export class SearchManager {
 
             return { mobilePoints, desktopPoints }
         } catch (error) {
+            if (!mobileContextClosed && promises.length > 0) {
+                await this.bot.browser.func.closeBrowser(mobileSession.context, accountEmail).catch(() => {})
+                mobileContextClosed = true
+                await Promise.allSettled(promises)
+            }
             this.bot.logger.error(
                 'main',
                 'SEARCH-MANAGER',
@@ -453,15 +487,16 @@ export class SearchManager {
         accountEmail: string,
         executionContext: any
     ): Promise<SearchResults> {
+        const desktopRemaining = this.desktopRemaining(missingSearchPoints)
         this.bot.logger.info('main', 'SEARCH-MANAGER', '串行开始')
         this.bot.logger.debug(
             'main',
             'SEARCH-MANAGER',
-            `串行配置 | 账户=${accountEmail} | 移动端缺失=${missingSearchPoints.mobilePoints} | 桌面端缺失=${missingSearchPoints.desktopPoints}`
+            `串行配置 | 账户=${accountEmail} | 移动端缺失=${missingSearchPoints.mobilePoints} | 桌面端缺失=${desktopRemaining}`
         )
 
         const shouldDoMobile = this.bot.config.workers.doMobileSearch && missingSearchPoints.mobilePoints > 0
-        const shouldDoDesktop = this.bot.config.workers.doDesktopSearch && missingSearchPoints.desktopPoints > 0
+        const shouldDoDesktop = this.bot.config.workers.doDesktopSearch && desktopRemaining > 0
 
         this.bot.logger.debug(
             'main',
@@ -479,11 +514,7 @@ export class SearchManager {
                 currentMessage: `正在执行移动搜索，目标 ${missingSearchPoints.mobilePoints}`
             })
             this.bot.logger.info('main', 'SEARCH-MANAGER', '步骤 1: 移动端')
-            this.bot.logger.debug(
-                'main',
-                'SEARCH-MANAGER',
-                `串行移动端 | 目标=${missingSearchPoints.mobilePoints}`
-            )
+            this.bot.logger.debug('main', 'SEARCH-MANAGER', `串行移动端 | 目标=${missingSearchPoints.mobilePoints}`)
             const beforePoints = Number(this.bot.userData.currentPoints ?? 0)
             const reportedPoints = await this.doMobileSearch(
                 data,
@@ -536,14 +567,10 @@ export class SearchManager {
             updateAccountRunState(accountEmail, {
                 currentTask: 'PC搜索',
                 currentStage: 'desktop-search',
-                currentMessage: `正在执行PC搜索，目标 ${missingSearchPoints.desktopPoints}`
+                currentMessage: `正在执行PC搜索，目标 ${desktopRemaining}`
             })
             this.bot.logger.info('main', 'SEARCH-MANAGER', '步骤 2: 桌面端')
-            this.bot.logger.debug(
-                'main',
-                'SEARCH-MANAGER',
-                `串行桌面端 | 目标=${missingSearchPoints.desktopPoints}`
-            )
+            this.bot.logger.debug('main', 'SEARCH-MANAGER', `串行桌面端 | 目标=${desktopRemaining}`)
             const beforePoints = Number(this.bot.userData.currentPoints ?? 0)
             const reportedPoints = await this.doDesktopSearchSequential(
                 data,
@@ -563,8 +590,8 @@ export class SearchManager {
                 accountEmail,
                 'desktop',
                 desktopPoints,
-                Math.max(0, missingSearchPoints.desktopPoints - desktopPoints),
-                missingSearchPoints.desktopPoints
+                Math.max(0, desktopRemaining - desktopPoints),
+                desktopRemaining
             )
             this.bot.logger.info(
                 'main',
@@ -588,7 +615,11 @@ export class SearchManager {
         return { mobilePoints, desktopPoints }
     }
 
-    private async createDesktopSession(account: Account, accountEmail: string): Promise<BrowserSession> {
+    private async createDesktopSession(
+        account: Account,
+        accountEmail: string,
+        targetPoints: number
+    ): Promise<BrowserSession> {
         this.bot.logger.info('main', 'SEARCH-DESKTOP-LOGIN', '初始化桌面端会话')
         this.bot.logger.debug(
             'main',
@@ -596,27 +627,35 @@ export class SearchManager {
             `初始化 | 账户=${accountEmail} | 代理=${account.proxy ?? 'none'}`
         )
 
-        const session = await this.bot['browserFactory'].createBrowser(account)
-        this.bot.logger.debug('main', 'SEARCH-DESKTOP-LOGIN', '浏览器已创建，新建页面')
+        let session: BrowserSession | null = null
+        try {
+            session = await this.bot['browserFactory'].createBrowser(account)
+            this.bot.logger.debug('main', 'SEARCH-DESKTOP-LOGIN', '浏览器已创建，新建页面')
 
-        this.bot.mainDesktopPage = await session.context.newPage()
+            this.bot.mainDesktopPage = await session.context.newPage()
 
-        this.bot.logger.info('main', 'SEARCH-DESKTOP-LOGIN', `浏览器就绪 | 账户=${accountEmail}`)
-        this.bot.logger.info('main', 'SEARCH-DESKTOP-LOGIN', '登录开始')
-        this.bot.logger.debug('main', 'SEARCH-DESKTOP-LOGIN', '调用登录处理器')
+            this.bot.logger.info('main', 'SEARCH-DESKTOP-LOGIN', `浏览器就绪 | 账户=${accountEmail}`)
+            this.bot.logger.info('main', 'SEARCH-DESKTOP-LOGIN', '登录开始')
+            this.bot.logger.debug('main', 'SEARCH-DESKTOP-LOGIN', '调用登录处理器')
 
-        await this.bot['login'].login(this.bot.mainDesktopPage, account)
+            await this.bot['login'].login(this.bot.mainDesktopPage, account)
 
-        this.bot.logger.info('main', 'SEARCH-DESKTOP-LOGIN', '登录通过，正在验证')
-        this.bot.logger.debug('main', 'SEARCH-DESKTOP-LOGIN', 'verifyBingSession')
+            this.bot.logger.info('main', 'SEARCH-DESKTOP-LOGIN', '登录通过，正在验证')
+            this.bot.logger.debug('main', 'SEARCH-DESKTOP-LOGIN', 'verifyBingSession')
 
-        await this.bot['login'].verifyBingSession(this.bot.mainDesktopPage)
-        this.bot.cookies.desktop = await session.context.cookies()
+            await this.bot['login'].verifyBingSession(this.bot.mainDesktopPage)
+            this.bot.cookies.desktop = await session.context.cookies()
 
-        this.bot.logger.debug('main', 'SEARCH-DESKTOP-LOGIN', 'Cookie已存储')
-        this.bot.logger.info('main', 'SEARCH-DESKTOP-LOGIN', '桌面端会话就绪')
+            this.bot.logger.debug('main', 'SEARCH-DESKTOP-LOGIN', 'Cookie已存储')
+            this.bot.logger.info('main', 'SEARCH-DESKTOP-LOGIN', '桌面端会话就绪')
 
-        return session
+            return session
+        } catch (error) {
+            if (session) {
+                await this.bot.browser.func.closeBrowser(session.context, accountEmail).catch(() => {})
+            }
+            this.throwSearchFailure(error, 'desktop-login', 'desktop', accountEmail, targetPoints)
+        }
     }
 
     private async doMobileSearch(
@@ -689,7 +728,13 @@ export class SearchManager {
                 if (error instanceof Error && error.stack) {
                     this.bot.logger.debug('main', 'SEARCH-MOBILE-SEARCH', `堆栈: ${error.stack}`)
                 }
-                return 0
+                this.throwSearchFailure(
+                    error,
+                    'mobile-search',
+                    'mobile',
+                    accountEmail,
+                    missingSearchPoints.mobileCounter.total || missingSearchPoints.mobilePoints
+                )
             } finally {
                 this.bot.logger.info('main', 'SEARCH-MOBILE-SEARCH', '正在关闭移动端会话')
                 this.bot.logger.debug('main', 'SEARCH-MOBILE-SEARCH', `正在关闭上下文 | 账户=${accountEmail}`)
@@ -717,32 +762,29 @@ export class SearchManager {
         accountEmail: string,
         executionContext: any
     ): Promise<number> {
+        const desktopRemaining = this.desktopRemaining(missingSearchPoints)
         this.bot.logger.debug(
             'main',
             'SEARCH-DESKTOP-PARALLEL',
-            `开始 | 账户=${accountEmail} | 目标=${missingSearchPoints.desktopPoints}`
+            `开始 | 账户=${accountEmail} | 目标=${desktopRemaining}`
         )
 
         return await executionContext.run({ isMobile: false, accountEmail }, async () => {
             try {
-                this.bot.logger.info(
-                    'main',
-                    'SEARCH-DESKTOP-PARALLEL',
-                    `搜索开始 | 目标=${missingSearchPoints.desktopPoints}`
-                )
+                this.bot.logger.info('main', 'SEARCH-DESKTOP-PARALLEL', `搜索开始 | 目标=${desktopRemaining}`)
                 const pointsEarned = await this.bot.activities.doSearch(data, this.bot.mainDesktopPage, false)
                 updateSearchTaskProgress(
                     accountEmail,
                     'desktop',
                     pointsEarned,
-                    Math.max(0, missingSearchPoints.desktopPoints - pointsEarned),
-                    missingSearchPoints.desktopPoints
+                    Math.max(0, desktopRemaining - pointsEarned),
+                    desktopRemaining
                 )
 
                 this.bot.logger.info(
                     'main',
                     'SEARCH-DESKTOP-PARALLEL',
-                    `搜索完成 | 账户=${accountEmail} | 获得=${pointsEarned}/${missingSearchPoints.desktopPoints}`
+                    `搜索完成 | 账户=${accountEmail} | 获得=${pointsEarned}/${desktopRemaining}`
                 )
                 this.bot.logger.debug(
                     'main',
@@ -760,7 +802,7 @@ export class SearchManager {
                 if (error instanceof Error && error.stack) {
                     this.bot.logger.debug('main', 'SEARCH-DESKTOP-PARALLEL', `堆栈: ${error.stack}`)
                 }
-                return 0
+                this.throwSearchFailure(error, 'desktop-search', 'desktop', accountEmail, desktopRemaining)
             } finally {
                 this.bot.logger.info('main', 'SEARCH-DESKTOP-PARALLEL', '正在关闭桌面端会话')
                 this.bot.logger.debug('main', 'SEARCH-DESKTOP-PARALLEL', `正在关闭上下文 | 账户=${accountEmail}`)
@@ -788,10 +830,11 @@ export class SearchManager {
         accountEmail: string,
         executionContext: any
     ): Promise<number> {
+        const desktopRemaining = this.desktopRemaining(missingSearchPoints)
         this.bot.logger.debug(
             'main',
             'SEARCH-DESKTOP-SEQUENTIAL',
-            `开始 | 账户=${accountEmail} | 目标=${missingSearchPoints.desktopPoints}`
+            `开始 | 账户=${accountEmail} | 目标=${desktopRemaining}`
         )
 
         return await executionContext.run({ isMobile: false, accountEmail }, async () => {
@@ -800,7 +843,7 @@ export class SearchManager {
                 return 0
             }
 
-            if (missingSearchPoints.desktopPoints === 0) {
+            if (desktopRemaining === 0) {
                 this.bot.logger.info('main', 'SEARCH-DESKTOP-SEQUENTIAL', '跳过：没有剩余积分')
                 return 0
             }
@@ -808,27 +851,23 @@ export class SearchManager {
             let desktopSession: BrowserSession | null = null
             try {
                 this.bot.logger.info('main', 'SEARCH-DESKTOP-SEQUENTIAL', '初始化桌面端会话')
-                desktopSession = await this.createDesktopSession(account, accountEmail)
+                desktopSession = await this.createDesktopSession(account, accountEmail, desktopRemaining)
 
-                this.bot.logger.info(
-                    'main',
-                    'SEARCH-DESKTOP-SEQUENTIAL',
-                    `搜索开始 | 目标=${missingSearchPoints.desktopPoints}`
-                )
+                this.bot.logger.info('main', 'SEARCH-DESKTOP-SEQUENTIAL', `搜索开始 | 目标=${desktopRemaining}`)
 
                 const pointsEarned = await this.bot.activities.doSearch(data, this.bot.mainDesktopPage, false)
                 updateSearchTaskProgress(
                     accountEmail,
                     'desktop',
                     pointsEarned,
-                    Math.max(0, missingSearchPoints.desktopPoints - pointsEarned),
-                    missingSearchPoints.desktopPoints
+                    Math.max(0, desktopRemaining - pointsEarned),
+                    desktopRemaining
                 )
 
                 this.bot.logger.info(
                     'main',
                     'SEARCH-DESKTOP-SEQUENTIAL',
-                    `搜索完成 | 账户=${accountEmail} | 获得=${pointsEarned}/${missingSearchPoints.desktopPoints}`
+                    `搜索完成 | 账户=${accountEmail} | 获得=${pointsEarned}/${desktopRemaining}`
                 )
                 this.bot.logger.debug(
                     'main',
@@ -846,15 +885,11 @@ export class SearchManager {
                 if (error instanceof Error && error.stack) {
                     this.bot.logger.debug('main', 'SEARCH-DESKTOP-SEQUENTIAL', `堆栈: ${error.stack}`)
                 }
-                return 0
+                this.throwSearchFailure(error, 'desktop-search', 'desktop', accountEmail, desktopRemaining)
             } finally {
                 if (desktopSession) {
                     this.bot.logger.info('main', 'SEARCH-DESKTOP-SEQUENTIAL', '正在关闭桌面端会话')
-                    this.bot.logger.debug(
-                        'main',
-                        'SEARCH-DESKTOP-SEQUENTIAL',
-                        `正在关闭上下文 | 账户=${accountEmail}`
-                    )
+                    this.bot.logger.debug('main', 'SEARCH-DESKTOP-SEQUENTIAL', `正在关闭上下文 | 账户=${accountEmail}`)
                     try {
                         await this.bot.browser.func.closeBrowser(desktopSession.context, accountEmail)
                         this.bot.logger.info('main', 'SEARCH-DESKTOP-SEQUENTIAL', '桌面端浏览器已关闭')

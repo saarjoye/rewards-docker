@@ -1,5 +1,5 @@
-import type { APIRequestContext, BrowserContext, Cookie, Page, Response } from 'patchright'
-import type { AxiosRequestConfig } from 'axios'
+import type { APIRequestContext, APIResponse, BrowserContext, Cookie, Page, Response } from 'patchright'
+import type { AxiosRequestConfig, AxiosResponse } from 'axios'
 
 import type { MicrosoftRewardsBot } from '../index'
 import { saveSessionData } from '../util/Load'
@@ -62,6 +62,9 @@ interface BrowserContextHttpResponse {
     redirected: boolean | null
 }
 
+const DASHBOARD_REQUEST_TIMEOUT_MS = 15000
+const DASHBOARD_TOTAL_TIMEOUT_MS = 30000
+
 export default class BrowserFunc {
     private bot: MicrosoftRewardsBot
     private dashboardCaptures = new WeakMap<Page, DashboardCaptureState>()
@@ -100,6 +103,36 @@ export default class BrowserFunc {
      * @returns {DashboardData} 用户必应奖励仪表板数据对象
      */
     async getDashboardData(geoLocale?: string): Promise<DashboardData> {
+        const startedAt = Date.now()
+        let timer: NodeJS.Timeout | undefined
+        try {
+            return await Promise.race([
+                this.getDashboardDataWithinBudget(geoLocale),
+                new Promise<never>((_resolve, reject) => {
+                    timer = setTimeout(
+                        () =>
+                            reject(
+                                new DashboardFetchError({
+                                    apiReason: `请求总耗时超过 ${DASHBOARD_TOTAL_TIMEOUT_MS}ms`,
+                                    fallbackReason: 'dashboard 获取总时限已到',
+                                    apiFailureKind: 'network'
+                                })
+                            ),
+                        DASHBOARD_TOTAL_TIMEOUT_MS
+                    )
+                })
+            ])
+        } finally {
+            if (timer) clearTimeout(timer)
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                'GET-DASHBOARD-DATA',
+                `请求结束 | elapsedMs=${Date.now() - startedAt} | totalTimeoutMs=${DASHBOARD_TOTAL_TIMEOUT_MS}`
+            )
+        }
+    }
+
+    private async getDashboardDataWithinBudget(geoLocale?: string): Promise<DashboardData> {
         this.cachedPanelFlyoutData = null
         geoLocale ??= this.bot.userData?.geoLocale
         const apiPath = '/api/getuserinfo'
@@ -131,7 +164,7 @@ export default class BrowserFunc {
                     data = browserResponse.body
                 }
             } else {
-                const response = await this.bot.axios.request({
+                const response = await this.requestDashboardAxios({
                     url: apiUrl,
                     method: 'GET',
                     headers: {
@@ -295,7 +328,7 @@ export default class BrowserFunc {
                 finalUrl = browserResponse.finalUrl
                 redirected = browserResponse.redirected
             } else {
-                const response = await this.bot.axios.request({
+                const response = await this.requestDashboardAxios({
                     url: dashboardUrl,
                     method: 'GET',
                     headers: {
@@ -373,7 +406,7 @@ export default class BrowserFunc {
                         finalUrl = browserResponse.finalUrl
                         redirected = browserResponse.redirected
                     } else {
-                        const response = await this.bot.axios.request({
+                        const response = await this.requestDashboardAxios({
                             url: targetUrl,
                             method: 'GET',
                             headers: {
@@ -528,14 +561,32 @@ export default class BrowserFunc {
         const request = this.dashboardRequestContext(page)
         if (!request) return null
 
-        const response = await request.get(targetUrl, {
-            headers,
-            failOnStatusCode: false
-        })
+        const startedAt = Date.now()
+        let response: APIResponse
+        try {
+            response = await request.get(targetUrl, {
+                headers,
+                failOnStatusCode: false,
+                timeout: DASHBOARD_REQUEST_TIMEOUT_MS
+            })
+        } catch (error) {
+            this.bot.logger.warn(
+                this.bot.isMobile,
+                'DASHBOARD-HTTP',
+                `BrowserContext 请求失败 | elapsedMs=${Date.now() - startedAt} | timeoutMs=${DASHBOARD_REQUEST_TIMEOUT_MS} | reason=${error instanceof Error ? error.message : String(error)}`
+            )
+            throw error
+        }
         try {
             const finalUrl = safeHttpUrl(response.url())
+            const status = response.status()
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                'DASHBOARD-HTTP',
+                `BrowserContext 请求完成 | elapsedMs=${Date.now() - startedAt} | timeoutMs=${DASHBOARD_REQUEST_TIMEOUT_MS} | status=${status}`
+            )
             return {
-                status: response.status(),
+                status,
                 headers: response.headers(),
                 body: await response.text(),
                 finalUrl,
@@ -543,6 +594,32 @@ export default class BrowserFunc {
             }
         } finally {
             await response.dispose()
+        }
+    }
+
+    private async requestDashboardAxios(config: AxiosRequestConfig) {
+        const startedAt = Date.now()
+        try {
+            const client = this.bot.axios as typeof this.bot.axios & {
+                requestOnce?: (request: AxiosRequestConfig, timeout?: number) => Promise<AxiosResponse>
+            }
+            const response = client.requestOnce
+                ? await client.requestOnce(config, DASHBOARD_REQUEST_TIMEOUT_MS)
+                : await client.request({ ...config, timeout: DASHBOARD_REQUEST_TIMEOUT_MS })
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                'DASHBOARD-HTTP',
+                `Axios 请求完成 | elapsedMs=${Date.now() - startedAt} | timeoutMs=${DASHBOARD_REQUEST_TIMEOUT_MS} | status=${response.status}`
+            )
+            return response
+        } catch (error) {
+            const diagnostic = safeAxiosDiagnostic(error)
+            this.bot.logger.warn(
+                this.bot.isMobile,
+                'DASHBOARD-HTTP',
+                `Axios 请求失败 | elapsedMs=${Date.now() - startedAt} | timeoutMs=${DASHBOARD_REQUEST_TIMEOUT_MS} | status=${diagnostic.status ?? 'n/a'} | reason=${diagnostic.category}`
+            )
+            throw error
         }
     }
 
@@ -713,7 +790,7 @@ export default class BrowserFunc {
                 }
             }
 
-            const response = await this.bot.axios.request(request)
+            const response = await this.requestDashboardAxios(request)
             return response.data as PanelFlyoutData
         } catch (error) {
             this.bot.logger.error(
@@ -799,6 +876,11 @@ export default class BrowserFunc {
     }
 
     async getMobileSearchPointsFallback(isMobile: boolean): Promise<MissingSearchPoints | null> {
+        const result = await this.getSearchPointsFallback(isMobile)
+        return result?.mobileDetected ? result : null
+    }
+
+    async getSearchPointsFallback(isMobile: boolean): Promise<MissingSearchPoints | null> {
         const htmlResult = await this.getDashboardHtmlSearchPoints(isMobile).catch(error => {
             this.bot.logger.debug(
                 this.bot.isMobile,
@@ -807,12 +889,12 @@ export default class BrowserFunc {
             )
             return null
         })
-        if (htmlResult?.mobileDetected) {
+        if (htmlResult && (htmlResult.mobileDetected || htmlResult.desktopCounter.detected)) {
             return htmlResult
         }
 
         const panelResult = this.getPanelFlyoutSearchPoints(isMobile)
-        if (panelResult?.mobileDetected) {
+        if (panelResult && (panelResult.mobileDetected || panelResult.desktopCounter.detected)) {
             return panelResult
         }
 
@@ -839,7 +921,7 @@ export default class BrowserFunc {
                     Origin: 'https://rewards.bing.com'
                 }
             }
-            const response = await this.bot.axios.request(request)
+            const response = await this.requestDashboardAxios(request)
             html = typeof response.data === 'string' ? response.data : ''
         }
         const parsed = dashboardFromHtml(html)
@@ -854,7 +936,8 @@ export default class BrowserFunc {
 
     private getPanelFlyoutSearchPoints(isMobile: boolean): MissingSearchPoints | null {
         const panelData = this.bot.panelData as unknown
-        const counterContainer = this.findCounterContainer(panelData, 'mobileSearch')
+        const counterContainer =
+            this.findCounterContainer(panelData, 'mobileSearch') ?? this.findCounterContainer(panelData, 'pcSearch')
         if (!counterContainer) {
             return null
         }

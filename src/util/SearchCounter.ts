@@ -111,6 +111,7 @@ export function calculateMissingSearchPoints(
     const safeCounters = (counters ?? {}) as Record<string, unknown>
     const counterValue = (key: 'mobileSearch' | 'pcSearch', status?: DashboardFieldStatus): unknown => {
         if (status === 'missing' || status === 'fallback') return undefined
+        if (status === 'empty') return []
         if (status === 'invalid') return {}
         return safeCounters[key]
     }

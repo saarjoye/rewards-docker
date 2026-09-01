@@ -120,11 +120,7 @@ function getAccount(data: StoredTaskProgressFile, email: string): StoredAccountT
     return account
 }
 
-export function updateTaskProgress(
-    email: string,
-    task: ProgressTaskKey,
-    patch: Partial<StoredTaskProgressItem>
-): void {
+export function updateTaskProgress(email: string, task: ProgressTaskKey, patch: Partial<StoredTaskProgressItem>): void {
     const data = readProgressFile()
     const account = getAccount(data, email)
 
@@ -315,4 +311,62 @@ export function updateSearchTaskProgress(
     detail.updatedAt = now
     account.updatedAt = new Date().toISOString()
     writeProgressFile(data)
+}
+
+function sanitizeProgressMessage(value: string): string {
+    return value
+        .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[REDACTED_EMAIL]')
+        .replace(/\b(password|passwd|pwd|token|secret|cookie|authorization)(\s*[:=]\s*)([^\s|]+)/gi, '$1$2[REDACTED]')
+        .slice(0, 500)
+}
+
+export function updateSearchTaskFailure(
+    email: string,
+    task: Extract<ProgressTaskKey, 'desktop' | 'mobile'>,
+    patch: { completed?: number; total?: number; message: string }
+): StoredTaskProgressItem {
+    const data = readProgressFile()
+    const account = getAccount(data, email)
+    const current = account[task]
+    const completed = Math.max(0, current.completed ?? 0, Number(patch.completed ?? 0))
+    const total = Math.max(completed, current.total ?? 0, Number(patch.total ?? 0))
+    const message = sanitizeProgressMessage(patch.message)
+    const label = task === 'desktop' ? 'PC搜索' : '移动搜索'
+    const detailKey = task === 'desktop' ? 'desktop-search' : 'mobile-search'
+    const now = new Date().toISOString()
+
+    account[task] = {
+        ...current,
+        completed,
+        total,
+        status: '失败'
+    }
+    let detail = account.details.find(item => item.key === detailKey)
+    if (!detail) {
+        detail = {
+            key: detailKey,
+            label,
+            group: task,
+            completed,
+            total,
+            gained: current.gained,
+            status: '失败',
+            message,
+            updatedAt: now
+        }
+        account.details.push(detail)
+    } else {
+        detail.completed = completed
+        detail.total = total
+        detail.gained = Math.max(detail.gained, current.gained)
+        detail.status = '失败'
+        detail.message = message
+        detail.updatedAt = now
+    }
+    account.currentTask = label
+    account.currentStage = `${task}-search-failed`
+    account.currentMessage = message
+    account.updatedAt = now
+    writeProgressFile(data)
+    return account[task]
 }

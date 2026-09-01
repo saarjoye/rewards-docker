@@ -44,7 +44,7 @@ const partial = dashboardFromApiPayload(
 assert.equal(partial.data.userStatus.availablePoints, 456)
 assert.deepEqual(partial.data.userStatus.counters.mobileSearch, [])
 assert.equal(partial.data.dashboardFieldAvailability.mobileSearch, 'missing')
-assert.equal(partial.data.dashboardFieldAvailability.pcSearch, 'available')
+assert.equal(partial.data.dashboardFieldAvailability.pcSearch, 'empty')
 assert.equal(partial.data.dashboardFieldAvailability.dailySetPromotions, 'missing')
 assert.equal(partial.data.dashboardFieldAvailability.country, 'fallback')
 assert.equal(partial.data.userProfile.attributes.country, 'us')
@@ -55,6 +55,24 @@ const partialSearch = calculateMissingSearchPoints(
     partial.data.dashboardFieldAvailability
 )
 assert.equal(partialSearch.mobileStatus, 'missing-counter')
+assert.equal(partialSearch.desktopCounter.status, 'empty-counter')
+
+const invalidPc = dashboardFromApiPayload({
+    dashboard: {
+        ...dashboard(),
+        userStatus: { availablePoints: 456, counters: { pcSearch: [{ pointProgress: 'bad' }] } }
+    }
+})
+assert.equal(invalidPc.data.dashboardFieldAvailability.pcSearch, 'invalid')
+assert.equal(
+    calculateMissingSearchPoints(
+        invalidPc.data.userStatus.counters,
+        false,
+        'dashboard',
+        invalidPc.data.dashboardFieldAvailability
+    ).desktopCounter.status,
+    'invalid-counter'
+)
 
 const legacyValue = dashboard(2345)
 legacyValue.promotionalItems.push({ title: 'brace } and semicolon; inside a string' })

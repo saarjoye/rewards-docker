@@ -64,6 +64,12 @@ async function main() {
     const runtimeRoot = path.join(tempRoot, 'dist')
     copyTree(path.join(projectRoot, 'dist'), runtimeRoot)
     fs.copyFileSync(path.join(projectRoot, 'package.json'), path.join(tempRoot, 'package.json'))
+    const runScript = path.join(tempRoot, 'scripts', 'docker', 'run_daily.sh')
+    fs.mkdirSync(path.dirname(runScript), { recursive: true })
+    fs.writeFileSync(
+        runScript,
+        '#!/usr/bin/env bash\necho "SYNTHETIC_RUN mode=$RUN_ACCOUNT_MODE index=$RUN_ACCOUNT_INDEX"\n'
+    )
 
     const config = JSON.parse(fs.readFileSync(path.join(projectRoot, 'src', 'config.example.json'), 'utf8'))
     const exampleAccounts = JSON.parse(fs.readFileSync(path.join(projectRoot, 'src', 'accounts.example.json'), 'utf8'))
@@ -74,8 +80,9 @@ async function main() {
         recoveryEmail: '',
         totpSecret: ''
     }
+    const secondAccount = { ...account, email: 'web-state-second@example.test' }
     fs.writeFileSync(path.join(runtimeRoot, 'config.json'), `${JSON.stringify(config, null, 2)}\n`)
-    fs.writeFileSync(path.join(runtimeRoot, 'accounts.json'), `${JSON.stringify([account], null, 2)}\n`)
+    fs.writeFileSync(path.join(runtimeRoot, 'accounts.json'), `${JSON.stringify([account, secondAccount], null, 2)}\n`)
 
     const labels = [
         '领取奖励积分',
@@ -188,9 +195,10 @@ async function main() {
     const stateResponse = await fetch(`${baseUrl}/api/state`, { headers: { Cookie: cookie } })
     assert.equal(stateResponse.status, 200)
     const state = await stateResponse.json()
-    assert.equal(state.taskProgress.length, 1)
+    assert.equal(state.taskProgress.length, 2)
 
-    const progress = state.taskProgress[0]
+    const progress = state.taskProgress.find(item => item.initialPoints === 14202)
+    assert.ok(progress)
     assert.equal(progress.initialPoints, 14202)
     assert.equal(progress.currentPoints, 14240)
     assert.equal(progress.finalPoints, 14240)
@@ -200,6 +208,27 @@ async function main() {
     assert.ok(progress.details.some(detail => detail.status === '已完成'))
     assert.ok(progress.details.some(detail => detail.status === '已跳过'))
     assert.ok(progress.details.some(detail => detail.status === '失败'))
+
+    assert.deepEqual(
+        state.accounts.map(item => ({ accountId: item.id, runAccountIndex: item.runAccountIndex })),
+        [
+            { accountId: 0, runAccountIndex: 1 },
+            { accountId: 1, runAccountIndex: 2 }
+        ]
+    )
+
+    const runResponse = await fetch(`${baseUrl}/api/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie },
+        body: JSON.stringify({ accountMode: 'continue', accountIndex: 2 })
+    })
+    assert.equal(runResponse.status, 200)
+    const runResult = await runResponse.json()
+    assert.equal(runResult.runState.accountMode, 'account')
+    assert.equal(runResult.runState.accountIndex, 2)
+    assert.equal(runResult.runState.selectedCount, 1)
+    assert.equal(runResult.runState.totalAccounts, 2)
+    assert.match(runResult.runState.accountLabel, /^#2 /)
 
     console.log('webTaskProgressState.test.js passed')
 }

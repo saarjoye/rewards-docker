@@ -41,4 +41,21 @@ assert.equal(invalid.mobileStatus, 'invalid-counter')
 assert.equal(invalid.mobileDetected, false)
 assert.equal(invalid.mobilePoints, 0)
 
+const desktop = calculateMissingSearchPoints(
+    {
+        mobileSearch: [],
+        pcSearch: [
+            { pointProgress: 0, pointProgressMax: 60 },
+            { pointProgress: 10, pointProgressMax: 20 }
+        ]
+    },
+    false
+)
+assert.equal(desktop.desktopCounter.status, 'ok')
+assert.equal(desktop.desktopCounter.completed, 0)
+assert.equal(desktop.desktopCounter.total, 60)
+assert.equal(desktop.desktopPoints, 60)
+assert.equal(desktop.edgePoints, 10)
+assert.equal(desktop.totalPoints, 70)
+
 console.log('searchCounterStatus.test.js passed')

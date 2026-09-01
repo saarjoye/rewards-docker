@@ -11,19 +11,17 @@ import { localDateKey } from '../util/DateUtils'
 import type { Account } from '../interface/Account'
 import type { Config, ConfigWorkers, ConfigGiftCardMonitor, WebhookWeComConfig } from '../interface/Config'
 import { accountProgressHash, readTaskProgressFile } from '../util/TaskProgressStore'
-import {
-    queryPointsCalendar,
-    type PointsCalendarAccount,
-    type PointsRangePreset
-} from '../util/PointsHistoryStore'
+import { queryPointsCalendar, type PointsCalendarAccount, type PointsRangePreset } from '../util/PointsHistoryStore'
 import { readAccountStatusFile, updateAccountStatus, type AccountStatusState } from '../util/AccountStatusStore'
 import {
     readRunCheckpointFile,
+    validateRunAccountIndex,
     type RunCheckpointState,
     type StoredRunCheckpointAccount
 } from '../util/RunCheckpointStore'
 import { diagnoseWeCom, testWeCom } from '../logging/WeCom'
 import { readableLogSnippet, stampLogLine, stripAnsi } from './logSanitizer'
+import { buildRunAccountEnvironment, resolveRunAccountRequest } from '../util/RunAccountRequest'
 
 type JsonValue = Record<string, unknown> | unknown[] | string | number | boolean | null
 
@@ -43,6 +41,7 @@ interface SessionData {
 
 interface PublicAccount {
     id: number
+    runAccountIndex: number
     maskedEmail: string
     geoLocale: string
     langCode: string
@@ -104,6 +103,9 @@ interface RunState {
     mode?: RunMode
     accountMode?: RunAccountMode
     accountIndex?: number
+    accountLabel?: string
+    selectedCount?: number
+    totalAccounts?: number
     manualTask?: ManualTask
     pid?: number
     startedAt?: string
@@ -212,7 +214,13 @@ const authReadFiles = Array.from(
     new Set(
         configuredAuthFile
             ? [authFile, ...authMirrorFiles]
-            : [authFile, ...authMirrorFiles, defaultAuthFile, path.join(appRoot, 'config', 'web-auth.json'), legacyAuthFile]
+            : [
+                  authFile,
+                  ...authMirrorFiles,
+                  defaultAuthFile,
+                  path.join(appRoot, 'config', 'web-auth.json'),
+                  legacyAuthFile
+              ]
     )
 )
 const accountsFile = path.join(runtimeRoot, 'accounts.json')
@@ -305,7 +313,7 @@ function currentSchedule(): ScheduleFile {
     const saved = readJsonFile<Partial<ScheduleFile> | null>(scheduleFile, null)
     return {
         schedule: typeof saved?.schedule === 'string' && saved.schedule ? saved.schedule : fallback,
-        timezone: typeof saved?.timezone === 'string' && saved.timezone ? saved.timezone : process.env.TZ ?? 'UTC',
+        timezone: typeof saved?.timezone === 'string' && saved.timezone ? saved.timezone : (process.env.TZ ?? 'UTC'),
         updatedAt: typeof saved?.updatedAt === 'string' ? saved.updatedAt : ''
     }
 }
@@ -325,7 +333,11 @@ function saveSchedule(schedule: string): ScheduleFile {
     validateCronSchedule(trimmed)
 
     const script = path.join(appRoot, 'scripts', 'docker', 'schedule.sh')
-    if (process.platform === 'linux' && fs.existsSync(script) && fs.existsSync('/etc/cron.d/microsoft-rewards-cron.template')) {
+    if (
+        process.platform === 'linux' &&
+        fs.existsSync(script) &&
+        fs.existsSync('/etc/cron.d/microsoft-rewards-cron.template')
+    ) {
         const result = spawnSync('bash', [script, 'apply', trimmed], {
             cwd: appRoot,
             env: { ...process.env, CRON_SCHEDULE: trimmed, TZ: process.env.TZ ?? 'UTC' },
@@ -407,12 +419,29 @@ function startScriptRun(
     if (!fs.existsSync(script)) {
         throw new Error('找不到运行脚本 scripts/docker/run_daily.sh')
     }
-    const accountMode = mode === 'account-check' ? 'all' : options.accountMode ?? 'continue'
+    const accountMode = mode === 'account-check' ? 'all' : (options.accountMode ?? 'continue')
     const accountIndex = accountMode === 'account' ? options.accountIndex : undefined
     const manualTask = mode === 'task' ? options.manualTask : undefined
-    if (accountMode === 'account' && !accountIndex) {
-        throw new Error('指定账号模式需要选择账号序号')
-    }
+    const accounts = loadAccounts()
+    validateRunAccountIndex(accounts.length, accountMode, accountIndex)
+    const selectedAccount = accountIndex ? accounts[accountIndex - 1] : undefined
+    const accountLabel = selectedAccount ? `#${accountIndex} ${maskEmail(selectedAccount.email)}` : undefined
+    const checkpointStates = new Map(
+        readRunCheckpointFile().accounts.map(item => [item.accountHash, item.state] as const)
+    )
+    const selectedCount =
+        accountMode === 'account'
+            ? 1
+            : accountMode === 'continue'
+              ? accounts.filter(account => checkpointStates.get(accountProgressHash(account.email)) !== 'completed')
+                    .length
+              : accountMode === 'failed'
+                ? accounts.filter(account =>
+                      ['failed', 'interrupted'].includes(
+                          checkpointStates.get(accountProgressHash(account.email)) ?? 'pending'
+                      )
+                  ).length
+                : accounts.length
 
     const child = spawn('bash', [script], {
         cwd: appRoot,
@@ -422,8 +451,7 @@ function startScriptRun(
             SKIP_RANDOM_SLEEP: 'true',
             RUN_SOURCE: 'web',
             RUN_MODE: mode,
-            RUN_ACCOUNT_MODE: accountMode,
-            ...(accountIndex ? { RUN_ACCOUNT_INDEX: String(accountIndex) } : {}),
+            ...buildRunAccountEnvironment(accountMode, accountIndex),
             ...(manualTask ? { MANUAL_TASK: manualTask } : {}),
             RUN_FAIL_ON_LOCK: 'true',
             RUNTIME_LOG_FILE: runtimeLogFile,
@@ -437,18 +465,24 @@ function startScriptRun(
             : manualTask
               ? `${manualTaskLabel(manualTask)}（${accountModeLabel(accountMode)}）`
               : `手动运行（${accountModeLabel(accountMode)}）`
-    const startedLine = stampLogLine(`${label}已启动，PID ${child.pid}`)
+    const selectionText = accountLabel
+        ? ` | 实际选择: ${accountLabel} | 数量 ${selectedCount}/${accounts.length}`
+        : ` | 账号数量 ${selectedCount}/${accounts.length}`
+    const startedLine = stampLogLine(`${label}已启动，PID ${child.pid}${selectionText}`)
     runState = {
         running: true,
         source: 'web',
         mode,
         accountMode,
         accountIndex,
+        accountLabel,
+        selectedCount,
+        totalAccounts: accounts.length,
         manualTask,
         pid: child.pid,
         startedAt: new Date().toISOString(),
         exitCode: null,
-        lastMessage: `${label}已启动，PID ${child.pid}`,
+        lastMessage: `${label}已启动，PID ${child.pid}${selectionText}`,
         recentLog: [startedLine]
     }
     appendManualRunLog([startedLine])
@@ -463,9 +497,7 @@ function startScriptRun(
             finishedAt: new Date().toISOString(),
             exitCode: -1,
             lastMessage: message,
-            recentLog: [...(runState.recentLog ?? []), stampLogLine(message)].slice(
-                -MAX_RUN_LOG_LINES
-            )
+            recentLog: [...(runState.recentLog ?? []), stampLogLine(message)].slice(-MAX_RUN_LOG_LINES)
         }
         appendManualRunLog([stampLogLine(message)])
     })
@@ -481,9 +513,7 @@ function startScriptRun(
             finishedAt: new Date().toISOString(),
             exitCode: code,
             lastMessage: message,
-            recentLog: [...(runState.recentLog ?? []), stampLogLine(message)].slice(
-                -MAX_RUN_LOG_LINES
-            )
+            recentLog: [...(runState.recentLog ?? []), stampLogLine(message)].slice(-MAX_RUN_LOG_LINES)
         }
         appendManualRunLog([stampLogLine(message)])
     })
@@ -607,7 +637,11 @@ function positiveInteger(value: unknown): number | undefined {
 }
 
 function normalizeRunAccountMode(value: unknown): RunAccountMode {
-    switch (String(value ?? '').trim().toLowerCase()) {
+    switch (
+        String(value ?? '')
+            .trim()
+            .toLowerCase()
+    ) {
         case 'failed':
             return 'failed'
         case 'all':
@@ -623,7 +657,11 @@ function normalizeRunAccountMode(value: unknown): RunAccountMode {
 }
 
 function normalizeManualTask(value: unknown): ManualTask | undefined {
-    switch (String(value ?? '').trim().toLowerCase()) {
+    switch (
+        String(value ?? '')
+            .trim()
+            .toLowerCase()
+    ) {
         case 'claim-bonus-points':
             return 'claim-bonus-points'
         case '':
@@ -656,7 +694,8 @@ function processAlive(pid?: number): boolean {
 function readRunLockMeta(): RunLockMeta | null {
     const meta = readJsonFile<Partial<RunLockMeta> | null>(runLockMetaFile, null)
     if (!meta) return null
-    const source = meta.source === 'cron' || meta.source === 'web' || meta.source === 'startup' ? meta.source : 'unknown'
+    const source =
+        meta.source === 'cron' || meta.source === 'web' || meta.source === 'startup' ? meta.source : 'unknown'
     const mode = meta.mode === 'account-check' ? 'account-check' : 'task'
     return {
         pid: numericPid(meta.pid),
@@ -832,6 +871,7 @@ function sanitizeAccount(account: Account, id: number): PublicAccount {
     const checkpoint = getRunCheckpoint(account)
     return {
         id,
+        runAccountIndex: id + 1,
         maskedEmail: maskEmail(account.email),
         geoLocale: account.geoLocale,
         langCode: account.langCode,
@@ -935,7 +975,9 @@ function publicGiftCardMonitorConfig(config: Config): PublicGiftCardMonitorConfi
     }
 }
 
-function publicConfig(config: Config): Pick<
+function publicConfig(
+    config: Config
+): Pick<
     Config,
     | 'headless'
     | 'clusters'
@@ -977,7 +1019,7 @@ function wecomFromPayload(input: Record<string, unknown>, existing?: WebhookWeCo
         enabled: Boolean(input.enabled),
         corpId: String(input.corpId ?? existing?.corpId ?? '').trim(),
         agentId: String(input.agentId ?? existing?.agentId ?? '').trim(),
-        corpSecret: corpSecretInput.trim().length > 0 ? corpSecretInput.trim() : existing?.corpSecret ?? '',
+        corpSecret: corpSecretInput.trim().length > 0 ? corpSecretInput.trim() : (existing?.corpSecret ?? ''),
         toUser: String(input.toUser ?? existing?.toUser ?? '').trim(),
         proxyMode,
         proxyBaseUrl: String(input.proxyBaseUrl ?? existing?.proxyBaseUrl ?? '').trim()
@@ -1078,7 +1120,9 @@ function safeConfigPatch(config: Config, input: Record<string, unknown>): Config
                 ? Boolean(input.giftCardRequireEnoughPoints)
                 : Boolean(config.giftCardMonitor.requireEnoughPoints),
         notifyOnce:
-            'giftCardNotifyOnce' in input ? Boolean(input.giftCardNotifyOnce) : config.giftCardMonitor.notifyOnce !== false,
+            'giftCardNotifyOnce' in input
+                ? Boolean(input.giftCardNotifyOnce)
+                : config.giftCardMonitor.notifyOnce !== false,
         shopUrl:
             String(input.giftCardShopUrl ?? config.giftCardMonitor.shopUrl ?? '').trim() ||
             'https://rewards.bing.com/redeem/cn?section=shop'
@@ -1096,9 +1140,7 @@ function safeConfigPatch(config: Config, input: Record<string, unknown>): Config
         giftCardMonitor,
         searchSettings: {
             ...config.searchSettings,
-            scrollRandomResults: Boolean(
-                input.scrollRandomResults ?? config.searchSettings.scrollRandomResults
-            ),
+            scrollRandomResults: Boolean(input.scrollRandomResults ?? config.searchSettings.scrollRandomResults),
             clickRandomResults: Boolean(input.clickRandomResults ?? config.searchSettings.clickRandomResults),
             parallelSearching: Boolean(input.parallelSearching ?? config.searchSettings.parallelSearching),
             searchResultVisitTime: String(input.searchResultVisitTime ?? config.searchSettings.searchResultVisitTime),
@@ -1289,10 +1331,17 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
                 return
             }
             const body = (await readBody(req)) as Record<string, unknown>
-            const accountMode = normalizeRunAccountMode(body.accountMode)
-            const accountIndex = positiveInteger(body.accountIndex)
+            const accounts = loadAccounts()
+            const { accountMode, accountIndex } = resolveRunAccountRequest(
+                normalizeRunAccountMode(body.accountMode),
+                body.accountIndex,
+                accounts.length
+            )
             const manualTask = normalizeManualTask(body.manualTask)
-            sendJson(res, 200, { ok: true, runState: startScriptRun('task', { accountMode, accountIndex, manualTask }) })
+            sendJson(res, 200, {
+                ok: true,
+                runState: startScriptRun('task', { accountMode, accountIndex, manualTask })
+            })
         } catch (error) {
             sendJson(res, 400, {
                 error: 'RUN_FAILED',
@@ -1640,7 +1689,13 @@ function timestampFromStampedLine(line: string): number {
     return Number.isFinite(date.getTime()) ? date.getTime() : 0
 }
 
-function queryLogs(url: URL): { source: LogSource; level: LogLevel; query: string; tail: number; lines: PublicLogLine[] } {
+function queryLogs(url: URL): {
+    source: LogSource
+    level: LogLevel
+    query: string
+    tail: number
+    lines: PublicLogLine[]
+} {
     const source = normalizeLogSource(url.searchParams.get('source'))
     const level = normalizeLogLevel(url.searchParams.get('level'))
     const query = (url.searchParams.get('query') ?? '').trim().toLowerCase()
@@ -1687,7 +1742,9 @@ function parseTaskProgress(accounts: Account[], lines = readRecentLogLines()): A
             group.currentTask !== '等待运行' ||
             group.currentMessage !== '等待运行' ||
             group.details.length > 0 ||
-            group.items.some(item => item.total > 0 || item.completed > 0 || item.gained > 0 || item.status !== '等待运行')
+            group.items.some(
+                item => item.total > 0 || item.completed > 0 || item.gained > 0 || item.status !== '等待运行'
+            )
     )
     if (hasStoredProgress) {
         return storedProgress
@@ -1747,7 +1804,9 @@ function parseTaskProgress(accounts: Account[], lines = readRecentLogLines()): A
             desktop.status = desktop.total > 0 ? '进行中' : '已完成'
         }
 
-        const mobileDone = rawLine.match(/(?:移动端(?:完成|=.*?)|SEARCH-MOBILE-SEARCH.*搜索完成).*获得=(\d+)(?:\/(\d+))?/)
+        const mobileDone = rawLine.match(
+            /(?:移动端(?:完成|=.*?)|SEARCH-MOBILE-SEARCH.*搜索完成).*获得=(\d+)(?:\/(\d+))?/
+        )
         if (mobileDone) {
             const gained = Number(mobileDone[1] ?? 0)
             const total = Number(mobileDone[2] ?? 0)
@@ -1894,14 +1953,7 @@ function buildTaskEvents(groups: AccountTaskProgress[], limit = 12): PublicTaskE
         .filter(event => event.task && !/^搜索任务[:：]?\s*PC搜索$/.test(`${event.task}：${event.message}`))
         .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))
         .filter(event => {
-            const key = [
-                event.account,
-                event.task,
-                event.status,
-                event.progress,
-                event.gained,
-                event.message
-            ].join('|')
+            const key = [event.account, event.task, event.status, event.progress, event.gained, event.message].join('|')
             if (seen.has(key)) return false
             seen.add(key)
             return true
@@ -1928,7 +1980,11 @@ function isMeaningfulTaskMessage(task: string, message: string): boolean {
 
 function currentTaskProgress(group: AccountTaskProgress): string {
     const task = group.currentTask || ''
-    const item = task.includes('移动') ? progressItem(group, 'mobile') : task.includes('PC') || task.includes('搜索') ? progressItem(group, 'desktop') : progressItem(group, 'daily')
+    const item = task.includes('移动')
+        ? progressItem(group, 'mobile')
+        : task.includes('PC') || task.includes('搜索')
+          ? progressItem(group, 'desktop')
+          : progressItem(group, 'daily')
     return taskProgressText(item)
 }
 
@@ -1967,9 +2023,7 @@ function loginHtml(setupRequired: boolean): string {
     const title = setupRequired ? '首次启动设置' : '管理员登录'
     const action = setupRequired ? '/api/setup' : '/api/login'
     const button = setupRequired ? '创建管理员账号' : '登录'
-    const hint = setupRequired
-        ? '创建本地管理员账号，用于保护管理入口。'
-        : '使用本地管理员账号进入管理入口。'
+    const hint = setupRequired ? '创建本地管理员账号，用于保护管理入口。' : '使用本地管理员账号进入管理入口。'
     const confirmField = setupRequired
         ? '<label class="auth-field"><span>确认密码</span><input name="passwordConfirm" type="password" autocomplete="new-password" placeholder="再次输入管理员密码" required minlength="8"></label>'
         : ''
@@ -2284,13 +2338,14 @@ function runControls(){
   const modeLabel = r.mode === 'account-check' ? '账号检测' : '执行任务';
   const disabled = r.running ? 'disabled' : '';
   const conflict = r.running ? (r.conflictReason || '已有任务正在运行') : '空闲，可启动新任务';
-  const accountOptions = state.accounts.map(a => '<option value="'+a.id+'">'+esc(a.maskedEmail || ('账号 '+a.id))+'</option>').join('');
+  const accountOptions = state.accounts.map(a => '<option value="'+a.runAccountIndex+'">账号 '+a.runAccountIndex+' · '+esc(a.maskedEmail || '未填写邮箱')+'</option>').join('');
   return '<section class="card section"><div class="toolbar"><div><h2>运行控制</h2><p class="section-note">正式任务开始前会做登录和 dashboard 读取，这是任务前置登录验证；账号检测按钮只验证登录和仪表盘读取，不执行搜索任务。</p></div><div class="top-actions"><button id="checkAccountsBtn" class="ghost-btn" '+disabled+'>检测账号状态</button><button id="runOnceBtn" class="primary-btn" '+disabled+'>立即执行一次</button></div></div>'
     + '<div class="form-grid" style="margin-bottom:16px"><div class="field"><label>运行模式</label><select id="runAccountMode" '+disabled+'><option value="continue">继续未完成账号</option><option value="failed">只重跑失败账号</option><option value="account">重跑指定账号</option><option value="all">强制全量重跑</option></select></div><div class="field"><label>指定账号</label><select id="runAccountIndex" '+disabled+'>'+accountOptions+'</select></div></div>'
     + '<div class="settings-list">'
     + setting('运行状态', r.running ? modeLabel + '中' : '空闲')
     + setting('运行来源', r.running ? sourceLabel(r.source) : '-')
-    + setting('账号模式', r.running ? accountModeLabel(r.accountMode) + (r.accountIndex ? ' #' + r.accountIndex : '') : '默认继续未完成账号')
+    + setting('账号模式', r.running ? accountModeLabel(r.accountMode) + (r.accountLabel ? ' ' + esc(r.accountLabel) : (r.accountIndex ? ' #' + r.accountIndex : '')) : '默认继续未完成账号')
+    + setting('实际账号数', r.running ? String(r.selectedCount || 0) + '/' + String(r.totalAccounts || state.accounts.length) : '-')
     + setting('PID', r.pid || '-')
     + setting('开始时间', formatDateTime(r.startedAt))
     + setting('运行时长', fmtDuration(r.ageSeconds))
@@ -2320,6 +2375,11 @@ function renderDashboard(){
   document.querySelector('#runOnceBtn')?.addEventListener('click', runOnceNow);
   document.querySelector('#checkAccountsBtn')?.addEventListener('click', checkAccountStatus);
   document.querySelector('#runAccountMode')?.addEventListener('change', updateRunAccountSelect);
+  document.querySelector('#runAccountIndex')?.addEventListener('change', function(){
+    const mode = el('runAccountMode');
+    if (mode) mode.value = 'account';
+    updateRunAccountSelect();
+  });
   updateRunAccountSelect();
 }
 function renderAccounts(){
@@ -2663,8 +2723,8 @@ async function clearWeCom(){
 async function runOnceNow(){
   try {
     const accountMode = el('runAccountMode')?.value || 'continue';
-    const accountIndex = Number(el('runAccountIndex')?.value || 0);
-    await api('/api/run', {method:'POST', body:JSON.stringify({accountMode, accountIndex})});
+    const accountIndex = accountMode === 'account' ? Number(el('runAccountIndex')?.value || 0) : undefined;
+    await api('/api/run', {method:'POST', body:JSON.stringify({accountMode, ...(accountIndex ? {accountIndex} : {})})});
   } catch (error) {
     alert(error.message);
   }
@@ -2690,7 +2750,7 @@ async function claimBonusNow(){
 function updateRunAccountSelect(){
   const mode = el('runAccountMode')?.value || 'continue';
   const select = el('runAccountIndex');
-  if (select) select.disabled = mode !== 'account' || Boolean(state?.runState?.running);
+  if (select) select.disabled = Boolean(state?.runState?.running);
 }
 async function checkAccountStatus(){
   try {

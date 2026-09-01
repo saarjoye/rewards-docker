@@ -35,6 +35,12 @@ function fieldStatus(value: unknown, valid: (candidate: unknown) => boolean): Da
     return valid(value) ? 'available' : 'invalid'
 }
 
+function searchFieldStatus(value: unknown): DashboardFieldStatus {
+    if (value === undefined || value === null) return 'missing'
+    if (Array.isArray(value) && value.length === 0) return 'empty'
+    return validSearchCounterArray(value) ? 'available' : 'invalid'
+}
+
 function validRecordArray(value: unknown): value is Record<string, unknown>[] {
     return Array.isArray(value) && value.every(isRecord)
 }
@@ -79,8 +85,8 @@ export function validateDashboardData(
     const countryAvailable = typeof countryValue === 'string' && countryValue.trim().length > 0
 
     const availability: DashboardFieldAvailability = {
-        pcSearch: fieldStatus(counters.pcSearch, validSearchCounterArray),
-        mobileSearch: fieldStatus(counters.mobileSearch, validSearchCounterArray),
+        pcSearch: searchFieldStatus(counters.pcSearch),
+        mobileSearch: searchFieldStatus(counters.mobileSearch),
         dailySetPromotions: fieldStatus(
             value.dailySetPromotions,
             candidate => isRecord(candidate) && Object.values(candidate).every(items => validRecordArray(items))

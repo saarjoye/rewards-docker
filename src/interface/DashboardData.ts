@@ -1,4 +1,4 @@
-export type DashboardFieldStatus = 'available' | 'missing' | 'invalid' | 'fallback'
+export type DashboardFieldStatus = 'available' | 'missing' | 'empty' | 'invalid' | 'fallback'
 
 export interface DashboardFieldAvailability {
     pcSearch: DashboardFieldStatus

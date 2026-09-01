@@ -89,6 +89,7 @@ function fakeBot(apiResult, fallbackResult = '<html>modern but incomplete</html>
     let apiRequests = 0
     let flyoutRequests = 0
     const flyoutUrls = []
+    const axiosRequests = []
     return {
         logs,
         get apiRequests() {
@@ -98,6 +99,7 @@ function fakeBot(apiResult, fallbackResult = '<html>modern but incomplete</html>
             return flyoutRequests
         },
         flyoutUrls,
+        axiosRequests,
         isMobile: true,
         fingerprint: { headers: {} },
         cookies: { mobile: [], desktop: [] },
@@ -110,6 +112,7 @@ function fakeBot(apiResult, fallbackResult = '<html>modern but incomplete</html>
         },
         axios: {
             request: async request => {
+                axiosRequests.push(request)
                 if (String(request.url).includes('/api/getuserinfo')) {
                     apiRequests += 1
                     if (apiResult instanceof Error || apiResult?.isAxiosError) throw apiResult
@@ -163,6 +166,7 @@ async function expectFailure(apiResult, expectedStatus, expectedKind) {
     })
     assert.equal((await new BrowserFunc(okBot).getDashboardData()).userStatus.availablePoints, 999)
     assert.equal(okBot.flyoutRequests, 0)
+    assert.equal(okBot.axiosRequests[0].timeout, 15000)
 
     const modernBot = fakeBot(axiosError(404), '<html>modern but incomplete</html>', flyoutDashboard(1888))
     const modernFunc = new BrowserFunc(modernBot)
@@ -291,6 +295,7 @@ async function expectFailure(apiResult, expectedStatus, expectedKind) {
     assert.equal(contextBot.apiRequests, 0)
     assert.equal(contextRequestOptions.headers.Cookie, undefined)
     assert.equal(contextRequestOptions.headers.cookie, undefined)
+    assert.equal(contextRequestOptions.timeout, 15000)
     assert.equal(contextResponseDisposed, true)
     assert.equal(contextBot.logs.join('\n').includes('FINGERPRINT-COOKIE-CANARY'), false)
 
@@ -312,6 +317,8 @@ async function expectFailure(apiResult, expectedStatus, expectedKind) {
     await expectFailure(axiosError(403), 403, 'auth')
     await expectFailure(axiosError(429), 429, 'rate-limit')
     await expectFailure(axiosError(500), 500, 'server')
+    await expectFailure(axiosError(502), 502, 'server')
+    await expectFailure(axiosError(504), 504, 'server')
     await expectFailure(axiosError(503), 503, 'server')
     const notFoundBot = fakeBot(axiosError(404))
     await assert.rejects(
@@ -459,6 +466,31 @@ async function expectFailure(apiResult, expectedStatus, expectedKind) {
     const captureLogs = captureBot.logs.join('\n')
     assert.match(captureLogs, /source=capture/)
     assert.equal(captureLogs.includes('REDACT-ME'), false)
+
+    const timeoutBot = fakeBot(axiosError(500))
+    const timeoutOptions = []
+    timeoutBot.mainMobilePage = {
+        isClosed: () => false,
+        on: () => {},
+        context: () => ({
+            request: {
+                get: async (_url, options) => {
+                    timeoutOptions.push(options)
+                    throw new Error('synthetic context timeout')
+                }
+            }
+        }),
+        content: async () => '<html>incomplete</html>',
+        title: async () => 'Rewards',
+        evaluate: async () => [],
+        url: () => 'https://rewards.bing.com/dashboard'
+    }
+    const timeoutStarted = Date.now()
+    await assert.rejects(() => new BrowserFunc(timeoutBot).getDashboardData(), DashboardFetchError)
+    assert.ok(Date.now() - timeoutStarted < 2000)
+    assert.ok(timeoutOptions.length > 0)
+    assert.ok(timeoutOptions.every(options => options.timeout === 15000))
+    assert.match(timeoutBot.logs.join('\n'), /timeoutMs=15000/)
 
     console.log('dashboardAcquisition.test.js passed')
 })().catch(error => {

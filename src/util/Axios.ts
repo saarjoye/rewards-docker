@@ -188,6 +188,14 @@ class AxiosClient {
 
         return this.instance.request(config)
     }
+
+    public async requestOnce(config: AxiosRequestConfig, timeout = 15000): Promise<AxiosResponse> {
+        return this.instance.request({
+            ...config,
+            timeout,
+            'axios-retry': { retries: 0 }
+        })
+    }
 }
 
 export default AxiosClient

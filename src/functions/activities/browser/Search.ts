@@ -6,6 +6,10 @@ import type { MissingSearchPoints } from '../../../interface/Points'
 import { QueryCore } from '../../QueryEngine'
 import { Workers } from '../../Workers'
 import { updateSearchTaskProgress, type ProgressTaskKey } from '../../../util/TaskProgressStore'
+import { isDashboardFetchError } from '../../../util/DashboardError'
+
+const SEARCH_QUERY_TIMEOUT_MS = 60000
+const SEARCH_ROUND_TIMEOUT_MS = 5 * 60 * 1000
 
 /**
  * 必应搜索类，负责执行必应搜索以获取积分
@@ -19,7 +23,16 @@ export class Search extends Workers {
     /** 搜索计数器 */
     private searchCount = 0
     /** 首次滚动标志 */
-    private firstScroll: boolean = true;
+    private firstScroll: boolean = true
+
+    private counterUnavailable(points: MissingSearchPoints, isMobile: boolean): boolean {
+        const status = isMobile ? points.mobileStatus : points.desktopCounter.status
+        return ['missing-counter', 'empty-counter', 'invalid-counter'].includes(status)
+    }
+
+    private counterStatus(points: MissingSearchPoints, isMobile: boolean): string {
+        return isMobile ? points.mobileStatus : points.desktopCounter.status
+    }
 
     public async doSearch(
         data: DashboardData,
@@ -34,24 +47,21 @@ export class Search extends Workers {
         this.bot.logger.info(isMobile, 'SEARCH-BING', `开始必应搜索 | currentPoints=${startBalance}`)
 
         let totalGainedPoints = 0
+        const roundStartedAt = Date.now()
 
         try {
             let searchCounters: Counters = await this.bot.browser.func.getSearchPoints()
-            const missingPoints = initialMissingPoints ?? this.bot.browser.func.missingSearchPoints(searchCounters, isMobile)
+            const missingPoints =
+                initialMissingPoints ?? this.bot.browser.func.missingSearchPoints(searchCounters, isMobile)
             let missingPointsTotal = missingPoints.totalPoints
             const initialMissingPointsTotal = missingPointsTotal
             let latestMissingPointsTotal = missingPointsTotal
 
-            if (
-                isMobile &&
-                ['missing-counter', 'empty-counter', 'invalid-counter'].includes(missingPoints.mobileStatus)
-            ) {
-                this.bot.logger.warn(
-                    isMobile,
-                    'SEARCH-BING',
-                    `未识别到移动搜索 counter，停止移动搜索 | reason=${missingPoints.mobileStatus} | source=${missingPoints.source} | keys=${missingPoints.counterKeys.join(',') || 'none'}`
+            if (this.counterUnavailable(missingPoints, isMobile)) {
+                const device = isMobile ? '移动' : 'PC'
+                throw new Error(
+                    `${device}搜索额度未确认 | reason=${this.counterStatus(missingPoints, isMobile)} | source=${missingPoints.source}`
                 )
-                return 0
             }
 
             this.bot.logger.debug(
@@ -83,7 +93,7 @@ export class Search extends Workers {
                 langCode,
                 geoLocale: locale,
                 // sourceOrder: ['google', 'wikipedia', 'reddit', 'local']
-                sourceOrder: ['china','local']
+                sourceOrder: ['china', 'local']
             })
 
             queries = [...new Set(queries.map(q => q.trim()).filter(Boolean))]
@@ -102,20 +112,18 @@ export class Search extends Workers {
             const stagnantLoopMax = 10
 
             for (let i = 0; i < queries.length; i++) {
+                if (Date.now() - roundStartedAt >= SEARCH_ROUND_TIMEOUT_MS) {
+                    throw new Error(`搜索整轮超时: ${SEARCH_ROUND_TIMEOUT_MS}ms`)
+                }
                 const query = queries[i] as string
 
                 searchCounters = await this.bingSearch(page, query, isMobile)
                 const newMissingPoints = this.bot.browser.func.missingSearchPoints(searchCounters, isMobile)
-                if (
-                    isMobile &&
-                    ['missing-counter', 'empty-counter', 'invalid-counter'].includes(newMissingPoints.mobileStatus)
-                ) {
-                    this.bot.logger.warn(
-                        isMobile,
-                        'SEARCH-BING',
-                        `搜索后移动搜索 counter 未识别，停止移动搜索 | reason=${newMissingPoints.mobileStatus} | source=${newMissingPoints.source} | keys=${newMissingPoints.counterKeys.join(',') || 'none'}`
+                if (this.counterUnavailable(newMissingPoints, isMobile)) {
+                    const device = isMobile ? '移动' : 'PC'
+                    throw new Error(
+                        `搜索后${device}搜索额度未确认 | reason=${this.counterStatus(newMissingPoints, isMobile)} | source=${newMissingPoints.source}`
                     )
-                    break
                 }
                 const newMissingPointsTotal = newMissingPoints.totalPoints
 
@@ -158,11 +166,7 @@ export class Search extends Workers {
                 latestMissingPointsTotal = newMissingPointsTotal
 
                 if (missingPointsTotal === 0) {
-                    this.bot.logger.info(
-                        isMobile,
-                        'SEARCH-BING',
-                        '已获得所有必需的搜索积分，停止主搜索循环'
-                    )
+                    this.bot.logger.info(isMobile, 'SEARCH-BING', '已获得所有必需的搜索积分，停止主搜索循环')
                     break
                 }
 
@@ -224,13 +228,12 @@ export class Search extends Workers {
                     const newPool = [...new Set(merged)]
                     queries = this.bot.utils.shuffleArray(newPool)
 
-                    this.bot.logger.info(
-                        isMobile,
-                        'SEARCH-BING-EXTRA',
-                        `新搜索查询池已生成 | count=${queries.length}`
-                    )
+                    this.bot.logger.info(isMobile, 'SEARCH-BING-EXTRA', `新搜索查询池已生成 | count=${queries.length}`)
 
                     for (const query of queries) {
+                        if (Date.now() - roundStartedAt >= SEARCH_ROUND_TIMEOUT_MS) {
+                            throw new Error(`搜索整轮超时: ${SEARCH_ROUND_TIMEOUT_MS}ms`)
+                        }
                         this.bot.logger.info(
                             isMobile,
                             'SEARCH-BING-EXTRA',
@@ -239,18 +242,11 @@ export class Search extends Workers {
 
                         searchCounters = await this.bingSearch(page, query, isMobile)
                         const newMissingPoints = this.bot.browser.func.missingSearchPoints(searchCounters, isMobile)
-                        if (
-                            isMobile &&
-                            ['missing-counter', 'empty-counter', 'invalid-counter'].includes(
-                                newMissingPoints.mobileStatus
+                        if (this.counterUnavailable(newMissingPoints, isMobile)) {
+                            const device = isMobile ? '移动' : 'PC'
+                            throw new Error(
+                                `额外搜索后${device}搜索额度未确认 | reason=${this.counterStatus(newMissingPoints, isMobile)} | source=${newMissingPoints.source}`
                             )
-                        ) {
-                            this.bot.logger.warn(
-                                isMobile,
-                                'SEARCH-BING-EXTRA',
-                                `额外搜索后移动搜索 counter 未识别，停止移动搜索 | reason=${newMissingPoints.mobileStatus} | source=${newMissingPoints.source} | keys=${newMissingPoints.counterKeys.join(',') || 'none'}`
-                            )
-                            return totalGainedPoints
                         }
                         const newMissingPointsTotal = newMissingPoints.totalPoints
 
@@ -268,7 +264,12 @@ export class Search extends Workers {
                             stagnantLoop = 0
 
                             const newBalance = Number(this.bot.userData.currentPoints ?? 0) + gainedPoints
-                            this.bot.recordPointGain(isMobile ? '移动搜索' : 'PC搜索', gainedPoints, newBalance, taskKey)
+                            this.bot.recordPointGain(
+                                isMobile ? '移动搜索' : 'PC搜索',
+                                gainedPoints,
+                                newBalance,
+                                taskKey
+                            )
 
                             totalGainedPoints += gainedPoints
                             if (accountEmail) {
@@ -313,7 +314,9 @@ export class Search extends Workers {
                                 'SEARCH-BING',
                                 `中止额外搜索 | startBalance=${startBalance} | finalBalance=${finalBalance}`
                             )
-                            return totalGainedPoints
+                            throw new Error(
+                                `搜索停滞，保留部分进度: gained=${totalGainedPoints}, remaining=${missingPointsTotal}`
+                            )
                         }
                     }
                 }
@@ -343,11 +346,28 @@ export class Search extends Workers {
                 'SEARCH-BING',
                 `doSearch中出现错误 | message=${error instanceof Error ? error.message : String(error)}`
             )
-            return totalGainedPoints
+            throw error
         }
     }
 
-    private async bingSearch(searchPage: Page, query: string, isMobile: boolean) {
+    private async bingSearch(searchPage: Page, query: string, isMobile: boolean): Promise<Counters> {
+        let timer: NodeJS.Timeout | undefined
+        try {
+            return await Promise.race([
+                this.performBingSearch(searchPage, query, isMobile),
+                new Promise<never>((_resolve, reject) => {
+                    timer = setTimeout(
+                        () => reject(new Error(`单次搜索超时: ${SEARCH_QUERY_TIMEOUT_MS}ms`)),
+                        SEARCH_QUERY_TIMEOUT_MS
+                    )
+                })
+            ])
+        } finally {
+            if (timer) clearTimeout(timer)
+        }
+    }
+
+    private async performBingSearch(searchPage: Page, query: string, isMobile: boolean): Promise<Counters> {
         const maxAttempts = 5
         const refreshThreshold = 10 // 页面在x次搜索后变得缓慢？
 
@@ -371,7 +391,7 @@ export class Search extends Workers {
         }
 
         // 每次搜索重置首次滚动标志，确保有初始向下滚动
-        this.firstScroll = true;
+        this.firstScroll = true
 
         this.bot.logger.debug(
             isMobile,
@@ -433,13 +453,16 @@ export class Search extends Workers {
 
                 return counters
             } catch (error) {
-                if (i >= 5) {
+                if (isDashboardFetchError(error)) {
+                    throw new Error(`查询后 dashboard 刷新失败，保留最近一次已确认进度: ${error.message}`)
+                }
+                if (i >= maxAttempts - 1) {
                     this.bot.logger.error(
                         isMobile,
                         'SEARCH-BING',
                         `5次重试后失败 | query="${query}" | message=${error instanceof Error ? error.message : String(error)}`
                     )
-                    break
+                    throw error
                 }
 
                 this.bot.logger.error(
@@ -458,15 +481,9 @@ export class Search extends Workers {
             }
         }
 
-        this.bot.logger.debug(
-            isMobile,
-            'SEARCH-BING',
-            `在重试失败后返回当前搜索计数器 | query="${query}"`
-        )
-
-        return await this.bot.browser.func.getSearchPoints()
+        throw new Error(`搜索查询失败且未取得可确认 counter | query="${query}"`)
     }
-  private async randomScroll(page: Page, isMobile: boolean) {
+    private async randomScroll(page: Page, isMobile: boolean) {
         try {
             const viewportHeight = await page.evaluate(() => window.innerHeight)
             const totalHeight = await page.evaluate(() => document.body.scrollHeight)

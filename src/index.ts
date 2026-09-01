@@ -35,6 +35,7 @@ import {
     updateAccountPointTotals,
     updateAccountRunState,
     updateAccountTaskProgress,
+    updateSearchTaskFailure,
     updateTaskDetail,
     updateTaskProgress
 } from './util/TaskProgressStore'
@@ -59,6 +60,7 @@ import { monitorGiftCards } from './util/GiftCardMonitor'
 import type { ServerActionName } from './util/ServerActions'
 import type { AppEarnablePoints, BrowserEarnablePoints, MissingSearchPoints } from './interface/Points'
 import { dashboardFailureDetails, isDashboardFetchError } from './util/DashboardError'
+import { SearchTaskError } from './util/SearchTaskError'
 import {
     calculateKnownPointTotals,
     buildWeComAccountMessage,
@@ -122,9 +124,16 @@ function parseRunAccountMode(value: string | undefined): RunAccountMode {
     }
 }
 
-function parsePositiveInteger(value: string | undefined): number | undefined {
+function parseInteger(value: string | undefined): number | undefined {
     const parsed = Number(value)
-    return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined
+    return Number.isInteger(parsed) ? parsed : undefined
+}
+
+function maskAccountEmail(email: string): string {
+    const [name = '', domain = ''] = email.split('@')
+    if (!domain) return email ? `${email.slice(0, 2)}***` : ''
+    const left = name.length <= 2 ? `${name[0] ?? ''}***` : `${name.slice(0, 2)}***${name.slice(-1)}`
+    return `${left}@${domain}`
 }
 
 function isAccountStatusCheckOnly(): boolean {
@@ -144,7 +153,7 @@ function currentRunOptions(): RunOptions {
             : manualTask && parseRunAccountMode(process.env.RUN_ACCOUNT_MODE) !== 'account'
               ? 'all'
               : parseRunAccountMode(process.env.RUN_ACCOUNT_MODE),
-        targetAccountIndex: parsePositiveInteger(process.env.RUN_ACCOUNT_INDEX),
+        targetAccountIndex: parseInteger(process.env.RUN_ACCOUNT_INDEX),
         source: process.env.RUN_SOURCE || 'local',
         manualTask
     }
@@ -580,6 +589,12 @@ export class MicrosoftRewardsBot {
                   })
         const accountsToRun = selection.selected
         const totalAccounts = accountsToRun.length
+        const selectedAccountSummary = accountsToRun
+            .map(account => {
+                const runAccountIndex = this.accounts.findIndex(item => item.email === account.email) + 1
+                return `#${runAccountIndex} ${maskAccountEmail(account.email)}`
+            })
+            .join(', ')
 
         this.logger.info(
             'main',
@@ -590,7 +605,7 @@ export class MicrosoftRewardsBot {
                 options.manualTask === 'claim-bonus-points' ? ' | 手动任务: 立即领取奖励积分' : ''
             } | 待执行账户: ${totalAccounts}/${this.accounts.length} | 已跳过: ${selection.skipped.length} | 上次中断: ${
                 selection.interrupted
-            } | 集群数: ${this.config.clusters}`
+            } | 实际选择: ${selectedAccountSummary || 'none'} | 集群数: ${this.config.clusters}`
         )
 
         if (totalAccounts === 0) {
@@ -778,7 +793,7 @@ export class MicrosoftRewardsBot {
                 this.logger.info(
                     'main',
                     'ACCOUNT-START',
-                    `开始处理账户: ${accountEmail} | 地理位置: ${account.geoLocale}`
+                    `开始处理账户: ${maskAccountEmail(accountEmail)} | 地理位置: ${account.geoLocale}`
                 )
 
                 this.axios = new AxiosClient(account.proxy)
@@ -827,7 +842,7 @@ export class MicrosoftRewardsBot {
                 this.logger.info(
                     'main',
                     'ACCOUNT-END',
-                    `已完成账户: ${accountEmail} | 总计: +${collectedPoints} | 原始: ${accountInitialPoints} → 新值: ${accountFinalPoints} | 持续时间: ${durationSeconds}秒`,
+                    `已完成账户: ${maskAccountEmail(accountEmail)} | 总计: +${collectedPoints} | 原始: ${accountInitialPoints} → 新值: ${accountFinalPoints} | 持续时间: ${durationSeconds}秒`,
                     'green'
                 )
                 await this.sendWeComAccountSummary(stat)
@@ -836,7 +851,22 @@ export class MicrosoftRewardsBot {
                 const message = error instanceof Error ? error.message : String(error)
                 const failure = isDashboardFetchError(error)
                     ? dashboardAccountFailure(dashboardFailureDetails(error))
-                    : genericAccountFailure('account-error', message)
+                    : error instanceof SearchTaskError
+                      ? genericAccountFailure(error.stage, message)
+                      : genericAccountFailure('account-error', message)
+                const failedTaskSummary: AccountTaskSummary[] =
+                    error instanceof SearchTaskError
+                        ? [
+                              {
+                                  key: error.task,
+                                  label: error.task === 'desktop' ? 'PC搜索' : '移动搜索',
+                                  completed: error.completed,
+                                  total: error.total,
+                                  gained: 0,
+                                  status: '失败'
+                              }
+                          ]
+                        : []
                 const initialPoints = this.dashboardPointsKnown ? this.userData.initialPoints : null
                 const finalPoints = this.dashboardPointsKnown ? this.userData.currentPoints : null
                 const collectedPoints =
@@ -862,17 +892,18 @@ export class MicrosoftRewardsBot {
                         beforePoints: initialPoints,
                         afterPoints: finalPoints,
                         runGained: collectedPoints,
+                        taskSummary: failedTaskSummary,
                         error: message
                     })
                 }
-                this.logger.error('main', 'ACCOUNT-ERROR', `${accountEmail}: ${message}`)
+                this.logger.error('main', 'ACCOUNT-ERROR', `${maskAccountEmail(accountEmail)}: ${message}`)
 
                 const stat: AccountStats = {
                     email: accountEmail,
                     initialPoints,
                     finalPoints,
                     collectedPoints,
-                    taskSummary: [],
+                    taskSummary: failedTaskSummary,
                     duration: parseFloat(durationSeconds),
                     success: false,
                     error: failure
@@ -1044,7 +1075,10 @@ export class MicrosoftRewardsBot {
                     data.dashboardFieldAvailability
                 )
                 const initialMobileSearch = initialSearchCounters.mobileCounter
-                const initialPcSearch = data.userStatus.counters.pcSearch?.[0]
+                const initialDesktopCompleted =
+                    initialSearchCounters.desktopCounter.completed + initialSearchCounters.edgeCounter.completed
+                const initialDesktopTotal =
+                    initialSearchCounters.desktopCounter.total + initialSearchCounters.edgeCounter.total
                 const initialMobileUnrecognized = ['missing-counter', 'empty-counter', 'invalid-counter'].includes(
                     initialSearchCounters.mobileStatus
                 )
@@ -1052,7 +1086,6 @@ export class MicrosoftRewardsBot {
                     initialSearchCounters.desktopCounter.status
                 )
                 const initialMobileProgress = initialMobileSearch.completed
-                const initialPcProgress = initialPcSearch?.pointProgress ?? 0
                 if (!isAccountStatusCheckOnly()) {
                     updateAccountTaskProgress(accountEmail, {
                         mobile: {
@@ -1066,12 +1099,13 @@ export class MicrosoftRewardsBot {
                                   : '已完成'
                         },
                         desktop: {
-                            completed: initialPcProgress,
-                            total: initialPcSearch?.pointProgressMax ?? 0,
+                            completed: initialDesktopCompleted,
+                            total: initialDesktopTotal,
                             gained: 0,
                             status: initialPcUnrecognized
                                 ? '未识别到搜索额度'
-                                : initialPcSearch && initialPcSearch.pointProgress < initialPcSearch.pointProgressMax
+                                : initialSearchCounters.desktopCounter.remaining > 0 ||
+                                    initialSearchCounters.edgeCounter.remaining > 0
                                   ? '进行中'
                                   : '已完成'
                         }
@@ -1354,24 +1388,39 @@ export class MicrosoftRewardsBot {
 
                 const searchPoints = await this.browser.func.getSearchPoints()
                 let missingSearchPoints = this.browser.func.missingSearchPoints(searchPoints, true)
-                if (
-                    ['missing-counter', 'empty-counter', 'invalid-counter'].includes(missingSearchPoints.mobileStatus)
-                ) {
+                const unrecognizedCounter = (status: string): boolean =>
+                    ['missing-counter', 'empty-counter', 'invalid-counter'].includes(status)
+                const needsMobileFallback = unrecognizedCounter(missingSearchPoints.mobileStatus)
+                const needsDesktopFallback = unrecognizedCounter(missingSearchPoints.desktopCounter.status)
+                if (needsMobileFallback || (this.config.workers.doDesktopSearch && needsDesktopFallback)) {
                     this.logger.warn(
                         'main',
                         'SEARCH-COUNTER',
-                        `未识别到移动搜索 counter，尝试 fallback | reason=${missingSearchPoints.mobileStatus} | keys=${missingSearchPoints.counterKeys.join(',') || 'none'}`
+                        `搜索 counter 未确认，尝试 fallback | mobile=${missingSearchPoints.mobileStatus} | desktop=${missingSearchPoints.desktopCounter.status} | keys=${missingSearchPoints.counterKeys.join(',') || 'none'}`
                     )
-                    const fallbackSearchPoints = await this.browser.func.getMobileSearchPointsFallback(true)
-                    if (fallbackSearchPoints?.mobileStatus === 'ok' && fallbackSearchPoints.mobilePoints > 0) {
+                    const fallbackSearchPoints = await this.browser.func.getSearchPointsFallback(true)
+                    if (fallbackSearchPoints) {
+                        const fallbackMobileKnown = !unrecognizedCounter(fallbackSearchPoints.mobileStatus)
+                        const fallbackDesktopKnown = !unrecognizedCounter(fallbackSearchPoints.desktopCounter.status)
                         missingSearchPoints = {
                             ...missingSearchPoints,
-                            mobilePoints: fallbackSearchPoints.mobilePoints,
-                            totalPoints: fallbackSearchPoints.mobilePoints,
-                            mobileDetected: fallbackSearchPoints.mobileDetected,
-                            mobileStatus: fallbackSearchPoints.mobileStatus,
-                            mobileMessage: fallbackSearchPoints.mobileMessage,
-                            mobileCounter: fallbackSearchPoints.mobileCounter,
+                            ...(needsMobileFallback && fallbackMobileKnown
+                                ? {
+                                      mobilePoints: fallbackSearchPoints.mobilePoints,
+                                      mobileDetected: fallbackSearchPoints.mobileDetected,
+                                      mobileStatus: fallbackSearchPoints.mobileStatus,
+                                      mobileMessage: fallbackSearchPoints.mobileMessage,
+                                      mobileCounter: fallbackSearchPoints.mobileCounter
+                                  }
+                                : {}),
+                            ...(needsDesktopFallback && fallbackDesktopKnown
+                                ? {
+                                      desktopPoints: fallbackSearchPoints.desktopPoints,
+                                      edgePoints: fallbackSearchPoints.edgePoints,
+                                      desktopCounter: fallbackSearchPoints.desktopCounter,
+                                      edgeCounter: fallbackSearchPoints.edgeCounter
+                                  }
+                                : {}),
                             source: fallbackSearchPoints.source,
                             counterKeys:
                                 fallbackSearchPoints.counterKeys.length > 0
@@ -1381,17 +1430,29 @@ export class MicrosoftRewardsBot {
                         this.logger.info(
                             'main',
                             'SEARCH-COUNTER',
-                            `fallback 已确认移动搜索额度 | source=${fallbackSearchPoints.source} | remaining=${fallbackSearchPoints.mobilePoints}`
-                        )
-                    } else if (fallbackSearchPoints) {
-                        this.logger.warn(
-                            'main',
-                            'SEARCH-COUNTER',
-                            `fallback 未确认可执行移动搜索 | source=${fallbackSearchPoints.source} | reason=${fallbackSearchPoints.mobileStatus}`
+                            `fallback 结果 | source=${fallbackSearchPoints.source} | mobile=${fallbackSearchPoints.mobileStatus} | desktop=${fallbackSearchPoints.desktopCounter.status}`
                         )
                     } else {
-                        this.logger.warn('main', 'SEARCH-COUNTER', 'fallback 未找到可用移动搜索 counter')
+                        this.logger.warn('main', 'SEARCH-COUNTER', 'fallback 未找到可用搜索 counter')
                     }
+                }
+                if (
+                    this.config.workers.doDesktopSearch &&
+                    unrecognizedCounter(missingSearchPoints.desktopCounter.status)
+                ) {
+                    const message = `PC搜索额度未确认：${missingSearchPoints.desktopCounter.message}`
+                    const progress = updateSearchTaskFailure(accountEmail, 'desktop', {
+                        completed: initialDesktopCompleted,
+                        total: initialDesktopTotal,
+                        message
+                    })
+                    throw new SearchTaskError(
+                        'dashboard-search-counter',
+                        'desktop',
+                        message,
+                        progress.completed,
+                        progress.total
+                    )
                 }
                 const searchStartPoints = await getLatestPoints(Number(this.userData.currentPoints ?? initialPoints))
                 this.userData.currentPoints = searchStartPoints
@@ -1410,7 +1471,9 @@ export class MicrosoftRewardsBot {
                 updateAccountRunState(accountEmail, {
                     currentTask: '搜索任务',
                     currentStage: 'search',
-                    currentMessage: `准备搜索：${mobileSearchMessage}，PC剩余 ${missingSearchPoints.desktopPoints}`
+                    currentMessage: `准备搜索：${mobileSearchMessage}，PC剩余 ${
+                        missingSearchPoints.desktopPoints + missingSearchPoints.edgePoints
+                    }`
                 })
                 const { mobilePoints, desktopPoints } = await this.searchManager.doSearches(
                     data,
@@ -1467,7 +1530,6 @@ export class MicrosoftRewardsBot {
                 const finalSearchPoints = await this.browser.func.getSearchPoints().catch(() => searchPoints)
                 const finalSearchCounters = this.browser.func.missingSearchPoints(finalSearchPoints, true)
                 const finalMobileSearch = finalSearchCounters.mobileCounter
-                const finalPcSearch = finalSearchPoints.pcSearch?.[0]
                 const finalMobileUnrecognized = ['missing-counter', 'empty-counter', 'invalid-counter'].includes(
                     finalSearchCounters.mobileStatus
                 )
@@ -1475,35 +1537,40 @@ export class MicrosoftRewardsBot {
                     finalSearchCounters.desktopCounter.status
                 )
                 const finalMobileTotal = finalMobileSearch.total || initialMobileSearch.total || 0
-                const finalPcTotal = finalPcSearch?.pointProgressMax ?? initialPcSearch?.pointProgressMax ?? 0
+                const finalPcTotal =
+                    finalSearchCounters.desktopCounter.total + finalSearchCounters.edgeCounter.total ||
+                    initialDesktopTotal
                 const finalMobileCompleted = Math.max(
                     finalMobileSearch.completed || initialMobileProgress,
                     finalMobileTotal > 0 ? Math.min(finalMobileTotal, mobileGainedPoints) : mobileGainedPoints
                 )
                 const finalPcCompleted = Math.max(
-                    finalPcSearch?.pointProgress ?? initialPcProgress,
+                    finalSearchCounters.desktopCounter.completed + finalSearchCounters.edgeCounter.completed ||
+                        initialDesktopCompleted,
                     finalPcTotal > 0 ? Math.min(finalPcTotal, desktopGainedPoints) : desktopGainedPoints
                 )
+                const finalMobileStatus = finalMobileUnrecognized
+                    ? '未识别到搜索额度'
+                    : finalMobileTotal > 0 && finalMobileCompleted < finalMobileTotal
+                      ? '进行中'
+                      : '已完成'
+                const finalPcStatus = finalPcUnrecognized
+                    ? '未识别到搜索额度'
+                    : finalPcTotal > 0 && finalPcCompleted < finalPcTotal
+                      ? '进行中'
+                      : '已完成'
                 updateAccountTaskProgress(accountEmail, {
                     mobile: {
                         completed: finalMobileCompleted,
                         total: finalMobileTotal,
                         gained: mobileGainedPoints,
-                        status: finalMobileUnrecognized
-                            ? '未识别到搜索额度'
-                            : finalMobileTotal > 0 && finalMobileCompleted < finalMobileTotal
-                              ? '进行中'
-                              : '已完成'
+                        status: finalMobileStatus
                     },
                     desktop: {
                         completed: finalPcCompleted,
                         total: finalPcTotal,
                         gained: desktopGainedPoints,
-                        status: finalPcUnrecognized
-                            ? '未识别到搜索额度'
-                            : finalPcTotal > 0 && finalPcCompleted < finalPcTotal
-                              ? '进行中'
-                              : '已完成'
+                        status: finalPcStatus
                     },
                     daily: {
                         completed: dailyGainedPoints,
@@ -1523,7 +1590,7 @@ export class MicrosoftRewardsBot {
                     completed: finalMobileCompleted,
                     total: finalMobileTotal,
                     gained: mobileGainedPoints,
-                    status: finalMobileUnrecognized ? '未识别到搜索额度' : '已完成'
+                    status: finalMobileStatus
                 })
                 taskSummary.push({
                     key: 'desktop',
@@ -1531,7 +1598,7 @@ export class MicrosoftRewardsBot {
                     completed: finalPcCompleted,
                     total: finalPcTotal,
                     gained: desktopGainedPoints,
-                    status: finalPcUnrecognized ? '未识别到搜索额度' : '已完成'
+                    status: finalPcStatus
                 })
                 if (otherGainedPoints > 0) {
                     taskSummary.push({
