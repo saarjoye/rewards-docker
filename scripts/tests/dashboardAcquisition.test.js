@@ -90,6 +90,7 @@ function fakeBot(apiResult, fallbackResult = '<html>modern but incomplete</html>
     let flyoutRequests = 0
     const flyoutUrls = []
     const axiosRequests = []
+    const retryDelays = []
     return {
         logs,
         get apiRequests() {
@@ -100,6 +101,7 @@ function fakeBot(apiResult, fallbackResult = '<html>modern but incomplete</html>
         },
         flyoutUrls,
         axiosRequests,
+        retryDelays,
         isMobile: true,
         fingerprint: { headers: {} },
         cookies: { mobile: [], desktop: [] },
@@ -110,13 +112,17 @@ function fakeBot(apiResult, fallbackResult = '<html>modern but incomplete</html>
             warn: (...args) => logs.push(args.join(' ')),
             error: (...args) => logs.push(args.join(' '))
         },
+        utils: {
+            wait: async delay => retryDelays.push(delay)
+        },
         axios: {
             request: async request => {
                 axiosRequests.push(request)
                 if (String(request.url).includes('/api/getuserinfo')) {
                     apiRequests += 1
-                    if (apiResult instanceof Error || apiResult?.isAxiosError) throw apiResult
-                    return apiResult
+                    const result = typeof apiResult === 'function' ? await apiResult(request, apiRequests) : apiResult
+                    if (result instanceof Error || result?.isAxiosError) throw result
+                    return result
                 }
                 if (String(request.url).includes('/rewards/panelflyout/getuserinfo')) {
                     flyoutRequests += 1
@@ -166,7 +172,7 @@ async function expectFailure(apiResult, expectedStatus, expectedKind) {
     })
     assert.equal((await new BrowserFunc(okBot).getDashboardData()).userStatus.availablePoints, 999)
     assert.equal(okBot.flyoutRequests, 0)
-    assert.equal(okBot.axiosRequests[0].timeout, 15000)
+    assert.equal(okBot.axiosRequests[0].timeout, 8000)
 
     const modernBot = fakeBot(axiosError(404), '<html>modern but incomplete</html>', flyoutDashboard(1888))
     const modernFunc = new BrowserFunc(modernBot)
@@ -295,7 +301,7 @@ async function expectFailure(apiResult, expectedStatus, expectedKind) {
     assert.equal(contextBot.apiRequests, 0)
     assert.equal(contextRequestOptions.headers.Cookie, undefined)
     assert.equal(contextRequestOptions.headers.cookie, undefined)
-    assert.equal(contextRequestOptions.timeout, 15000)
+    assert.equal(contextRequestOptions.timeout, 8000)
     assert.equal(contextResponseDisposed, true)
     assert.equal(contextBot.logs.join('\n').includes('FINGERPRINT-COOKIE-CANARY'), false)
 
@@ -320,6 +326,33 @@ async function expectFailure(apiResult, expectedStatus, expectedKind) {
     await expectFailure(axiosError(502), 502, 'server')
     await expectFailure(axiosError(504), 504, 'server')
     await expectFailure(axiosError(503), 503, 'server')
+
+    const retrySequence = [
+        axiosError(504),
+        axiosError(503),
+        {
+            status: 200,
+            headers: { 'content-type': 'text/plain; charset=utf-8' },
+            data: JSON.stringify({ dashboard: dashboard(1555) })
+        }
+    ]
+    const retryBot = fakeBot((_request, attempt) => retrySequence[attempt - 1])
+    assert.equal((await new BrowserFunc(retryBot).getDashboardData()).userStatus.availablePoints, 1555)
+    assert.equal(retryBot.apiRequests, 3)
+    assert.equal(retryBot.retryDelays.length, 2)
+    assert.ok(retryBot.retryDelays[0] >= 500 && retryBot.retryDelays[0] <= 750)
+    assert.ok(retryBot.retryDelays[1] >= 1000 && retryBot.retryDelays[1] <= 1250)
+
+    const exhaustedBot = fakeBot(axiosError(504))
+    await assert.rejects(
+        () => new BrowserFunc(exhaustedBot).getDashboardData(),
+        error => error instanceof DashboardFetchError && error.attempts === 3 && error.apiStatus === 504
+    )
+    assert.equal(exhaustedBot.apiRequests, 3)
+
+    const authNoRetryBot = fakeBot(axiosError(401))
+    await assert.rejects(() => new BrowserFunc(authNoRetryBot).getDashboardData(), DashboardFetchError)
+    assert.equal(authNoRetryBot.apiRequests, 1)
     const notFoundBot = fakeBot(axiosError(404))
     await assert.rejects(
         () => new BrowserFunc(notFoundBot).getDashboardData(),
@@ -467,6 +500,31 @@ async function expectFailure(apiResult, expectedStatus, expectedKind) {
     assert.match(captureLogs, /source=capture/)
     assert.equal(captureLogs.includes('REDACT-ME'), false)
 
+    const pointsListeners = new Map()
+    const capturedPointsBot = fakeBot(axiosError(401))
+    const capturedPointsPage = {
+        isClosed: () => false,
+        on: (event, listener) => pointsListeners.set(event, listener),
+        url: () => 'https://rewards.bing.com/dashboard'
+    }
+    capturedPointsBot.mainMobilePage = capturedPointsPage
+    const capturedPointsFunc = new BrowserFunc(capturedPointsBot)
+    capturedPointsFunc.prepareDashboardCapture(capturedPointsPage, 'CN')
+    pointsListeners.get('response')({
+        request: () => ({
+            resourceType: () => 'fetch',
+            frame: () => ({ url: () => 'https://rewards.bing.com/dashboard' })
+        }),
+        url: () => 'https://rewards.bing.com/api/getuserinfo?type=1',
+        status: () => 200,
+        headers: () => ({ 'content-type': 'text/plain; charset=utf-8' }),
+        body: async () => Buffer.from(JSON.stringify({ dashboard: { userStatus: { availablePoints: 2112 } } }))
+    })
+    const capturedPointsSnapshot = await capturedPointsFunc.getCurrentPointsSnapshot()
+    assert.equal(capturedPointsSnapshot.confidence, 'confirmed')
+    assert.equal(capturedPointsSnapshot.points, 2112)
+    assert.equal(capturedPointsSnapshot.source, 'capture-points')
+
     const timeoutBot = fakeBot(axiosError(500))
     const timeoutOptions = []
     timeoutBot.mainMobilePage = {
@@ -489,8 +547,39 @@ async function expectFailure(apiResult, expectedStatus, expectedKind) {
     await assert.rejects(() => new BrowserFunc(timeoutBot).getDashboardData(), DashboardFetchError)
     assert.ok(Date.now() - timeoutStarted < 2000)
     assert.ok(timeoutOptions.length > 0)
-    assert.ok(timeoutOptions.every(options => options.timeout === 15000))
-    assert.match(timeoutBot.logs.join('\n'), /timeoutMs=15000/)
+    assert.ok(timeoutOptions.every(options => options.timeout === 8000))
+    assert.match(timeoutBot.logs.join('\n'), /timeoutMs=8000/)
+
+    const lightweightBot = fakeBot({
+        status: 200,
+        headers: { 'content-type': 'text/plain; charset=utf-8' },
+        data: JSON.stringify({ dashboard: { userStatus: { availablePoints: 2222 } } })
+    })
+    const lightweightSnapshot = await new BrowserFunc(lightweightBot).getCurrentPointsSnapshot()
+    assert.equal(lightweightSnapshot.confidence, 'confirmed')
+    assert.equal(lightweightSnapshot.points, 2222)
+    assert.equal(lightweightSnapshot.source, 'api-points')
+    assert.equal(lightweightBot.apiRequests, 1)
+    assert.equal(lightweightBot.flyoutRequests, 0)
+    assert.equal(lightweightBot.axiosRequests.length, 1)
+
+    let cacheAttempt = 0
+    const cachedBot = fakeBot(() => {
+        cacheAttempt += 1
+        return cacheAttempt === 1
+            ? { status: 200, headers: { 'content-type': 'application/json' }, data: { dashboard: dashboard(3333) } }
+            : axiosError(504)
+    })
+    const cachedFunc = new BrowserFunc(cachedBot)
+    assert.equal((await cachedFunc.getCurrentPointsSnapshot()).confidence, 'confirmed')
+    const cachedSnapshot = await cachedFunc.getCurrentPointsSnapshot()
+    assert.equal(cachedSnapshot.confidence, 'cached')
+    assert.equal(cachedSnapshot.points, 3333)
+    await assert.rejects(() => cachedFunc.getCurrentPoints(), DashboardFetchError)
+    cachedFunc.resetCurrentPointsCache()
+    const resetSnapshot = await cachedFunc.getCurrentPointsSnapshot()
+    assert.equal(resetSnapshot.confidence, 'unknown')
+    assert.equal(resetSnapshot.points, null)
 
     console.log('dashboardAcquisition.test.js passed')
 })().catch(error => {

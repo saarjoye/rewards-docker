@@ -22,13 +22,14 @@ import {
     type SafeHttpDiagnostic
 } from '../util/Axios'
 import {
+    availablePointsFromApiPayload,
     dashboardFromApiPayload,
     dashboardFromFlyoutPayload,
     dashboardFromFlightEntries,
     dashboardFromHtml,
     validateDashboardData
 } from '../util/DashboardParser'
-import { DashboardFetchError } from '../util/DashboardError'
+import { DashboardFetchError, dashboardFailureDetails, type DashboardFailureDetails } from '../util/DashboardError'
 import {
     extractDeploymentIdFromHtml,
     extractScriptUrls,
@@ -49,6 +50,7 @@ interface CapturedDashboard {
 
 interface DashboardCaptureState {
     candidate: CapturedDashboard | null
+    pointsCandidate: { points: number; path: string; observedAt: string } | null
     candidateCount: number
     geoLocale?: string
     pending: Set<Promise<void>>
@@ -62,14 +64,48 @@ interface BrowserContextHttpResponse {
     redirected: boolean | null
 }
 
-const DASHBOARD_REQUEST_TIMEOUT_MS = 15000
-const DASHBOARD_TOTAL_TIMEOUT_MS = 30000
+export interface CurrentPointsSnapshot {
+    points: number | null
+    source: string | null
+    confidence: 'confirmed' | 'cached' | 'unknown'
+    observedAt: string | null
+    error: DashboardFailureDetails | null
+}
+
+interface TrustedPointsCache {
+    scope: string
+    points: number
+    source: string
+    observedAt: string
+    sequence: number
+}
+
+type ClaimButtonSearchMode = 'confirm' | 'entry-or-confirm'
+
+interface ClaimButtonClickResult {
+    clicked: boolean
+    phase?: 'entry' | 'confirm'
+    reason?: string
+    score?: number
+}
+
+const DASHBOARD_REQUEST_TIMEOUT_MS = 8000
+const DASHBOARD_TOTAL_TIMEOUT_MS = 55000
+const DASHBOARD_API_ATTEMPTS = 3
+const DASHBOARD_RETRY_BASE_DELAY_MS = 500
+const DASHBOARD_RETRY_JITTER_MS = 250
+const CLAIM_ENTRY_TIMEOUT_MS = 15000
+const CLAIM_CONFIRM_TIMEOUT_MS = 10000
+const CLAIM_POLL_INTERVAL_MS = 250
 
 export default class BrowserFunc {
     private bot: MicrosoftRewardsBot
     private dashboardCaptures = new WeakMap<Page, DashboardCaptureState>()
     private lastDashboardFieldAvailability: DashboardFieldAvailability | undefined
     private cachedPanelFlyoutData: PanelFlyoutData | null = null
+    private lastDashboardSource: string | null = null
+    private trustedPointsCache: TrustedPointsCache | null = null
+    private pointsCacheSequence = 0
 
     constructor(bot: MicrosoftRewardsBot) {
         this.bot = bot
@@ -84,6 +120,7 @@ export default class BrowserFunc {
 
         const state: DashboardCaptureState = {
             candidate: null,
+            pointsCandidate: null,
             candidateCount: 0,
             geoLocale,
             pending: new Set<Promise<void>>()
@@ -91,6 +128,7 @@ export default class BrowserFunc {
         this.lastDashboardFieldAvailability = undefined
         this.dashboardCaptures.set(page, state)
 
+        if (typeof page.on !== 'function') return
         page.on('response', response => {
             const pending = this.captureDashboardResponse(response, state)
             state.pending.add(pending)
@@ -103,27 +141,26 @@ export default class BrowserFunc {
      * @returns {DashboardData} 用户必应奖励仪表板数据对象
      */
     async getDashboardData(geoLocale?: string): Promise<DashboardData> {
+        const result = await this.getDashboardResult(geoLocale, false)
+        if (this.isCurrentPointsSnapshot(result)) {
+            throw new Error('完整 dashboard 请求意外返回轻量积分结果')
+        }
+        return result
+    }
+
+    private async getDashboardResult(
+        geoLocale: string | undefined,
+        allowLightweightPoints: boolean
+    ): Promise<DashboardData | CurrentPointsSnapshot> {
         const startedAt = Date.now()
-        let timer: NodeJS.Timeout | undefined
         try {
-            return await Promise.race([
-                this.getDashboardDataWithinBudget(geoLocale),
-                new Promise<never>((_resolve, reject) => {
-                    timer = setTimeout(
-                        () =>
-                            reject(
-                                new DashboardFetchError({
-                                    apiReason: `请求总耗时超过 ${DASHBOARD_TOTAL_TIMEOUT_MS}ms`,
-                                    fallbackReason: 'dashboard 获取总时限已到',
-                                    apiFailureKind: 'network'
-                                })
-                            ),
-                        DASHBOARD_TOTAL_TIMEOUT_MS
-                    )
-                })
-            ])
+            return await this.getDashboardDataWithinBudget(
+                geoLocale,
+                startedAt + DASHBOARD_TOTAL_TIMEOUT_MS,
+                startedAt,
+                allowLightweightPoints
+            )
         } finally {
-            if (timer) clearTimeout(timer)
             this.bot.logger.debug(
                 this.bot.isMobile,
                 'GET-DASHBOARD-DATA',
@@ -132,7 +169,12 @@ export default class BrowserFunc {
         }
     }
 
-    private async getDashboardDataWithinBudget(geoLocale?: string): Promise<DashboardData> {
+    private async getDashboardDataWithinBudget(
+        geoLocale: string | undefined,
+        deadline: number,
+        startedAt: number,
+        allowLightweightPoints: boolean
+    ): Promise<DashboardData | CurrentPointsSnapshot> {
         this.cachedPanelFlyoutData = null
         geoLocale ??= this.bot.userData?.geoLocale
         const apiPath = '/api/getuserinfo'
@@ -141,113 +183,159 @@ export default class BrowserFunc {
         const apiUrl = `${dashboardOrigin}${apiPath}?type=1`
         let apiFailure: SafeHttpDiagnostic
         let apiReason: string
+        let apiAttempts = 0
 
-        try {
-            const browserResponse = await this.requestWithBrowserContext(page, apiUrl, {
-                Referer: `${dashboardOrigin}/`,
-                Origin: dashboardOrigin
-            })
-            let status: number
-            let headers: unknown
-            let data: unknown
-            let finalUrl: string | null
-            let redirected: boolean | null
+        if (page && !page.isClosed()) this.prepareDashboardCapture(page, geoLocale)
 
-            if (browserResponse) {
-                status = browserResponse.status
-                headers = browserResponse.headers
-                finalUrl = browserResponse.finalUrl
-                redirected = browserResponse.redirected
-                try {
-                    data = JSON.parse(browserResponse.body)
-                } catch {
-                    data = browserResponse.body
-                }
-            } else {
-                const response = await this.requestDashboardAxios({
-                    url: apiUrl,
-                    method: 'GET',
-                    headers: {
-                        ...this.fingerprintHeadersWithoutCookie(),
-                        Cookie: this.buildCookieHeaderForUrl(this.bot.cookies.mobile, apiUrl),
+        apiFailure = this.networkDashboardFailure()
+        apiReason = 'API 尚未请求'
+        for (let attempt = 1; attempt <= DASHBOARD_API_ATTEMPTS; attempt += 1) {
+            if (this.dashboardRemainingMs(deadline) <= 0) {
+                apiReason = `请求总耗时超过 ${DASHBOARD_TOTAL_TIMEOUT_MS}ms`
+                break
+            }
+            apiAttempts = attempt
+            try {
+                const requestTimeout = this.dashboardRequestTimeout(deadline)
+                const browserResponse = await this.requestWithBrowserContext(
+                    page,
+                    apiUrl,
+                    {
                         Referer: `${dashboardOrigin}/`,
                         Origin: dashboardOrigin
+                    },
+                    requestTimeout
+                )
+                let status: number
+                let headers: unknown
+                let data: unknown
+                let finalUrl: string | null
+                let redirected: boolean | null
+
+                if (browserResponse) {
+                    status = browserResponse.status
+                    headers = browserResponse.headers
+                    finalUrl = browserResponse.finalUrl
+                    redirected = browserResponse.redirected
+                    try {
+                        data = JSON.parse(browserResponse.body)
+                    } catch {
+                        data = browserResponse.body
                     }
+                } else {
+                    const response = await this.requestDashboardAxios(
+                        {
+                            url: apiUrl,
+                            method: 'GET',
+                            headers: {
+                                ...this.fingerprintHeadersWithoutCookie(),
+                                Cookie: this.buildCookieHeaderForUrl(this.bot.cookies.mobile, apiUrl),
+                                Referer: `${dashboardOrigin}/`,
+                                Origin: dashboardOrigin
+                            }
+                        },
+                        requestTimeout
+                    )
+                    status = response.status
+                    headers = response.headers
+                    data = response.data
+                    finalUrl = axiosFinalUrl(response)
+                    redirected = axiosRedirected(response, apiUrl)
+                }
+                if (typeof data === 'string') {
+                    try {
+                        data = JSON.parse(data)
+                    } catch {
+                        // Structural parsing below reports a safe reason for non-JSON text.
+                    }
+                }
+
+                const contentType = responseContentType(headers)
+                const topLevelFields = responseTopLevelFields(data)
+                const parsed = dashboardFromApiPayload(data, { geoLocale })
+                const successfulStatus = status >= 200 && status < 300
+                const availablePoints = successfulStatus ? availablePointsFromApiPayload(data) : null
+                if (availablePoints && availablePoints.points !== null) {
+                    this.rememberTrustedPoints(availablePoints.points, 'api-points')
+                }
+                const failureCategory = successfulStatus ? 'invalid-response' : classifyHttpFailure(status)
+                const diagnosticReason = successfulStatus
+                    ? parsed.reason
+                    : this.describeDashboardFailure({
+                          status,
+                          code: null,
+                          contentType,
+                          topLevelFields,
+                          category: failureCategory,
+                          finalUrl,
+                          redirected
+                      })
+                this.logDashboardDiagnostic('api', {
+                    path: apiPath,
+                    status,
+                    code: null,
+                    contentType,
+                    topLevelFields,
+                    htmlLength: null,
+                    pageUrl: null,
+                    pageTitle: null,
+                    parserReason: diagnosticReason,
+                    finalUrl,
+                    redirected,
+                    flightEntryCount: null,
+                    captureCount: null
                 })
-                status = response.status
-                headers = response.headers
-                data = response.data
-                finalUrl = axiosFinalUrl(response)
-                redirected = axiosRedirected(response, apiUrl)
+
+                if (successfulStatus && parsed.data) return this.acceptDashboard(parsed.data, 'api')
+                if (successfulStatus && allowLightweightPoints && availablePoints && availablePoints.points !== null) {
+                    this.lastDashboardSource = 'api-points'
+                    return this.confirmedPointsSnapshot(availablePoints.points, 'api-points')
+                }
+                apiFailure = {
+                    status,
+                    code: null,
+                    contentType,
+                    topLevelFields,
+                    category: failureCategory,
+                    finalUrl,
+                    redirected
+                }
+                apiReason = diagnosticReason
+            } catch (error) {
+                apiFailure = this.safeDashboardDiagnostic(error)
+                apiReason = this.describeDashboardFailure(apiFailure)
+                this.logDashboardDiagnostic('api', {
+                    path: apiPath,
+                    status: apiFailure.status,
+                    code: apiFailure.code,
+                    contentType: apiFailure.contentType,
+                    topLevelFields: apiFailure.topLevelFields,
+                    htmlLength: null,
+                    pageUrl: null,
+                    pageTitle: null,
+                    parserReason: apiReason,
+                    finalUrl: apiFailure.finalUrl,
+                    redirected: apiFailure.redirected,
+                    flightEntryCount: null,
+                    captureCount: null
+                })
             }
 
-            const contentType = responseContentType(headers)
-            const topLevelFields = responseTopLevelFields(data)
-            const parsed = dashboardFromApiPayload(data, { geoLocale })
-            const successfulStatus = status >= 200 && status < 300
-            const failureCategory = successfulStatus ? 'invalid-response' : classifyHttpFailure(status)
-            const diagnosticReason = successfulStatus
-                ? parsed.reason
-                : this.describeDashboardFailure({
-                      status,
-                      code: null,
-                      contentType,
-                      topLevelFields,
-                      category: failureCategory,
-                      finalUrl,
-                      redirected
-                  })
-            this.logDashboardDiagnostic('api', {
-                path: apiPath,
-                status,
-                code: null,
-                contentType,
-                topLevelFields,
-                htmlLength: null,
-                pageUrl: null,
-                pageTitle: null,
-                parserReason: diagnosticReason,
-                finalUrl,
-                redirected,
-                flightEntryCount: null,
-                captureCount: null
-            })
-
-            if (successfulStatus && parsed.data) return parsed.data
-            apiFailure = {
-                status,
-                code: null,
-                contentType,
-                topLevelFields,
-                category: failureCategory,
-                finalUrl,
-                redirected
-            }
-            apiReason = diagnosticReason
-        } catch (error) {
-            apiFailure = safeAxiosDiagnostic(error)
-            apiReason = this.describeDashboardFailure(apiFailure)
-            this.logDashboardDiagnostic('api', {
-                path: apiPath,
-                status: apiFailure.status,
-                code: apiFailure.code,
-                contentType: apiFailure.contentType,
-                topLevelFields: apiFailure.topLevelFields,
-                htmlLength: null,
-                pageUrl: null,
-                pageTitle: null,
-                parserReason: apiReason,
-                finalUrl: apiFailure.finalUrl,
-                redirected: apiFailure.redirected,
-                flightEntryCount: null,
-                captureCount: null
-            })
+            if (!this.shouldRetryDashboardApi(apiFailure) || attempt >= DASHBOARD_API_ATTEMPTS) break
+            const retryDelay =
+                DASHBOARD_RETRY_BASE_DELAY_MS * attempt + Math.floor(Math.random() * (DASHBOARD_RETRY_JITTER_MS + 1))
+            this.bot.logger.warn(
+                this.bot.isMobile,
+                'GET-DASHBOARD-DATA',
+                `API dashboard 暂时不可用，准备重试 | attempt=${attempt}/${DASHBOARD_API_ATTEMPTS} | status=${apiFailure.status ?? 'n/a'} | kind=${apiFailure.category} | delayMs=${retryDelay}`
+            )
+            await this.waitWithinDashboardBudget(retryDelay, deadline)
         }
 
         this.bot.logger.warn(
             this.bot.isMobile,
             'GET-DASHBOARD-DATA',
-            `API dashboard 不可用，尝试页面回退 | kind=${apiFailure.category} | reason=${apiReason}`
+            `API dashboard 不可用，尝试页面回退 | attempts=${apiAttempts} | elapsedMs=${Date.now() - startedAt} | kind=${apiFailure.category} | status=${apiFailure.status ?? 'n/a'} | reason=${apiReason}`
         )
 
         const fallbackReasons: string[] = []
@@ -257,10 +345,20 @@ export default class BrowserFunc {
             const captured = await this.getCapturedDashboard(page)
             if (captured) {
                 this.logCapturedDashboard(captured, page)
-                return captured.data
+                return this.acceptDashboard(captured.data, 'capture')
+            }
+            const capturedPoints = this.getCapturedPoints(page)
+            if (allowLightweightPoints && capturedPoints) {
+                this.rememberTrustedPoints(capturedPoints.points, 'capture-points')
+                this.lastDashboardSource = 'capture-points'
+                return this.confirmedPointsSnapshot(capturedPoints.points, 'capture-points', capturedPoints.observedAt)
             }
 
-            const parsePage = async (label: string): Promise<DashboardData | null> => {
+            const parsePage = async (label: string, source: string): Promise<DashboardData | null> => {
+                if (this.dashboardRemainingMs(deadline) <= 0) {
+                    fallbackReasons.push(`${label}：dashboard 获取总时限已到`)
+                    return null
+                }
                 try {
                     const [html, title, flightEntries] = await Promise.all([
                         page.content(),
@@ -284,9 +382,9 @@ export default class BrowserFunc {
                     })
 
                     const flight = dashboardFromFlightEntries(flightEntries, { geoLocale })
-                    if (flight.data) return flight.data
+                    if (flight.data) return this.acceptDashboard(flight.data, `${source}-flight`)
                     const htmlResult = dashboardFromHtml(html, { geoLocale })
-                    if (htmlResult.data) return htmlResult.data
+                    if (htmlResult.data) return this.acceptDashboard(htmlResult.data, `${source}-html`)
                     fallbackReasons.push(`${label}：${flight.reason}；${htmlResult.reason}`)
                 } catch {
                     fallbackReasons.push(`${label}内容读取失败`)
@@ -294,106 +392,163 @@ export default class BrowserFunc {
                 return null
             }
 
-            const currentPageData = await parsePage('当前页面')
+            const currentPageData = await parsePage('当前页面', 'current-page')
             if (currentPageData) return currentPageData
 
-            if (apiFailure.status === 404) {
-                await page.reload({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null)
-                await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => null)
+            const mayNavigateFallback = apiFailure.category !== 'auth' && apiFailure.category !== 'rate-limit'
+            if (mayNavigateFallback && this.dashboardRemainingMs(deadline) > 0) {
+                const dashboardUrl = `${dashboardOrigin}/dashboard`
+                const navigationTimeout = Math.min(15000, this.dashboardRequestTimeout(deadline, 15000))
+                let currentPath = ''
+                try {
+                    currentPath = new URL(page.url()).pathname
+                } catch {
+                    // Use goto below when the current URL cannot be parsed.
+                }
+                try {
+                    if (currentPath.startsWith('/dashboard')) {
+                        await page.reload({ waitUntil: 'domcontentloaded', timeout: navigationTimeout })
+                    } else {
+                        await page.goto(dashboardUrl, { waitUntil: 'domcontentloaded', timeout: navigationTimeout })
+                    }
+                } catch {
+                    fallbackReasons.push('Dashboard 页面导航失败')
+                }
+                const networkIdleTimeout = Math.min(10000, this.dashboardRemainingMs(deadline))
+                if (networkIdleTimeout > 0) {
+                    try {
+                        await page.waitForLoadState('networkidle', { timeout: networkIdleTimeout })
+                    } catch {
+                        // A bounded networkidle miss does not prevent parsing captured/page data.
+                    }
+                }
                 const reloadedCapture = await this.getCapturedDashboard(page)
                 if (reloadedCapture) {
                     this.logCapturedDashboard(reloadedCapture, page)
-                    return reloadedCapture.data
+                    return this.acceptDashboard(reloadedCapture.data, 'reload-capture')
                 }
-                const reloadedPageData = await parsePage('页面重载')
+                const reloadedPoints = this.getCapturedPoints(page)
+                if (allowLightweightPoints && reloadedPoints) {
+                    this.rememberTrustedPoints(reloadedPoints.points, 'reload-capture-points')
+                    this.lastDashboardSource = 'reload-capture-points'
+                    return this.confirmedPointsSnapshot(
+                        reloadedPoints.points,
+                        'reload-capture-points',
+                        reloadedPoints.observedAt
+                    )
+                }
+                const reloadedPageData = await parsePage('Dashboard 页面重载', 'reload-page')
                 if (reloadedPageData) return reloadedPageData
             }
         }
 
-        try {
-            const dashboardUrl = `${dashboardOrigin}/dashboard`
-            const browserResponse = await this.requestWithBrowserContext(page, dashboardUrl, {
-                Referer: `${dashboardOrigin}/`
-            })
-            let status: number
-            let headers: unknown
-            let html: string
-            let finalUrl: string | null
-            let redirected: boolean | null
-
-            if (browserResponse) {
-                status = browserResponse.status
-                headers = browserResponse.headers
-                html = browserResponse.body
-                finalUrl = browserResponse.finalUrl
-                redirected = browserResponse.redirected
-            } else {
-                const response = await this.requestDashboardAxios({
-                    url: dashboardUrl,
-                    method: 'GET',
-                    headers: {
-                        ...this.fingerprintHeadersWithoutCookie(),
-                        Cookie: this.buildCookieHeaderForUrl(this.bot.cookies.mobile, dashboardUrl),
+        if (this.dashboardRemainingMs(deadline) > 0) {
+            try {
+                const dashboardUrl = `${dashboardOrigin}/dashboard`
+                const requestTimeout = this.dashboardRequestTimeout(deadline)
+                const browserResponse = await this.requestWithBrowserContext(
+                    page,
+                    dashboardUrl,
+                    {
                         Referer: `${dashboardOrigin}/`
                     },
-                    responseType: 'text',
-                    transformResponse: data => data
+                    requestTimeout
+                )
+                let status: number
+                let headers: unknown
+                let html: string
+                let finalUrl: string | null
+                let redirected: boolean | null
+
+                if (browserResponse) {
+                    status = browserResponse.status
+                    headers = browserResponse.headers
+                    html = browserResponse.body
+                    finalUrl = browserResponse.finalUrl
+                    redirected = browserResponse.redirected
+                } else {
+                    const response = await this.requestDashboardAxios(
+                        {
+                            url: dashboardUrl,
+                            method: 'GET',
+                            headers: {
+                                ...this.fingerprintHeadersWithoutCookie(),
+                                Cookie: this.buildCookieHeaderForUrl(this.bot.cookies.mobile, dashboardUrl),
+                                Referer: `${dashboardOrigin}/`
+                            },
+                            responseType: 'text',
+                            transformResponse: data => data
+                        },
+                        requestTimeout
+                    )
+                    status = response.status
+                    headers = response.headers
+                    html = typeof response.data === 'string' ? response.data : ''
+                    finalUrl = axiosFinalUrl(response)
+                    redirected = axiosRedirected(response, dashboardUrl)
+                }
+                this.logDashboardDiagnostic('html', {
+                    path: '/dashboard',
+                    status,
+                    code: null,
+                    contentType: responseContentType(headers),
+                    topLevelFields: [],
+                    htmlLength: html.length,
+                    pageUrl: page && !page.isClosed() ? this.safePageUrl(page.url()) : null,
+                    pageTitle: null,
+                    parserReason: null,
+                    finalUrl,
+                    redirected,
+                    flightEntryCount: null,
+                    captureCount: null
                 })
-                status = response.status
-                headers = response.headers
-                html = typeof response.data === 'string' ? response.data : ''
-                finalUrl = axiosFinalUrl(response)
-                redirected = axiosRedirected(response, dashboardUrl)
+                const parsed = dashboardFromHtml(html, { geoLocale })
+                if (parsed.data) return this.acceptDashboard(parsed.data, 'html-request')
+                fallbackReasons.push(`HTML 请求：${parsed.reason}`)
+            } catch (error) {
+                const diagnostic = this.safeDashboardDiagnostic(error)
+                this.logDashboardDiagnostic('html', {
+                    path: '/dashboard',
+                    status: diagnostic.status,
+                    code: diagnostic.code,
+                    contentType: diagnostic.contentType,
+                    topLevelFields: diagnostic.topLevelFields,
+                    htmlLength: null,
+                    pageUrl: page && !page.isClosed() ? this.safePageUrl(page.url()) : null,
+                    pageTitle: null,
+                    parserReason: null,
+                    finalUrl: diagnostic.finalUrl,
+                    redirected: diagnostic.redirected,
+                    flightEntryCount: null,
+                    captureCount: null
+                })
+                fallbackReasons.push(`HTML 请求：${this.describeDashboardFailure(diagnostic)}`)
             }
-            this.logDashboardDiagnostic('html', {
-                path: '/dashboard',
-                status,
-                code: null,
-                contentType: responseContentType(headers),
-                topLevelFields: [],
-                htmlLength: html.length,
-                pageUrl: page && !page.isClosed() ? this.safePageUrl(page.url()) : null,
-                pageTitle: null,
-                parserReason: null,
-                finalUrl,
-                redirected,
-                flightEntryCount: null,
-                captureCount: null
-            })
-            const parsed = dashboardFromHtml(html, { geoLocale })
-            if (parsed.data) return parsed.data
-            fallbackReasons.push(`HTML 请求：${parsed.reason}`)
-        } catch (error) {
-            const diagnostic = safeAxiosDiagnostic(error)
-            this.logDashboardDiagnostic('html', {
-                path: '/dashboard',
-                status: diagnostic.status,
-                code: diagnostic.code,
-                contentType: diagnostic.contentType,
-                topLevelFields: diagnostic.topLevelFields,
-                htmlLength: null,
-                pageUrl: page && !page.isClosed() ? this.safePageUrl(page.url()) : null,
-                pageTitle: null,
-                parserReason: null,
-                finalUrl: diagnostic.finalUrl,
-                redirected: diagnostic.redirected,
-                flightEntryCount: null,
-                captureCount: null
-            })
-            fallbackReasons.push(`HTML 请求：${this.describeDashboardFailure(diagnostic)}`)
+        } else {
+            fallbackReasons.push('HTML 请求：dashboard 获取总时限已到')
         }
 
-        if (apiFailure.category === 'endpoint-unavailable' || apiFailure.category === 'invalid-response') {
+        if (
+            ['endpoint-unavailable', 'invalid-response', 'server', 'network'].includes(apiFailure.category) &&
+            this.dashboardRemainingMs(deadline) > 0
+        ) {
             const flyoutReasons: string[] = []
             for (const targetUrl of this.panelFlyoutFallbackUrls(geoLocale)) {
                 const target = new URL(targetUrl)
+                if (this.dashboardRemainingMs(deadline) <= 0) break
                 try {
                     const functionalHeaders = {
                         Accept: 'application/json',
                         Referer: `${target.origin}/`,
                         Origin: target.origin
                     }
-                    const browserResponse = await this.requestWithBrowserContext(page, targetUrl, functionalHeaders)
+                    const requestTimeout = this.dashboardRequestTimeout(deadline)
+                    const browserResponse = await this.requestWithBrowserContext(
+                        page,
+                        targetUrl,
+                        functionalHeaders,
+                        requestTimeout
+                    )
                     let status: number
                     let headers: unknown
                     let payload: unknown
@@ -406,17 +561,20 @@ export default class BrowserFunc {
                         finalUrl = browserResponse.finalUrl
                         redirected = browserResponse.redirected
                     } else {
-                        const response = await this.requestDashboardAxios({
-                            url: targetUrl,
-                            method: 'GET',
-                            headers: {
-                                ...this.fingerprintHeadersWithoutCookie(),
-                                ...functionalHeaders,
-                                Cookie: this.buildCookieHeaderForUrl(this.bot.cookies.mobile, targetUrl)
+                        const response = await this.requestDashboardAxios(
+                            {
+                                url: targetUrl,
+                                method: 'GET',
+                                headers: {
+                                    ...this.fingerprintHeadersWithoutCookie(),
+                                    ...functionalHeaders,
+                                    Cookie: this.buildCookieHeaderForUrl(this.bot.cookies.mobile, targetUrl)
+                                },
+                                maxRedirects: 0,
+                                validateStatus: () => true
                             },
-                            maxRedirects: 0,
-                            validateStatus: () => true
-                        })
+                            requestTimeout
+                        )
                         status = response.status
                         headers = response.headers
                         payload = response.data
@@ -470,11 +628,11 @@ export default class BrowserFunc {
                             'GET-DASHBOARD-DATA',
                             `使用 Bing flyout dashboard 降级 | host=${target.hostname} | unavailableFields=${unavailableFields || 'none'}`
                         )
-                        return parsed.data
+                        return this.acceptDashboard(parsed.data, 'flyout')
                     }
                     flyoutReasons.push(`${target.hostname}：${parserReason}`)
                 } catch (error) {
-                    const diagnostic = safeAxiosDiagnostic(error)
+                    const diagnostic = this.safeDashboardDiagnostic(error)
                     const reason = this.describeDashboardFailure(diagnostic)
                     this.logDashboardDiagnostic('flyout', {
                         path: target.pathname,
@@ -507,8 +665,95 @@ export default class BrowserFunc {
             apiStatus: apiFailure.status,
             apiFailureKind: apiFailure.category,
             apiReason,
-            fallbackReason
+            fallbackReason,
+            attempts: apiAttempts,
+            elapsedMs: Date.now() - startedAt
         })
+    }
+
+    public resetCurrentPointsCache(): void {
+        this.trustedPointsCache = null
+        this.lastDashboardSource = null
+    }
+
+    private isCurrentPointsSnapshot(value: DashboardData | CurrentPointsSnapshot): value is CurrentPointsSnapshot {
+        return 'confidence' in value && 'points' in value
+    }
+
+    private confirmedPointsSnapshot(points: number, source: string, observedAt?: string): CurrentPointsSnapshot {
+        return {
+            points,
+            source,
+            confidence: 'confirmed',
+            observedAt: observedAt ?? this.trustedPointsCache?.observedAt ?? new Date().toISOString(),
+            error: null
+        }
+    }
+
+    private currentPointsScope(): string {
+        return this.bot.userData?.accountEmail?.trim().toLowerCase() || '__unscoped__'
+    }
+
+    private acceptDashboard(data: DashboardData, source: string): DashboardData {
+        this.lastDashboardSource = source
+        const parsed = availablePointsFromApiPayload({ dashboard: data })
+        if (parsed.points !== null) {
+            this.rememberTrustedPoints(parsed.points, source)
+        }
+        return data
+    }
+
+    private rememberTrustedPoints(points: number, source: string): void {
+        this.pointsCacheSequence += 1
+        this.trustedPointsCache = {
+            scope: this.currentPointsScope(),
+            points,
+            source,
+            observedAt: new Date().toISOString(),
+            sequence: this.pointsCacheSequence
+        }
+    }
+
+    private dashboardRemainingMs(deadline: number): number {
+        return Math.max(0, deadline - Date.now())
+    }
+
+    private dashboardRequestTimeout(deadline: number, requested = DASHBOARD_REQUEST_TIMEOUT_MS): number {
+        const remaining = this.dashboardRemainingMs(deadline)
+        if (remaining <= 0) throw new Error('dashboard deadline exceeded')
+        return Math.max(1, Math.min(requested, remaining))
+    }
+
+    private async waitWithinDashboardBudget(delayMs: number, deadline: number): Promise<void> {
+        const remaining = this.dashboardRemainingMs(deadline)
+        if (remaining <= 0) return
+        await this.bot.utils.wait(Math.min(delayMs, remaining))
+    }
+
+    private networkDashboardFailure(): SafeHttpDiagnostic {
+        return {
+            status: null,
+            code: null,
+            contentType: null,
+            topLevelFields: [],
+            category: 'network',
+            finalUrl: null,
+            redirected: null
+        }
+    }
+
+    private safeDashboardDiagnostic(error: unknown): SafeHttpDiagnostic {
+        const diagnostic = safeAxiosDiagnostic(error)
+        if (diagnostic.code || !(error instanceof Error)) return diagnostic
+        const code =
+            error.name.toLowerCase().includes('timeout') || /timed?\s*out|deadline/i.test(error.message)
+                ? 'ETIMEDOUT'
+                : error.name.slice(0, 80)
+        return { ...diagnostic, code }
+    }
+
+    private shouldRetryDashboardApi(diagnostic: SafeHttpDiagnostic): boolean {
+        return diagnostic.status === null || [502, 503, 504].includes(diagnostic.status)
     }
 
     private dashboardOrigin(page: Page | undefined): string {
@@ -556,7 +801,8 @@ export default class BrowserFunc {
     private async requestWithBrowserContext(
         page: Page | undefined,
         targetUrl: string,
-        headers: Record<string, string>
+        headers: Record<string, string>,
+        timeoutMs = DASHBOARD_REQUEST_TIMEOUT_MS
     ): Promise<BrowserContextHttpResponse | null> {
         const request = this.dashboardRequestContext(page)
         if (!request) return null
@@ -567,13 +813,13 @@ export default class BrowserFunc {
             response = await request.get(targetUrl, {
                 headers,
                 failOnStatusCode: false,
-                timeout: DASHBOARD_REQUEST_TIMEOUT_MS
+                timeout: timeoutMs
             })
         } catch (error) {
             this.bot.logger.warn(
                 this.bot.isMobile,
                 'DASHBOARD-HTTP',
-                `BrowserContext 请求失败 | elapsedMs=${Date.now() - startedAt} | timeoutMs=${DASHBOARD_REQUEST_TIMEOUT_MS} | reason=${error instanceof Error ? error.message : String(error)}`
+                `BrowserContext 请求失败 | elapsedMs=${Date.now() - startedAt} | timeoutMs=${timeoutMs} | reason=${this.safeDashboardDiagnostic(error).code ?? 'network'}`
             )
             throw error
         }
@@ -583,7 +829,7 @@ export default class BrowserFunc {
             this.bot.logger.debug(
                 this.bot.isMobile,
                 'DASHBOARD-HTTP',
-                `BrowserContext 请求完成 | elapsedMs=${Date.now() - startedAt} | timeoutMs=${DASHBOARD_REQUEST_TIMEOUT_MS} | status=${status}`
+                `BrowserContext 请求完成 | elapsedMs=${Date.now() - startedAt} | timeoutMs=${timeoutMs} | status=${status}`
             )
             return {
                 status,
@@ -597,19 +843,19 @@ export default class BrowserFunc {
         }
     }
 
-    private async requestDashboardAxios(config: AxiosRequestConfig) {
+    private async requestDashboardAxios(config: AxiosRequestConfig, timeoutMs = DASHBOARD_REQUEST_TIMEOUT_MS) {
         const startedAt = Date.now()
         try {
             const client = this.bot.axios as typeof this.bot.axios & {
                 requestOnce?: (request: AxiosRequestConfig, timeout?: number) => Promise<AxiosResponse>
             }
             const response = client.requestOnce
-                ? await client.requestOnce(config, DASHBOARD_REQUEST_TIMEOUT_MS)
-                : await client.request({ ...config, timeout: DASHBOARD_REQUEST_TIMEOUT_MS })
+                ? await client.requestOnce(config, timeoutMs)
+                : await client.request({ ...config, timeout: timeoutMs, 'axios-retry': { retries: 0 } })
             this.bot.logger.debug(
                 this.bot.isMobile,
                 'DASHBOARD-HTTP',
-                `Axios 请求完成 | elapsedMs=${Date.now() - startedAt} | timeoutMs=${DASHBOARD_REQUEST_TIMEOUT_MS} | status=${response.status}`
+                `Axios 请求完成 | elapsedMs=${Date.now() - startedAt} | timeoutMs=${timeoutMs} | status=${response.status}`
             )
             return response
         } catch (error) {
@@ -617,7 +863,7 @@ export default class BrowserFunc {
             this.bot.logger.warn(
                 this.bot.isMobile,
                 'DASHBOARD-HTTP',
-                `Axios 请求失败 | elapsedMs=${Date.now() - startedAt} | timeoutMs=${DASHBOARD_REQUEST_TIMEOUT_MS} | status=${diagnostic.status ?? 'n/a'} | reason=${diagnostic.category}`
+                `Axios 请求失败 | elapsedMs=${Date.now() - startedAt} | timeoutMs=${timeoutMs} | status=${diagnostic.status ?? 'n/a'} | reason=${diagnostic.category}`
             )
             throw error
         }
@@ -662,6 +908,14 @@ export default class BrowserFunc {
             }
 
             state.candidateCount += 1
+            const availablePoints = availablePointsFromApiPayload(payload)
+            if (availablePoints.points !== null) {
+                state.pointsCandidate = {
+                    points: availablePoints.points,
+                    path: url.pathname.slice(0, 300),
+                    observedAt: new Date().toISOString()
+                }
+            }
             const wrapped = dashboardFromApiPayload(payload, { geoLocale: state.geoLocale })
             const direct = wrapped.data ? null : validateDashboardData(payload, { geoLocale: state.geoLocale })
             const data = wrapped.data ?? (direct?.valid ? direct.data : null)
@@ -686,6 +940,10 @@ export default class BrowserFunc {
             await Promise.allSettled([...state.pending])
         }
         return state.candidate
+    }
+
+    private getCapturedPoints(page: Page): DashboardCaptureState['pointsCandidate'] {
+        return this.dashboardCaptures.get(page)?.pointsCandidate ?? null
     }
 
     private logCapturedDashboard(captured: CapturedDashboard, page: Page): void {
@@ -1102,17 +1360,67 @@ export default class BrowserFunc {
      * @returns {number} 当前总积分金额
      */
     async getCurrentPoints(): Promise<number> {
-        try {
-            const data = await this.getDashboardData()
+        const snapshot = await this.getCurrentPointsSnapshot()
+        if (snapshot.confidence === 'confirmed' && snapshot.points !== null) return snapshot.points
 
-            return data.userStatus.availablePoints
+        const details = snapshot.error
+        this.bot.logger.error(
+            this.bot.isMobile,
+            'GET-CURRENT-POINTS',
+            `积分读取未确认 | confidence=${snapshot.confidence} | source=${snapshot.source ?? 'none'} | status=${details?.apiStatus ?? 'n/a'} | attempts=${details?.attempts ?? 0} | elapsedMs=${details?.elapsedMs ?? 0}`
+        )
+        throw new DashboardFetchError({
+            apiStatus: details?.apiStatus,
+            apiReason: details?.apiReason ?? '积分读取未确认',
+            fallbackReason: details?.fallbackReason ?? '没有本次请求确认的积分数据',
+            apiFailureKind: details?.apiFailureKind ?? 'invalid-response',
+            attempts: details?.attempts,
+            elapsedMs: details?.elapsedMs
+        })
+    }
+
+    async getCurrentPointsSnapshot(): Promise<CurrentPointsSnapshot> {
+        const startingSequence = this.pointsCacheSequence
+        try {
+            const result = await this.getDashboardResult(undefined, true)
+            if (this.isCurrentPointsSnapshot(result)) return result
+            const data = result
+            const points = data.userStatus.availablePoints
+            return {
+                points,
+                source: this.lastDashboardSource ?? 'dashboard',
+                confidence: 'confirmed',
+                observedAt: this.trustedPointsCache?.observedAt ?? new Date().toISOString(),
+                error: null
+            }
         } catch (error) {
-            this.bot.logger.error(
-                this.bot.isMobile,
-                'GET-CURRENT-POINTS',
-                `发生错误: ${error instanceof Error ? error.message : String(error)}`
-            )
-            throw error
+            const details = dashboardFailureDetails(error)
+            const cache = this.trustedPointsCache?.scope === this.currentPointsScope() ? this.trustedPointsCache : null
+            if (cache && cache.sequence > startingSequence) {
+                return {
+                    points: cache.points,
+                    source: cache.source,
+                    confidence: 'confirmed',
+                    observedAt: cache.observedAt,
+                    error: details
+                }
+            }
+            if (cache) {
+                return {
+                    points: cache.points,
+                    source: cache.source,
+                    confidence: 'cached',
+                    observedAt: cache.observedAt,
+                    error: details
+                }
+            }
+            return {
+                points: null,
+                source: null,
+                confidence: 'unknown',
+                observedAt: null,
+                error: details
+            }
         }
     }
 
@@ -1312,158 +1620,164 @@ export default class BrowserFunc {
         }
     }
 
+    private async clickVisibleClaimButton(page: Page, mode: ClaimButtonSearchMode): Promise<ClaimButtonClickResult> {
+        return page.evaluate(searchMode => {
+            const normalizeText = (value: string | null | undefined) => (value ?? '').replace(/\s+/g, ' ').trim()
+            const isVisible = (el: Element) => {
+                const rect = (el as HTMLElement).getBoundingClientRect()
+                const style = window.getComputedStyle(el)
+                return (
+                    rect.width > 0 &&
+                    rect.height > 0 &&
+                    style.visibility !== 'hidden' &&
+                    style.display !== 'none' &&
+                    style.pointerEvents !== 'none'
+                )
+            }
+            const isDisabled = (el: Element) =>
+                (el as HTMLButtonElement).disabled === true ||
+                el.getAttribute('aria-disabled') === 'true' ||
+                el.getAttribute('disabled') !== null
+            const selector = 'button,a,[role="button"],[data-testid],[aria-label],[title]'
+            const dialogSelector =
+                '[role="dialog"],[aria-modal="true"],[class*="modal" i],[class*="dialog" i],[class*="drawer" i]'
+            const dialogRoots = Array.from(document.querySelectorAll(dialogSelector)).filter(isVisible)
+            const confirmCandidates = dialogRoots
+                .flatMap(root => Array.from(root.querySelectorAll(selector)))
+                .filter(el => !isDisabled(el) && isVisible(el))
+                .map(el => {
+                    const element = el as HTMLElement
+                    const text = normalizeText(
+                        element.innerText ||
+                            element.textContent ||
+                            el.getAttribute('aria-label') ||
+                            el.getAttribute('title')
+                    )
+                    let score = 0
+                    if (text === '领取积分') score += 100
+                    if (/领取积分|claim points/i.test(text)) score += 80
+                    if (/领取|claim/i.test(text)) score += 40
+                    if (element.tagName.toLowerCase() === 'button') score += 10
+                    return { el, score }
+                })
+                .filter(candidate => candidate.score >= 50)
+                .sort((a, b) => b.score - a.score)
+
+            const confirmTarget = confirmCandidates[0]
+            if (confirmTarget) {
+                confirmTarget.el.scrollIntoView({ block: 'center', inline: 'center' })
+                ;(confirmTarget.el as HTMLElement).click()
+                return { clicked: true, phase: 'confirm' as const, score: confirmTarget.score }
+            }
+
+            if (searchMode === 'confirm') return { clicked: false, reason: 'no-confirm-button' }
+
+            const entryCandidates = Array.from(document.querySelectorAll(selector))
+                .filter(el => !el.closest(dialogSelector) && !isDisabled(el) && isVisible(el))
+                .map(el => {
+                    const element = el as HTMLElement
+                    const text = normalizeText(
+                        element.innerText ||
+                            element.textContent ||
+                            el.getAttribute('aria-label') ||
+                            el.getAttribute('title')
+                    )
+                    const context = normalizeText(
+                        [
+                            text,
+                            el.closest('[data-testid], section, article, div')?.textContent,
+                            el.closest('[data-testid], section, article, div')?.getAttribute('data-testid')
+                        ].join(' ')
+                    )
+                    let score = 0
+                    if (/可领取/.test(text)) score += 60
+                    if (/领取|claim/i.test(text)) score += 40
+                    if (/积分|points?|奖励|bonus/i.test(context)) score += 20
+                    if (element.tagName.toLowerCase() === 'button') score += 10
+                    return { el, score }
+                })
+                .filter(candidate => candidate.score >= 80)
+                .sort((a, b) => b.score - a.score)
+
+            const entryTarget = entryCandidates[0]
+            if (!entryTarget) return { clicked: false, reason: 'no-entry-button' }
+
+            entryTarget.el.scrollIntoView({ block: 'center', inline: 'center' })
+            ;(entryTarget.el as HTMLElement).click()
+            return { clicked: true, phase: 'entry' as const, score: entryTarget.score }
+        }, mode)
+    }
+
+    private async waitAndClickClaimButton(
+        page: Page,
+        mode: ClaimButtonSearchMode,
+        timeoutMs: number
+    ): Promise<ClaimButtonClickResult> {
+        const deadline = Date.now() + Math.max(0, timeoutMs)
+        let result = await this.clickVisibleClaimButton(page, mode)
+        while (!result.clicked && Date.now() < deadline) {
+            await new Promise(resolve => setTimeout(resolve, CLAIM_POLL_INTERVAL_MS))
+            result = await this.clickVisibleClaimButton(page, mode)
+        }
+        return result
+    }
+
     async clickClaimBonusPointsButton(page: Page): Promise<boolean> {
         try {
+            const openDialogResult = await this.clickVisibleClaimButton(page, 'confirm').catch(
+                (): ClaimButtonClickResult => ({
+                    clicked: false,
+                    reason: 'confirm-precheck-failed'
+                })
+            )
+            if (openDialogResult.clicked) {
+                this.bot.logger.info(
+                    this.bot.isMobile,
+                    'CLAIM-BONUS-POINTS',
+                    `已直接点击打开抽屉中的领取确认按钮 | score=${openDialogResult.score ?? 0}`
+                )
+                await this.bot.utils.wait(this.bot.utils.randomDelay(5000, 8000))
+                return true
+            }
+
             await page
                 .goto('https://rewards.bing.com/dashboard', { waitUntil: 'domcontentloaded', timeout: 15000 })
                 .catch(() => {})
             await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {})
 
-            const entryResult = await page.evaluate(() => {
-                const normalizeText = (value: string | null | undefined) => (value ?? '').replace(/\s+/g, ' ').trim()
-                const isVisible = (el: Element) => {
-                    const rect = (el as HTMLElement).getBoundingClientRect()
-                    const style = window.getComputedStyle(el)
-                    return (
-                        rect.width > 0 &&
-                        rect.height > 0 &&
-                        style.visibility !== 'hidden' &&
-                        style.display !== 'none' &&
-                        style.pointerEvents !== 'none'
-                    )
-                }
-                const isDisabled = (el: Element) =>
-                    (el as HTMLButtonElement).disabled === true ||
-                    el.getAttribute('aria-disabled') === 'true' ||
-                    el.getAttribute('disabled') !== null
-                const selector = 'button,a,[role="button"],[data-testid],[aria-label],[title]'
-                const candidates = Array.from(document.querySelectorAll(selector))
-                    .filter(el => !isDisabled(el) && isVisible(el))
-                    .map(el => {
-                        const element = el as HTMLElement
-                        const text = normalizeText(
-                            [
-                                element.innerText,
-                                element.textContent,
-                                el.getAttribute('aria-label'),
-                                el.getAttribute('title'),
-                                el.getAttribute('data-testid'),
-                                el.id,
-                                el.className?.toString()
-                            ].join(' ')
-                        )
-                        const context = normalizeText(
-                            [
-                                text,
-                                el.closest('[data-testid], section, article, div')?.textContent,
-                                el.closest('[data-testid], section, article, div')?.getAttribute('data-testid'),
-                                el.closest('[class], [id]')?.className?.toString(),
-                                el.closest('[class], [id]')?.id
-                            ].join(' ')
-                        )
-                        let score = 0
-                        if (/可领取/.test(text)) score += 60
-                        if (/领取|claim/i.test(text)) score += 40
-                        if (/积分|points?|奖励|bonus/i.test(context)) score += 20
-                        if (element.tagName.toLowerCase() === 'button') score += 10
-                        return { el, text, score }
-                    })
-                    .filter(candidate => candidate.score >= 80)
-                    .sort((a, b) => b.score - a.score)
-
-                const target = candidates[0]
-                if (!target) return { clicked: false, reason: 'no-entry-button' }
-
-                target.el.scrollIntoView({ block: 'center', inline: 'center' })
-                ;(target.el as HTMLElement).click()
-                return { clicked: true, text: target.text.slice(0, 100), score: target.score }
-            })
-
+            const entryResult = await this.waitAndClickClaimButton(page, 'entry-or-confirm', CLAIM_ENTRY_TIMEOUT_MS)
             if (!entryResult.clicked) {
                 this.bot.logger.warn(
                     this.bot.isMobile,
                     'CLAIM-BONUS-POINTS',
-                    `页面点击兜底未找到奖励领取入口 | reason=${entryResult.reason}`
+                    `页面点击兜底未找到奖励领取入口 | reason=${entryResult.reason ?? 'unknown'} | timeoutMs=${CLAIM_ENTRY_TIMEOUT_MS}`
                 )
                 return false
+            }
+
+            if (entryResult.phase === 'confirm') {
+                this.bot.logger.info(
+                    this.bot.isMobile,
+                    'CLAIM-BONUS-POINTS',
+                    `页面加载后直接点击领取确认按钮 | score=${entryResult.score ?? 0}`
+                )
+                await this.bot.utils.wait(this.bot.utils.randomDelay(5000, 8000))
+                return true
             }
 
             this.bot.logger.info(
                 this.bot.isMobile,
                 'CLAIM-BONUS-POINTS',
-                `已点击 dashboard 奖励领取入口 | 文本="${entryResult.text ?? ''}" | score=${entryResult.score ?? 0}`
+                `已点击 dashboard 奖励领取入口 | score=${entryResult.score ?? 0}`
             )
             await this.bot.utils.wait(this.bot.utils.randomDelay(1500, 3000))
 
-            const confirmResult = await page.evaluate(() => {
-                const normalizeText = (value: string | null | undefined) => (value ?? '').replace(/\s+/g, ' ').trim()
-                const isVisible = (el: Element) => {
-                    const rect = (el as HTMLElement).getBoundingClientRect()
-                    const style = window.getComputedStyle(el)
-                    return (
-                        rect.width > 0 &&
-                        rect.height > 0 &&
-                        style.visibility !== 'hidden' &&
-                        style.display !== 'none' &&
-                        style.pointerEvents !== 'none'
-                    )
-                }
-                const isDisabled = (el: Element) =>
-                    (el as HTMLButtonElement).disabled === true ||
-                    el.getAttribute('aria-disabled') === 'true' ||
-                    el.getAttribute('disabled') !== null
-                const dialogRoots = Array.from(
-                    document.querySelectorAll(
-                        '[role="dialog"],[aria-modal="true"],[class*="modal" i],[class*="dialog" i],[class*="drawer" i]'
-                    )
-                ).filter(isVisible)
-                const roots = dialogRoots.length > 0 ? dialogRoots : [document.body]
-                const candidates = roots
-                    .flatMap(root =>
-                        Array.from(root.querySelectorAll('button,a,[role="button"],[data-testid],[aria-label],[title]'))
-                    )
-                    .filter(el => !isDisabled(el) && isVisible(el))
-                    .map(el => {
-                        const element = el as HTMLElement
-                        const text = normalizeText(
-                            [
-                                element.innerText,
-                                element.textContent,
-                                el.getAttribute('aria-label'),
-                                el.getAttribute('title'),
-                                el.getAttribute('data-testid'),
-                                el.id,
-                                el.className?.toString()
-                            ].join(' ')
-                        )
-                        let score = 0
-                        if (text === '领取积分') score += 100
-                        if (/领取积分|claim points/i.test(text)) score += 80
-                        if (/领取|claim/i.test(text)) score += 40
-                        if (element.tagName.toLowerCase() === 'button') score += 10
-                        return { el, text, score }
-                    })
-                    .filter(candidate => candidate.score >= 50)
-                    .sort((a, b) => b.score - a.score)
-
-                const target = candidates[0]
-                if (!target) {
-                    const dialogText = dialogRoots
-                        .map(root => normalizeText(root.textContent).slice(0, 160))
-                        .join(' | ')
-                    return { clicked: false, reason: 'no-confirm-button', dialogText }
-                }
-
-                target.el.scrollIntoView({ block: 'center', inline: 'center' })
-                ;(target.el as HTMLElement).click()
-                return { clicked: true, text: target.text.slice(0, 100), score: target.score }
-            })
-
+            const confirmResult = await this.waitAndClickClaimButton(page, 'confirm', CLAIM_CONFIRM_TIMEOUT_MS)
             if (!confirmResult.clicked) {
                 this.bot.logger.warn(
                     this.bot.isMobile,
                     'CLAIM-BONUS-POINTS',
-                    `页面点击兜底未找到抽屉确认按钮 | reason=${confirmResult.reason} | dialog="${confirmResult.dialogText ?? ''}"`
+                    `页面点击兜底未找到抽屉确认按钮 | reason=${confirmResult.reason ?? 'unknown'} | timeoutMs=${CLAIM_CONFIRM_TIMEOUT_MS}`
                 )
                 return false
             }
@@ -1471,7 +1785,7 @@ export default class BrowserFunc {
             this.bot.logger.info(
                 this.bot.isMobile,
                 'CLAIM-BONUS-POINTS',
-                `已点击 dashboard 奖励领取确认按钮 | 文本="${confirmResult.text ?? ''}" | score=${confirmResult.score ?? 0}`
+                `已点击 dashboard 奖励领取确认按钮 | score=${confirmResult.score ?? 0}`
             )
             await this.bot.utils.wait(this.bot.utils.randomDelay(5000, 8000))
             return true

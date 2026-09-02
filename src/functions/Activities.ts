@@ -13,7 +13,7 @@ import { UrlRewardNew } from './activities/api/UrlRewardNew'
 import { Quiz } from './activities/api/Quiz'
 import { FindClippy } from './activities/api/FindClippy'
 import { DoubleSearchPoints } from './activities/api/DoubleSearchPoints'
-import { ClaimBonusPoints } from './activities/api/ClaimBonusPoints'
+import { ClaimBonusPoints, type ClaimBonusOutcome } from './activities/api/ClaimBonusPoints'
 import { StreakProtection } from './activities/api/StreakProtection'
 
 // Browser
@@ -100,9 +100,9 @@ export default class Activities {
         await doubleSearchPoints.doDoubleSearchPoints(promotion)
     }
 
-    doClaimBonusPoints = async (): Promise<void> => {
+    doClaimBonusPoints = async (): Promise<ClaimBonusOutcome> => {
         const claimBonusPoints = new ClaimBonusPoints(this.bot)
-        await claimBonusPoints.claimBonusPoints()
+        return claimBonusPoints.claimBonusPoints()
     }
 
     doStreakProtection = async (): Promise<void> => {

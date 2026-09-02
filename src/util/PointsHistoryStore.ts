@@ -44,6 +44,7 @@ export interface PointRunRecord {
     categories: PointCategoryTotals
     status: PointRunStatus
     taskSummary: PointTaskSummaryLike[]
+    balanceUnconfirmed?: boolean
     failureStage?: string
     error?: string
 }
@@ -333,6 +334,7 @@ function normalizeRun(input: Partial<PointRunRecord>, day: PointDayRecord): Poin
         categories: normalizeCategories(input.categories),
         status: normalizeStatus(input.status),
         taskSummary: normalizeTaskSummary(input.taskSummary),
+        balanceUnconfirmed: input.balanceUnconfirmed === true ? true : undefined,
         failureStage: typeof input.failureStage === 'string' ? sanitizeText(input.failureStage) : undefined,
         error: typeof input.error === 'string' ? sanitizeText(input.error) : undefined
     }
@@ -724,6 +726,7 @@ export function finishPointRun(
         afterPoints?: number
         runGained?: number
         taskSummary?: PointTaskSummaryLike[]
+        balanceUnconfirmed?: boolean
         failureStage?: string
         error?: string
     }
@@ -748,6 +751,7 @@ export function finishPointRun(
         run.finishedAt = new Date().toISOString()
         run.status = statusFromTaskSummary(patch.status, summary)
         run.taskSummary = [...run.taskSummary, ...summary]
+        if (patch.balanceUnconfirmed !== undefined) run.balanceUnconfirmed = patch.balanceUnconfirmed
         if (patch.failureStage) run.failureStage = sanitizeText(patch.failureStage)
         if (patch.error) run.error = sanitizeText(patch.error)
 
@@ -789,8 +793,9 @@ function emptyCalendarRecord(account: PointsCalendarAccount, date: string): Poin
 }
 
 function publicRun(run: PointRunRecord): Omit<PointRunRecord, 'accountHash'> {
-    const { accountHash, ...rest } = run
-    return rest
+    const publicValue = { ...run } as Partial<PointRunRecord>
+    delete publicValue.accountHash
+    return publicValue as Omit<PointRunRecord, 'accountHash'>
 }
 
 function publicRecord(account: PointsCalendarAccount, date: string, saved?: PointDayRecord): PointsCalendarRecord {

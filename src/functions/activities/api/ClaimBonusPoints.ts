@@ -1,162 +1,156 @@
 import type { AxiosRequestConfig } from 'axios'
+
+import type { CurrentPointsSnapshot } from '../../../browser/BrowserFunc'
+import type { DashboardFailureDetails } from '../../../util/DashboardError'
 import { Workers } from '../../Workers'
 
+export type ClaimBonusOutcome =
+    | {
+          status: 'verified'
+          oldBalance: number
+          newBalance: number
+          gainedPoints: number
+          source: string
+      }
+    | {
+          status: 'pending-verification'
+          oldBalance: number
+          lastKnownPoints: number | null
+          source: string | null
+          verificationError: DashboardFailureDetails | null
+      }
+    | {
+          status: 'skipped'
+          oldBalance: number
+          reason: string
+      }
+
 export class ClaimBonusPoints extends Workers {
-    private cookieHeader: string = ''
+    private readonly oldBalance: number = this.bot.userData.currentPoints
 
-    private fingerprintHeader: { [x: string]: string } = {}
-
-    private gainedPoints: number = 0
-
-    private oldBalance: number = this.bot.userData.currentPoints
-
-    public async claimBonusPoints() {
+    public async claimBonusPoints(): Promise<ClaimBonusOutcome> {
         this.bot.logger.info(
             this.bot.isMobile,
             'CLAIM-BONUS-POINTS',
             `开始领取奖励积分 | 地区=${this.bot.userData.geoLocale} | 旧余额=${this.oldBalance}`
         )
 
-        try {
-            // 新版 UI（modern）：走 Next.js Server Action（认证靠 Cookie，无需 requestToken）
-            if (this.bot.rewardsVersion === 'modern' || !this.bot.requestToken) {
-                const ok = await this.bot.browser.func.callServerAction(
-                    'claimBonusPoints',
-                    [],
-                    'CLAIM-BONUS-POINTS'
-                )
+        const mutation = await this.executeClaimMutation()
+        if (!mutation.executed) {
+            this.bot.logger.warn(this.bot.isMobile, 'CLAIM-BONUS-POINTS', mutation.reason)
+            return { status: 'skipped', oldBalance: this.oldBalance, reason: mutation.reason }
+        }
 
-                if (!ok) {
-                    this.bot.logger.warn(
-                        this.bot.isMobile,
-                        'CLAIM-BONUS-POINTS',
-                        'Server Action 调用未成功（可能是部署版本不匹配或网络错误），尝试页面点击兜底'
-                    )
-                    const clicked = await this.bot.browser.func.clickClaimBonusPointsButton(this.bot.mainMobilePage)
-                    if (!clicked) {
-                        this.bot.logger.warn(
-                            this.bot.isMobile,
-                            'CLAIM-BONUS-POINTS',
-                            'Server Action 和页面点击兜底均未成功，跳过'
-                        )
-                        return
-                    }
-                }
+        const firstSnapshot = await this.bot.browser.func.getCurrentPointsSnapshot()
+        const firstVerified = this.finishVerified(firstSnapshot, mutation.httpStatus)
+        if (firstVerified) return firstVerified
 
-                // 通过余额差确认实际获得积分
-                const newBalance = await this.bot.browser.func.getCurrentPoints()
-                this.gainedPoints = newBalance - this.oldBalance
+        this.bot.logger.warn(
+            this.bot.isMobile,
+            'CLAIM-BONUS-POINTS',
+            `领取请求已完成，首次积分复核未确认 | confidence=${firstSnapshot.confidence} | source=${firstSnapshot.source ?? 'none'} | status=${firstSnapshot.error?.apiStatus ?? 'n/a'}`
+        )
+        await this.bot.utils.wait(2000)
 
-                if (this.gainedPoints > 0) {
-                    this.bot.recordPointGain('领取奖励积分', this.gainedPoints, newBalance)
-                    this.bot.logger.info(
-                        this.bot.isMobile,
-                        'CLAIM-BONUS-POINTS',
-                        `完成领取奖励积分 | 获得积分=${this.gainedPoints} | 新余额=${newBalance}`,
-                        'green'
-                    )
-                } else {
-                    this.bot.logger.warn(
-                        this.bot.isMobile,
-                        'CLAIM-BONUS-POINTS',
-                        `领取奖励积分完成但无积分变化 | 旧余额=${this.oldBalance} | 新余额=${newBalance}`
-                    )
-                }
+        const secondSnapshot = await this.bot.browser.func.getCurrentPointsSnapshot()
+        const secondVerified = this.finishVerified(secondSnapshot, mutation.httpStatus)
+        if (secondVerified) return secondVerified
 
-                await this.bot.utils.wait(this.bot.utils.randomDelay(5000, 10000))
-                return
-            }
+        const lastKnown = secondSnapshot.points !== null ? secondSnapshot : firstSnapshot
+        const verificationError = secondSnapshot.error ?? firstSnapshot.error
+        this.bot.logger.warn(
+            this.bot.isMobile,
+            'CLAIM-BONUS-POINTS',
+            `领取请求已完成，积分待复核 | confidence=${lastKnown.confidence} | source=${lastKnown.source ?? 'none'} | status=${verificationError?.apiStatus ?? 'n/a'} | attempts=${verificationError?.attempts ?? 0}`
+        )
+        return {
+            status: 'pending-verification',
+            oldBalance: this.oldBalance,
+            lastKnownPoints: lastKnown.points,
+            source: lastKnown.source,
+            verificationError
+        }
+    }
 
-            // 旧版 UI：走 REST API（需要 requestToken）
-            const targetUrl = 'https://rewards.bing.com/api/claimallpointsasync?X-Requested-With=XMLHttpRequest'
-            this.cookieHeader = this.bot.browser.func.buildCookieHeaderForUrl(
-                this.bot.isMobile ? this.bot.cookies.mobile : this.bot.cookies.desktop,
-                targetUrl
+    private async executeClaimMutation(): Promise<
+        { executed: true; httpStatus: number | null } | { executed: false; reason: string }
+    > {
+        if (this.bot.rewardsVersion === 'modern' || !this.bot.requestToken) {
+            const serverActionOk = await this.bot.browser.func.callServerAction(
+                'claimBonusPoints',
+                [],
+                'CLAIM-BONUS-POINTS'
             )
+            if (serverActionOk) return { executed: true, httpStatus: null }
 
-            const fingerprintHeaders = { ...this.bot.fingerprint.headers }
-            delete fingerprintHeaders['Cookie']
-            delete fingerprintHeaders['cookie']
-            this.fingerprintHeader = fingerprintHeaders
-
-            this.bot.logger.debug(
+            this.bot.logger.warn(
                 this.bot.isMobile,
                 'CLAIM-BONUS-POINTS',
-                `准备好的领取奖励积分头部信息 | cookie长度=${this.cookieHeader.length} | 指纹头部键=${Object.keys(this.fingerprintHeader).length}`
+                'Server Action 调用未确认，尝试一次页面点击兜底'
             )
+            const clicked = await this.bot.browser.func.clickClaimBonusPointsButton(this.bot.mainMobilePage)
+            return clicked
+                ? { executed: true, httpStatus: null }
+                : { executed: false, reason: '未找到可确认执行的奖励领取入口，已跳过' }
+        }
 
-            const formData = new URLSearchParams({
-                timeZone: this.bot.userData.timezoneOffset,
-                __RequestVerificationToken: this.bot.requestToken
-            })
+        const targetUrl = 'https://rewards.bing.com/api/claimallpointsasync?X-Requested-With=XMLHttpRequest'
+        const cookieHeader = this.bot.browser.func.buildCookieHeaderForUrl(
+            this.bot.isMobile ? this.bot.cookies.mobile : this.bot.cookies.desktop,
+            targetUrl
+        )
+        const fingerprintHeaders = Object.fromEntries(
+            Object.entries(this.bot.fingerprint.headers).filter(([name]) => name.toLowerCase() !== 'cookie')
+        )
+        const formData = new URLSearchParams({
+            timeZone: this.bot.userData.timezoneOffset,
+            __RequestVerificationToken: this.bot.requestToken
+        })
+        const request: AxiosRequestConfig = {
+            url: targetUrl,
+            method: 'POST',
+            headers: {
+                ...fingerprintHeaders,
+                Cookie: cookieHeader,
+                Referer: 'https://rewards.bing.com/',
+                Origin: 'https://rewards.bing.com'
+            },
+            data: formData
+        }
+        const client = this.bot.axios as typeof this.bot.axios & {
+            requestOnce?: (config: AxiosRequestConfig, timeout?: number) => Promise<{ status: number }>
+        }
+        const response = client.requestOnce
+            ? await client.requestOnce(request, 15000)
+            : await client.request({ ...request, timeout: 15000, 'axios-retry': { retries: 0 } })
+        this.bot.logger.debug(
+            this.bot.isMobile,
+            'CLAIM-BONUS-POINTS',
+            `领取请求完成 | path=/api/claimallpointsasync | status=${response.status}`
+        )
+        return { executed: true, httpStatus: response.status }
+    }
 
-            this.bot.logger.debug(
-                this.bot.isMobile,
-                'CLAIM-BONUS-POINTS',
-                `准备好的领取奖励积分表单数据 | 时区=${this.bot.userData.timezoneOffset} | 活动量=1`
-            )
+    private finishVerified(snapshot: CurrentPointsSnapshot, httpStatus: number | null): ClaimBonusOutcome | null {
+        if (snapshot.confidence !== 'confirmed' || snapshot.points === null) return null
 
-            const request: AxiosRequestConfig = {
-                url: targetUrl,
-                method: 'POST',
-                headers: {
-                    ...this.fingerprintHeader,
-                    Cookie: this.cookieHeader,
-                    Referer: 'https://rewards.bing.com/',
-                    Origin: 'https://rewards.bing.com'
-                },
-                data: formData
-            }
-
-            this.bot.logger.debug(
-                this.bot.isMobile,
-                'CLAIM-BONUS-POINTS',
-                `发送领取奖励积分请求 | url=${request.url}`
-            )
-
-            const response = await this.bot.axios.request(request)
-
-            this.bot.logger.debug(
-                this.bot.isMobile,
-                'CLAIM-BONUS-POINTS',
-                `收到领取奖励积分响应 | 状态=${response.status}`
-            )
-
-            const newBalance = await this.bot.browser.func.getCurrentPoints()
-            this.gainedPoints = newBalance - this.oldBalance
-
-            this.bot.logger.debug(
-                this.bot.isMobile,
-                'CLAIM-BONUS-POINTS',
-                `领取奖励积分后余额差额 | 旧余额=${this.oldBalance} | 新余额=${newBalance} | 获得积分=${this.gainedPoints}`
-            )
-
-            if (this.gainedPoints > 0) {
-                this.bot.recordPointGain('领取奖励积分', this.gainedPoints, newBalance)
-
-                this.bot.logger.info(
-                    this.bot.isMobile,
-                    'CLAIM-BONUS-POINTS',
-                    `完成领取奖励积分 | 状态=${response.status} | 获得积分=${this.gainedPoints} | 新余额=${newBalance}`,
-                    'green'
-                )
-            } else {
-                this.bot.logger.warn(
-                    this.bot.isMobile,
-                    'CLAIM-BONUS-POINTS',
-                    `领取奖励积分失败，没有积分 | 状态=${response.status} | 旧余额=${this.oldBalance} | 新余额=${newBalance}`
-                )
-            }
-
-            this.bot.logger.debug(this.bot.isMobile, 'CLAIM-BONUS-POINTS', `领取奖励积分后等待`)
-
-            await this.bot.utils.wait(this.bot.utils.randomDelay(5000, 10000))
-        } catch (error) {
-            this.bot.logger.error(
-                this.bot.isMobile,
-                'CLAIM-BONUS-POINTS',
-                `doClaimBonusPoints中出错 | 消息=${error instanceof Error ? error.message : String(error)}`
-            )
+        const newBalance = snapshot.points
+        const gainedPoints = Math.max(0, newBalance - this.oldBalance)
+        if (gainedPoints > 0) {
+            this.bot.recordPointGain('领取奖励积分', gainedPoints, newBalance)
+        }
+        this.bot.logger.info(
+            this.bot.isMobile,
+            'CLAIM-BONUS-POINTS',
+            `领取奖励积分已复核 | status=${httpStatus ?? 'n/a'} | 获得积分=${gainedPoints} | 新余额=${newBalance} | source=${snapshot.source ?? 'dashboard'}`,
+            gainedPoints > 0 ? 'green' : 'yellow'
+        )
+        return {
+            status: 'verified',
+            oldBalance: this.oldBalance,
+            newBalance,
+            gainedPoints,
+            source: snapshot.source ?? 'dashboard'
         }
     }
 }

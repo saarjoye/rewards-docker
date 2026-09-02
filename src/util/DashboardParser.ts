@@ -13,6 +13,11 @@ export interface DashboardValidationOptions {
     geoLocale?: string
 }
 
+export interface AvailablePointsParseResult {
+    points: number | null
+    reason: string
+}
+
 interface BalancedJson {
     json: string
     end: number
@@ -28,6 +33,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function hasFiniteNonNegativeNumber(value: unknown): value is number {
     return typeof value === 'number' && Number.isFinite(value) && value >= 0
+}
+
+function hasValidAvailablePoints(value: unknown): value is number {
+    return hasFiniteNonNegativeNumber(value) && Number.isSafeInteger(value)
 }
 
 function fieldStatus(value: unknown, valid: (candidate: unknown) => boolean): DashboardFieldStatus {
@@ -72,7 +81,7 @@ export function validateDashboardData(
 
     const userStatus = value.userStatus
     if (!isRecord(userStatus)) return { valid: false, reason: '缺少 userStatus' }
-    if (!hasFiniteNonNegativeNumber(userStatus.availablePoints)) {
+    if (!hasValidAvailablePoints(userStatus.availablePoints)) {
         return { valid: false, reason: 'userStatus.availablePoints 非法' }
     }
 
@@ -146,6 +155,19 @@ export function dashboardFromApiPayload(
         : { data: null, source: null, reason: `API dashboard 校验失败：${validation.reason}` }
 }
 
+export function availablePointsFromApiPayload(payload: unknown): AvailablePointsParseResult {
+    if (!isRecord(payload) || !Object.prototype.hasOwnProperty.call(payload, 'dashboard')) {
+        return { points: null, reason: 'API 响应缺少 dashboard 字段' }
+    }
+    if (!isRecord(payload.dashboard)) return { points: null, reason: 'dashboard 不是对象' }
+    const userStatus = payload.dashboard.userStatus
+    if (!isRecord(userStatus)) return { points: null, reason: '缺少 userStatus' }
+    if (!hasValidAvailablePoints(userStatus.availablePoints)) {
+        return { points: null, reason: 'userStatus.availablePoints 非法' }
+    }
+    return { points: userStatus.availablePoints, reason: 'ok' }
+}
+
 export function dashboardFromFlyoutPayload(
     payload: unknown,
     options: DashboardValidationOptions = {}
@@ -173,7 +195,7 @@ export function dashboardFromFlyoutPayload(
         return { data: null, source: null, reason: 'Bing flyout 未确认 Rewards 用户状态' }
     }
 
-    const availablePoints = hasFiniteNonNegativeNumber(flyoutStatus.availablePoints)
+    const availablePoints = hasValidAvailablePoints(flyoutStatus.availablePoints)
         ? flyoutStatus.availablePoints
         : userInfo.balance
     const sourceCounters = isRecord(flyoutStatus.counters) ? flyoutStatus.counters : {}

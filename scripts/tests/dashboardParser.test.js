@@ -4,6 +4,7 @@ const {
     dashboardFromFlyoutPayload,
     dashboardFromFlightEntries,
     dashboardFromHtml,
+    availablePointsFromApiPayload,
     validateDashboardData
 } = require('../../dist/util/DashboardParser')
 const { calculateMissingSearchPoints } = require('../../dist/util/SearchCounter')
@@ -32,6 +33,12 @@ assert.equal(missing.data, null)
 assert.match(missing.reason, /缺少 dashboard/)
 
 assert.equal(validateDashboardData({ userStatus: { availablePoints: 0 } }).valid, false)
+assert.deepEqual(availablePointsFromApiPayload({ dashboard: { userStatus: { availablePoints: 0 } } }), {
+    points: 0,
+    reason: 'ok'
+})
+assert.equal(availablePointsFromApiPayload({ dashboard: { userStatus: { availablePoints: -1 } } }).points, null)
+assert.equal(availablePointsFromApiPayload({ dashboard: { userStatus: { availablePoints: 1.5 } } }).points, null)
 
 const partial = dashboardFromApiPayload(
     {

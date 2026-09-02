@@ -61,7 +61,7 @@ import {
 import { monitorGiftCards } from './util/GiftCardMonitor'
 import type { ServerActionName } from './util/ServerActions'
 import type { AppEarnablePoints, BrowserEarnablePoints, MissingSearchPoints } from './interface/Points'
-import { dashboardFailureDetails, isDashboardFetchError } from './util/DashboardError'
+import { DashboardFetchError, dashboardFailureDetails, isDashboardFetchError } from './util/DashboardError'
 import { SearchTaskError } from './util/SearchTaskError'
 import { ensureSuccessfulLogin } from './util/AuthenticatedFlow'
 import {
@@ -541,6 +541,7 @@ export class MicrosoftRewardsBot {
             taskSummary?: AccountTaskSummary[]
             error?: string
             failureStage?: string
+            balanceUnconfirmed?: boolean
         } = {}
     ): void {
         if (isAccountStatusCheckOnly() || !this.currentPointRunId) return
@@ -553,6 +554,7 @@ export class MicrosoftRewardsBot {
                 runGained: patch.runGained,
                 taskSummary: patch.taskSummary,
                 failureStage: patch.failureStage,
+                balanceUnconfirmed: patch.balanceUnconfirmed,
                 error: patch.error
             })
         } catch (error) {
@@ -767,6 +769,7 @@ export class MicrosoftRewardsBot {
             this.dashboardPointsKnown = false
             this.userData.userName = this.utils.getEmailUsername(accountEmail)
             this.userData.accountEmail = accountEmail
+            this.browser.func.resetCurrentPointsCache()
             this.userData.timezoneOffset = String(-new Date().getTimezoneOffset())
             this.userData.initialPoints = 0
             this.userData.currentPoints = 0
@@ -811,10 +814,16 @@ export class MicrosoftRewardsBot {
                 const accountFinalPoints = result.finalPoints
                 const statusMessage = isAccountStatusCheckOnly()
                     ? '账号状态检测通过'
-                    : `任务已完成，本次增加 ${collectedPoints} 分`
+                    : result.partial
+                      ? result.partialReason || '任务动作已完成，积分待复核'
+                      : `任务已完成，本次增加 ${collectedPoints} 分`
                 updateAccountStatus(accountEmail, {
                     state: 'success',
-                    stage: isAccountStatusCheckOnly() ? 'status-check' : 'account-end',
+                    stage: isAccountStatusCheckOnly()
+                        ? 'status-check'
+                        : result.partial
+                          ? 'account-partial'
+                          : 'account-end',
                     lastMessage: statusMessage
                 })
                 this.updateFormalRunCheckpoint(accountEmail, {
@@ -826,11 +835,12 @@ export class MicrosoftRewardsBot {
                     runMode: currentRunOptions().accountMode,
                     pid: process.pid
                 })
-                this.finishCurrentPointRun(accountEmail, 'completed', {
+                this.finishCurrentPointRun(accountEmail, result.partial ? 'partial' : 'completed', {
                     beforePoints: accountInitialPoints,
-                    afterPoints: accountFinalPoints,
-                    runGained: collectedPoints,
-                    taskSummary: result.taskSummary
+                    afterPoints: accountFinalPoints ?? undefined,
+                    runGained: collectedPoints ?? undefined,
+                    taskSummary: result.taskSummary,
+                    balanceUnconfirmed: result.balanceUnconfirmed
                 })
 
                 const stat: AccountStats = {
@@ -847,8 +857,8 @@ export class MicrosoftRewardsBot {
                 this.logger.info(
                     'main',
                     'ACCOUNT-END',
-                    `已完成账户: ${maskAccountEmail(accountEmail)} | 总计: +${collectedPoints} | 原始: ${accountInitialPoints} → 新值: ${accountFinalPoints} | 持续时间: ${durationSeconds}秒`,
-                    'green'
+                    `${result.partial ? '部分完成' : '已完成'}账户: ${maskAccountEmail(accountEmail)} | 总计: ${collectedPoints === null ? '待复核' : `+${collectedPoints}`} | 原始: ${accountInitialPoints} → 新值: ${accountFinalPoints ?? '未知'} | 持续时间: ${durationSeconds}秒`,
+                    result.partial ? 'yellow' : 'green'
                 )
                 await this.sendWeComAccountSummary(stat)
             } catch (error) {
@@ -969,9 +979,12 @@ export class MicrosoftRewardsBot {
 
     async Main(account: Account): Promise<{
         initialPoints: number
-        finalPoints: number
-        collectedPoints: number
+        finalPoints: number | null
+        collectedPoints: number | null
         taskSummary: AccountTaskSummary[]
+        partial?: boolean
+        partialReason?: string
+        balanceUnconfirmed?: boolean
     }> {
         const accountEmail = account.email
         this.logger.info('main', 'FLOW', `开始为 ${accountEmail} 创建会话`)
@@ -1206,6 +1219,7 @@ export class MicrosoftRewardsBot {
                         return fallback
                     }
                 }
+                let claimBalancePending = false
                 const runPointTask = async (label: string, fn: () => Promise<void>): Promise<void> => {
                     const detailKey = taskDetailKey(label)
                     this.currentDetailTask = { key: detailKey, label, group: 'activity' }
@@ -1272,15 +1286,126 @@ export class MicrosoftRewardsBot {
                         this.currentDetailTask = null
                     }
                 }
+                const runClaimBonusTask = async () => {
+                    const label = '领取奖励积分'
+                    const detailKey = taskDetailKey(label)
+                    this.currentDetailTask = { key: detailKey, label, group: 'activity' }
+                    updateAccountRunState(accountEmail, {
+                        currentTask: label,
+                        currentStage: 'activity',
+                        currentMessage: `正在执行：${label}`
+                    })
+                    updateTaskDetail(accountEmail, {
+                        key: detailKey,
+                        label,
+                        group: 'activity',
+                        status: '进行中',
+                        message: `正在执行：${label}`
+                    })
+                    try {
+                        const outcome = await this.workers.doClaimBonusPoints(data)
+                        if (outcome.status === 'verified') {
+                            const gained = outcome.gainedPoints
+                            this.userData.currentPoints = outcome.newBalance
+                            dailyGainedPoints = Math.max(
+                                dailyGainedPoints,
+                                Math.max(0, outcome.newBalance - initialPoints)
+                            )
+                            taskSummary.push({ key: 'daily', label, gained, status: '已完成' })
+                            updateTaskDetail(accountEmail, {
+                                key: detailKey,
+                                label,
+                                group: 'activity',
+                                completed: gained,
+                                total: gained,
+                                gained,
+                                status: '已完成',
+                                message: gained > 0 ? `${label} +${gained}` : `${label} 已完成，未新增积分`
+                            })
+                            updateAccountPointTotals(accountEmail, {
+                                currentPoints: outcome.newBalance,
+                                finalPoints: outcome.newBalance
+                            })
+                            this.safeEnsurePointRunCategoryMinimum(
+                                accountEmail,
+                                label,
+                                pointCategoryFor(label),
+                                gained,
+                                outcome.newBalance
+                            )
+                        } else if (outcome.status === 'pending-verification') {
+                            claimBalancePending = true
+                            taskSummary.push({ key: 'daily', label, gained: 0, status: '积分待复核' })
+                            updateTaskDetail(accountEmail, {
+                                key: detailKey,
+                                label,
+                                group: 'activity',
+                                status: '待复核',
+                                message: '领取请求已完成，积分待复核'
+                            })
+                            updateTaskProgress(accountEmail, 'daily', {
+                                completed: dailyGainedPoints,
+                                total: dailyGainedPoints,
+                                gained: dailyGainedPoints,
+                                status: '积分待复核'
+                            })
+                        } else {
+                            taskSummary.push({ key: 'daily', label, gained: 0, status: `已跳过：${outcome.reason}` })
+                            updateTaskDetail(accountEmail, {
+                                key: detailKey,
+                                label,
+                                group: 'activity',
+                                status: '已跳过',
+                                message: outcome.reason
+                            })
+                        }
+                        return outcome
+                    } catch (error) {
+                        const message = error instanceof Error ? error.message : String(error)
+                        updateTaskDetail(accountEmail, {
+                            key: detailKey,
+                            label,
+                            group: 'activity',
+                            status: '失败',
+                            message
+                        })
+                        throw error
+                    } finally {
+                        this.currentDetailTask = null
+                    }
+                }
                 const completeManualClaimBonusTask = async (): Promise<{
                     initialPoints: number
-                    finalPoints: number
-                    collectedPoints: number
+                    finalPoints: number | null
+                    collectedPoints: number | null
                     taskSummary: AccountTaskSummary[]
+                    partial?: boolean
+                    partialReason?: string
+                    balanceUnconfirmed?: boolean
                 }> => {
                     this.logger.info('main', 'MANUAL-TASK', '手动任务：仅执行领取奖励积分')
-                    await runPointTask('领取奖励积分', async () => this.workers.doClaimBonusPoints(data))
-                    const finalPoints = await getLatestPoints(Number(this.userData.currentPoints ?? initialPoints))
+                    const outcome = await runClaimBonusTask()
+                    if (outcome.status === 'pending-verification') {
+                        updateAccountRunState(accountEmail, {
+                            currentTask: '立即领取奖励积分动作完成',
+                            currentStage: 'balance-pending-verification',
+                            currentMessage: '领取请求已完成，积分待复核'
+                        })
+                        this.logger.warn('main', 'MANUAL-TASK', '立即领取动作已完成，最终积分待复核')
+                        return {
+                            initialPoints,
+                            finalPoints: null,
+                            collectedPoints: null,
+                            taskSummary,
+                            partial: true,
+                            partialReason: '领取请求已完成，积分待复核',
+                            balanceUnconfirmed: true
+                        }
+                    }
+                    const finalPoints =
+                        outcome.status === 'verified'
+                            ? outcome.newBalance
+                            : await getLatestPoints(Number(this.userData.currentPoints ?? initialPoints))
                     const collectedPoints = Math.max(0, finalPoints - initialPoints)
                     this.userData.currentPoints = finalPoints
                     updateAccountPointTotals(accountEmail, {
@@ -1371,7 +1496,7 @@ export class MicrosoftRewardsBot {
                     await runPointTask('连击保护', async () => this.activities.doStreakProtection())
                 }
                 if (this.config.workers.doClaimBonusPoints) {
-                    await runPointTask('领取奖励积分', async () => this.workers.doClaimBonusPoints(data))
+                    await runClaimBonusTask()
                 }
                 if (this.config.workers.doAppPromotions && appData && hasKnownGeoLocale) {
                     await runPointTask('App 活动', async () => this.workers.doAppPromotions(appData))
@@ -1519,7 +1644,58 @@ export class MicrosoftRewardsBot {
 
                 mobileContextClosed = true
 
-                const finalPoints = await this.browser.func.getCurrentPoints()
+                const finalPointsSnapshot = await this.browser.func.getCurrentPointsSnapshot()
+                if (finalPointsSnapshot.confidence !== 'confirmed' || finalPointsSnapshot.points === null) {
+                    const details = finalPointsSnapshot.error
+                    if (!claimBalancePending) {
+                        throw new DashboardFetchError({
+                            apiStatus: details?.apiStatus,
+                            apiReason: details?.apiReason ?? '最终积分读取未确认',
+                            fallbackReason: details?.fallbackReason ?? '账号收口未取得本次确认的积分',
+                            apiFailureKind: details?.apiFailureKind ?? 'invalid-response',
+                            attempts: details?.attempts,
+                            elapsedMs: details?.elapsedMs
+                        })
+                    }
+
+                    updateAccountRunState(accountEmail, {
+                        currentTask: '账号任务动作完成',
+                        currentStage: 'balance-pending-verification',
+                        currentMessage: '任务动作已完成，最终积分待复核'
+                    })
+                    updateTaskProgress(accountEmail, 'daily', {
+                        completed: dailyGainedPoints,
+                        total: dailyGainedPoints,
+                        gained: dailyGainedPoints,
+                        status: '积分待复核'
+                    })
+                    this.logger.warn(
+                        'main',
+                        'FLOW',
+                        `账号任务动作已完成，最终积分待复核 | status=${details?.apiStatus ?? 'n/a'} | attempts=${details?.attempts ?? 0}`
+                    )
+                    return {
+                        initialPoints,
+                        finalPoints: null,
+                        collectedPoints: null,
+                        taskSummary,
+                        partial: true,
+                        partialReason: '任务动作已完成，最终积分待复核',
+                        balanceUnconfirmed: true
+                    }
+                }
+                const finalPoints = finalPointsSnapshot.points
+                if (claimBalancePending) {
+                    const claimSummary = taskSummary.find(item => item.label === '领取奖励积分')
+                    if (claimSummary) claimSummary.status = '后续余额已确认'
+                    updateTaskDetail(accountEmail, {
+                        key: taskDetailKey('领取奖励积分'),
+                        label: '领取奖励积分',
+                        group: 'activity',
+                        status: '已完成',
+                        message: '领取动作已完成，账号收口时余额已确认'
+                    })
+                }
                 const collectedPoints = Math.max(0, finalPoints - initialPoints)
                 const searchGainedPoints = Math.max(0, finalPoints - searchStartPoints)
                 dailyGainedPoints = Math.max(dailyGainedPoints, Math.max(0, searchStartPoints - initialPoints))

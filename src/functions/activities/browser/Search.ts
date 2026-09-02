@@ -6,10 +6,16 @@ import type { MissingSearchPoints } from '../../../interface/Points'
 import { QueryCore } from '../../QueryEngine'
 import { Workers } from '../../Workers'
 import { updateSearchTaskProgress, type ProgressTaskKey } from '../../../util/TaskProgressStore'
-import { isDashboardFetchError } from '../../../util/DashboardError'
-
-const SEARCH_QUERY_TIMEOUT_MS = 60000
-const SEARCH_ROUND_TIMEOUT_MS = 5 * 60 * 1000
+import {
+    abortableWait,
+    calculateSearchRoundTimeoutMs,
+    calculateSearchTimeoutBudget,
+    runSearchStage,
+    SEARCH_PRE_SUBMIT_ATTEMPTS,
+    SearchOperationError,
+    type SearchOperationStage,
+    type SearchTimeoutBudget
+} from '../../../util/SearchExecution'
 
 /**
  * 必应搜索类，负责执行必应搜索以获取积分
@@ -98,13 +104,39 @@ export class Search extends Workers {
 
             queries = [...new Set(queries.map(q => q.trim()).filter(Boolean))]
 
+            const timeoutBudget = calculateSearchTimeoutBudget({
+                searchDelayMax: this.bot.config.searchSettings.searchDelay.max,
+                searchResultVisitTime: this.bot.config.searchSettings.searchResultVisitTime,
+                scrollRandomResults: this.bot.config.searchSettings.scrollRandomResults,
+                clickRandomResults: this.bot.config.searchSettings.clickRandomResults
+            })
+            const roundTimeoutMs = calculateSearchRoundTimeoutMs(
+                timeoutBudget.queryTimeoutMs,
+                initialMissingPointsTotal,
+                queries.length
+            )
+            const roundDeadline = roundStartedAt + roundTimeoutMs
+
             this.bot.logger.info(isMobile, 'SEARCH-BING', `搜索查询池准备就绪 | count=${queries.length}`)
+            this.bot.logger.debug(
+                isMobile,
+                'SEARCH-BING',
+                `搜索超时预算 | queryTimeoutMs=${timeoutBudget.queryTimeoutMs} | roundTimeoutMs=${roundTimeoutMs} | searchDelayMaxMs=${timeoutBudget.stageTimeouts['search-delay']} | dashboardRefreshMs=${timeoutBudget.stageTimeouts['dashboard-refresh']}`
+            )
 
             // 跳转到bing
             const targetUrl = this.searchPageURL ? this.searchPageURL : this.bingHome
-            this.bot.logger.debug(isMobile, 'SEARCH-BING', `导航到搜索页面 | url=${targetUrl}`)
+            const target = new URL(targetUrl)
+            this.bot.logger.debug(
+                isMobile,
+                'SEARCH-BING',
+                `导航到搜索页面 | host=${target.hostname} | path=${target.pathname}`
+            )
 
-            await page.goto(targetUrl)
+            await page.goto(targetUrl, {
+                waitUntil: 'domcontentloaded',
+                timeout: timeoutBudget.navigationMs
+            })
             await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {})
             await this.bot.browser.utils.tryDismissAllMessages(page)
 
@@ -112,12 +144,12 @@ export class Search extends Workers {
             const stagnantLoopMax = 10
 
             for (let i = 0; i < queries.length; i++) {
-                if (Date.now() - roundStartedAt >= SEARCH_ROUND_TIMEOUT_MS) {
-                    throw new Error(`搜索整轮超时: ${SEARCH_ROUND_TIMEOUT_MS}ms`)
+                if (Date.now() >= roundDeadline) {
+                    throw new Error(`搜索整轮超时: ${roundTimeoutMs}ms`)
                 }
                 const query = queries[i] as string
 
-                searchCounters = await this.bingSearch(page, query, isMobile)
+                searchCounters = await this.bingSearch(page, query, isMobile, timeoutBudget)
                 const newMissingPoints = this.bot.browser.func.missingSearchPoints(searchCounters, isMobile)
                 if (this.counterUnavailable(newMissingPoints, isMobile)) {
                     const device = isMobile ? '移动' : 'PC'
@@ -135,7 +167,7 @@ export class Search extends Workers {
                     this.bot.logger.info(
                         isMobile,
                         'SEARCH-BING',
-                        `未获得积分 ${stagnantLoop}/${stagnantLoopMax} | query="${query}" | remaining=${newMissingPointsTotal}`
+                        `未获得积分 ${stagnantLoop}/${stagnantLoopMax} | queryLength=${query.length} | remaining=${newMissingPointsTotal}`
                     )
                 } else {
                     stagnantLoop = 0
@@ -157,7 +189,7 @@ export class Search extends Workers {
                     this.bot.logger.info(
                         isMobile,
                         'SEARCH-BING',
-                        `获得积分=${gainedPoints} points | query="${query}" | remaining=${newMissingPointsTotal}`,
+                        `获得积分=${gainedPoints} points | queryLength=${query.length} | remaining=${newMissingPointsTotal}`,
                         'green'
                     )
                 }
@@ -231,16 +263,16 @@ export class Search extends Workers {
                     this.bot.logger.info(isMobile, 'SEARCH-BING-EXTRA', `新搜索查询池已生成 | count=${queries.length}`)
 
                     for (const query of queries) {
-                        if (Date.now() - roundStartedAt >= SEARCH_ROUND_TIMEOUT_MS) {
-                            throw new Error(`搜索整轮超时: ${SEARCH_ROUND_TIMEOUT_MS}ms`)
+                        if (Date.now() >= roundDeadline) {
+                            throw new Error(`搜索整轮超时: ${roundTimeoutMs}ms`)
                         }
                         this.bot.logger.info(
                             isMobile,
                             'SEARCH-BING-EXTRA',
-                            `额外搜索 | remaining=${missingPointsTotal} | query="${query}"`
+                            `额外搜索 | remaining=${missingPointsTotal} | queryLength=${query.length}`
                         )
 
-                        searchCounters = await this.bingSearch(page, query, isMobile)
+                        searchCounters = await this.bingSearch(page, query, isMobile, timeoutBudget)
                         const newMissingPoints = this.bot.browser.func.missingSearchPoints(searchCounters, isMobile)
                         if (this.counterUnavailable(newMissingPoints, isMobile)) {
                             const device = isMobile ? '移动' : 'PC'
@@ -258,7 +290,7 @@ export class Search extends Workers {
                             this.bot.logger.info(
                                 isMobile,
                                 'SEARCH-BING-EXTRA',
-                                `未获得积分 ${stagnantLoop}/${stagnantLoopMax} | query="${query}" | remaining=${newMissingPointsTotal}`
+                                `未获得积分 ${stagnantLoop}/${stagnantLoopMax} | queryLength=${query.length} | remaining=${newMissingPointsTotal}`
                             )
                         } else {
                             stagnantLoop = 0
@@ -285,7 +317,7 @@ export class Search extends Workers {
                             this.bot.logger.info(
                                 isMobile,
                                 'SEARCH-BING-EXTRA',
-                                `获得积分=${gainedPoints} points | query="${query}" | remaining=${newMissingPointsTotal}`,
+                                `获得积分=${gainedPoints} points | queryLength=${query.length} | remaining=${newMissingPointsTotal}`,
                                 'green'
                             )
                         }
@@ -350,25 +382,74 @@ export class Search extends Workers {
         }
     }
 
-    private async bingSearch(searchPage: Page, query: string, isMobile: boolean): Promise<Counters> {
-        let timer: NodeJS.Timeout | undefined
+    private async bingSearch(
+        searchPage: Page,
+        query: string,
+        isMobile: boolean,
+        timeoutBudget: SearchTimeoutBudget
+    ): Promise<Counters> {
+        const controller = new AbortController()
+        const queryDeadline = Date.now() + timeoutBudget.queryTimeoutMs
+        return this.performBingSearch(searchPage, query, isMobile, timeoutBudget, controller, queryDeadline)
+    }
+
+    private async executeStage<T>(
+        searchPage: Page,
+        isMobile: boolean,
+        controller: AbortController,
+        queryDeadline: number,
+        stage: SearchOperationStage,
+        stageTimeoutMs: number,
+        operation: (signal: AbortSignal) => Promise<T>
+    ): Promise<T> {
+        const remainingMs = Math.max(1, queryDeadline - Date.now())
+        const timeoutMs = Math.min(stageTimeoutMs, remainingMs)
+        const startedAt = Date.now()
+        this.bot.logger.debug(isMobile, 'SEARCH-QUERY', `阶段开始 | stage=${stage} | timeoutMs=${timeoutMs}`)
         try {
-            return await Promise.race([
-                this.performBingSearch(searchPage, query, isMobile),
-                new Promise<never>((_resolve, reject) => {
-                    timer = setTimeout(
-                        () => reject(new Error(`单次搜索超时: ${SEARCH_QUERY_TIMEOUT_MS}ms`)),
-                        SEARCH_QUERY_TIMEOUT_MS
-                    )
-                })
-            ])
-        } finally {
-            if (timer) clearTimeout(timer)
+            const result = await runSearchStage({
+                page: searchPage,
+                controller,
+                stage,
+                timeoutMs,
+                operation
+            })
+            this.bot.logger.debug(
+                isMobile,
+                'SEARCH-QUERY',
+                `阶段完成 | stage=${stage} | elapsedMs=${Date.now() - startedAt}`
+            )
+            return result
+        } catch (error) {
+            const operationError =
+                error instanceof SearchOperationError
+                    ? error
+                    : new SearchOperationError(
+                          stage,
+                          `搜索阶段失败 | stage=${stage}`,
+                          timeoutMs,
+                          Date.now() - startedAt,
+                          false,
+                          { cause: error }
+                      )
+            this.bot.logger.error(
+                isMobile,
+                'SEARCH-QUERY',
+                `阶段失败 | stage=${operationError.operationStage} | elapsedMs=${operationError.elapsedMs} | timeoutMs=${operationError.timeoutMs} | timedOut=${operationError.timedOut} | message=${operationError.message}`
+            )
+            throw operationError
         }
     }
 
-    private async performBingSearch(searchPage: Page, query: string, isMobile: boolean): Promise<Counters> {
-        const maxAttempts = 5
+    private async performBingSearch(
+        searchPage: Page,
+        query: string,
+        isMobile: boolean,
+        timeoutBudget: SearchTimeoutBudget,
+        controller: AbortController,
+        queryDeadline: number
+    ): Promise<Counters> {
+        const maxAttempts = SEARCH_PRE_SUBMIT_ATTEMPTS
         const refreshThreshold = 10 // 页面在x次搜索后变得缓慢？
 
         this.searchCount++
@@ -385,9 +466,22 @@ export class Search extends Workers {
             const cvid = randomBytes(16).toString('hex')
             const url = `${this.bingHome}/search?q=${encodeURIComponent(query)}&PC=U531&FORM=ANNTA1&cvid=${cvid}`
 
-            await searchPage.goto(url)
-            await searchPage.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {})
-            await this.bot.browser.utils.tryDismissAllMessages(searchPage)
+            await this.executeStage(
+                searchPage,
+                isMobile,
+                controller,
+                queryDeadline,
+                'search-box',
+                timeoutBudget.navigationMs,
+                async signal => {
+                    signal.throwIfAborted()
+                    await searchPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 })
+                    signal.throwIfAborted()
+                    await searchPage.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {})
+                    signal.throwIfAborted()
+                    await this.bot.browser.utils.tryDismissAllMessages(searchPage)
+                }
+            )
         }
 
         // 每次搜索重置首次滚动标志，确保有初始向下滚动
@@ -396,71 +490,63 @@ export class Search extends Workers {
         this.bot.logger.debug(
             isMobile,
             'SEARCH-BING',
-            `开始bingSearch | query="${query}" | maxAttempts=${maxAttempts} | searchCount=${this.searchCount} | refreshEvery=${refreshThreshold} | scrollRandomResults=${this.bot.config.searchSettings.scrollRandomResults} | clickRandomResults=${this.bot.config.searchSettings.clickRandomResults}`
+            `开始bingSearch | queryLength=${query.length} | maxAttempts=${maxAttempts} | searchCount=${this.searchCount} | refreshEvery=${refreshThreshold} | scrollRandomResults=${this.bot.config.searchSettings.scrollRandomResults} | clickRandomResults=${this.bot.config.searchSettings.clickRandomResults}`
         )
 
-        for (let i = 0; i < maxAttempts; i++) {
+        let submitted = false
+        for (let i = 0; i < maxAttempts && !submitted; i++) {
             try {
                 const searchBar = '#sb_form_q'
                 const searchBox = searchPage.locator(searchBar)
 
-                await searchPage.evaluate(() => {
-                    window.scrollTo({ left: 0, top: 0, behavior: 'auto' })
-                })
+                await this.executeStage(
+                    searchPage,
+                    isMobile,
+                    controller,
+                    queryDeadline,
+                    'search-box',
+                    timeoutBudget.stageTimeouts['search-box'],
+                    async signal => {
+                        signal.throwIfAborted()
+                        await searchPage.evaluate(() => {
+                            window.scrollTo({ left: 0, top: 0, behavior: 'auto' })
+                        })
+                        await searchPage.keyboard.press('Home')
+                        await searchBox.waitFor({ state: 'visible', timeout: 15000 })
+                    }
+                )
 
-                await searchPage.keyboard.press('Home')
-                await searchBox.waitFor({ state: 'visible', timeout: 15000 })
-
-                await this.bot.utils.wait(1000)
-                await this.bot.browser.utils.ghostClick(searchPage, searchBar, { clickCount: 3 })
-                await searchBox.fill('')
-
-                await searchPage.keyboard.type(query, { delay: 50 })
-                await searchPage.keyboard.press('Enter')
+                await this.executeStage(
+                    searchPage,
+                    isMobile,
+                    controller,
+                    queryDeadline,
+                    'submit',
+                    timeoutBudget.stageTimeouts.submit,
+                    async signal => {
+                        await abortableWait(1000, signal)
+                        await searchBox.click({ clickCount: 3, timeout: 5000 })
+                        signal.throwIfAborted()
+                        await searchBox.fill('')
+                        await searchPage.keyboard.type(query, { delay: 50 })
+                        signal.throwIfAborted()
+                        await searchPage.keyboard.press('Enter')
+                    }
+                )
+                submitted = true
 
                 this.bot.logger.debug(
                     isMobile,
                     'SEARCH-BING',
-                    `提交查询到必应 | attempt=${i + 1}/${maxAttempts} | query="${query}"`
+                    `提交查询到必应 | attempt=${i + 1}/${maxAttempts} | queryLength=${query.length}`
                 )
-
-                await this.bot.utils.wait(3000)
-
-                if (this.bot.config.searchSettings.scrollRandomResults) {
-                    await this.bot.utils.wait(2000)
-                    await this.randomScroll(searchPage, isMobile)
-                }
-
-                if (this.bot.config.searchSettings.clickRandomResults) {
-                    await this.bot.utils.wait(2000)
-                    await this.clickRandomLink(searchPage, isMobile)
-                }
-
-                await this.bot.utils.wait(
-                    this.bot.utils.randomDelay(
-                        this.bot.config.searchSettings.searchDelay.min,
-                        this.bot.config.searchSettings.searchDelay.max
-                    )
-                )
-
-                const counters = await this.bot.browser.func.getSearchPoints()
-
-                this.bot.logger.debug(
-                    isMobile,
-                    'SEARCH-BING',
-                    `查询后的搜索计数器 | attempt=${i + 1}/${maxAttempts} | query="${query}"`
-                )
-
-                return counters
             } catch (error) {
-                if (isDashboardFetchError(error)) {
-                    throw new Error(`查询后 dashboard 刷新失败，保留最近一次已确认进度: ${error.message}`)
-                }
-                if (i >= maxAttempts - 1) {
+                if (error instanceof SearchOperationError && error.timedOut) throw error
+                if (i >= maxAttempts - 1 || searchPage.isClosed()) {
                     this.bot.logger.error(
                         isMobile,
                         'SEARCH-BING',
-                        `5次重试后失败 | query="${query}" | message=${error instanceof Error ? error.message : String(error)}`
+                        `提交前重试耗尽 | attempts=${maxAttempts} | queryLength=${query.length} | message=${error instanceof Error ? error.message : String(error)}`
                     )
                     throw error
                 }
@@ -468,23 +554,100 @@ export class Search extends Workers {
                 this.bot.logger.error(
                     isMobile,
                     'SEARCH-BING',
-                    `搜索尝试失败 | attempt=${i + 1}/${maxAttempts} | query="${query}" | message=${error instanceof Error ? error.message : String(error)}`
+                    `提交前搜索尝试失败 | attempt=${i + 1}/${maxAttempts} | queryLength=${query.length} | message=${error instanceof Error ? error.message : String(error)}`
                 )
 
                 this.bot.logger.warn(
                     isMobile,
                     'SEARCH-BING',
-                    `重试搜索 | attempt=${i + 1}/${maxAttempts} | query="${query}"`
+                    `重试搜索 | attempt=${i + 1}/${maxAttempts} | queryLength=${query.length}`
                 )
 
-                await this.bot.utils.wait(2000)
+                await abortableWait(timeoutBudget.retryDelayMs, controller.signal)
             }
         }
 
-        throw new Error(`搜索查询失败且未取得可确认 counter | query="${query}"`)
+        if (!submitted) throw new Error(`搜索查询提交失败 | queryLength=${query.length}`)
+
+        await this.executeStage(
+            searchPage,
+            isMobile,
+            controller,
+            queryDeadline,
+            'post-submit-wait',
+            timeoutBudget.stageTimeouts['post-submit-wait'],
+            signal => abortableWait(3000, signal)
+        )
+
+        if (this.bot.config.searchSettings.scrollRandomResults) {
+            await this.executeStage(
+                searchPage,
+                isMobile,
+                controller,
+                queryDeadline,
+                'scroll',
+                timeoutBudget.stageTimeouts.scroll,
+                async signal => {
+                    await abortableWait(2000, signal)
+                    await this.randomScroll(searchPage, isMobile, signal)
+                }
+            )
+        }
+
+        if (this.bot.config.searchSettings.clickRandomResults) {
+            await this.executeStage(
+                searchPage,
+                isMobile,
+                controller,
+                queryDeadline,
+                'click',
+                timeoutBudget.stageTimeouts.click,
+                async signal => {
+                    await abortableWait(2000, signal)
+                    await this.clickRandomLink(
+                        searchPage,
+                        isMobile,
+                        signal,
+                        Math.max(0, timeoutBudget.stageTimeouts.click - 17_000)
+                    )
+                }
+            )
+        }
+
+        const searchDelayMs = this.bot.utils.randomDelay(
+            this.bot.config.searchSettings.searchDelay.min,
+            this.bot.config.searchSettings.searchDelay.max
+        )
+        await this.executeStage(
+            searchPage,
+            isMobile,
+            controller,
+            queryDeadline,
+            'search-delay',
+            timeoutBudget.stageTimeouts['search-delay'],
+            signal => abortableWait(searchDelayMs, signal)
+        )
+
+        const counters = await this.executeStage(
+            searchPage,
+            isMobile,
+            controller,
+            queryDeadline,
+            'dashboard-refresh',
+            timeoutBudget.stageTimeouts['dashboard-refresh'],
+            () => this.bot.browser.func.getSearchPoints()
+        )
+
+        this.bot.logger.debug(
+            isMobile,
+            'SEARCH-BING',
+            `查询后的搜索计数器 | queryLength=${query.length} | searchCount=${this.searchCount}`
+        )
+        return counters
     }
-    private async randomScroll(page: Page, isMobile: boolean) {
+    private async randomScroll(page: Page, isMobile: boolean, signal: AbortSignal) {
         try {
+            signal.throwIfAborted()
             const viewportHeight = await page.evaluate(() => window.innerHeight)
             const totalHeight = await page.evaluate(() => document.body.scrollHeight)
             const randomScrollPosition = Math.floor(Math.random() * (totalHeight - viewportHeight))
@@ -498,7 +661,9 @@ export class Search extends Workers {
             await page.evaluate((scrollPos: number) => {
                 window.scrollTo({ left: 0, top: scrollPos, behavior: 'auto' })
             }, randomScrollPosition)
+            signal.throwIfAborted()
         } catch (error) {
+            if (signal.aborted) throw signal.reason ?? error
             this.bot.logger.error(
                 isMobile,
                 'SEARCH-RANDOM-SCROLL',
@@ -507,14 +672,15 @@ export class Search extends Workers {
         }
     }
 
-    private async clickRandomLink(page: Page, isMobile: boolean) {
+    private async clickRandomLink(page: Page, isMobile: boolean, signal: AbortSignal, visitTimeMs: number) {
         try {
             this.bot.logger.debug(isMobile, 'SEARCH-RANDOM-CLICK', '尝试点击随机搜索结果链接')
 
             const searchPageUrl = page.url()
 
+            signal.throwIfAborted()
             await this.bot.browser.utils.ghostClick(page, '#b_results .b_algo h2')
-            await this.bot.utils.wait(this.bot.config.searchSettings.searchResultVisitTime)
+            await abortableWait(visitTimeMs, signal)
 
             if (isMobile) {
                 await page.goto(searchPageUrl)
@@ -528,7 +694,9 @@ export class Search extends Workers {
                 await this.bot.browser.utils.closeTabs(newTab)
                 this.bot.logger.debug(isMobile, 'SEARCH-RANDOM-CLICK', '已关闭结果标签页')
             }
+            signal.throwIfAborted()
         } catch (error) {
+            if (signal.aborted) throw signal.reason ?? error
             this.bot.logger.error(
                 isMobile,
                 'SEARCH-RANDOM-CLICK',

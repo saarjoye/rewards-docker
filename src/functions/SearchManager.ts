@@ -94,7 +94,8 @@ export class SearchManager {
             failure.message,
             progress.completed,
             progress.total,
-            failure.loginState
+            failure.loginState,
+            failure.operationStage
         )
     }
 

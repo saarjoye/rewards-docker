@@ -13,6 +13,8 @@ export interface DashboardFailureDetails {
     apiReason: string
     fallbackReason: string
     apiFailureKind: DashboardFailureKind
+    attempts: number
+    elapsedMs: number
 }
 
 export class DashboardFetchError extends Error implements DashboardFailureDetails {
@@ -21,12 +23,16 @@ export class DashboardFetchError extends Error implements DashboardFailureDetail
     readonly apiReason: string
     readonly fallbackReason: string
     readonly apiFailureKind: DashboardFailureKind
+    readonly attempts: number
+    readonly elapsedMs: number
 
     constructor(options: {
         apiStatus?: number | null
         apiReason: string
         fallbackReason: string
         apiFailureKind: DashboardFailureKind
+        attempts?: number
+        elapsedMs?: number
     }) {
         super(`dashboard 获取失败：API ${options.apiReason}；页面回退 ${options.fallbackReason}`)
         this.name = 'DashboardFetchError'
@@ -34,6 +40,8 @@ export class DashboardFetchError extends Error implements DashboardFailureDetail
         this.apiReason = options.apiReason
         this.fallbackReason = options.fallbackReason
         this.apiFailureKind = options.apiFailureKind
+        this.attempts = Math.max(0, Math.trunc(options.attempts ?? 0))
+        this.elapsedMs = Math.max(0, Math.trunc(options.elapsedMs ?? 0))
     }
 
     toJSON(): DashboardFailureDetails {
@@ -49,7 +57,9 @@ export function dashboardFailureDetails(error: unknown): DashboardFailureDetails
             apiStatus: error.apiStatus,
             apiReason: error.apiReason,
             fallbackReason: error.fallbackReason,
-            apiFailureKind: error.apiFailureKind
+            apiFailureKind: error.apiFailureKind,
+            attempts: error.attempts,
+            elapsedMs: error.elapsedMs
         }
     }
 
@@ -60,7 +70,9 @@ export function dashboardFailureDetails(error: unknown): DashboardFailureDetails
         apiStatus: null,
         apiReason: '未确认',
         fallbackReason: message,
-        apiFailureKind: 'invalid-response'
+        apiFailureKind: 'invalid-response',
+        attempts: 0,
+        elapsedMs: 0
     }
 }
 

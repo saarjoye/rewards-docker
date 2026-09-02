@@ -8,6 +8,7 @@ import type {
     PurplePromotionalItem
 } from '../interface/DashboardData'
 import type { AppDashboardData } from '../interface/AppDashBoardData'
+import type { ClaimBonusOutcome } from './activities/api/ClaimBonusPoints'
 
 export class Workers {
     public bot: MicrosoftRewardsBot
@@ -21,7 +22,6 @@ export class Workers {
         const todayData = data.dailySetPromotions[todayKey]
 
         const activitiesUncompleted = todayData?.filter(x => !x?.complete && x.pointProgressMax > 0) ?? []
-
 
         if (!activitiesUncompleted.length) {
             this.bot.logger.info(this.bot.isMobile, 'DAILY-SET', '所有"每日任务"项目已完成')
@@ -56,11 +56,7 @@ export class Workers {
             }) ?? []
 
         if (!activitiesUncompleted.length) {
-            this.bot.logger.info(
-                this.bot.isMobile,
-                'MORE-PROMOTIONS',
-                '所有"更多推广"项目已完成'
-            )
+            this.bot.logger.info(this.bot.isMobile, 'MORE-PROMOTIONS', '所有"更多推广"项目已完成')
             return
         }
 
@@ -86,11 +82,7 @@ export class Workers {
         })
 
         if (!appRewards.length) {
-            this.bot.logger.info(
-                this.bot.isMobile,
-                'APP-PROMOTIONS',
-                '所有"应用推广"项目已完成'
-            )
+            this.bot.logger.info(this.bot.isMobile, 'APP-PROMOTIONS', '所有"应用推广"项目已完成')
             return
         }
 
@@ -174,7 +166,7 @@ export class Workers {
         this.bot.logger.info(this.bot.isMobile, 'SPECIAL-ACTIVITY', '所有"特殊活动"项目已完成')
     }
 
-    public async doClaimBonusPoints(data: DashboardData) {
+    public async doClaimBonusPoints(data: DashboardData): Promise<ClaimBonusOutcome> {
         // 旧版 dashboard 用 pointClaimBannerPromotion 字段预检查"是否可领"，
         // 但新版 UI 的 dashboard 数据结构变了，该字段恒为 undefined，
         // 导致永远走"未找到横幅"分支，ClaimBonusPoints.ts 的 Server Action 代码无法执行。
@@ -191,19 +183,20 @@ export class Workers {
                 'CLAIM-BONUS-POINTS',
                 `奖励积分已被领取 | offerId=${pointsActivity.offerId}`
             )
-            return
+            return { status: 'skipped', oldBalance: this.bot.userData.currentPoints, reason: '奖励积分已领取' }
         }
 
-        await this.bot.activities.doClaimBonusPoints()
+        const outcome = await this.bot.activities.doClaimBonusPoints()
 
         // 旧版 banner 字段存在时才输出带标题的成功日志；新版由 ClaimBonusPoints.ts 自己输出
-        if (pointsActivity) {
+        if (pointsActivity && outcome.status === 'verified') {
             this.bot.logger.info(
                 this.bot.isMobile,
                 'CLAIM-BONUS-POINTS',
                 `已领取奖励积分 | 标题="${pointsActivity.title}" | offerId=${pointsActivity.offerId}`
             )
         }
+        return outcome
     }
 
     public async doPunchCards(data: DashboardData, page: Page) {
@@ -228,11 +221,7 @@ export class Workers {
             return
         }
 
-        this.bot.logger.info(
-            this.bot.isMobile,
-            'PUNCHCARD',
-            `开始解决 ${activitiesUncompleted.length} 个"打卡"项目`
-        )
+        this.bot.logger.info(this.bot.isMobile, 'PUNCHCARD', `开始解决 ${activitiesUncompleted.length} 个"打卡"项目`)
 
         await this.solveActivities(activitiesUncompleted, page)
 
@@ -303,7 +292,6 @@ export class Workers {
 
                             // await this.bot.activities.doUrlReward(basePromotion)
                             await this.bot.activities.doDaily(basePromotion)
-
                         }
                         break
                     }
