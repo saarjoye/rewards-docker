@@ -20,6 +20,7 @@ export interface SearchTimeoutBudget {
 export interface SearchBudgetOptions {
     searchDelayMax: string | number
     searchResultVisitTime: string | number
+    interactionTimeout?: string | number
     scrollRandomResults: boolean
     clickRandomResults: boolean
 }
@@ -32,6 +33,8 @@ const DASHBOARD_REFRESH_TIMEOUT_MS = 60_000
 const NAVIGATION_TIMEOUT_MS = 25_000
 const RETRY_DELAY_MS = 2_000
 const SAFETY_MARGIN_MS = 10_000
+const CLICK_SAFETY_MARGIN_MS = 5_000
+const DEFAULT_INTERACTION_TIMEOUT_MS = 30_000
 const PRE_SUBMIT_ATTEMPTS = 3
 const MIN_ROUND_TIMEOUT_MS = 10 * 60_000
 const MAX_ROUND_TIMEOUT_MS = 60 * 60_000
@@ -46,7 +49,13 @@ function durationMs(value: string | number): number {
 
 export function calculateSearchTimeoutBudget(options: SearchBudgetOptions): SearchTimeoutBudget {
     const searchDelayMs = durationMs(options.searchDelayMax) + 2_000
-    const clickMs = options.clickRandomResults ? durationMs(options.searchResultVisitTime) + 17_000 : 0
+    const interactionTimeoutMs =
+        options.interactionTimeout === undefined
+            ? DEFAULT_INTERACTION_TIMEOUT_MS
+            : durationMs(options.interactionTimeout)
+    const clickMs = options.clickRandomResults
+        ? durationMs(options.searchResultVisitTime) + interactionTimeoutMs + CLICK_SAFETY_MARGIN_MS
+        : 0
     const scrollMs = options.scrollRandomResults ? SCROLL_TIMEOUT_MS : 0
     const stageTimeouts: Record<SearchOperationStage, number> = {
         'search-box': SEARCH_BOX_TIMEOUT_MS,

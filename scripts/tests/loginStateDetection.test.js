@@ -1,8 +1,13 @@
 const assert = require('node:assert/strict')
 const {
     LOGIN_ERROR_ALERT_SELECTOR,
+    PASSWORD_SIGN_IN_OPTION_SELECTOR,
+    classifyRewardsPageLoginState,
+    hasBingAuthenticationCookies,
+    isKmsiPromptText,
     LoginStateError,
     captureLoginErrorSnapshot,
+    rewardsDashboardUrl,
     selectDetectedLoginState
 } = require('../../dist/browser/auth/Login')
 
@@ -30,6 +35,54 @@ async function main() {
     assert.equal(selectDetectedLoginState(['2FA_TOTP', 'ERROR_ALERT']), 'ERROR_ALERT')
     assert.equal(selectDetectedLoginState(['EMAIL_INPUT']), 'EMAIL_INPUT')
     assert.equal(selectDetectedLoginState(['PASSKEY_ERROR', 'PASSWORD_INPUT']), 'PASSKEY_ERROR')
+    assert.equal(selectDetectedLoginState(['REWARDS_SIGN_IN']), 'REWARDS_SIGN_IN')
+
+    assert.match(PASSWORD_SIGN_IN_OPTION_SELECTOR, /\[role="button"\]/)
+    assert.match(PASSWORD_SIGN_IN_OPTION_SELECTOR, /使用密码/)
+    assert.equal(
+        rewardsDashboardUrl('https://rewards.bing.com/about?source=test'),
+        'https://rewards.bing.com/dashboard'
+    )
+    assert.equal(classifyRewardsPageLoginState('https://rewards.bing.com/dashboard', false), 'LOGGED_IN')
+    assert.equal(classifyRewardsPageLoginState('https://rewards.bing.com/dashboard', true), 'REWARDS_SIGN_IN')
+    assert.equal(classifyRewardsPageLoginState('https://rewards.bing.com/about', true), 'REWARDS_SIGN_IN')
+    assert.equal(classifyRewardsPageLoginState('https://rewards.bing.com/about', false), 'UNKNOWN')
+    assert.equal(classifyRewardsPageLoginState('https://rewards.bing.com/createuser', false), 'UNKNOWN')
+    assert.equal(classifyRewardsPageLoginState('https://account.microsoft.com/', false), null)
+    assert.equal(isKmsiPromptText('Stay signed in?'), true)
+    assert.equal(isKmsiPromptText('保持登录状态'), true)
+    assert.equal(isKmsiPromptText('Enter your password'), false)
+
+    const future = 2_000_000_000
+    assert.equal(
+        hasBingAuthenticationCookies([
+            { name: '_U', domain: '.bing.com', expires: future },
+            { name: '.MSA.Auth', domain: '.bing.com', expires: future }
+        ]),
+        true
+    )
+    assert.equal(
+        hasBingAuthenticationCookies([
+            { name: '_U', domain: '.bing.com', expires: future },
+            { name: 'WLS', domain: 'cn.bing.com', expires: -1 }
+        ]),
+        true
+    )
+    assert.equal(hasBingAuthenticationCookies([{ name: '_U', domain: '.bing.com', expires: future }]), false)
+    assert.equal(
+        hasBingAuthenticationCookies([
+            { name: '_U', domain: '.live.com', expires: future },
+            { name: '.MSA.Auth', domain: '.live.com', expires: future }
+        ]),
+        false
+    )
+    assert.equal(
+        hasBingAuthenticationCookies([
+            { name: '_U', domain: '.bing.com', expires: 1 },
+            { name: '.MSA.Auth', domain: '.bing.com', expires: future }
+        ]),
+        false
+    )
 
     assert.match(LOGIN_ERROR_ALERT_SELECTOR, /wcpConsentBannerCtrl/)
     assert.match(LOGIN_ERROR_ALERT_SELECTOR, /__next-route-announcer__/)

@@ -25,11 +25,12 @@ const { Search } = require('../../dist/functions/activities/browser/Search')
     const interactiveBudget = calculateSearchTimeoutBudget({
         searchDelayMax: '1min',
         searchResultVisitTime: '12sec',
+        interactionTimeout: '50sec',
         scrollRandomResults: true,
         clickRandomResults: true
     })
     assert.equal(interactiveBudget.stageTimeouts.scroll, 10000)
-    assert.equal(interactiveBudget.stageTimeouts.click, 29000)
+    assert.equal(interactiveBudget.stageTimeouts.click, 67000)
     assert.ok(interactiveBudget.queryTimeoutMs > defaultBudget.queryTimeoutMs)
 
     let closed = false
@@ -140,6 +141,39 @@ const { Search } = require('../../dist/functions/activities/browser/Search')
     assert.equal(returnedCounters, counters)
     assert.equal(locatorClicks, 1)
     assert.equal(ghostClicks, 0)
+
+    let primaryPageCloses = 0
+    let optionalClickAttempts = 0
+    const optionalResultLink = {
+        waitFor: async options => {
+            assert.deepEqual(options, { state: 'visible', timeout: 5000 })
+        },
+        click: async options => {
+            optionalClickAttempts += 1
+            assert.deepEqual(options, { timeout: 10000 })
+        }
+    }
+    const optionalClickPage = {
+        url: () => 'https://www.bing.com/search?q=synthetic',
+        context: () => ({ pages: () => [optionalClickPage] }),
+        locator: selector => {
+            assert.equal(selector, '#b_results .b_algo h2 a')
+            return { first: () => optionalResultLink }
+        },
+        goto: async () => {
+            throw new Error('no navigation expected')
+        },
+        close: async () => {
+            primaryPageCloses += 1
+        }
+    }
+    const optionalClickSearch = new Search({
+        logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+        browser: { utils: {} }
+    })
+    await optionalClickSearch.clickRandomLink(optionalClickPage, false, new AbortController().signal, 0)
+    assert.equal(optionalClickAttempts, 1)
+    assert.equal(primaryPageCloses, 0)
 
     console.log('searchTimeoutBudget.test.js passed')
 })().catch(error => {

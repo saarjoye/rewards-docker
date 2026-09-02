@@ -11,6 +11,7 @@ async function main() {
         process.chdir(tempRoot)
 
         const { ensureSuccessfulLogin } = require('../../dist/util/AuthenticatedFlow')
+        const BrowserFunc = require('../../dist/browser/BrowserFunc').default
         const { LoginStateError } = require('../../dist/browser/auth/Login')
         const { readAccountStatusFile, updateAccountStatus } = require('../../dist/util/AccountStatusStore')
         const { readRunCheckpointFile, updateRunCheckpoint } = require('../../dist/util/RunCheckpointStore')
@@ -79,6 +80,30 @@ async function main() {
 
         const persisted = JSON.stringify({ accountStatus, checkpoint, progress, history })
         assert.equal(persisted.includes('SECRET-CANARY'), false)
+
+        let cookieReads = 0
+        let contextCloses = 0
+        let browserCloses = 0
+        const browserFunc = new BrowserFunc({
+            isMobile: true,
+            config: { sessionPath: 'unused' },
+            logger: { debug() {}, info() {}, warn() {}, error() {} },
+            utils: { wait: async () => {}, randomDelay: () => 0 }
+        })
+        await browserFunc.closeBrowser(
+            {
+                browser: () => ({ close: async () => browserCloses++ }),
+                cookies: async () => {
+                    cookieReads++
+                    return []
+                },
+                close: async () => contextCloses++
+            },
+            'synthetic@example.test'
+        )
+        assert.equal(cookieReads, 0, '未验证上下文不得读取或保存 Cookie')
+        assert.equal(contextCloses, 1)
+        assert.equal(browserCloses, 1)
 
         console.log('loginFailurePropagation.test.js passed')
     } finally {

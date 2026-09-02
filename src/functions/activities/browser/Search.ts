@@ -107,6 +107,7 @@ export class Search extends Workers {
             const timeoutBudget = calculateSearchTimeoutBudget({
                 searchDelayMax: this.bot.config.searchSettings.searchDelay.max,
                 searchResultVisitTime: this.bot.config.searchSettings.searchResultVisitTime,
+                interactionTimeout: this.bot.config.globalTimeout,
                 scrollRandomResults: this.bot.config.searchSettings.scrollRandomResults,
                 clickRandomResults: this.bot.config.searchSettings.clickRandomResults
             })
@@ -608,7 +609,7 @@ export class Search extends Workers {
                         searchPage,
                         isMobile,
                         signal,
-                        Math.max(0, timeoutBudget.stageTimeouts.click - 17_000)
+                        this.bot.utils.stringToNumber(this.bot.config.searchSettings.searchResultVisitTime)
                     )
                 }
             )
@@ -677,23 +678,42 @@ export class Search extends Workers {
             this.bot.logger.debug(isMobile, 'SEARCH-RANDOM-CLICK', '尝试点击随机搜索结果链接')
 
             const searchPageUrl = page.url()
+            const pagesBeforeClick = new Set(page.context().pages())
 
             signal.throwIfAborted()
-            await this.bot.browser.utils.ghostClick(page, '#b_results .b_algo h2')
+            const resultLink = page.locator('#b_results .b_algo h2 a').first()
+            const clicked = await resultLink
+                .waitFor({ state: 'visible', timeout: 5000 })
+                .then(async () => {
+                    await resultLink.click({ timeout: 10000 })
+                    return true
+                })
+                .catch(() => false)
+            signal.throwIfAborted()
+            if (!clicked) {
+                this.bot.logger.debug(isMobile, 'SEARCH-RANDOM-CLICK', '未找到可点击结果，跳过本次随机访问')
+                return
+            }
             await abortableWait(visitTimeMs, signal)
 
-            if (isMobile) {
-                await page.goto(searchPageUrl)
-                this.bot.logger.debug(isMobile, 'SEARCH-RANDOM-CLICK', '已返回搜索页面')
+            const openedPages = page
+                .context()
+                .pages()
+                .filter(candidate => candidate !== page && !pagesBeforeClick.has(candidate))
+            if (openedPages.length > 0) {
+                await Promise.allSettled(openedPages.map(openedPage => openedPage.close({ runBeforeUnload: false })))
+                this.bot.logger.debug(
+                    isMobile,
+                    'SEARCH-RANDOM-CLICK',
+                    `已关闭本次打开的结果标签页 | count=${openedPages.length}`
+                )
+            } else if (page.url() !== searchPageUrl) {
+                await page.goto(searchPageUrl, { waitUntil: 'domcontentloaded', timeout: 15000 })
+                this.bot.logger.debug(isMobile, 'SEARCH-RANDOM-CLICK', '结果在当前标签页打开，已返回搜索页面')
             } else {
-                const newTab = await this.bot.browser.utils.getLatestTab(page)
-                const newTabUrl = newTab.url()
-
-                this.bot.logger.debug(isMobile, 'SEARCH-RANDOM-CLICK', `已访问结果标签页 | url=${newTabUrl}`)
-
-                await this.bot.browser.utils.closeTabs(newTab)
-                this.bot.logger.debug(isMobile, 'SEARCH-RANDOM-CLICK', '已关闭结果标签页')
+                this.bot.logger.debug(isMobile, 'SEARCH-RANDOM-CLICK', '点击未产生新标签或导航，继续搜索')
             }
+
             signal.throwIfAborted()
         } catch (error) {
             if (signal.aborted) throw signal.reason ?? error

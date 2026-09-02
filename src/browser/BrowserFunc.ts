@@ -99,6 +99,7 @@ const CLAIM_CONFIRM_TIMEOUT_MS = 10000
 const CLAIM_POLL_INTERVAL_MS = 250
 
 export default class BrowserFunc {
+    private readonly verifiedSessionContexts = new WeakSet<BrowserContext>()
     private bot: MicrosoftRewardsBot
     private dashboardCaptures = new WeakMap<Page, DashboardCaptureState>()
     private lastDashboardFieldAvailability: DashboardFieldAvailability | undefined
@@ -678,6 +679,10 @@ export default class BrowserFunc {
 
     private isCurrentPointsSnapshot(value: DashboardData | CurrentPointsSnapshot): value is CurrentPointsSnapshot {
         return 'confidence' in value && 'points' in value
+    }
+
+    public markSessionVerified(context: BrowserContext): void {
+        this.verifiedSessionContexts.add(context)
     }
 
     private confirmedPointsSnapshot(points: number, source: string, observedAt?: string): CurrentPointsSnapshot {
@@ -1803,10 +1808,13 @@ export default class BrowserFunc {
         const rootBrowser = browser.browser?.() ?? null
 
         try {
-            // Try to save cookies
-            const cookies = await browser.cookies()
-            this.bot.logger.debug(this.bot.isMobile, 'CLOSE-BROWSER', `Saving ${cookies.length} cookies.`)
-            await saveSessionData(this.bot.config.sessionPath, cookies, email, this.bot.isMobile)
+            if (this.verifiedSessionContexts.has(browser)) {
+                const cookies = await browser.cookies()
+                this.bot.logger.debug(this.bot.isMobile, 'CLOSE-BROWSER', `Saving ${cookies.length} cookies.`)
+                await saveSessionData(this.bot.config.sessionPath, cookies, email, this.bot.isMobile)
+            } else {
+                this.bot.logger.warn(this.bot.isMobile, 'CLOSE-BROWSER', '会话未通过登录验证，跳过 Cookie 保存')
+            }
 
             await this.bot.utils.wait(2000)
         } catch (error) {
