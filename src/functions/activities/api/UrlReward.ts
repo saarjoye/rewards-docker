@@ -1,130 +1,150 @@
-import type { AxiosRequestConfig } from 'axios'
+import { URLs } from '../../../constants/urls'
 import type { BasePromotion } from '../../../interface/DashboardData'
-import { Workers } from '../../Workers'
+import { BaseActivity } from '../BaseActivity'
 
-export class UrlReward extends Workers {
-    private cookieHeader: string = ''
-
-    private fingerprintHeader: { [x: string]: string } = {}
-
-    private gainedPoints: number = 0
-
-    private oldBalance: number = this.bot.userData.currentPoints
-
+export class UrlReward extends BaseActivity {
     public async doUrlReward(promotion: BasePromotion) {
-        if (!this.bot.requestToken) {
+        await this.runUrlReward(promotion, true)
+    }
+
+    private async runUrlReward(promotion: BasePromotion, allowSessionRepair: boolean) {
+        const offerId = promotion.offerId
+
+        const actionId = this.bot.nextActions.reportActivity
+        if (!actionId) {
             this.bot.logger.warn(
                 this.bot.isMobile,
                 'URL-REWARD',
-                '跳过：旧版 UrlReward 接口需要 RequestVerificationToken，当前会话未提供'
+                `Skipping ${offerId}: "reportActivity" not discovered in bundle`
             )
             return
         }
 
-        const offerId = promotion.offerId
+        const live = await this.bot.browser.func.ensureOffer(offerId)
+        if (!live) {
+            this.bot.logger.warn(
+                this.bot.isMobile,
+                'URL-REWARD',
+                `Skipping ${offerId}: not present in page snapshot, even after refetching /earn and /dashboard`
+            )
+            return
+        }
+        if (!live.reportable) {
+            this.bot.logger.warn(
+                this.bot.isMobile,
+                'URL-REWARD',
+                `Skipping ${offerId}: not reportable (completed/locked/no-hash/future-dated)`
+            )
+            return
+        }
+
+        if (this.bot.config.skipNonPointTasks && live.points === 0) {
+            this.bot.logger.info(
+                this.bot.isMobile,
+                'URL-REWARD',
+                `Skipping ${offerId}: awards no points (points=${live.points}${live.promotionSubtype ? ` subtype=${live.promotionSubtype}` : ''}) - likely a free trial/non-crediting offer. Set skipNonPointTasks=false to attempt anyway.`
+            )
+            return
+        }
+
+        const oldBalance = this.bot.userData.currentPoints
+        const expectedPoints = live.points
+
+        const dashboardActivityType = Number(promotion.activityType)
+        const activityType =
+            live.activityType ??
+            (Number.isInteger(dashboardActivityType) && dashboardActivityType > 0 ? dashboardActivityType : 11)
 
         this.bot.logger.info(
             this.bot.isMobile,
             'URL-REWARD',
-            `开始UrlReward | offerId=${offerId} | 地区=${this.bot.userData.geoLocale} | 旧余额=${this.oldBalance}`
+            `Starting UrlReward | offerId=${offerId} | geo=${this.bot.userData.geoLocale} | currentBalance=${oldBalance}`
         )
 
         try {
-            const targetUrl = 'https://rewards.bing.com/api/reportactivity?X-Requested-With=XMLHttpRequest'
-            this.cookieHeader = this.bot.browser.func.buildCookieHeaderForUrl(
-                this.bot.isMobile ? this.bot.cookies.mobile : this.bot.cookies.desktop,
-                targetUrl
+            const { status, acknowledged, availablePoints } = await this.bot.browser.func.reportServerAction(
+                actionId,
+                [
+                    live.hash,
+                    activityType,
+                    {
+                        offerid: offerId,
+                        isPromotional: live.isPromotional ? true : '$undefined',
+                        timezoneOffset: this.bot.userData.timezoneOffset
+                    }
+                ],
+                {
+                    url: URLs.rewards.dashboard,
+                    referer: URLs.rewards.dashboard,
+                    routerStateTree: this.bot.browser.react.routerStateTree('dashboard')
+                }
             )
 
-            const fingerprintHeaders = { ...this.bot.fingerprint.headers }
-            delete fingerprintHeaders['Cookie']
-            delete fingerprintHeaders['cookie']
-            this.fingerprintHeader = fingerprintHeaders
-
-            this.bot.logger.debug(
-                this.bot.isMobile,
-                'URL-REWARD',
-                `准备好的UrlReward头部 | offerId=${offerId} | cookie长度=${this.cookieHeader.length} | 指纹头部键=${Object.keys(this.fingerprintHeader).length}`
-            )
-
-            const formData = new URLSearchParams({
-                id: offerId,
-                hash: promotion.hash,
-                timeZone: this.bot.userData.timezoneOffset,
-                activityAmount: '1',
-                dbs: '0',
-                form: '',
-                type: '',
-                __RequestVerificationToken: this.bot.requestToken
-            })
-
-            this.bot.logger.debug(
-                this.bot.isMobile,
-                'URL-REWARD',
-                `准备好的UrlReward表单数据 | offerId=${offerId} | hash=${promotion.hash} | 时区=480 | 活动量=1`
-            )
-
-            const request: AxiosRequestConfig = {
-                url: targetUrl,
-                method: 'POST',
-                headers: {
-                    ...this.fingerprintHeader,
-                    Cookie: this.cookieHeader,
-                    Referer: 'https://rewards.bing.com/',
-                    Origin: 'https://rewards.bing.com'
-                },
-                data: formData
+            if (!acknowledged) {
+                this.bot.logger.warn(
+                    this.bot.isMobile,
+                    'URL-REWARD',
+                    `UrlReward request was not acknowledged | offerId=${offerId} | status=${status}`
+                )
+                if (await this.retryAfterRequestFailure(promotion, allowSessionRepair)) return
             }
 
-            this.bot.logger.debug(
-                this.bot.isMobile,
-                'URL-REWARD',
-                `发送UrlReward请求 | offerId=${offerId} | url=${request.url}`
-            )
-
-            const response = await this.bot.axios.request(request)
+            const newBalance = availablePoints ?? (await this.bot.browser.func.getCurrentPoints())
+            const gainedPoints = newBalance - oldBalance
 
             this.bot.logger.debug(
                 this.bot.isMobile,
                 'URL-REWARD',
-                `收到UrlReward响应 | offerId=${offerId} | 状态=${response.status}`
+                `Response | offerId=${offerId} | status=${status} | acknowledged=${acknowledged} | pointsGained=${gainedPoints} | currentBalance=${newBalance}`
             )
 
-            const newBalance = await this.bot.browser.func.getCurrentPoints()
-            this.gainedPoints = newBalance - this.oldBalance
+            if (gainedPoints > 0) {
+                this.bot.userData.currentPoints = newBalance
+                this.bot.userData.gainedPoints = (this.bot.userData.gainedPoints ?? 0) + gainedPoints
 
-            this.bot.logger.debug(
-                this.bot.isMobile,
-                'URL-REWARD',
-                `UrlReward后的余额差额 | offerId=${offerId} | 旧余额=${this.oldBalance} | 新余额=${newBalance} | 获得积分=${this.gainedPoints}`
-            )
-
-            if (this.gainedPoints > 0) {
-                this.bot.recordPointGain('UrlReward', this.gainedPoints, newBalance)
-
+                const shortfall = expectedPoints > 0 && gainedPoints < expectedPoints
                 this.bot.logger.info(
                     this.bot.isMobile,
                     'URL-REWARD',
-                    `完成UrlReward | offerId=${offerId} | 状态=${response.status} | 获得积分=${this.gainedPoints} | 新余额=${newBalance}`,
+                    `Completed UrlReward | offerId=${offerId} | pointsGained=${gainedPoints} | currentBalance=${newBalance}${shortfall ? ' | WARNING: credited less than advertised' : ''}`,
+                    'green'
+                )
+            } else if (acknowledged && expectedPoints === 0) {
+                this.bot.logger.info(
+                    this.bot.isMobile,
+                    'URL-REWARD',
+                    `Completed UrlReward (no points by design) | offerId=${offerId} | acknowledged=true | pointsGained=0 | currentBalance=${newBalance}`,
                     'green'
                 )
             } else {
                 this.bot.logger.warn(
                     this.bot.isMobile,
                     'URL-REWARD',
-                    `UrlReward失败，没有积分 | offerId=${offerId} | 状态=${response.status} | 旧余额=${this.oldBalance} | 新余额=${newBalance}`
+                    `UrlReward credited no points | offerId=${offerId} | acknowledged=${acknowledged} | expected=${expectedPoints} | pointsGained=0 | currentBalance=${newBalance}`
                 )
             }
-
-            this.bot.logger.debug(this.bot.isMobile, 'URL-REWARD', `等待UrlReward后 | offerId=${offerId}`)
-
-            await this.bot.utils.wait(this.bot.utils.randomDelay(5000, 10000))
         } catch (error) {
             this.bot.logger.error(
                 this.bot.isMobile,
                 'URL-REWARD',
-                `doUrlReward中出错 | offerId=${promotion.offerId} | 消息=${error instanceof Error ? error.message : String(error)}`
+                `Error in doUrlReward | offerId=${offerId} | message=${error instanceof Error ? error.message : String(error)}`
             )
+            await this.retryAfterRequestFailure(promotion, allowSessionRepair)
         }
+    }
+
+    private async retryAfterRequestFailure(promotion: BasePromotion, allowSessionRepair: boolean): Promise<boolean> {
+        if (!allowSessionRepair) return false
+
+        const refreshed = await this.bot.refreshCurrentRewardsContext(`URL-REWARD:${promotion.offerId}`)
+        if (!refreshed) return false
+
+        this.bot.logger.info(
+            this.bot.isMobile,
+            'URL-REWARD',
+            `Retrying UrlReward once with refreshed cookies and bootstrap data | offerId=${promotion.offerId}`
+        )
+        await this.runUrlReward(promotion, false)
+        return true
     }
 }

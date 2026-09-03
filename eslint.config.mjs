@@ -5,7 +5,7 @@ import globals from 'globals'
 
 export default tseslint.config(
     {
-        ignores: ['dist/**', 'node_modules/**', 'diagnostics/**', 'sessions/**', 'scripts/**']
+        ignores: ['dist/**', 'node_modules/**', 'diagnostics/**', 'sessions/**']
     },
     js.configs.recommended,
     ...tseslint.configs.recommended,
@@ -22,7 +22,15 @@ export default tseslint.config(
             '@typescript-eslint/no-explicit-any': ['warn', { fixToUnknown: false }],
             'prefer-arrow-callback': 'error',
             'no-empty': 'off',
-            "preserve-caught-error": "off",
+            'preserve-caught-error': 'off'
+        }
+    },
+    {
+        files: ['web/public/**/*.js'],
+        languageOptions: {
+            globals: {
+                ...globals.browser
+            }
         }
     },
     // Must come last: disables ESLint rules that conflict with Prettier formatting

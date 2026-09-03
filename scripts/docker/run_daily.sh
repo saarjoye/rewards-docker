@@ -1,258 +1,217 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-/ms-playwright}"
+_SKIP_SLEEP_OVERRIDE="${SKIP_RANDOM_SLEEP:-}"
+
+# Restore container environment (ACCOUNT_*, CONFIG_*, etc.) lost when cron spawns this job
+if [ -f /etc/container_env ]; then
+    # shellcheck source=/dev/null
+    . /etc/container_env
+fi
+
+# Re-apply the caller's override so sourcing /etc/container_env can't reset it.
+[ -n "$_SKIP_SLEEP_OVERRIDE" ] && SKIP_RANDOM_SLEEP="$_SKIP_SLEEP_OVERRIDE"
+unset _SKIP_SLEEP_OVERRIDE
+
+export PLAYWRIGHT_BROWSERS_PATH=0
 export TZ="${TZ:-UTC}"
 
 cd /usr/src/microsoft-rewards-script
 
-# Do not start a Rewards run until the matching browser revision is available.
-node scripts/docker/check-browser.js
+LOCKFILE=/tmp/run_daily.lock
 
-LOCKFILE="${RUN_LOCK_FILE:-/tmp/run_daily.lock}"
-LOCK_META_FILE="${RUN_LOCK_META_FILE:-/tmp/run_daily.lock.meta}"
-RUNTIME_LOG_FILE="${RUNTIME_LOG_FILE:-/var/log/microsoft-rewards.log}"
-RUN_SOURCE="${RUN_SOURCE:-cron}"
-RUN_MODE="${RUN_MODE:-task}"
-RUN_ACCOUNT_MODE="${RUN_ACCOUNT_MODE:-continue}"
-RUN_ACCOUNT_INDEX="${RUN_ACCOUNT_INDEX:-}"
-MANUAL_TASK="${MANUAL_TASK:-}"
-RUN_FAIL_ON_LOCK="${RUN_FAIL_ON_LOCK:-false}"
-SCRIPT_PID="$$"
-CHILD_PID=""
-
-export RUN_SOURCE RUN_MODE RUN_ACCOUNT_MODE RUN_ACCOUNT_INDEX MANUAL_TASK RUN_FAIL_ON_LOCK RUNTIME_LOG_FILE
-
-log() {
-    echo "[$(date)] [run_daily.sh] $*"
+is_positive_integer() {
+    [[ "$1" =~ ^[1-9][0-9]*$ ]]
 }
 
-json_escape() {
-    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+is_nonnegative_integer() {
+    [[ "$1" =~ ^[0-9]+$ ]]
 }
 
-write_lock_meta() {
-    local started_at
-    started_at="$(date -Iseconds)"
-    cat > "$LOCK_META_FILE" <<EOF
-{
-  "pid": $SCRIPT_PID,
-  "source": "$(json_escape "$RUN_SOURCE")",
-  "mode": "$(json_escape "$RUN_MODE")",
-  "accountMode": "$(json_escape "$RUN_ACCOUNT_MODE")",
-  "accountIndex": "$(json_escape "$RUN_ACCOUNT_INDEX")",
-  "manualTask": "$(json_escape "$MANUAL_TASK")",
-  "startedAt": "$(json_escape "$started_at")",
-  "skipRandomSleep": "$(json_escape "${SKIP_RANDOM_SLEEP:-false}")",
-  "logFile": "$(json_escape "$RUNTIME_LOG_FILE")"
-}
-EOF
-}
-
-read_lock_pid() {
-    if [ ! -f "$LOCKFILE" ]; then
-        return 1
-    fi
-    local pid
-    pid="$(cat "$LOCKFILE" 2>/dev/null || true)"
-    if [[ "$pid" =~ ^[0-9]+$ ]]; then
-        printf '%s' "$pid"
-        return 0
-    fi
-    return 1
-}
-
-is_alive() {
-    local pid="${1:-}"
-    [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null
-}
-
-process_age() {
+is_run_daily_process() {
     local pid="$1"
-    ps -o etimes= -p "$pid" 2>/dev/null | tr -d ' ' || true
-}
-
-remove_stale_lock() {
-    rm -f "$LOCKFILE" "$LOCK_META_FILE"
-    return 0
+    [ -r "/proc/$pid/cmdline" ] || return 1
+    tr '\0' ' ' < "/proc/$pid/cmdline" | grep -q 'scripts/docker/run_daily\.sh'
 }
 
 self_heal_lockfile() {
-    if [ ! -f "$LOCKFILE" ]; then
-        [ -f "$LOCK_META_FILE" ] && rm -f "$LOCK_META_FILE"
-        return 0
+    # If lockfile exists but is empty → remove it
+    if [ -f "$LOCKFILE" ]; then
+        local lock_content
+        lock_content=$(<"$LOCKFILE" || echo "")
+
+        if [[ -z "$lock_content" ]]; then
+            echo "[$(date)] [run_daily.sh] Found empty lockfile → removing."
+            rm -f "$LOCKFILE"
+            return
+        fi
+
+        # If lockfile contains non-numeric PID → remove it
+        if ! [[ "$lock_content" =~ ^[0-9]+$ ]]; then
+            echo "[$(date)] [run_daily.sh] Found corrupted lockfile content ('$lock_content') → removing."
+            rm -f "$LOCKFILE"
+            return
+        fi
+
+        # If lockfile contains PID but process is dead → remove it
+        if ! kill -0 "$lock_content" 2>/dev/null; then
+            echo "[$(date)] [run_daily.sh] Lockfile PID $lock_content is dead → removing stale lock."
+            rm -f "$LOCKFILE"
+            return
+        fi
+
+        if ! is_run_daily_process "$lock_content"; then
+            echo "[$(date)] [run_daily.sh] Lockfile PID $lock_content is not run_daily.sh → removing stale lock."
+            rm -f "$LOCKFILE"
+        fi
     fi
-
-    local lock_pid
-    if ! lock_pid="$(read_lock_pid)"; then
-        log "发现损坏的锁文件，正在删除。"
-        remove_stale_lock
-        return 0
-    fi
-
-    if ! is_alive "$lock_pid"; then
-        log "锁文件PID $lock_pid 已死亡，正在删除陈旧锁。"
-        remove_stale_lock
-        return 0
-    fi
-
-    return 0
-}
-
-find_other_runner() {
-    local current="$SCRIPT_PID"
-    local pids pid cmd
-    pids="$(pgrep -f '[n]ode .*dist/index\.js|[n]pm start' 2>/dev/null || true)"
-    for pid in $pids; do
-        [ "$pid" = "$current" ] && continue
-        [ "$pid" = "$PPID" ] && continue
-        cmd="$(ps -o args= -p "$pid" 2>/dev/null || true)"
-        [ -z "$cmd" ] && continue
-        case "$cmd" in
-            *"pgrep -f"*|*"ps -o args="*) continue ;;
-        esac
-        printf '%s' "$pid"
-        return 0
-    done
-    return 1
-}
-
-handle_existing_runner() {
-    local existing_pid="$1"
-    local timeout_hours=${STUCK_PROCESS_TIMEOUT_HOURS:-8}
-    local timeout_seconds=$((timeout_hours * 3600))
-    local age
-
-    age="$(process_age "$existing_pid")"
-    if [[ "$age" =~ ^[0-9]+$ ]] && [ "$age" -gt "$timeout_seconds" ]; then
-        log "终止卡住的进程 $existing_pid (${age}s > ${timeout_hours}h)"
-        kill -TERM "$existing_pid" 2>/dev/null || true
-        sleep 5
-        kill -KILL "$existing_pid" 2>/dev/null || true
-        remove_stale_lock
-        return 0
-    fi
-
-    log "已有任务运行中，PID: $existing_pid；本次来源=$RUN_SOURCE，模式=$RUN_MODE，账号模式=$RUN_ACCOUNT_MODE，拒绝启动。"
-    return 1
 }
 
 acquire_lock() {
-    local max_attempts=1
+    local max_attempts=5
     local attempt=0
-    local existing_pid
+    local timeout_hours=${STUCK_PROCESS_TIMEOUT_HOURS:-8}
+    local timeout_seconds
+    local existing_pid="unknown"
 
-    while [ "$attempt" -lt "$max_attempts" ]; do
-        self_heal_lockfile
+    if ! is_positive_integer "$timeout_hours"; then
+        echo "[$(date)] [run_daily.sh] ERROR: STUCK_PROCESS_TIMEOUT_HOURS must be a positive integer." >&2
+        return 2
+    fi
+    timeout_seconds=$((timeout_hours * 3600))
 
-        if (set -C; echo "$SCRIPT_PID" > "$LOCKFILE") 2>/dev/null; then
-            write_lock_meta
-            log "锁获取成功 (PID: $SCRIPT_PID, source=$RUN_SOURCE, mode=$RUN_MODE, accountMode=$RUN_ACCOUNT_MODE)"
+    while [ $attempt -lt $max_attempts ]; do
+        attempt=$((attempt + 1))
+        # Try to create lock with current PID
+        if (set -C; echo "$$" > "$LOCKFILE") 2>/dev/null; then
+            echo "[$(date)] [run_daily.sh] Lock acquired successfully (PID: $$)"
             return 0
         fi
 
-        existing_pid="$(read_lock_pid || true)"
-        if [ -n "$existing_pid" ] && ! handle_existing_runner "$existing_pid"; then
-            return 1
+        # Lock exists, validate it
+        if [ -f "$LOCKFILE" ]; then
+            existing_pid=$(<"$LOCKFILE" || echo "")
+
+            echo "[$(date)] [run_daily.sh] Lock file exists with PID: '$existing_pid'"
+
+            # If lockfile content is invalid → delete and retry
+            if [[ -z "$existing_pid" || ! "$existing_pid" =~ ^[0-9]+$ ]]; then
+                echo "[$(date)] [run_daily.sh] Removing invalid lockfile → retrying..."
+                rm -f "$LOCKFILE"
+                continue
+            fi
+
+            # If process is dead → delete and retry
+            if ! kill -0 "$existing_pid" 2>/dev/null; then
+                echo "[$(date)] [run_daily.sh] Removing stale lock (dead PID: $existing_pid)"
+                rm -f "$LOCKFILE"
+                continue
+            fi
+
+            if ! is_run_daily_process "$existing_pid"; then
+                echo "[$(date)] [run_daily.sh] Removing stale lock owned by unrelated PID $existing_pid"
+                rm -f "$LOCKFILE"
+                continue
+            fi
+
+            # Check process runtime → kill if exceeded timeout
+            local process_age
+            if process_age=$(ps -o etimes= -p "$existing_pid" 2>/dev/null | tr -d ' '); then
+                if [ "$process_age" -gt "$timeout_seconds" ]; then
+                    echo "[$(date)] [run_daily.sh] Killing stuck process $existing_pid (${process_age}s > ${timeout_hours}h)"
+                    kill -TERM "$existing_pid" 2>/dev/null || true
+                    sleep 5
+                    kill -KILL "$existing_pid" 2>/dev/null || true
+                    rm -f "$LOCKFILE"
+                    continue
+                fi
+            fi
         fi
 
-        attempt=$((attempt + 1))
+        echo "[$(date)] [run_daily.sh] Lock held by PID $existing_pid, attempt $attempt/$max_attempts"
+        sleep 2
     done
 
+    echo "[$(date)] [run_daily.sh] Could not acquire lock after $max_attempts attempts; exiting."
     return 1
 }
 
-check_orphan_runner() {
-    local other_pid
-    if other_pid="$(find_other_runner)"; then
-        if ! handle_existing_runner "$other_pid"; then
-            return 1
+release_lock() {
+    if [ -f "$LOCKFILE" ]; then
+        local lock_pid
+        lock_pid=$(<"$LOCKFILE")
+        if [ "$lock_pid" = "$$" ]; then
+            rm -f "$LOCKFILE"
+            echo "[$(date)] [run_daily.sh] Lock released (PID: $$)"
         fi
     fi
-    return 0
 }
 
-terminate_child_group() {
-    if [ -n "${CHILD_PID:-}" ] && is_alive "$CHILD_PID"; then
-        log "正在终止子进程组 $CHILD_PID"
-        kill -TERM "-$CHILD_PID" 2>/dev/null || kill -TERM "$CHILD_PID" 2>/dev/null || true
-        sleep 5
-        kill -KILL "-$CHILD_PID" 2>/dev/null || kill -KILL "$CHILD_PID" 2>/dev/null || true
-    fi
-}
-
-release_lock() {
-    local lock_pid=""
-    if [ -f "$LOCKFILE" ]; then
-        lock_pid="$(cat "$LOCKFILE" 2>/dev/null || true)"
-    fi
-
-    if [ "$lock_pid" = "$SCRIPT_PID" ]; then
-        rm -f "$LOCKFILE" "$LOCK_META_FILE"
-        log "锁已释放 (PID: $SCRIPT_PID)"
-    fi
-}
-
-cleanup() {
-    local exit_code=$?
-    if [ "$exit_code" -ne 0 ]; then
-        terminate_child_group
-    fi
-    release_lock
-    exit "$exit_code"
-}
-
-trap cleanup EXIT
-trap 'exit 143' TERM
+# Always release the lock on exit, including interrupt/termination paths.
+trap release_lock EXIT
 trap 'exit 130' INT
+trap 'exit 143' TERM
 
-log "当前进程PID: $SCRIPT_PID | source=$RUN_SOURCE | mode=$RUN_MODE | accountMode=$RUN_ACCOUNT_MODE | accountIndex=${RUN_ACCOUNT_INDEX:-all}"
+echo "[$(date)] [run_daily.sh] Current process PID: $$"
 
+# Self-heal any broken or empty locks before proceeding
 self_heal_lockfile
 
-if ! check_orphan_runner; then
-    [ "$RUN_FAIL_ON_LOCK" = "true" ] && exit 75
+if acquire_lock; then
+    :
+else
+    lock_status=$?
+    [ "$lock_status" -eq 2 ] && exit 1
     exit 0
 fi
 
-if ! acquire_lock; then
-    [ "$RUN_FAIL_ON_LOCK" = "true" ] && exit 75
-    exit 0
-fi
-
+# Random sleep between MIN and MAX to spread execution
 MINWAIT=${MIN_SLEEP_MINUTES:-5}
 MAXWAIT=${MAX_SLEEP_MINUTES:-50}
-MINWAIT_SEC=$((MINWAIT * 60))
-MAXWAIT_SEC=$((MAXWAIT * 60))
+
+if ! is_nonnegative_integer "$MINWAIT" || ! is_nonnegative_integer "$MAXWAIT"; then
+    echo "[$(date)] [run_daily.sh] ERROR: MIN_SLEEP_MINUTES and MAX_SLEEP_MINUTES must be non-negative integers." >&2
+    exit 1
+fi
+if [ "$MAXWAIT" -lt "$MINWAIT" ]; then
+    echo "[$(date)] [run_daily.sh] ERROR: MAX_SLEEP_MINUTES must be greater than or equal to MIN_SLEEP_MINUTES." >&2
+    exit 1
+fi
+
+MINWAIT_SEC=$((MINWAIT*60))
+MAXWAIT_SEC=$((MAXWAIT*60))
 
 if [ "${SKIP_RANDOM_SLEEP:-false}" != "true" ]; then
-    if [ "$MAXWAIT_SEC" -le "$MINWAIT_SEC" ]; then
-        SLEEPTIME="$MINWAIT_SEC"
+    if [ "$MAXWAIT_SEC" -eq "$MINWAIT_SEC" ]; then
+        SLEEPTIME=$MINWAIT_SEC
     else
-        SLEEPTIME=$((MINWAIT_SEC + RANDOM % (MAXWAIT_SEC - MINWAIT_SEC)))
+        SLEEPTIME=$((MINWAIT_SEC + RANDOM % (MAXWAIT_SEC - MINWAIT_SEC + 1)))
     fi
-    log "休眠 $((SLEEPTIME / 60)) 分钟 ($SLEEPTIME 秒)"
+    echo "[$(date)] [run_daily.sh] Sleeping for $((SLEEPTIME/60)) minutes ($SLEEPTIME seconds)"
     sleep "$SLEEPTIME"
 else
-    log "跳过随机休眠"
+    echo "[$(date)] [run_daily.sh] Skipping random sleep"
 fi
 
-log "开始脚本..."
-mkdir -p "$(dirname "$RUNTIME_LOG_FILE")"
-
-set +e
-setsid bash -lc 'npm start' > >(tee -a "$RUNTIME_LOG_FILE") 2>&1 &
-CHILD_PID=$!
-wait "$CHILD_PID"
-RESULT=$?
-set -e
-CHILD_PID=""
-
-if [ "$RESULT" -eq 0 ]; then
-    log "脚本成功完成。"
+# Start the actual script
+echo "[$(date)] [run_daily.sh] Starting script..."
+run_status=0
+if [ "${API_MODE:-false}" = "true" ]; then
+    if node scripts/api/trigger.js; then
+        echo "[$(date)] [run_daily.sh] Script completed successfully (via API)."
+    else
+        echo "[$(date)] [run_daily.sh] ERROR: Script failed (via API)!" >&2
+        run_status=1
+    fi
 else
-    log "错误: 脚本失败！退出码: $RESULT" >&2
-    exit "$RESULT"
+    if npm start; then
+        echo "[$(date)] [run_daily.sh] Script completed successfully."
+    else
+        echo "[$(date)] [run_daily.sh] ERROR: Script failed!" >&2
+        run_status=1
+    fi
 fi
 
-log "脚本完成"
+echo "[$(date)] [run_daily.sh] Script finished"
+# Lock is released automatically via trap
+exit "$run_status"

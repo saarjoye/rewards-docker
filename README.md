@@ -1,246 +1,477 @@
-# 微软奖励脚本
-自动化的微软奖励脚本，这次使用 TypeScript、Cheerio 和 Playwright 编写。
+> This repository pins the upstream v4.3.2 core and adds an isolated Chinese control Web. See [README.zh-CN.md](README.zh-CN.md) for the two-container NAS deployment and [UPSTREAM.md](UPSTREAM.md) for the exact baseline.
 
-该项目来源于https://github.com/TheNetsky/Microsoft-Rewards-Script ，感谢原作者的付出
+[![Discord](https://img.shields.io/badge/Join%20Our%20Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/8BxYbV4pkj)
+[![Latest Build](https://img.shields.io/github/actions/workflow/status/TheNetsky/Microsoft-Rewards-Script/auto-release.yml?branch=v4&style=for-the-badge&label=Latest%20Build)](https://github.com/TheNetsky/Microsoft-Rewards-Script/actions/workflows/auto-release.yml)
+[![Docker](https://img.shields.io/badge/Docker-GHCR-blue?style=for-the-badge&logo=docker)](https://github.com/TheNetsky/Microsoft-Rewards-Script/pkgs/container/microsoft-rewards-script)
 
-本项目不定时同步原项目代码，主要内容为本地化处理，主要针对的是国内用户无法访问外网google和输出日志简单翻译等问题，并在原有基础上完善功能。若有侵权请联系我删除。
+> [!TIP]
+> This version supports the **new, modern Bing Rewards dashboard only** - it does **not** support the legacy dashboard.
+> If your account still uses the old dashboard, use the [v3 branch](https://github.com/TheNetsky/Microsoft-Rewards-Script/tree/v3) and v3.x releases instead!
+>
+> Use at your own risk - some features may not work as expected.
 
-本项目所有改动基于win11系统和docker环境。其他系统未测试，请根据原项目相关配置设置。
+---
 
-# 同步原项目时间
-2026年6月15日16:12:44
+## Table of Contents
 
+- [Table of Contents](#table-of-contents)
+- [Quick Setup](#quick-setup)
+    - [Bare metal](#bare-metal)
+        - [Get the script](#get-the-script)
+- [Account Setup](#account-setup)
+- [Config Setup](#config-setup)
+    - [Build and run the script (bare metal version)](#build-and-run-the-script-bare-metal-version)
+- [Docker](#docker)
+- [Control API and Dashboard](#control-api-and-dashboard)
+- [Nix Setup](#nix-setup)
+- [Configuration Options](#configuration-options)
+    - [Core](#core)
+    - [Workers](#workers)
+    - [Activities](#activities)
+    - [Search Settings](#search-settings)
+        - [Query sources](#query-sources)
+    - [Experimental](#experimental)
+        - [Activity source layout](#activity-source-layout)
+    - [Logging](#logging)
+    - [Proxy](#proxy)
+    - [Webhooks](#webhooks)
+- [Troubleshooting](#troubleshooting)
+    - [Manual login](#manual-login)
+    - [Session management](#session-management)
+- [Disclaimer](#disclaimer)
 
-# window环境 #
-## 如何自动设置 ##
-1. 下载或克隆源代码
-2. win系统运行setup.bat部署环境（若使用setup.bat报错，请参考手动设置）
-3. 在dist目录 `accounts.json`添加你的账户信息
-4. 按照你的喜好修改dist目录 `config.json` 文件
-5. 运行 `npm start`或运行 `run.bat` 启动构建好的脚本
-## 如何手动设置 ##
-1. 下载或克隆源代码
-2. 下载安装nodejs 24和npm环境
-3. 运行 `npm install` 安装依赖包
-4. 若Error: browserType.launch: Executable doesn't exist报错执行 npx patchright install chromium
-5. 将 `accounts.example.json` 重命名为 `accounts.json`，并添加你的账户信息
-6. 按照你的喜好修改 `config.json` 文件
-7. 运行 `npm run pre-build` 预构建脚本
-8. 运行 `npm run build` 构建脚本
-9. 运行 `npm start` 启动构建好的脚本
+---
 
+## Quick Setup
 
-# Docker环境 #
-1. 下载或克隆源代码
-2. 确保`config.json`内的 `headless`设置为`true`
-3. 编辑`compose.yaml` 
-* 设置时区`TZ` 
-* 设置调度`CRON_SCHEDULE` （默认为每天7点执行一次）
-* 保持`RUN_ON_START=true`
-4. 首次部署或 Patchright 版本更新后，安装与当前镜像匹配的 Chromium Headless Shell
-~~~
-docker compose --profile setup run --rm browser-install
-~~~
-5. 启动容器
-~~~
-docker compose up -d 
-~~~
+### Bare metal
 
-浏览器保存在 Compose 命名卷 `playwright-browsers` 中，不包含在应用镜像内，后续更新应用镜像无需重复下载。`docker compose down` 会保留该卷；`docker compose down -v` 会同时删除浏览器，下次启动奖励任务前必须重新执行安装命令。浏览器缺失或版本不匹配时 Web 后台仍可启动，但奖励任务会明确报错并返回失败。
+**Requirements:** Node.js >= 24 and Git  
+Works on Windows, Linux, macOS, and WSL.
 
-主服务和浏览器安装服务共用 `REWARDS_IMAGE`；未设置时使用默认 GHCR 镜像。切换镜像仓库时只需设置该变量，两个服务会保持相同应用与 Patchright 版本。
+#### Get the script
 
-## 注意事项 ##
-- 如果出现无法自动登录情况，请在代码执行登录过程中手动完成网页的登录，等待代码自动完成剩下流程。登录信息保存在sessions目录（需要多备份），后续运行根据该目录的会话文件来运行。
-- 复制或重命名 `src/accounts.example.json` 为 `src/accounts.json` 并添加您的凭据
-- 复制或重命名 `src/config.example.json` 为 `src/config.json` 并自定义您的偏好。
-- 不要跳过此步骤。之前的 accounts.json 和 config.json 版本与当前版本不兼容。
-- 您必须在对 accounts.json 和 config.json 进行任何更改后重新构建脚本。
-
-## 配置参考
-
-编辑 `src/config.json` 以自定义行为。
-以下是关键配置部分的摘要。
-
-### Core / 核心
-| 设置 | 描述 | 默认值 |
-|----------|-------------|----------|
-| `baseURL` | Microsoft Rewards base URL | `https://rewards.bing.com` |
-| `sessionPath` | 用于存储浏览器会话的文件夹 | `sessions` |
-| `headless` | 在后台运行浏览器 | `false`（可见） |
-| `clusters` | 并发账户实例数 | `1` |
-| `errorDiagnostics` | 出错时自动截图诊断 | `true` |
-| `debugLogs` | 输出 DEBUG 级别日志（也可用 `-dev` 启动参数临时开启） | `false` |
-
-
-### Fingerprinting / 指纹识别
-| 设置 | 描述 | 默认值 |
-|---------|-------------|---------|
-| `saveFingerprint.mobile` | 重用移动浏览器指纹 | `false` |
-| `saveFingerprint.desktop` | 重用桌面浏览器指纹 | `false` |
-
-
-### Job State / 任务状态
-| 设置 | 描述 | 默认值 |
-|---------|-------------|---------|
-| `workers.doDailySet` | 完成每日集活动 | `true` |
-| `workers.doSpecialPromotions` | 完成特殊促销活动 | `true` |
-| `workers.doMorePromotions` | 完成促销优惠 | `true` |
-| `workers.doClaimBonusPoints` | 领取 dashboard 上的奖励积分（新版 UI 走 Server Action） | `true` |
-| `workers.doPunchCards` | 完成打卡活动 | `true` |
-| `workers.doAppPromotions` | 完成 App 端活动（ReadToEarn / DailyCheckIn 等） | `true` |
-| `workers.doDesktopSearch` | 执行桌面搜索 | `true` |
-| `workers.doMobileSearch` | 执行移动搜索 | `true` |
-| `workers.doDailyCheckIn` | 完成每日签到 | `true` |
-| `workers.doReadToEarn` | 完成阅读赚取活动 | `true` |
-| `ensureStreakProtection` | 启用连击保护（账户级配置，新版 UI 走 Server Action） | `true` |
-
-### Search / 搜索
-| 设置 | 描述 | 默认值 |
-|---------|-------------|---------|
-| `searchOnBingLocalQueries` | 使用本地查询 vs. 获取的查询 | `false` |
-| `searchSettings.scrollRandomResults` | 随机滚动搜索结果 | `true` |
-| `searchSettings.clickRandomResults` | 点击随机结果链接 | `true` |
-| `searchSettings.parallelSearching` | 桌面端/移动端搜索并行执行 | `false` |
-| `searchSettings.queryEngines` | 查询源及顺序（数组），决定从哪些源获取搜索词 | `['china', 'local']` |
-| `searchSettings.searchResultVisitTime` | 访问搜索结果页的停留时间 | `10sec` |
-| `searchSettings.searchDelay` | 搜索之间的延迟（最小/最大） | `30sec - 1min` |
-| `searchSettings.readDelay` | 阅读赚取活动的阅读间隔（最小/最大） | `30sec - 1min` |
-| `searchSettings.chinaApi.appkey` | gmya.net appkey（填入解除免费档限流，留空走免费档） | `''`（空） |
-
-> 注：示例配置 `config.example.json` 里 `searchDelay` 为 `6-12min`、`readDelay` 为 `6-11min`、`searchResultVisitTime` 为 `20sec`，比 Validator 默认值更保守，适合长时间挂机场景。
-
-#### queryEngines 查询源说明
-`searchSettings.queryEngines` 决定从哪些源获取搜索词，按数组顺序尝试。可选值：
-
-| 值 | 来源 | 国内可用性 |
-|---|---|---|
-| `china` | 中国热搜（gmya.net：百度/头条/抖音/微博/知乎） | ✅ 直连 |
-| `local` | 本地查询词（`search-queries.json`，392 个标准词） | ✅ 离线 |
-| `google` | Google Trends | ❌ 需代理（见 `proxy.queryEngine`） |
-| `wikipedia` | 维基百科热门 | ❌ 需代理 |
-| `reddit` | Reddit 热门帖 | ❌ 需代理 |
-
-**国内推荐配置**：`["china", "local"]`（示例配置默认值），无需代理即可获取丰富搜索词。
-
-#### 查询词来源（中国地区）
-当 `queryEngines` 包含 `china` 时，搜索词从中国热搜获取：
-- **数据源**：gmya.net 热门词 API（百度/头条/抖音/微博/知乎热搜榜）
-- **策略**：随机打乱 5 个源，取前 N 个聚合去重（避免每个账号都用同一个源）。N 由是否配置 `chinaApi.appkey` 决定：有 appkey 取 2 个；免费档取 1 个。首选源全部失败时自动 fallback 到剩余源
-- **限流处理**：免费档（无 appkey）对连续请求有频率限制，会触发 403。本脚本在源与源之间插入随机退避（1.2~2.5s），命中限流后指数退避 ×1.5，并将限流错误如实上报（不再误报为"格式异常"）。想彻底避免限流，在 `searchSettings.chinaApi.appkey` 填入 gmya.net appkey
-- **扩展**：对每个热搜词调用 Bing Suggestions/Related Terms 扩展查询多样性（命中率取决于词的特性 —— 短词高、长句低），扩展进度采样输出，结尾输出"热搜词使用清单"（INFO 级别）
-- **本地兜底**：`src/functions/search-queries.json` 提供 392 个标准查询词作为补充
-
-
-### 高级设置
-| 设置 | 描述 | 默认值 |
-|---------|-------------|---------|
-| `globalTimeout` | 操作超时持续时间 | `30sec` |
-| `proxy.queryEngine` | 代理查询引擎请求（google/wikipedia/reddit 等需翻墙的源；china 源走 gmya.net 国内直连，无需开） | `false` |
-| `consoleLogFilter` | 控制台日志过滤（按级别/关键词/正则 白名单或黑名单） | 见下方说明 |
-| `webhook.webhookLogFilter` | Webhook 推送日志过滤（结构同 consoleLogFilter） | 见下方说明 |
-
-#### 日志过滤（consoleLogFilter / webhookLogFilter）
-两个字段结构相同，用于过滤输出到控制台 / webhook 的日志：
-```json
-{
-    "enabled": false,
-    "mode": "whitelist",
-    "levels": ["error", "warn"],
-    "keywords": ["starting account"],
-    "regexPatterns": []
-}
+```bash
+git clone https://github.com/TheNetsky/Microsoft-Rewards-Script.git
+cd Microsoft-Rewards-Script
 ```
-- `mode`：`whitelist`（只输出匹配的）或 `blacklist`（排除匹配的）
-- `levels`：日志级别筛选（`debug`/`info`/`warn`/`error`）
-- `keywords`：日志消息包含这些关键词则命中
-- `regexPatterns`：正则匹配
 
-### Webhook 设置
-本项目支持三种推送渠道（均在 `webhook` 对象下，可同时开启多个）：
+Or, download the latest release ZIP and extract it.
 
-| 设置 | 描述 | 默认值 |
-|---------|-------------|---------|
-| `webhook.discord.enabled` | 启用 Discord 推送 | `false` |
-| `webhook.discord.url` | Discord webhook URL | `""` |
-| `webhook.ntfy.enabled` | 启用 ntfy 推送 | `false` |
-| `webhook.ntfy.url` | ntfy 服务器 URL | `""` |
-| `webhook.ntfy.topic` | ntfy 主题 | `""` |
-| `webhook.ntfy.token` | ntfy 认证 token | `""` |
-| `webhook.ntfy.priority` | ntfy 优先级（1-5） | `3` |
-| `webhook.pushplus.enabled` | 启用 PushPlus 推送（国内） | `false` |
-| `webhook.pushplus.token` | PushPlus token | `""` |
-| `webhook.pushplus.template` | PushPlus 模板（`txt`/`html`/`markdown`） | `txt` |
+## Account Setup
 
-> **国内推荐**：PushPlus（微信推送，无需翻墙）。Discord/ntfy 需要能访问对应服务。
+- Copy and rename [`env.example`](env.example) to `.env` and add your account credentials:
 
+```env
+ACCOUNT_1_EMAIL=email@example.com
+# ACCOUNT_1_PASSWORD=your_password
+```
 
-### 新版 UI 兼容性（Server Action）
+> [!NOTE]
+> `ACCOUNT_N_PASSWORD` is optional. Set it when password sign-in should be available; leave it unset for passwordless/Authenticator-only accounts.
+>
+> Add one `ACCOUNT_N_*` block per account. Account slots do not need to be contiguous: `ACCOUNT_2` or `ACCOUNT_4` can be configured even when earlier slots are missing. Accounts run in ascending slot order. Optional per-account fields cover recovery email, locale, language, proxy, and fingerprint persistence - see [`env.example`](env.example) for all of them.
 
-微软新版 dashboard（modern UI）改用 Next.js App Router，部分功能不再有对外 REST API，旧版 API（`togglestreakasync`、`claimallpointsasync`）在新版 UI 下因取不到 `requestToken` 会返回 `400 Bad Request`。
+`ACCOUNT_N_LANG_CODE` accepts a BCP 47 language tag such as `nl`, `it`, or `pt-BR`. `ACCOUNT_N_GEO_LOCALE` accepts a two-letter country code or defaults to `auto`. The selected language and country are applied consistently to browser fingerprints, `Accept-Language`, Microsoft Rewards app headers, and market-specific requests. In `auto` mode, the country reported by the Microsoft profile is cached after the first successful dashboard request; changing either locale setting automatically replaces an incompatible saved fingerprint.
 
-| 功能 | 调用方式 | 认证 |
-|---|---|---|
-| 连击保护 toggle | `POST /dashboard` + `next-action` hash + body `[true]` | Cookie |
-| 领取积分 | `POST /dashboard` + `next-action` hash + body `[]` | Cookie |
+> [!TIP]
+> For 2FA accounts, set `ACCOUNT_N_TOTP_SECRET` and the script will generate and enter the 6-digit code automatically. To get the secret: in your Microsoft Security settings open 'Manage how you sign in', add an Authenticator app, and when the QR code appears choose 'enter code manually' - use that code as the value in your `.env`.
 
-**版本守卫机制**：`next-action` hash 在编译时生成、绑定到具体部署版本（`dpl`）。脚本启动时从 dashboard HTML 提取当前部署 ID，与脚本内置的支持版本（`20260612-3`）比对：
-- ✅ **匹配** → 走 Server Action（新版 UI）
-- ⚠️ **不匹配** → 微软可能更新了 dashboard，内置 hash 可能失效，相关功能**自动降级跳过**（不会 400，不影响其他任务）
-- 旧版 UI（legacy）→ 仍走原 REST API（需要 `requestToken`）
+> [!WARNING]
+> You must rebuild your script after making any changes to the `.env`.
 
-如果降级跳过频繁出现，说明微软更新了部署，需要重新更新 hash。
+## Config Setup
 
-## ✨ 功能
+> [!WARNING]
+> Do **not** skip this step if you are running the script bare metal.
 
-**账户管理：**
-- ✅ 多账户支持
-- ✅ 会话存储与持久化
-- ✅ 2FA 支持
-- ✅ 无密码登录支持
+- **Bare metal:** Copy or rename `config.example.json` to `config.json` (in the project root) and customize your preferences.
+- **Docker:** A valid `config.json` is automatically created on first run and saved locally to `./config/`. You can optionally manually create a `config.json` (e.g., if you need to specify regex values) using the provided `config.example.json`
 
-**自动化与控制：**
-- ✅ 无头浏览器操作
-- ✅ 集群支持（同时多个账户）
-- ✅ 可配置任务选择
-- ✅ 代理支持
-- ✅ 自动调度（Docker）
+> [!CAUTION]
+> Prior versions of accounts.json and config.json are not compatible with current release.
 
-**搜索与活动：**
-- ✅ 桌面与移动搜索
-- ✅ Microsoft Edge 搜索模拟
-- ✅ 地理定位搜索查询
-- ✅ 模拟滚动与链接点击
-- ✅ 每日集完成
-- ✅ 促销活动
-- ✅ 打卡完成
-- ✅ 每日签到
-- ✅ 阅读赚取活动
-- ✅ 连击保护（新版 UI 走 Server Action）
-- ✅ 领取 dashboard 奖励积分（新版 UI 走 Server Action）
+### Build and run the script (bare metal version)
 
-**搜索词来源（中国地区）：**
-- ✅ 中国热搜（百度/头条/抖音/微博/知乎，多源聚合 + 限流退避）
-- ✅ Bing Suggestions / Related Terms 扩展（日志聚合输出）
-- ✅ 本地查询词兜底（`search-queries.json`，392 个标准词）
+```bash
+npm run pre-build
+npm run build
+npm run start
+```
 
-**测验与互动内容：**
-- ✅ 测验解答（10 分与 30-40 分变体）
-- ✅ 此或彼测验（随机答案）
-- ✅ ABC 测验解答
-- ✅ 投票完成
-- ✅ 点击奖励
+## Docker
 
-**通知与监控：**
-- ✅ Discord Webhook 集成
-- ✅ ntfy 推送支持
-- ✅ PushPlus 推送支持（国内微信推送）
-- ✅ 全面日志记录（带日志过滤、本地文件持久化）
-- ✅ Docker 支持与监控
+- Copy the sample [`compose.yaml`](compose.yaml)
+- Copy and rename [`env.example`](env.example) to `.env` and add your account credentials:
 
+```env
+ACCOUNT_1_EMAIL=email@example.com
+# ACCOUNT_1_PASSWORD=your_password
+```
 
-## ⚠️ 免责声明
+`ACCOUNT_N_PASSWORD` is optional; omit it for passwordless/Authenticator-only accounts.
 
-**风险自负！** 使用自动化脚本时，您的 Microsoft Rewards 账户可能会被暂停或禁止。
+- Review `compose.yaml` to adjust scheduling, timezone, and config options.
 
-此脚本仅供教育目的。作者对 Microsoft 采取的任何账户操作不承担责任。
+> [!NOTE]
+> A valid `config.json` is auto-generated on first run using default values, and saved locally to `./config/`.
+> Optionally, use `CONFIG_*` variables in the `environment:` section of the `compose.yaml` to customise your options (e.g., clusters, webhook, etc.).
+> A full list of available options are in the [table below](#configuration-options).
+> `CONFIG_*` variables are applied on every startup and always take precedence over `./config/config.json`.
+
+> [!TIP]
+> If a new image adds config options you're missing, a warning will appear in the container logs.
+> To update, delete `./config/config.json` and restart - a fresh one will be generated from the latest example, with your `compose.yaml` overrides re-applied.
+
+- Start the container: `docker compose up -d`
+
+> [!TIP]
+> Monitor logs with `docker logs microsoft-rewards-script`, useful for viewing passwordless login codes or diagnosing issues.
+> You can also enable a webhook in `compose.yaml` for notifications.
+
+---
+
+## Control API and Dashboard
+
+The optional Control API lets a local dashboard or another trusted tool monitor
+and control the script over HTTP. See the [complete Control API
+documentation](scripts/api/README.md) for setup, authentication, every endpoint,
+request fields, response examples, and security guidance.
+
+Common uses include:
+
+- checking API health and the current run state with `GET /health` and
+  `GET /status`;
+- reading live points, logs, errors, account summaries, run history, and error
+  diagnostics;
+- listing safe stored-session metadata and deleting the mobile/desktop sessions
+  for one account;
+- starting all accounts with `POST /start` and an empty JSON body;
+- running only one account with `POST /start` and `{"accountIndex":2}`;
+- running all accounts except selected slots with `POST /start` and
+  `{"excludedAccountIndexes":[2,4]}`;
+- stopping or restarting a run with `POST /stop` or `POST /restart`;
+- streaming live logs and status updates from `GET /events` using
+  Server-Sent Events (SSE);
+- reading the active configuration and schedule, with config and schedule
+  changes available only when their explicit `API_ALLOW_*` options are enabled.
+
+For example, start only `ACCOUNT_2` with cURL:
+
+```bash
+curl --request POST \
+  --url http://127.0.0.1:3010/start \
+  --header 'Authorization: Bearer YOUR_API_TOKEN' \
+  --header 'Content-Type: application/json' \
+  --data '{"accountIndex":2}'
+```
+
+For a ready-made web interface, use the supported and endorsed
+[Rewards Dashboard](https://github.com/mgrimace/rewards-dashboard). It connects
+to this Control API to manage runs, accounts, schedules, logs, points, and
+related script settings.
+
+---
+
+## Nix Setup
+
+If using Nix: `bash scripts/nix/run.sh`
+
+---
+
+## Configuration Options
+
+Edit `config.json` to customize behavior, or set `CONFIG_*` environment variables in `compose.yaml` (Docker). Below are all currently available options.
+
+> [!WARNING]
+> Rebuild the script (bare metal), or recreate the container (Docker) after all config changes.
+
+### Core
+
+| Setting                     | Type    | Default      | Description                                                        | Docker environment variable           |
+| --------------------------- | ------- | ------------ | ------------------------------------------------------------------ | ------------------------------------- |
+| `sessionPath`               | string  | `"sessions"` | Directory to store browser sessions                                |                                       |
+| `headless`                  | boolean | `false`      | Run browser invisibly                                              | Always `true` in Docker               |
+| `clusters`                  | number  | `1`          | Number of concurrent account clusters                              | `CONFIG_CLUSTERS`                     |
+| `errorDiagnostics`          | boolean | `false`      | Save error and unknown-login page diagnostics under `diagnostics/` | `CONFIG_ERROR_DIAGNOSTICS`            |
+| `ensureStreakProtection`    | boolean | `true`       | Ensure streak protection is enabled                                | `CONFIG_ENSURE_STREAK_PROTECTION`     |
+| `autoClaimPunchcardRewards` | boolean | `false`      | Auto-claim completed punchcard rewards                             | `CONFIG_AUTO_CLAIM_PUNCHCARD_REWARDS` |
+| `contintueOnBotWarning`     | boolean | `false`      | Continue despite the Microsoft bot-score warning (not recommended) | `CONFIG_CONTINTUE_ON_BOT_WARNING`     |
+| `skipNonPointTasks`         | boolean | `true`       | Skip tasks that award no points                                    | `CONFIG_SKIP_NON_POINT_TASKS`         |
+| `accountDelay.min`          | string  | `"1min"`     | Minimum delay before starting the next configured account          | `CONFIG_ACCOUNT_DELAY_MIN`            |
+| `accountDelay.max`          | string  | `"3min"`     | Maximum delay before starting the next configured account          | `CONFIG_ACCOUNT_DELAY_MAX`            |
+| `searchOnBingLocalQueries`  | boolean | `false`      | Use the local query list for ExploreOnBing                         | `CONFIG_SEARCH_ON_BING_LOCAL`         |
+| `globalTimeout`             | string  | `"30sec"`    | Timeout for all actions                                            | `CONFIG_GLOBAL_TIMEOUT`               |
+
+### Workers
+
+| Setting                        | Type    | Default | Description                                                                | Docker environment variable          |
+| ------------------------------ | ------- | ------- | -------------------------------------------------------------------------- | ------------------------------------ |
+| `workers.doDailySet`           | boolean | `true`  | Complete daily set                                                         | `CONFIG_WORKER_DAILY_SET`            |
+| `workers.doClaimBonusPoints`   | boolean | `true`  | Claim bonus points                                                         | `CONFIG_WORKER_CLAIM_BONUS_POINTS`   |
+| `workers.doMorePromotions`     | boolean | `true`  | Complete "more activities"                                                 | `CONFIG_WORKER_MORE_PROMOTIONS`      |
+| `workers.doPunchCards`         | boolean | `true`  | Complete punchcards                                                        | `CONFIG_WORKER_PUNCH_CARDS`          |
+| `workers.doAppPromotions`      | boolean | `true`  | Complete app promotions                                                    | `CONFIG_WORKER_APP_PROMOTIONS`       |
+| `workers.doDesktopSearch`      | boolean | `true`  | Perform desktop searches                                                   | `CONFIG_WORKER_DESKTOP_SEARCH`       |
+| `workers.doMobileSearch`       | boolean | `true`  | Perform mobile searches                                                    | `CONFIG_WORKER_MOBILE_SEARCH`        |
+| `workers.doBonusSearches`      | boolean | `false` | Farm bonus searches beyond the cap                                         | `CONFIG_WORKER_BONUS_SEARCHES`       |
+| `workers.doDailyCheckIn`       | boolean | `true`  | Complete daily check-in                                                    | `CONFIG_WORKER_DAILY_CHECKIN`        |
+| `workers.doReadToEarn`         | boolean | `true`  | Complete Read-to-Earn                                                      | `CONFIG_WORKER_READ_TO_EARN`         |
+| `workers.doActivateSearchPerk` | boolean | `true`  | Activate the "search Nx more" perk when present (runs after the daily set) | `CONFIG_WORKER_ACTIVATE_SEARCH_PERK` |
+| `workers.doVisualSearch`       | boolean | `false` | Activate the visual-search streak and perform visual searches              | `CONFIG_WORKER_VISUAL_SEARCH`        |
+
+### Activities
+
+| Setting                   | Type    | Default | Description                    | Docker environment variable      |
+| ------------------------- | ------- | ------- | ------------------------------ | -------------------------------- |
+| `activities.urlReward`    | boolean | `true`  | Complete URL reward activities | `CONFIG_ACTIVITY_URL_REWARD`     |
+| `activities.searchOnBing` | boolean | `true`  | Complete ExploreOnBing offers  | `CONFIG_ACTIVITY_SEARCH_ON_BING` |
+
+### Search Settings
+
+| Setting                                | Type     | Default                             | Description                                               | Docker environment variable        |
+| -------------------------------------- | -------- | ----------------------------------- | --------------------------------------------------------- | ---------------------------------- |
+| `searchSettings.scrollRandomResults`   | boolean  | `false`                             | Scroll randomly on results                                | `CONFIG_SEARCH_SCROLL_RANDOM`      |
+| `searchSettings.clickRandomResults`    | boolean  | `false`                             | Click random links                                        | `CONFIG_SEARCH_CLICK_RANDOM`       |
+| `searchSettings.runOnZeroPoints`       | boolean  | `false`                             | Run searches even when no search points remain            | `CONFIG_SEARCH_RUN_ON_ZERO_POINTS` |
+| `searchSettings.maxBonusSearches`      | number   | `110`                               | Max bonus searches per run (when `doBonusSearches` is on) | `CONFIG_SEARCH_MAX_BONUS_SEARCHES` |
+| `searchSettings.parallelSearching`     | boolean  | `true`                              | Run searches in parallel                                  | `CONFIG_SEARCH_PARALLEL`           |
+| `searchSettings.clusterSearch`         | boolean  | `true`                              | Cluster each main topic with Bing suggestions             | `CONFIG_SEARCH_CLUSTER`            |
+| `searchSettings.queryEngines`          | string[] | see [Query sources](#query-sources) | Sources used to build the search query pool               | `CONFIG_SEARCH_QUERY_ENGINES` \*   |
+| `searchSettings.searchResultVisitTime` | string   | `"10sec"`                           | Time to spend on each search result                       | `CONFIG_SEARCH_VISIT_TIME`         |
+| `searchSettings.searchDelay.min`       | string   | `"30sec"`                           | Minimum delay between searches                            | `CONFIG_SEARCH_DELAY_MIN`          |
+| `searchSettings.searchDelay.max`       | string   | `"1min"`                            | Maximum delay between searches                            | `CONFIG_SEARCH_DELAY_MAX`          |
+| `searchSettings.readDelay.min`         | string   | `"30sec"`                           | Minimum delay for reading                                 | `CONFIG_SEARCH_READ_DELAY_MIN`     |
+| `searchSettings.readDelay.max`         | string   | `"1min"`                            | Maximum delay for reading                                 | `CONFIG_SEARCH_READ_DELAY_MAX`     |
+
+Desktop and mobile search quotas are tracked independently from the dashboard counters. All `mobileSearch` entries are combined for the mobile quota, while all `pcSearch` entries are combined for desktop execution; a counter explicitly identified as Edge is also shown separately for diagnostics. The script skips only the completed platform, so a completed `60/60` mobile quota does not prevent an incomplete desktop quota from running. With `parallelSearching` enabled, both incomplete quotas can run concurrently in their own browser contexts.
+
+> [!NOTE]
+> \* Docker `CONFIG_*` array values are comma-separated strings e.g. `"error,warn"`. Regex patterns must be set directly in `config.json`.
+
+#### Query sources
+
+`searchSettings.queryEngines` controls where the main search topics come from. Pick any combination; topics from all selected sources are pooled and de-duplicated. When `searchSettings.clusterSearch` is enabled, each main topic is expanded on demand with Bing suggestions, that topic cluster is shuffled and completed, and only then does searching move to the next main topic.
+
+Core sources:
+
+| Selector     | Source                                           |
+| ------------ | ------------------------------------------------ |
+| `google`     | Google Trends (trending searches)                |
+| `wikipedia`  | Wikipedia most-read articles (previous day)      |
+| `wikirandom` | Random Wikipedia articles                        |
+| `hackernews` | Hacker News front-page stories                   |
+| `reddit`     | Reddit r/popular post titles                     |
+| `local`      | Bundled `src/functions/search-queries.json` list |
+
+RSS feeds use a dotted path - `rss` for every feed, `rss.<site>` for a whole site, or `rss.<site>.<endpoint>` for a single feed:
+
+| Selector           | Feeds                                                          |
+| ------------------ | -------------------------------------------------------------- |
+| `rss.googleTrends` | Google Trends RSS (`gb`, `us`)                                 |
+| `rss.googleNews`   | Google News (`gb`, `us`, `world`, `technology`, `business`)    |
+| `rss.bbc`          | BBC News (`top`, `world`, `technology`, `business`, `science`) |
+| `rss.guardian`     | The Guardian (`international`, `world`, `technology`)          |
+| `rss.theVerge`     | The Verge (`all`)                                              |
+| `rss.arsTechnica`  | Ars Technica (`all`)                                           |
+| `rss.reddit`       | Reddit listing feeds (`popular`, `worldnews`, `technology`)    |
+
+Add your own feeds in `src/constants/rssFeeds.ts`.
+
+Default:
+
+```json
+[
+    "google",
+    "wikipedia",
+    "wikirandom",
+    "hackernews",
+    "reddit",
+    "local",
+    "rss.googleTrends",
+    "rss.googleNews",
+    "rss.bbc",
+    "rss.guardian.world",
+    "rss.theVerge.all"
+]
+```
+
+### Experimental
+
+Opt-in features that may change. Disabled by default.
+
+| Setting                        | Type    | Default | Description                                                             | Docker environment variable              |
+| ------------------------------ | ------- | ------- | ----------------------------------------------------------------------- | ---------------------------------------- |
+| `experimental.apiSearch`       | boolean | `false` | Perform Bing searches over HTTP instead of driving a browser page       | `CONFIG_EXPERIMENTAL_API_SEARCH`         |
+| `experimental.apiSearchOnBing` | boolean | `false` | Complete ExploreOnBing offers over HTTP instead of the browser          | `CONFIG_EXPERIMENTAL_API_SEARCH_ON_BING` |
+| `experimental.blockMedia`      | boolean | `false` | Block post-login browser `image` and `media` requests to reduce traffic | `CONFIG_EXPERIMENTAL_BLOCK_MEDIA`        |
+| `experimental.edgeBrowsing`    | boolean | `false` | Report the 30-minute Edge browsing activity as a background HTTP task   | `CONFIG_EXPERIMENTAL_EDGE_BROWSING`      |
+
+When `experimental.blockMedia` is enabled, the automated flow activates it only after authentication has been
+verified and the session has been saved. The manual-login flow keeps media enabled throughout; `npm run open-session` still
+applies the configured blocker immediately because it opens an already-saved session.
+
+When `experimental.edgeBrowsing` is enabled, the task starts before the normal activity sequence and runs as a separate Promise alongside Daily Set, promotions, app activities, and searches. If foreground work finishes first, the account remains open until this Promise settles. Accounts without the promotion, an access token, or remaining Edge work are skipped immediately.
+
+#### Activity source layout
+
+Standard activities live under `src/functions/activities`, grouped by responsibility:
+
+- `rewards`: Daily Set, More Promotions, Punch Cards, and shared promotion dispatch
+- `api`: individual Rewards API actions
+- `app`: individual mobile-app activities and App Promotions orchestration
+- `search`: browser search flows, search tracking, and shared SearchOnBing behavior
+- `visualSearch`: the visual-search activity and its browser transport
+- `experimental`: API Search, API SearchOnBing, Edge Browsing, and their supporting transports
+
+Experimental activities live with the other activities under `src/functions/activities/experimental`. The browser-only media blocker lives at `src/browser/MediaBlocker.ts`. `BrowserFunc` contains shared Rewards/browser/session transport only, rather than individual search or visual-search implementations.
+
+> [!NOTE]
+> [Playwright documents](https://playwright.dev/docs/api/class-browsercontext#browser-context-route) that request routing disables the browser HTTP cache while routing is active. Image-heavy pages will usually transfer substantially less data with media blocking enabled, but cache-heavy sites are not guaranteed to use less total bandwidth or load faster. Keep this option disabled if a site depends on image/media load events.
+
+> [!NOTE]
+> The API paths are faster but depend on the modern dashboard's endpoints. If an ExploreOnBing offer ever fails to be credited, turn `apiSearchOnBing` off to fall back to the browser path.
+
+Regardless of the experimental search settings, normal Rewards actions use the cookies and action data captured during bootstrap without refreshing the visible page. The browser remains idle until a browser-backed search starts. A failed or unacknowledged URL-reward request triggers one context refresh and one retry; successful requests use the balance returned by the server action.
+
+### Logging
+
+| Setting                          | Type     | Default                | Description                       | Docker environment variable     |
+| -------------------------------- | -------- | ---------------------- | --------------------------------- | ------------------------------- |
+| `debugLogs`                      | boolean  | `false`                | Enable debug logging              | `CONFIG_DEBUG_LOGS`             |
+| `consoleLogFilter.enabled`       | boolean  | `false`                | Enable console log filtering      | `CONFIG_LOG_FILTER_ENABLED`     |
+| `consoleLogFilter.mode`          | string   | `"whitelist"`          | Filter mode (whitelist/blacklist) | `CONFIG_LOG_FILTER_MODE`        |
+| `consoleLogFilter.levels`        | string[] | `["error", "warn"]`    | Log levels to filter              | `CONFIG_LOG_FILTER_LEVELS` \*   |
+| `consoleLogFilter.keywords`      | string[] | `["starting account"]` | Keywords to filter                | `CONFIG_LOG_FILTER_KEYWORDS` \* |
+| `consoleLogFilter.regexPatterns` | string[] | `[]`                   | Regex patterns for filtering      |                                 |
+
+> [!NOTE]
+> \* Docker `CONFIG_*` array values are comma-separated strings e.g. `"error,warn"`. Regex patterns must be set directly in `config.json`.
+
+### Proxy
+
+| Setting                         | Type    | Default | Description                                                        | Docker environment variable              |
+| ------------------------------- | ------- | ------- | ------------------------------------------------------------------ | ---------------------------------------- |
+| `proxy.queryEngine`             | boolean | `true`  | Proxy query engine requests                                        | `CONFIG_PROXY_QUERY_ENGINE`              |
+| `proxy.ignoreCertificateErrors` | boolean | `false` | Disable browser TLS certificate verification for intercept proxies | `CONFIG_PROXY_IGNORE_CERTIFICATE_ERRORS` |
+
+Leave `proxy.ignoreCertificateErrors` disabled for normal HTTP(S)/SOCKS proxies. Enabling it weakens TLS protection for the entire browser context and should only be used when a trusted intercepting proxy cannot otherwise present a valid certificate.
+
+`proxy.queryEngine` controls whether query-source HTTP requests use the account HTTP proxy. Set the corresponding `ACCOUNT_N_PROXY_HTTP=true` (and configure `ACCOUNT_N_PROXY_*`) for those HTTP requests to have a proxy available; browser traffic uses `ACCOUNT_N_PROXY_URL` independently.
+
+Account browser proxies support `http://`, `https://`, `socks4://`, and `socks5://` (a bare hostname is treated as HTTP). HTTP(S) proxies may use `ACCOUNT_N_PROXY_USERNAME` and `ACCOUNT_N_PROXY_PASSWORD`; Patchright does not support browser authentication for SOCKS4/SOCKS5 proxies. Invalid protocols, ports, partial credentials, and authenticated SOCKS proxy configurations are rejected during account validation before the browser starts.
+
+### Webhooks
+
+| Setting                                  | Type     | Default                                              | Description                       | Docker environment variable             |
+| ---------------------------------------- | -------- | ---------------------------------------------------- | --------------------------------- | --------------------------------------- |
+| `webhook.discord.enabled`                | boolean  | `false`                                              | Enable Discord webhook            | `CONFIG_DISCORD_ENABLED`                |
+| `webhook.discord.url`                    | string   | `""`                                                 | Discord webhook URL               | `CONFIG_DISCORD_URL`                    |
+| `webhook.telegram.enabled`               | boolean  | `false`                                              | Enable Telegram webhook           | `CONFIG_TELEGRAM_ENABLED`               |
+| `webhook.telegram.botToken`              | string   | `""`                                                 | Telegram bot token                | `CONFIG_TELEGRAM_BOTTOKEN`              |
+| `webhook.telegram.chatId`                | string   | `""`                                                 | Telegram chat id                  | `CONFIG_TELEGRAM_CHATID`                |
+| `webhook.ntfy.enabled`                   | boolean  | `false`                                              | Enable ntfy notifications         | `CONFIG_NTFY_ENABLED`                   |
+| `webhook.ntfy.url`                       | string   | `""`                                                 | ntfy server URL                   | `CONFIG_NTFY_URL`                       |
+| `webhook.ntfy.topic`                     | string   | `""`                                                 | ntfy topic                        | `CONFIG_NTFY_TOPIC`                     |
+| `webhook.ntfy.token`                     | string   | `""`                                                 | ntfy authentication token         | `CONFIG_NTFY_TOKEN`                     |
+| `webhook.ntfy.title`                     | string   | `"Microsoft-Rewards-Script"`                         | Notification title                | `CONFIG_NTFY_TITLE`                     |
+| `webhook.ntfy.tags`                      | string[] | `["bot", "notify"]`                                  | Notification tags                 | `CONFIG_NTFY_TAGS` \*                   |
+| `webhook.ntfy.priority`                  | number   | `3`                                                  | Notification priority (1-5)       | `CONFIG_NTFY_PRIORITY`                  |
+| `webhook.webhookLogFilter.enabled`       | boolean  | `false`                                              | Enable webhook log filtering      | `CONFIG_WEBHOOK_LOG_FILTER_ENABLED`     |
+| `webhook.webhookLogFilter.mode`          | string   | `"whitelist"`                                        | Filter mode (whitelist/blacklist) | `CONFIG_WEBHOOK_LOG_FILTER_MODE`        |
+| `webhook.webhookLogFilter.levels`        | string[] | `["error"]`                                          | Log levels to send                | `CONFIG_WEBHOOK_LOG_FILTER_LEVELS` \*   |
+| `webhook.webhookLogFilter.keywords`      | string[] | `["starting account", "select number", "collected"]` | Keywords to filter                | `CONFIG_WEBHOOK_LOG_FILTER_KEYWORDS` \* |
+| `webhook.webhookLogFilter.regexPatterns` | string[] | `[]`                                                 | Regex patterns for filtering      |                                         |
+
+> [!NOTE]
+> \* Docker `CONFIG_*` array values are comma-separated strings e.g. `"error,warn"`. Regex patterns must be set directly in `config.json`.
+
+> [!WARNING]
+> **NTFY** users set the `webhookLogFilter` to `enabled`, or you will receive push notifications for _all_ logs.
+> When enabled, only account start, 2FA codes, and account completion summaries are delivered as push notifications.
+> Customize which notifications you receive with the `keywords` options.
+
+---
+
+## Troubleshooting
+
+> [!TIP]
+> Most login issues can be fixed by deleting your /sessions folder, and redeploying the script
+
+### Manual login
+
+Use the manual-login command when an account needs an interactive Microsoft sign-in. It opens the same bundled
+patched Chromium browser in headful mode and does not invoke the automated login handler. After you finish signing
+in, the command waits until the browser remains on `rewards.bing.com` for five continuous seconds, saves the session,
+and closes the browser automatically.
+
+```bash
+# Create or refresh the mobile session used at the start of automated runs
+npm run manual-login -- --email user@example.com
+
+# Create or refresh only the desktop session
+npm run manual-login -- --email user@example.com --platform desktop
+
+# Create mobile and desktop sessions sequentially
+npm run manual-login -- --email user@example.com --platform both
+
+# Ignore existing cookies and perform a clean sign-in
+npm run manual-login -- --email user@example.com --fresh
+```
+
+The email must match an `ACCOUNT_N_EMAIL` entry in `.env`. Existing cookies are restored by default, while `--fresh`
+starts without them but retains a compatible saved fingerprint when fingerprint persistence is enabled. The command
+uses the selected account's language, region, proxy, proxy credentials, and fingerprint settings from `.env`. For
+consistent device identity between the manual and automated browser, enable `ACCOUNT_N_SAVE_FINGERPRINT_MOBILE=true`
+and/or
+`ACCOUNT_N_SAVE_FINGERPRINT_DESKTOP=true` for the platforms you use.
+
+The session path, global timeout, media-blocking option, and proxy TLS option come from `config.json`. The corresponding
+`CONFIG_GLOBAL_TIMEOUT`, `CONFIG_EXPERIMENTAL_BLOCK_MEDIA`, and
+`CONFIG_PROXY_IGNORE_CERTIFICATE_ERRORS` environment overrides are also applied after `.env` is loaded. Manual login
+forces a visible browser and defers media blocking for the entire interactive authentication flow, even when
+`experimental.blockMedia` is enabled. Automated runs resume the configured blocker only after login verification and
+session saving, so authentication SVGs, QR codes, and videos cannot be blocked by this option.
+
+Run this command directly on a computer with a graphical desktop and a full Patchright Chromium installation. The
+default Docker image contains only the headless browser shell and cannot display this interactive window.
+
+### Session management
+
+The session utility requires an explicit command, so running it without an
+argument only displays help and never deletes anything.
+
+```bash
+# List stored mobile and desktop sessions
+npm run clear-sessions -- list
+
+# Delete the sessions belonging to one account
+npm run clear-sessions -- email user@example.com
+
+# Delete every stored session
+npm run clear-sessions -- all
+```
+
+```bash
+# List safe session metadata
+curl --request GET \
+  --url http://127.0.0.1:3010/sessions \
+  --header 'Authorization: Bearer YOUR_API_TOKEN'
+
+# Delete only user@example.com's mobile and desktop sessions
+curl --request DELETE \
+  --url http://127.0.0.1:3010/sessions/user%40example.com \
+  --header 'Authorization: Bearer YOUR_API_TOKEN'
+```
+
+See the [Control API session documentation](scripts/api/README.md#session-management)
+for response data, Axios examples, and error behavior.
+
+---
+
+## Disclaimer
+
+Use at your own risk.  
+Automation of Microsoft Rewards may lead to account suspension or bans.  
+This software is provided for educational purposes only.  
+The authors are not responsible for any actions taken by Microsoft.

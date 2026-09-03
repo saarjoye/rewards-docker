@@ -1,1279 +1,176 @@
-import type { APIRequestContext, APIResponse, BrowserContext, Cookie, Page, Response } from 'patchright'
-import type { AxiosRequestConfig, AxiosResponse } from 'axios'
+import { URLs } from '../constants/urls'
+import { BING_APP_USER_AGENT } from '../constants/userAgents'
+import type { BrowserContext, Cookie, Page } from 'patchright'
+import type { HttpRequestConfig } from '../util/Http'
 
 import type { MicrosoftRewardsBot } from '../index'
-import { saveSessionData } from '../util/Load'
+import type { PageSnapshot, ParsedOffer } from './ReactFunc'
+import { loadSession, saveStorageState } from '../util/SessionStore'
+import { isBrowserClosedError } from '../util/Utils'
 
-import type { Counters, DashboardData, DashboardFieldAvailability } from './../interface/DashboardData'
+import type { DashboardData } from './../interface/DashboardData'
 import type { AppUserData } from '../interface/AppUserData'
-import type { XboxDashboardData } from './../interface/XboxDashboardData'
-import type { AppEarnablePoints, BrowserEarnablePoints, MissingSearchPoints } from '../interface/Points'
+import type { AppEarnablePoints, BrowserEarnablePoints } from '../interface/Points'
 import type { AppDashboardData } from '../interface/AppDashBoardData'
-import { PanelFlyoutData } from '../interface/PanelFlyoutData'
-import { calculateMissingSearchPoints } from '../util/SearchCounter'
-import {
-    axiosFinalUrl,
-    axiosRedirected,
-    classifyHttpFailure,
-    responseContentType,
-    responseTopLevelFields,
-    safeHttpUrl,
-    safeAxiosDiagnostic,
-    type SafeHttpDiagnostic
-} from '../util/Axios'
-import {
-    availablePointsFromApiPayload,
-    dashboardFromApiPayload,
-    dashboardFromFlyoutPayload,
-    dashboardFromFlightEntries,
-    dashboardFromHtml,
-    validateDashboardData
-} from '../util/DashboardParser'
-import { DashboardFetchError, dashboardFailureDetails, type DashboardFailureDetails } from '../util/DashboardError'
-import {
-    extractDeploymentIdFromHtml,
-    extractScriptUrls,
-    extractServerActionHashResultFromSources,
-    FALLBACK_SERVER_ACTION_HASHES,
-    isKnownServerActionDeployment,
-    type ServerActionName,
-    type ServerActionRuntimeInfo
-} from '../util/ServerActions'
-
-interface CapturedDashboard {
-    data: DashboardData
-    path: string
-    status: number
-    contentType: string | null
-    topLevelFields: string[]
-}
-
-interface DashboardCaptureState {
-    candidate: CapturedDashboard | null
-    pointsCandidate: { points: number; path: string; observedAt: string } | null
-    candidateCount: number
-    geoLocale?: string
-    pending: Set<Promise<void>>
-}
-
-interface BrowserContextHttpResponse {
-    status: number
-    headers: Record<string, string>
-    body: string
-    finalUrl: string | null
-    redirected: boolean | null
-}
-
-export interface CurrentPointsSnapshot {
-    points: number | null
-    source: string | null
-    confidence: 'confirmed' | 'cached' | 'unknown'
-    observedAt: string | null
-    error: DashboardFailureDetails | null
-}
-
-interface TrustedPointsCache {
-    scope: string
-    points: number
-    source: string
-    observedAt: string
-    sequence: number
-}
-
-type ClaimButtonSearchMode = 'confirm' | 'entry-or-confirm'
-
-interface ClaimButtonClickResult {
-    clicked: boolean
-    phase?: 'entry' | 'confirm'
-    reason?: string
-    score?: number
-}
-
-const DASHBOARD_REQUEST_TIMEOUT_MS = 8000
-const DASHBOARD_TOTAL_TIMEOUT_MS = 55000
-const DASHBOARD_API_ATTEMPTS = 3
-const DASHBOARD_RETRY_BASE_DELAY_MS = 500
-const DASHBOARD_RETRY_JITTER_MS = 250
-const CLAIM_ENTRY_TIMEOUT_MS = 15000
-const CLAIM_CONFIRM_TIMEOUT_MS = 10000
-const CLAIM_POLL_INTERVAL_MS = 250
+import { detectFlyoutBotWarning, mapFlyoutToDashboard, type RewardsFlyoutData } from './FlyoutDashboard'
 
 export default class BrowserFunc {
-    private readonly verifiedSessionContexts = new WeakSet<BrowserContext>()
     private bot: MicrosoftRewardsBot
-    private dashboardCaptures = new WeakMap<Page, DashboardCaptureState>()
-    private lastDashboardFieldAvailability: DashboardFieldAvailability | undefined
-    private cachedPanelFlyoutData: PanelFlyoutData | null = null
-    private lastDashboardSource: string | null = null
-    private trustedPointsCache: TrustedPointsCache | null = null
-    private pointsCacheSequence = 0
+
+    private rewardsDeploymentId = ''
+
+    private useFlyoutDashboardFallback = false
 
     constructor(bot: MicrosoftRewardsBot) {
         this.bot = bot
     }
 
-    prepareDashboardCapture(page: Page, geoLocale?: string): void {
-        const existing = this.dashboardCaptures.get(page)
-        if (existing) {
-            existing.geoLocale = geoLocale
-            return
-        }
+    async getDashboardData(cookies?: Cookie[]): Promise<DashboardData> {
+        const fingerprintHeaders = { ...(this.bot.fingerprint?.headers ?? {}) }
+        delete fingerprintHeaders['Cookie']
+        delete fingerprintHeaders['cookie']
 
-        const state: DashboardCaptureState = {
-            candidate: null,
-            pointsCandidate: null,
-            candidateCount: 0,
-            geoLocale,
-            pending: new Set<Promise<void>>()
-        }
-        this.lastDashboardFieldAvailability = undefined
-        this.dashboardCaptures.set(page, state)
+        if (!this.useFlyoutDashboardFallback) {
+            let primaryError: unknown
 
-        if (typeof page.on !== 'function') return
-        page.on('response', response => {
-            const pending = this.captureDashboardResponse(response, state)
-            state.pending.add(pending)
-            void pending.finally(() => state.pending.delete(pending))
-        })
-    }
-
-    /**
-     * 获取用户桌面仪表板数据
-     * @returns {DashboardData} 用户必应奖励仪表板数据对象
-     */
-    async getDashboardData(geoLocale?: string): Promise<DashboardData> {
-        const result = await this.getDashboardResult(geoLocale, false)
-        if (this.isCurrentPointsSnapshot(result)) {
-            throw new Error('完整 dashboard 请求意外返回轻量积分结果')
-        }
-        return result
-    }
-
-    private async getDashboardResult(
-        geoLocale: string | undefined,
-        allowLightweightPoints: boolean
-    ): Promise<DashboardData | CurrentPointsSnapshot> {
-        const startedAt = Date.now()
-        try {
-            return await this.getDashboardDataWithinBudget(
-                geoLocale,
-                startedAt + DASHBOARD_TOTAL_TIMEOUT_MS,
-                startedAt,
-                allowLightweightPoints
-            )
-        } finally {
-            this.bot.logger.debug(
-                this.bot.isMobile,
-                'GET-DASHBOARD-DATA',
-                `请求结束 | elapsedMs=${Date.now() - startedAt} | totalTimeoutMs=${DASHBOARD_TOTAL_TIMEOUT_MS}`
-            )
-        }
-    }
-
-    private async getDashboardDataWithinBudget(
-        geoLocale: string | undefined,
-        deadline: number,
-        startedAt: number,
-        allowLightweightPoints: boolean
-    ): Promise<DashboardData | CurrentPointsSnapshot> {
-        this.cachedPanelFlyoutData = null
-        geoLocale ??= this.bot.userData?.geoLocale
-        const apiPath = '/api/getuserinfo'
-        const page = this.bot.mainMobilePage
-        const dashboardOrigin = this.dashboardOrigin(page)
-        const apiUrl = `${dashboardOrigin}${apiPath}?type=1`
-        let apiFailure: SafeHttpDiagnostic
-        let apiReason: string
-        let apiAttempts = 0
-
-        if (page && !page.isClosed()) this.prepareDashboardCapture(page, geoLocale)
-
-        apiFailure = this.networkDashboardFailure()
-        apiReason = 'API 尚未请求'
-        for (let attempt = 1; attempt <= DASHBOARD_API_ATTEMPTS; attempt += 1) {
-            if (this.dashboardRemainingMs(deadline) <= 0) {
-                apiReason = `请求总耗时超过 ${DASHBOARD_TOTAL_TIMEOUT_MS}ms`
-                break
-            }
-            apiAttempts = attempt
-            try {
-                const requestTimeout = this.dashboardRequestTimeout(deadline)
-                const browserResponse = await this.requestWithBrowserContext(
-                    page,
-                    apiUrl,
-                    {
-                        Referer: `${dashboardOrigin}/`,
-                        Origin: dashboardOrigin
-                    },
-                    requestTimeout
-                )
-                let status: number
-                let headers: unknown
-                let data: unknown
-                let finalUrl: string | null
-                let redirected: boolean | null
-
-                if (browserResponse) {
-                    status = browserResponse.status
-                    headers = browserResponse.headers
-                    finalUrl = browserResponse.finalUrl
-                    redirected = browserResponse.redirected
-                    try {
-                        data = JSON.parse(browserResponse.body)
-                    } catch {
-                        data = browserResponse.body
-                    }
-                } else {
-                    const response = await this.requestDashboardAxios(
-                        {
-                            url: apiUrl,
-                            method: 'GET',
-                            headers: {
-                                ...this.fingerprintHeadersWithoutCookie(),
-                                Cookie: this.buildCookieHeaderForUrl(this.bot.cookies.mobile, apiUrl),
-                                Referer: `${dashboardOrigin}/`,
-                                Origin: dashboardOrigin
-                            }
-                        },
-                        requestTimeout
-                    )
-                    status = response.status
-                    headers = response.headers
-                    data = response.data
-                    finalUrl = axiosFinalUrl(response)
-                    redirected = axiosRedirected(response, apiUrl)
-                }
-                if (typeof data === 'string') {
-                    try {
-                        data = JSON.parse(data)
-                    } catch {
-                        // Structural parsing below reports a safe reason for non-JSON text.
-                    }
-                }
-
-                const contentType = responseContentType(headers)
-                const topLevelFields = responseTopLevelFields(data)
-                const parsed = dashboardFromApiPayload(data, { geoLocale })
-                const successfulStatus = status >= 200 && status < 300
-                const availablePoints = successfulStatus ? availablePointsFromApiPayload(data) : null
-                if (availablePoints && availablePoints.points !== null) {
-                    this.rememberTrustedPoints(availablePoints.points, 'api-points')
-                }
-                const failureCategory = successfulStatus ? 'invalid-response' : classifyHttpFailure(status)
-                const diagnosticReason = successfulStatus
-                    ? parsed.reason
-                    : this.describeDashboardFailure({
-                          status,
-                          code: null,
-                          contentType,
-                          topLevelFields,
-                          category: failureCategory,
-                          finalUrl,
-                          redirected
-                      })
-                this.logDashboardDiagnostic('api', {
-                    path: apiPath,
-                    status,
-                    code: null,
-                    contentType,
-                    topLevelFields,
-                    htmlLength: null,
-                    pageUrl: null,
-                    pageTitle: null,
-                    parserReason: diagnosticReason,
-                    finalUrl,
-                    redirected,
-                    flightEntryCount: null,
-                    captureCount: null
-                })
-
-                if (successfulStatus && parsed.data) return this.acceptDashboard(parsed.data, 'api')
-                if (successfulStatus && allowLightweightPoints && availablePoints && availablePoints.points !== null) {
-                    this.lastDashboardSource = 'api-points'
-                    return this.confirmedPointsSnapshot(availablePoints.points, 'api-points')
-                }
-                apiFailure = {
-                    status,
-                    code: null,
-                    contentType,
-                    topLevelFields,
-                    category: failureCategory,
-                    finalUrl,
-                    redirected
-                }
-                apiReason = diagnosticReason
-            } catch (error) {
-                apiFailure = this.safeDashboardDiagnostic(error)
-                apiReason = this.describeDashboardFailure(apiFailure)
-                this.logDashboardDiagnostic('api', {
-                    path: apiPath,
-                    status: apiFailure.status,
-                    code: apiFailure.code,
-                    contentType: apiFailure.contentType,
-                    topLevelFields: apiFailure.topLevelFields,
-                    htmlLength: null,
-                    pageUrl: null,
-                    pageTitle: null,
-                    parserReason: apiReason,
-                    finalUrl: apiFailure.finalUrl,
-                    redirected: apiFailure.redirected,
-                    flightEntryCount: null,
-                    captureCount: null
-                })
-            }
-
-            if (!this.shouldRetryDashboardApi(apiFailure) || attempt >= DASHBOARD_API_ATTEMPTS) break
-            const retryDelay =
-                DASHBOARD_RETRY_BASE_DELAY_MS * attempt + Math.floor(Math.random() * (DASHBOARD_RETRY_JITTER_MS + 1))
-            this.bot.logger.warn(
-                this.bot.isMobile,
-                'GET-DASHBOARD-DATA',
-                `API dashboard 暂时不可用，准备重试 | attempt=${attempt}/${DASHBOARD_API_ATTEMPTS} | status=${apiFailure.status ?? 'n/a'} | kind=${apiFailure.category} | delayMs=${retryDelay}`
-            )
-            await this.waitWithinDashboardBudget(retryDelay, deadline)
-        }
-
-        this.bot.logger.warn(
-            this.bot.isMobile,
-            'GET-DASHBOARD-DATA',
-            `API dashboard 不可用，尝试页面回退 | attempts=${apiAttempts} | elapsedMs=${Date.now() - startedAt} | kind=${apiFailure.category} | status=${apiFailure.status ?? 'n/a'} | reason=${apiReason}`
-        )
-
-        const fallbackReasons: string[] = []
-        if (page && !page.isClosed()) {
-            this.prepareDashboardCapture(page, geoLocale)
-
-            const captured = await this.getCapturedDashboard(page)
-            if (captured) {
-                this.logCapturedDashboard(captured, page)
-                return this.acceptDashboard(captured.data, 'capture')
-            }
-            const capturedPoints = this.getCapturedPoints(page)
-            if (allowLightweightPoints && capturedPoints) {
-                this.rememberTrustedPoints(capturedPoints.points, 'capture-points')
-                this.lastDashboardSource = 'capture-points'
-                return this.confirmedPointsSnapshot(capturedPoints.points, 'capture-points', capturedPoints.observedAt)
-            }
-
-            const parsePage = async (label: string, source: string): Promise<DashboardData | null> => {
-                if (this.dashboardRemainingMs(deadline) <= 0) {
-                    fallbackReasons.push(`${label}：dashboard 获取总时限已到`)
-                    return null
-                }
+            for (let attempt = 1; attempt <= 2; attempt++) {
                 try {
-                    const [html, title, flightEntries] = await Promise.all([
-                        page.content(),
-                        page.title().catch(() => ''),
-                        page.evaluate(() => Reflect.get(globalThis, '__next_f') ?? []).catch(() => [])
-                    ])
-                    this.logDashboardDiagnostic('page', {
-                        path: '/dashboard',
-                        status: null,
-                        code: null,
-                        contentType: 'text/html',
-                        topLevelFields: [],
-                        htmlLength: html.length,
-                        pageUrl: this.safePageUrl(page.url()),
-                        pageTitle: this.safePageTitle(title),
-                        parserReason: null,
-                        finalUrl: null,
-                        redirected: null,
-                        flightEntryCount: Array.isArray(flightEntries) ? flightEntries.length : 0,
-                        captureCount: this.dashboardCaptures.get(page)?.candidateCount ?? 0
+                    const response = await this.bot.http.request<DashboardData>({
+                        url: URLs.rewards.userInfoApi,
+                        method: 'GET',
+                        headers: {
+                            ...fingerprintHeaders,
+                            Cookie: this.buildCookieHeader(this.getCachedCookies(cookies, URLs.rewards.userInfoApi)),
+                            Referer: URLs.rewards.referer,
+                            Origin: URLs.rewards.origin
+                        },
+                        retries: 0
                     })
 
-                    const flight = dashboardFromFlightEntries(flightEntries, { geoLocale })
-                    if (flight.data) return this.acceptDashboard(flight.data, `${source}-flight`)
-                    const htmlResult = dashboardFromHtml(html, { geoLocale })
-                    if (htmlResult.data) return this.acceptDashboard(htmlResult.data, `${source}-html`)
-                    fallbackReasons.push(`${label}：${flight.reason}；${htmlResult.reason}`)
-                } catch {
-                    fallbackReasons.push(`${label}内容读取失败`)
-                }
-                return null
-            }
+                    await this.applyResponseCookies(URLs.rewards.userInfoApi, response.headers['set-cookie'])
 
-            const currentPageData = await parsePage('当前页面', 'current-page')
-            if (currentPageData) return currentPageData
-
-            const mayNavigateFallback = apiFailure.category !== 'auth' && apiFailure.category !== 'rate-limit'
-            if (mayNavigateFallback && this.dashboardRemainingMs(deadline) > 0) {
-                const dashboardUrl = `${dashboardOrigin}/dashboard`
-                const navigationTimeout = Math.min(15000, this.dashboardRequestTimeout(deadline, 15000))
-                let currentPath = ''
-                try {
-                    currentPath = new URL(page.url()).pathname
-                } catch {
-                    // Use goto below when the current URL cannot be parsed.
-                }
-                try {
-                    if (currentPath.startsWith('/dashboard')) {
-                        await page.reload({ waitUntil: 'domcontentloaded', timeout: navigationTimeout })
-                    } else {
-                        await page.goto(dashboardUrl, { waitUntil: 'domcontentloaded', timeout: navigationTimeout })
-                    }
-                } catch {
-                    fallbackReasons.push('Dashboard 页面导航失败')
-                }
-                const networkIdleTimeout = Math.min(10000, this.dashboardRemainingMs(deadline))
-                if (networkIdleTimeout > 0) {
-                    try {
-                        await page.waitForLoadState('networkidle', { timeout: networkIdleTimeout })
-                    } catch {
-                        // A bounded networkidle miss does not prevent parsing captured/page data.
-                    }
-                }
-                const reloadedCapture = await this.getCapturedDashboard(page)
-                if (reloadedCapture) {
-                    this.logCapturedDashboard(reloadedCapture, page)
-                    return this.acceptDashboard(reloadedCapture.data, 'reload-capture')
-                }
-                const reloadedPoints = this.getCapturedPoints(page)
-                if (allowLightweightPoints && reloadedPoints) {
-                    this.rememberTrustedPoints(reloadedPoints.points, 'reload-capture-points')
-                    this.lastDashboardSource = 'reload-capture-points'
-                    return this.confirmedPointsSnapshot(
-                        reloadedPoints.points,
-                        'reload-capture-points',
-                        reloadedPoints.observedAt
-                    )
-                }
-                const reloadedPageData = await parsePage('Dashboard 页面重载', 'reload-page')
-                if (reloadedPageData) return reloadedPageData
-            }
-        }
-
-        if (this.dashboardRemainingMs(deadline) > 0) {
-            try {
-                const dashboardUrl = `${dashboardOrigin}/dashboard`
-                const requestTimeout = this.dashboardRequestTimeout(deadline)
-                const browserResponse = await this.requestWithBrowserContext(
-                    page,
-                    dashboardUrl,
-                    {
-                        Referer: `${dashboardOrigin}/`
-                    },
-                    requestTimeout
-                )
-                let status: number
-                let headers: unknown
-                let html: string
-                let finalUrl: string | null
-                let redirected: boolean | null
-
-                if (browserResponse) {
-                    status = browserResponse.status
-                    headers = browserResponse.headers
-                    html = browserResponse.body
-                    finalUrl = browserResponse.finalUrl
-                    redirected = browserResponse.redirected
-                } else {
-                    const response = await this.requestDashboardAxios(
-                        {
-                            url: dashboardUrl,
-                            method: 'GET',
-                            headers: {
-                                ...this.fingerprintHeadersWithoutCookie(),
-                                Cookie: this.buildCookieHeaderForUrl(this.bot.cookies.mobile, dashboardUrl),
-                                Referer: `${dashboardOrigin}/`
-                            },
-                            responseType: 'text',
-                            transformResponse: data => data
-                        },
-                        requestTimeout
-                    )
-                    status = response.status
-                    headers = response.headers
-                    html = typeof response.data === 'string' ? response.data : ''
-                    finalUrl = axiosFinalUrl(response)
-                    redirected = axiosRedirected(response, dashboardUrl)
-                }
-                this.logDashboardDiagnostic('html', {
-                    path: '/dashboard',
-                    status,
-                    code: null,
-                    contentType: responseContentType(headers),
-                    topLevelFields: [],
-                    htmlLength: html.length,
-                    pageUrl: page && !page.isClosed() ? this.safePageUrl(page.url()) : null,
-                    pageTitle: null,
-                    parserReason: null,
-                    finalUrl,
-                    redirected,
-                    flightEntryCount: null,
-                    captureCount: null
-                })
-                const parsed = dashboardFromHtml(html, { geoLocale })
-                if (parsed.data) return this.acceptDashboard(parsed.data, 'html-request')
-                fallbackReasons.push(`HTML 请求：${parsed.reason}`)
-            } catch (error) {
-                const diagnostic = this.safeDashboardDiagnostic(error)
-                this.logDashboardDiagnostic('html', {
-                    path: '/dashboard',
-                    status: diagnostic.status,
-                    code: diagnostic.code,
-                    contentType: diagnostic.contentType,
-                    topLevelFields: diagnostic.topLevelFields,
-                    htmlLength: null,
-                    pageUrl: page && !page.isClosed() ? this.safePageUrl(page.url()) : null,
-                    pageTitle: null,
-                    parserReason: null,
-                    finalUrl: diagnostic.finalUrl,
-                    redirected: diagnostic.redirected,
-                    flightEntryCount: null,
-                    captureCount: null
-                })
-                fallbackReasons.push(`HTML 请求：${this.describeDashboardFailure(diagnostic)}`)
-            }
-        } else {
-            fallbackReasons.push('HTML 请求：dashboard 获取总时限已到')
-        }
-
-        if (
-            ['endpoint-unavailable', 'invalid-response', 'server', 'network'].includes(apiFailure.category) &&
-            this.dashboardRemainingMs(deadline) > 0
-        ) {
-            const flyoutReasons: string[] = []
-            for (const targetUrl of this.panelFlyoutFallbackUrls(geoLocale)) {
-                const target = new URL(targetUrl)
-                if (this.dashboardRemainingMs(deadline) <= 0) break
-                try {
-                    const functionalHeaders = {
-                        Accept: 'application/json',
-                        Referer: `${target.origin}/`,
-                        Origin: target.origin
-                    }
-                    const requestTimeout = this.dashboardRequestTimeout(deadline)
-                    const browserResponse = await this.requestWithBrowserContext(
-                        page,
-                        targetUrl,
-                        functionalHeaders,
-                        requestTimeout
-                    )
-                    let status: number
-                    let headers: unknown
-                    let payload: unknown
-                    let finalUrl: string | null
-                    let redirected: boolean | null
-                    if (browserResponse) {
-                        status = browserResponse.status
-                        headers = browserResponse.headers
-                        payload = browserResponse.body
-                        finalUrl = browserResponse.finalUrl
-                        redirected = browserResponse.redirected
-                    } else {
-                        const response = await this.requestDashboardAxios(
-                            {
-                                url: targetUrl,
-                                method: 'GET',
-                                headers: {
-                                    ...this.fingerprintHeadersWithoutCookie(),
-                                    ...functionalHeaders,
-                                    Cookie: this.buildCookieHeaderForUrl(this.bot.cookies.mobile, targetUrl)
-                                },
-                                maxRedirects: 0,
-                                validateStatus: () => true
-                            },
-                            requestTimeout
-                        )
-                        status = response.status
-                        headers = response.headers
-                        payload = response.data
-                        finalUrl = axiosFinalUrl(response)
-                        redirected = axiosRedirected(response, targetUrl)
-                    }
-                    if (typeof payload === 'string') {
-                        try {
-                            payload = JSON.parse(payload)
-                        } catch {
-                            // The parser below reports a safe structural reason.
-                        }
-                    }
-                    const successfulStatus = status >= 200 && status < 300
-                    const parsed = dashboardFromFlyoutPayload(payload, { geoLocale })
-                    const parserReason = successfulStatus
-                        ? parsed.reason
-                        : this.describeDashboardFailure({
-                              status,
-                              code: null,
-                              contentType: responseContentType(headers),
-                              topLevelFields: responseTopLevelFields(payload),
-                              category: classifyHttpFailure(status),
-                              finalUrl,
-                              redirected
-                          })
-                    this.logDashboardDiagnostic('flyout', {
-                        path: target.pathname,
-                        status,
-                        code: null,
-                        contentType: responseContentType(headers),
-                        topLevelFields: responseTopLevelFields(payload),
-                        htmlLength: null,
-                        pageUrl: null,
-                        pageTitle: null,
-                        parserReason,
-                        finalUrl,
-                        redirected,
-                        flightEntryCount: null,
-                        captureCount: null
-                    })
-
-                    if (successfulStatus && parsed.data) {
-                        this.cachedPanelFlyoutData = payload as PanelFlyoutData
-                        const unavailableFields = Object.entries(parsed.data.dashboardFieldAvailability)
-                            .filter(([, availability]) => availability !== 'available')
-                            .map(([field, availability]) => `${field}=${availability}`)
-                            .join(',')
+                    if (response.data?.dashboard) return response.data
+                    throw new Error('Dashboard data missing from API response')
+                } catch (error) {
+                    primaryError = error
+                    if (attempt === 1) {
                         this.bot.logger.warn(
                             this.bot.isMobile,
                             'GET-DASHBOARD-DATA',
-                            `使用 Bing flyout dashboard 降级 | host=${target.hostname} | unavailableFields=${unavailableFields || 'none'}`
+                            `Primary dashboard request failed; retrying once | message=${this.errorMessage(error)}`
                         )
-                        return this.acceptDashboard(parsed.data, 'flyout')
+                        await new Promise(resolve => setTimeout(resolve, 1000))
                     }
-                    flyoutReasons.push(`${target.hostname}：${parserReason}`)
-                } catch (error) {
-                    const diagnostic = this.safeDashboardDiagnostic(error)
-                    const reason = this.describeDashboardFailure(diagnostic)
-                    this.logDashboardDiagnostic('flyout', {
-                        path: target.pathname,
-                        status: diagnostic.status,
-                        code: diagnostic.code,
-                        contentType: diagnostic.contentType,
-                        topLevelFields: diagnostic.topLevelFields,
-                        htmlLength: null,
-                        pageUrl: null,
-                        pageTitle: null,
-                        parserReason: reason,
-                        finalUrl: diagnostic.finalUrl,
-                        redirected: diagnostic.redirected,
-                        flightEntryCount: null,
-                        captureCount: null
-                    })
-                    flyoutReasons.push(`${target.hostname}：${reason}`)
                 }
             }
-            fallbackReasons.push(`Bing flyout：${flyoutReasons.join('；') || '未返回可校验数据'}`)
-        }
 
-        const fallbackReason = fallbackReasons.join(' | ').slice(0, 800) || '页面回退未返回可校验的 dashboard'
-        this.bot.logger.error(
-            this.bot.isMobile,
-            'GET-DASHBOARD-DATA',
-            `dashboard 获取失败 | apiKind=${apiFailure.category} | apiStatus=${apiFailure.status ?? 'n/a'} | fallback=${fallbackReason}`
-        )
-        throw new DashboardFetchError({
-            apiStatus: apiFailure.status,
-            apiFailureKind: apiFailure.category,
-            apiReason,
-            fallbackReason,
-            attempts: apiAttempts,
-            elapsedMs: Date.now() - startedAt
-        })
-    }
-
-    public resetCurrentPointsCache(): void {
-        this.trustedPointsCache = null
-        this.lastDashboardSource = null
-    }
-
-    private isCurrentPointsSnapshot(value: DashboardData | CurrentPointsSnapshot): value is CurrentPointsSnapshot {
-        return 'confidence' in value && 'points' in value
-    }
-
-    public markSessionVerified(context: BrowserContext): void {
-        this.verifiedSessionContexts.add(context)
-    }
-
-    private confirmedPointsSnapshot(points: number, source: string, observedAt?: string): CurrentPointsSnapshot {
-        return {
-            points,
-            source,
-            confidence: 'confirmed',
-            observedAt: observedAt ?? this.trustedPointsCache?.observedAt ?? new Date().toISOString(),
-            error: null
-        }
-    }
-
-    private currentPointsScope(): string {
-        return this.bot.userData?.accountEmail?.trim().toLowerCase() || '__unscoped__'
-    }
-
-    private acceptDashboard(data: DashboardData, source: string): DashboardData {
-        this.lastDashboardSource = source
-        const parsed = availablePointsFromApiPayload({ dashboard: data })
-        if (parsed.points !== null) {
-            this.rememberTrustedPoints(parsed.points, source)
-        }
-        return data
-    }
-
-    private rememberTrustedPoints(points: number, source: string): void {
-        this.pointsCacheSequence += 1
-        this.trustedPointsCache = {
-            scope: this.currentPointsScope(),
-            points,
-            source,
-            observedAt: new Date().toISOString(),
-            sequence: this.pointsCacheSequence
-        }
-    }
-
-    private dashboardRemainingMs(deadline: number): number {
-        return Math.max(0, deadline - Date.now())
-    }
-
-    private dashboardRequestTimeout(deadline: number, requested = DASHBOARD_REQUEST_TIMEOUT_MS): number {
-        const remaining = this.dashboardRemainingMs(deadline)
-        if (remaining <= 0) throw new Error('dashboard deadline exceeded')
-        return Math.max(1, Math.min(requested, remaining))
-    }
-
-    private async waitWithinDashboardBudget(delayMs: number, deadline: number): Promise<void> {
-        const remaining = this.dashboardRemainingMs(deadline)
-        if (remaining <= 0) return
-        await this.bot.utils.wait(Math.min(delayMs, remaining))
-    }
-
-    private networkDashboardFailure(): SafeHttpDiagnostic {
-        return {
-            status: null,
-            code: null,
-            contentType: null,
-            topLevelFields: [],
-            category: 'network',
-            finalUrl: null,
-            redirected: null
-        }
-    }
-
-    private safeDashboardDiagnostic(error: unknown): SafeHttpDiagnostic {
-        const diagnostic = safeAxiosDiagnostic(error)
-        if (diagnostic.code || !(error instanceof Error)) return diagnostic
-        const code =
-            error.name.toLowerCase().includes('timeout') || /timed?\s*out|deadline/i.test(error.message)
-                ? 'ETIMEDOUT'
-                : error.name.slice(0, 80)
-        return { ...diagnostic, code }
-    }
-
-    private shouldRetryDashboardApi(diagnostic: SafeHttpDiagnostic): boolean {
-        return diagnostic.status === null || [502, 503, 504].includes(diagnostic.status)
-    }
-
-    private dashboardOrigin(page: Page | undefined): string {
-        const candidates = [page && !page.isClosed() ? page.url() : null, this.bot.config.baseURL]
-        for (const candidate of candidates) {
-            if (typeof candidate !== 'string') continue
-            try {
-                const url = new URL(candidate)
-                const host = url.hostname.toLowerCase()
-                const trustedHost = host === 'rewards.bing.com' || host === 'rewards.microsoft.com'
-                const trustedPath =
-                    (host.endsWith('.bing.com') || host.endsWith('.microsoft.com')) &&
-                    (url.pathname.includes('/dashboard') || url.pathname.includes('/rewards'))
-                if (url.protocol === 'https:' && (trustedHost || trustedPath)) return url.origin
-            } catch {
-                // Try the next trusted local candidate.
-            }
-        }
-        return 'https://rewards.bing.com'
-    }
-
-    private panelFlyoutFallbackUrls(geoLocale?: string): string[] {
-        const path = '/rewards/panelflyout/getuserinfo?channel=BingFlyout&partnerId=BingRewards'
-        const normalizedLocale = geoLocale?.trim().toLowerCase()
-        const cookieDomains = this.bot.cookies.mobile.map(cookie => cookie.domain.replace(/^\./, '').toLowerCase())
-        const preferChina =
-            normalizedLocale === 'cn' ||
-            ((normalizedLocale === undefined || normalizedLocale === '' || normalizedLocale === 'auto') &&
-                cookieDomains.includes('cn.bing.com') &&
-                !cookieDomains.includes('www.bing.com'))
-        const hosts = preferChina ? ['cn.bing.com', 'www.bing.com'] : ['www.bing.com', 'cn.bing.com']
-        return hosts.map(host => `https://${host}${path}`)
-    }
-
-    private dashboardRequestContext(page: Page | undefined): APIRequestContext | null {
-        if (!page || page.isClosed()) return null
-        try {
-            const request = page.context().request
-            return request && typeof request.get === 'function' ? request : null
-        } catch {
-            return null
-        }
-    }
-
-    private async requestWithBrowserContext(
-        page: Page | undefined,
-        targetUrl: string,
-        headers: Record<string, string>,
-        timeoutMs = DASHBOARD_REQUEST_TIMEOUT_MS
-    ): Promise<BrowserContextHttpResponse | null> {
-        const request = this.dashboardRequestContext(page)
-        if (!request) return null
-
-        const startedAt = Date.now()
-        let response: APIResponse
-        try {
-            response = await request.get(targetUrl, {
-                headers,
-                failOnStatusCode: false,
-                timeout: timeoutMs
-            })
-        } catch (error) {
+            this.useFlyoutDashboardFallback = true
             this.bot.logger.warn(
                 this.bot.isMobile,
-                'DASHBOARD-HTTP',
-                `BrowserContext 请求失败 | elapsedMs=${Date.now() - startedAt} | timeoutMs=${timeoutMs} | reason=${this.safeDashboardDiagnostic(error).code ?? 'network'}`
+                'GET-DASHBOARD-DATA',
+                `Primary dashboard unavailable after one retry; using Bing flyout fallback | message=${this.errorMessage(primaryError)}`
             )
-            throw error
         }
+
+        return await this.getFlyoutDashboardData(cookies, fingerprintHeaders)
+    }
+
+    private async getFlyoutDashboardData(
+        cookies: Cookie[] | undefined,
+        fingerprintHeaders: Record<string, string>
+    ): Promise<DashboardData> {
         try {
-            const finalUrl = safeHttpUrl(response.url())
-            const status = response.status()
-            this.bot.logger.debug(
-                this.bot.isMobile,
-                'DASHBOARD-HTTP',
-                `BrowserContext 请求完成 | elapsedMs=${Date.now() - startedAt} | timeoutMs=${timeoutMs} | status=${status}`
-            )
-            return {
-                status,
-                headers: response.headers(),
-                body: await response.text(),
-                finalUrl,
-                redirected: finalUrl === null ? null : finalUrl !== safeHttpUrl(targetUrl)
-            }
-        } finally {
-            await response.dispose()
-        }
-    }
-
-    private async requestDashboardAxios(config: AxiosRequestConfig, timeoutMs = DASHBOARD_REQUEST_TIMEOUT_MS) {
-        const startedAt = Date.now()
-        try {
-            const client = this.bot.axios as typeof this.bot.axios & {
-                requestOnce?: (request: AxiosRequestConfig, timeout?: number) => Promise<AxiosResponse>
-            }
-            const response = client.requestOnce
-                ? await client.requestOnce(config, timeoutMs)
-                : await client.request({ ...config, timeout: timeoutMs, 'axios-retry': { retries: 0 } })
-            this.bot.logger.debug(
-                this.bot.isMobile,
-                'DASHBOARD-HTTP',
-                `Axios 请求完成 | elapsedMs=${Date.now() - startedAt} | timeoutMs=${timeoutMs} | status=${response.status}`
-            )
-            return response
-        } catch (error) {
-            const diagnostic = safeAxiosDiagnostic(error)
-            this.bot.logger.warn(
-                this.bot.isMobile,
-                'DASHBOARD-HTTP',
-                `Axios 请求失败 | elapsedMs=${Date.now() - startedAt} | timeoutMs=${timeoutMs} | status=${diagnostic.status ?? 'n/a'} | reason=${diagnostic.category}`
-            )
-            throw error
-        }
-    }
-
-    private fingerprintHeadersWithoutCookie(): Record<string, string> {
-        return Object.fromEntries(
-            Object.entries(this.bot.fingerprint?.headers ?? {}).filter(([name]) => name.toLowerCase() !== 'cookie')
-        )
-    }
-
-    private async captureDashboardResponse(response: Response, state: DashboardCaptureState): Promise<void> {
-        try {
-            const request = response.request()
-            const resourceType = request.resourceType()
-            if (resourceType !== 'xhr' && resourceType !== 'fetch') return
-
-            const url = new URL(response.url())
-            const expectedOrigin = new URL(this.bot.config.baseURL).origin
-            const frameOrigin = (() => {
-                try {
-                    return new URL(request.frame().url()).origin
-                } catch {
-                    return null
-                }
-            })()
-            if (url.protocol !== 'https:' || (url.origin !== expectedOrigin && url.origin !== frameOrigin)) return
-            if (response.status() < 200 || response.status() >= 300) return
-
-            const headers = response.headers()
-            const contentLength = Number(headers['content-length'] ?? 0)
-            if (Number.isFinite(contentLength) && contentLength > 2_000_000) return
-
-            const body = await response.body()
-            if (body.length === 0 || body.length > 2_000_000) return
-
-            let payload: unknown
-            try {
-                payload = JSON.parse(body.toString('utf8')) as unknown
-            } catch {
-                return
-            }
-
-            state.candidateCount += 1
-            const availablePoints = availablePointsFromApiPayload(payload)
-            if (availablePoints.points !== null) {
-                state.pointsCandidate = {
-                    points: availablePoints.points,
-                    path: url.pathname.slice(0, 300),
-                    observedAt: new Date().toISOString()
-                }
-            }
-            const wrapped = dashboardFromApiPayload(payload, { geoLocale: state.geoLocale })
-            const direct = wrapped.data ? null : validateDashboardData(payload, { geoLocale: state.geoLocale })
-            const data = wrapped.data ?? (direct?.valid ? direct.data : null)
-            if (!data) return
-
-            state.candidate = {
-                data,
-                path: url.pathname.slice(0, 300),
-                status: response.status(),
-                contentType: responseContentType(headers),
-                topLevelFields: responseTopLevelFields(payload)
-            }
-        } catch {
-            // Browser response capture is opportunistic; the normal fallback chain reports failures.
-        }
-    }
-
-    private async getCapturedDashboard(page: Page): Promise<CapturedDashboard | null> {
-        const state = this.dashboardCaptures.get(page)
-        if (!state) return null
-        for (let pass = 0; pass < 2 && state.pending.size > 0; pass += 1) {
-            await Promise.allSettled([...state.pending])
-        }
-        return state.candidate
-    }
-
-    private getCapturedPoints(page: Page): DashboardCaptureState['pointsCandidate'] {
-        return this.dashboardCaptures.get(page)?.pointsCandidate ?? null
-    }
-
-    private logCapturedDashboard(captured: CapturedDashboard, page: Page): void {
-        this.logDashboardDiagnostic('capture', {
-            path: captured.path,
-            status: captured.status,
-            code: null,
-            contentType: captured.contentType,
-            topLevelFields: captured.topLevelFields,
-            htmlLength: null,
-            pageUrl: this.safePageUrl(page.url()),
-            pageTitle: null,
-            parserReason: 'ok',
-            finalUrl: null,
-            redirected: null,
-            flightEntryCount: null,
-            captureCount: this.dashboardCaptures.get(page)?.candidateCount ?? 0
-        })
-    }
-
-    private describeDashboardFailure(diagnostic: SafeHttpDiagnostic): string {
-        switch (diagnostic.category) {
-            case 'auth':
-                return `API 鉴权失败 (${diagnostic.status})`
-            case 'rate-limit':
-                return 'API 请求受限 (429)'
-            case 'server':
-                return `API 服务端错误 (${diagnostic.status})`
-            case 'endpoint-unavailable':
-                return 'dashboard endpoint unavailable'
-            case 'network':
-                return `API 网络错误 (${diagnostic.code ?? 'unknown'})`
-            case 'invalid-response':
-                return `API 响应格式错误 (${diagnostic.status ?? 'unknown'})`
-        }
-    }
-
-    private logDashboardDiagnostic(
-        source: 'api' | 'page' | 'html' | 'capture' | 'flyout',
-        diagnostic: {
-            path: string
-            status: number | null
-            code: string | null
-            contentType: string | null
-            topLevelFields: string[]
-            htmlLength: number | null
-            pageUrl: string | null
-            pageTitle: string | null
-            parserReason: string | null
-            finalUrl: string | null
-            redirected: boolean | null
-            flightEntryCount: number | null
-            captureCount: number | null
-        }
-    ): void {
-        this.bot.logger.debug(
-            this.bot.isMobile,
-            'GET-DASHBOARD-DATA',
-            `source=${source} | path=${diagnostic.path} | status=${diagnostic.status ?? 'n/a'} | axiosCode=${diagnostic.code ?? 'n/a'} | contentType=${diagnostic.contentType ?? 'n/a'} | topLevelFields=${diagnostic.topLevelFields.join(',') || 'none'} | parserReason=${diagnostic.parserReason ?? 'n/a'} | htmlLength=${diagnostic.htmlLength ?? 'n/a'} | flightEntries=${diagnostic.flightEntryCount ?? 'n/a'} | capturedCandidates=${diagnostic.captureCount ?? 'n/a'} | finalUrl=${diagnostic.finalUrl ?? 'n/a'} | redirected=${diagnostic.redirected ?? 'n/a'} | pageUrl=${diagnostic.pageUrl ?? 'n/a'} | pageTitle=${diagnostic.pageTitle ?? 'n/a'}`
-        )
-    }
-
-    private safePageUrl(rawUrl: string): string {
-        try {
-            const url = new URL(rawUrl)
-            return `${url.origin === 'null' ? `${url.protocol}//` : url.origin}${url.pathname}`.slice(0, 300)
-        } catch {
-            return 'unavailable'
-        }
-    }
-
-    private safePageTitle(title: string): string {
-        return title
-            .replace(/[\r\n\t]+/g, ' ')
-            .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '<redacted-email>')
-            .replace(/\b(token|code|authorization|cookie)\s*[:=]\s*\S+/gi, '$1=<redacted>')
-            .trim()
-            .slice(0, 160)
-    }
-
-    /**
-     * Fetch user panel flyout data
-     * @returns {PanelFlyoutData} Object of user bing rewards dashboard data
-     */
-    async getPanelFlyoutData(): Promise<PanelFlyoutData> {
-        if (this.cachedPanelFlyoutData) {
-            const cached = this.cachedPanelFlyoutData
-            this.cachedPanelFlyoutData = null
-            return cached
-        }
-
-        try {
-            const targetUrl =
-                'https://cn.bing.com/rewards/panelflyout/getuserinfo?channel=BingFlyout&partnerId=BingRewards'
-            const request: AxiosRequestConfig = {
-                url: targetUrl,
+            const response = await this.bot.http.request<RewardsFlyoutData>({
+                url: URLs.bing.rewardsFlyoutUserInfo,
                 method: 'GET',
                 headers: {
-                    ...this.fingerprintHeadersWithoutCookie(),
-                    Cookie: this.buildCookieHeaderForUrl(this.bot.cookies.mobile, targetUrl),
-                    Origin: 'https://cn.bing.com'
-                }
-            }
+                    ...fingerprintHeaders,
+                    Accept: 'application/json',
+                    Cookie: this.buildCookieHeader(this.getCachedCookies(cookies, URLs.bing.rewardsFlyoutUserInfo)),
+                    Referer: `${URLs.bing.origin}/`,
+                    Origin: URLs.bing.origin
+                },
+                retries: 0
+            })
 
-            const response = await this.requestDashboardAxios(request)
-            return response.data as PanelFlyoutData
+            await this.applyResponseCookies(URLs.bing.rewardsFlyoutUserInfo, response.headers['set-cookie'])
+
+            const detection = detectFlyoutBotWarning(response.data)
+            this.bot.logger.warn(
+                this.bot.isMobile,
+                'GET-DASHBOARD-DATA',
+                `Using partial Bing flyout dashboard | suspectedLimited=${detection.likelyLimited} | botMarkers=${detection.hasBotProfileMarkers} | activitiesCollapsed=${detection.hasCollapsedActivities}`
+            )
+            return mapFlyoutToDashboard(response.data)
         } catch (error) {
             this.bot.logger.error(
                 this.bot.isMobile,
-                'GET-PANEL-FLYOUT-DATA',
-                `获取面板数据出错: ${error instanceof Error ? error.message : String(error)}`
+                'GET-DASHBOARD-DATA',
+                `Primary dashboard and Bing flyout fallback failed | message=${this.errorMessage(error)}`
             )
             throw error
         }
     }
 
-    /**
-     * 获取用户应用仪表板数据
-     * @returns {AppDashboardData} 用户必应奖励仪表板数据对象
-     */
+    private errorMessage(error: unknown): string {
+        return error instanceof Error ? error.message : String(error)
+    }
+
     async getAppDashboardData(): Promise<AppDashboardData> {
         try {
-            const request: AxiosRequestConfig = {
-                url: 'https://prod.rewardsplatform.microsoft.com/dapi/me?channel=SAIOS&options=613',
+            const request: HttpRequestConfig = {
+                url: URLs.platform.me('SAIOS'),
                 method: 'GET',
                 headers: {
                     Authorization: `Bearer ${this.bot.accessToken}`,
-                    'User-Agent':
-                        'Bing/32.5.431027001 (com.microsoft.bing; build:431027001; iOS 17.6.1) Alamofire/5.10.2'
+                    'User-Agent': BING_APP_USER_AGENT,
+                    'X-Rewards-Country': this.bot.userData.geoLocale,
+                    'X-Rewards-Language': this.bot.userData.langCode,
+                    'X-Rewards-IsMobile': 'true'
                 }
             }
 
-            const response = await this.bot.axios.request(request)
+            const response = await this.bot.http.request(request)
             return response.data as AppDashboardData
         } catch (error) {
             this.bot.logger.error(
                 this.bot.isMobile,
                 'GET-APP-DASHBOARD-DATA',
-                `获取仪表板数据出错: ${error instanceof Error ? error.message : String(error)}`
+                `Error fetching dashboard data: ${error instanceof Error ? error.message : String(error)}`
             )
             throw error
         }
     }
 
-    /**
-     * 获取用户xbox仪表板数据
-     * @returns {XboxDashboardData} 用户必应奖励仪表板数据对象
-     */
-    async getXBoxDashboardData(): Promise<XboxDashboardData> {
+    async getBrowserEarnablePoints(data?: DashboardData): Promise<BrowserEarnablePoints> {
         try {
-            const request: AxiosRequestConfig = {
-                url: 'https://prod.rewardsplatform.microsoft.com/dapi/me?channel=xboxapp&options=6',
-                method: 'GET',
-                headers: {
-                    Authorization: `Bearer ${this.bot.accessToken}`,
-                    'User-Agent':
-                        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; Xbox; Xbox One X) AppleWebKit/537.36 (KHTML, like Gecko) Edge/18.19041'
-                }
-            }
-
-            const response = await this.bot.axios.request(request)
-            return response.data as XboxDashboardData
-        } catch (error) {
-            this.bot.logger.error(
-                this.bot.isMobile,
-                'GET-XBOX-DASHBOARD-DATA',
-                `获取仪表板数据出错: ${error instanceof Error ? error.message : String(error)}`
-            )
-            throw error
-        }
-    }
-
-    /**
-     * 获取搜索积分计数器
-     */
-    async getSearchPoints(): Promise<Counters> {
-        const dashboardData = await this.getDashboardData() // 始终获取最新数据
-        this.lastDashboardFieldAvailability = dashboardData.dashboardFieldAvailability
-        return dashboardData.userStatus.counters
-    }
-
-    missingSearchPoints(
-        counters: Counters,
-        isMobile: boolean,
-        availability = this.lastDashboardFieldAvailability
-    ): MissingSearchPoints {
-        return calculateMissingSearchPoints(counters, isMobile, 'dashboard', availability)
-    }
-
-    async getMobileSearchPointsFallback(isMobile: boolean): Promise<MissingSearchPoints | null> {
-        const result = await this.getSearchPointsFallback(isMobile)
-        return result?.mobileDetected ? result : null
-    }
-
-    async getSearchPointsFallback(isMobile: boolean): Promise<MissingSearchPoints | null> {
-        const htmlResult = await this.getDashboardHtmlSearchPoints(isMobile).catch(error => {
-            this.bot.logger.debug(
-                this.bot.isMobile,
-                'SEARCH-COUNTER-FALLBACK',
-                `dashboard-html unavailable: ${error instanceof Error ? error.message : String(error)}`
-            )
-            return null
-        })
-        if (htmlResult && (htmlResult.mobileDetected || htmlResult.desktopCounter.detected)) {
-            return htmlResult
-        }
-
-        const panelResult = this.getPanelFlyoutSearchPoints(isMobile)
-        if (panelResult && (panelResult.mobileDetected || panelResult.desktopCounter.detected)) {
-            return panelResult
-        }
-
-        return null
-    }
-
-    private async getDashboardHtmlSearchPoints(isMobile: boolean): Promise<MissingSearchPoints | null> {
-        const targetUrl = this.bot.config.baseURL
-        const browserResponse = await this.requestWithBrowserContext(this.bot.mainMobilePage, targetUrl, {
-            Referer: 'https://rewards.bing.com/',
-            Origin: 'https://rewards.bing.com'
-        })
-        let html: string
-        if (browserResponse) {
-            html = browserResponse.body
-        } else {
-            const request: AxiosRequestConfig = {
-                url: targetUrl,
-                method: 'GET',
-                headers: {
-                    ...this.fingerprintHeadersWithoutCookie(),
-                    Cookie: this.buildCookieHeaderForUrl(this.bot.cookies.mobile, targetUrl),
-                    Referer: 'https://rewards.bing.com/',
-                    Origin: 'https://rewards.bing.com'
-                }
-            }
-            const response = await this.requestDashboardAxios(request)
-            html = typeof response.data === 'string' ? response.data : ''
-        }
-        const parsed = dashboardFromHtml(html)
-        if (!parsed.data) return null
-        return calculateMissingSearchPoints(
-            parsed.data.userStatus.counters,
-            isMobile,
-            'dashboard-html',
-            parsed.data.dashboardFieldAvailability
-        )
-    }
-
-    private getPanelFlyoutSearchPoints(isMobile: boolean): MissingSearchPoints | null {
-        const panelData = this.bot.panelData as unknown
-        const counterContainer =
-            this.findCounterContainer(panelData, 'mobileSearch') ?? this.findCounterContainer(panelData, 'pcSearch')
-        if (!counterContainer) {
-            return null
-        }
-
-        return calculateMissingSearchPoints(counterContainer, isMobile, 'panel-flyout')
-    }
-
-    private findCounterContainer(value: unknown, key: string, depth = 0): Record<string, unknown> | null {
-        if (!value || depth > 6) {
-            return null
-        }
-
-        if (Array.isArray(value)) {
-            for (const item of value) {
-                const found = this.findCounterContainer(item, key, depth + 1)
-                if (found) {
-                    return found
-                }
-            }
-            return null
-        }
-
-        if (typeof value !== 'object') {
-            return null
-        }
-
-        const record = value as Record<string, unknown>
-        if (Object.prototype.hasOwnProperty.call(record, key)) {
-            return record
-        }
-
-        for (const child of Object.values(record)) {
-            const found = this.findCounterContainer(child, key, depth + 1)
-            if (found) {
-                return found
-            }
-        }
-
-        return null
-    }
-
-    /**
-     * 获取通过网页浏览器可赚取的总积分
-     */
-    async getBrowserEarnablePoints(dashboardData?: DashboardData): Promise<BrowserEarnablePoints> {
-        try {
-            const data = dashboardData ?? (await this.getDashboardData())
+            data ??= await this.getDashboardData()
 
             const desktopSearchPoints =
-                data.userStatus.counters.pcSearch?.reduce(
-                    (sum, x) => sum + (x.pointProgressMax - x.pointProgress),
+                data.dashboard.userStatus.counters.pcSearch?.reduce(
+                    (sum: number, x: { pointProgressMax: number; pointProgress: number }) =>
+                        sum + (x.pointProgressMax - x.pointProgress),
                     0
                 ) ?? 0
 
             const mobileSearchPoints =
-                data.userStatus.counters.mobileSearch?.reduce(
-                    (sum, x) => sum + (x.pointProgressMax - x.pointProgress),
+                data.dashboard.userStatus.counters.mobileSearch?.reduce(
+                    (sum: number, x: { pointProgressMax: number; pointProgress: number }) =>
+                        sum + (x.pointProgressMax - x.pointProgress),
                     0
                 ) ?? 0
 
             const todayDate = this.bot.utils.getFormattedDate()
             const dailySetPoints =
-                data.dailySetPromotions[todayDate]?.reduce(
-                    (sum, x) => sum + (x.pointProgressMax - x.pointProgress),
+                data.dashboard.dailySetPromotions[todayDate]?.reduce(
+                    (sum: number, x: { pointProgressMax: number; pointProgress: number }) =>
+                        sum + (x.pointProgressMax - x.pointProgress),
                     0
                 ) ?? 0
 
             const morePromotionsPoints =
-                data.morePromotions?.reduce((sum, x) => {
-                    if (
-                        ['quiz', 'urlreward'].includes(x.promotionType) &&
-                        x.exclusiveLockedFeatureStatus !== 'locked'
-                    ) {
+                data.dashboard.morePromotions?.reduce((sum, x) => {
+                    if (x.promotionType === 'urlreward' && x.exclusiveLockedFeatureStatus !== 'locked') {
                         return sum + (x.pointProgressMax - x.pointProgress)
                     }
                     return sum
@@ -1292,31 +189,28 @@ export default class BrowserFunc {
             this.bot.logger.error(
                 this.bot.isMobile,
                 'GET-BROWSER-EARNABLE-POINTS',
-                `发生错误: ${error instanceof Error ? error.message : String(error)}`
+                `An error occurred: ${error instanceof Error ? error.message : String(error)}`
             )
             throw error
         }
     }
 
-    /**
-     * 获取通过移动应用可赚取的总积分
-     */
     async getAppEarnablePoints(): Promise<AppEarnablePoints> {
         try {
             const eligibleOffers = ['ENUS_readarticle3_30points', 'Gamification_Sapphire_DailyCheckIn']
 
-            const request: AxiosRequestConfig = {
-                url: 'https://prod.rewardsplatform.microsoft.com/dapi/me?channel=SAAndroid&options=613',
+            const request: HttpRequestConfig = {
+                url: URLs.platform.me('SAAndroid'),
                 method: 'GET',
                 headers: {
                     Authorization: `Bearer ${this.bot.accessToken}`,
                     'X-Rewards-Country': this.bot.userData.geoLocale,
-                    'X-Rewards-Language': 'zh-CN',
+                    'X-Rewards-Language': this.bot.userData.langCode,
                     'X-Rewards-ismobile': 'true'
                 }
             }
 
-            const response = await this.bot.axios.request(request)
+            const response = await this.bot.http.request<AppUserData>(request)
             const userData: AppUserData = response.data
             const eligibleActivities = userData.response.promotions.filter(x =>
                 eligibleOffers.includes(x.attributes.offerid ?? '')
@@ -1355,470 +249,301 @@ export default class BrowserFunc {
             this.bot.logger.error(
                 this.bot.isMobile,
                 'GET-APP-EARNABLE-POINTS',
-                `发生错误: ${error instanceof Error ? error.message : String(error)}`
+                `An error occurred: ${error instanceof Error ? error.message : String(error)}`
             )
             throw error
         }
     }
-    /**
-     * 获取当前积分金额
-     * @returns {number} 当前总积分金额
-     */
+
     async getCurrentPoints(): Promise<number> {
-        const snapshot = await this.getCurrentPointsSnapshot()
-        if (snapshot.confidence === 'confirmed' && snapshot.points !== null) return snapshot.points
-
-        const details = snapshot.error
-        this.bot.logger.error(
-            this.bot.isMobile,
-            'GET-CURRENT-POINTS',
-            `积分读取未确认 | confidence=${snapshot.confidence} | source=${snapshot.source ?? 'none'} | status=${details?.apiStatus ?? 'n/a'} | attempts=${details?.attempts ?? 0} | elapsedMs=${details?.elapsedMs ?? 0}`
-        )
-        throw new DashboardFetchError({
-            apiStatus: details?.apiStatus,
-            apiReason: details?.apiReason ?? '积分读取未确认',
-            fallbackReason: details?.fallbackReason ?? '没有本次请求确认的积分数据',
-            apiFailureKind: details?.apiFailureKind ?? 'invalid-response',
-            attempts: details?.attempts,
-            elapsedMs: details?.elapsedMs
-        })
-    }
-
-    async getCurrentPointsSnapshot(): Promise<CurrentPointsSnapshot> {
-        const startingSequence = this.pointsCacheSequence
         try {
-            const result = await this.getDashboardResult(undefined, true)
-            if (this.isCurrentPointsSnapshot(result)) return result
-            const data = result
-            const points = data.userStatus.availablePoints
-            return {
-                points,
-                source: this.lastDashboardSource ?? 'dashboard',
-                confidence: 'confirmed',
-                observedAt: this.trustedPointsCache?.observedAt ?? new Date().toISOString(),
-                error: null
-            }
-        } catch (error) {
-            const details = dashboardFailureDetails(error)
-            const cache = this.trustedPointsCache?.scope === this.currentPointsScope() ? this.trustedPointsCache : null
-            if (cache && cache.sequence > startingSequence) {
-                return {
-                    points: cache.points,
-                    source: cache.source,
-                    confidence: 'confirmed',
-                    observedAt: cache.observedAt,
-                    error: details
-                }
-            }
-            if (cache) {
-                return {
-                    points: cache.points,
-                    source: cache.source,
-                    confidence: 'cached',
-                    observedAt: cache.observedAt,
-                    error: details
-                }
-            }
-            return {
-                points: null,
-                source: null,
-                confidence: 'unknown',
-                observedAt: null,
-                error: details
-            }
-        }
-    }
+            const data = await this.getDashboardData()
 
-    /**
-     * 从 dashboard 页面和静态脚本提取 Next.js Server Action 运行信息。
-     * hash 与 dashboard 部署版本绑定，所以优先动态解析当前页面使用的 hash。
-     */
-    async extractServerActionRuntimeInfo(page: Page, includeScripts = true): Promise<ServerActionRuntimeInfo> {
-        try {
-            // 优先用页面 DOM 提取（已加载时）
-            let html: string | null = null
-            try {
-                html = await page.content()
-            } catch {
-                html = null
-            }
-
-            // DOM 没拿到时优先复用 BrowserContext Cookie jar，请求 API 不可用时再降级到 axios。
-            if (!html) {
-                const dashboardUrl = 'https://rewards.bing.com/dashboard'
-                const browserResponse = await this.requestWithBrowserContext(page, dashboardUrl, {
-                    Referer: 'https://rewards.bing.com/'
-                })
-                if (browserResponse) {
-                    html = browserResponse.body
-                } else {
-                    const request: AxiosRequestConfig = {
-                        url: dashboardUrl,
-                        method: 'GET',
-                        headers: {
-                            ...this.fingerprintHeadersWithoutCookie(),
-                            Cookie: this.buildCookieHeaderForUrl(this.bot.cookies.mobile, dashboardUrl),
-                            Referer: 'https://rewards.bing.com/'
-                        }
-                    }
-                    const response = await this.bot.axios.request(request)
-                    html = typeof response.data === 'string' ? response.data : String(response.data)
-                }
-            }
-
-            const deploymentId = extractDeploymentIdFromHtml(html)
-            const scriptUrls = extractScriptUrls(html)
-            const sources = [{ name: 'dashboard-html', content: html }]
-
-            for (const scriptUrl of includeScripts ? scriptUrls.slice(0, 30) : []) {
-                try {
-                    const response = await this.bot.axios.request({
-                        url: scriptUrl,
-                        method: 'GET',
-                        headers: {
-                            ...this.fingerprintHeadersWithoutCookie(),
-                            Cookie: this.buildCookieHeaderForUrl(this.bot.cookies.mobile, scriptUrl),
-                            Referer: 'https://rewards.bing.com/dashboard'
-                        },
-                        responseType: 'text',
-                        transformResponse: data => data
-                    })
-
-                    const content = typeof response.data === 'string' ? response.data : String(response.data ?? '')
-                    if (content) sources.push({ name: scriptUrl, content })
-                } catch (error) {
-                    this.bot.logger.debug(
-                        this.bot.isMobile,
-                        'SERVER-ACTION',
-                        `读取 dashboard 脚本失败，已跳过 | script=${new URL(scriptUrl).pathname} | 错误=${error instanceof Error ? error.message : String(error)}`
-                    )
-                }
-            }
-
-            if (!deploymentId) {
-                this.bot.logger.warn(
-                    this.bot.isMobile,
-                    'SERVER-ACTION',
-                    '未能从 dashboard 页面提取部署 ID，新版 Server Action 功能将跳过'
-                )
-                return { deploymentId: null, hashes: {}, diagnostics: {}, scriptUrls }
-            }
-
-            const dynamicResult = extractServerActionHashResultFromSources(sources)
-            const hashes = isKnownServerActionDeployment(deploymentId)
-                ? { ...FALLBACK_SERVER_ACTION_HASHES, ...dynamicResult.hashes }
-                : dynamicResult.hashes
-
-            const detectedActions = Object.keys(hashes)
-            if (detectedActions.length > 0) {
-                this.bot.logger.info(
-                    this.bot.isMobile,
-                    'SERVER-ACTION',
-                    `新版仪表板部署 ID: ${deploymentId} | 已识别 Server Action: ${detectedActions.join(',')}`
-                )
-            } else {
-                this.bot.logger.warn(
-                    this.bot.isMobile,
-                    'SERVER-ACTION',
-                    `新版仪表板部署 ID: ${deploymentId} | 未识别到可用 Server Action hash，相关功能将降级跳过`
-                )
-            }
-            for (const [action, diagnostic] of Object.entries(dynamicResult.diagnostics)) {
-                if (!diagnostic.unique) {
-                    this.bot.logger.warn(
-                        this.bot.isMobile,
-                        'SERVER-ACTION',
-                        `Server Action hash 未唯一确认，已跳过动态调用 | action=${action} | reason=${diagnostic.reason} | candidates=${diagnostic.candidateCount}`
-                    )
-                }
-            }
-
-            return { deploymentId, hashes, diagnostics: dynamicResult.diagnostics, scriptUrls }
-        } catch (error) {
-            this.bot.logger.warn(
-                this.bot.isMobile,
-                'SERVER-ACTION',
-                `提取 Server Action 信息失败: ${error instanceof Error ? error.message : String(error)}`
-            )
-            return { deploymentId: null, hashes: {}, diagnostics: {}, scriptUrls: [] }
-        }
-    }
-
-    /**
-     * 调用新版 dashboard 的 Next.js Server Action。
-     * 认证靠 Cookie（无需 requestToken / accessToken），返回的响应是 RSC 流，只看 HTTP 状态码判断成功。
-     *
-     * @param actionName Server Action 名称
-     * @param args Server Action 参数数组（如 [true] 开启连击保护；[] 无参数领积分）
-     * @param tag 日志标签
-     * @returns 成功返回 true，失败/降级返回 false
-     */
-    async callServerAction(actionName: ServerActionName, args: unknown[], tag: string): Promise<boolean> {
-        if (!this.bot.serverActions.hashes[actionName]) {
-            this.bot.serverActions = await this.extractServerActionRuntimeInfo(this.bot.mainMobilePage, true)
-        }
-
-        const deploymentId = this.bot.serverActions.deploymentId
-        const actionHash = this.bot.serverActions.hashes[actionName]
-
-        if (!deploymentId || !actionHash) {
-            this.bot.logger.warn(
-                this.bot.isMobile,
-                tag,
-                `跳过：未识别到当前 dashboard 可用的 Server Action hash | action=${actionName} | deployment=${deploymentId ?? 'null'}`
-            )
-            return false
-        }
-
-        try {
-            const targetUrl = 'https://rewards.bing.com/dashboard'
-            const request: AxiosRequestConfig = {
-                url: targetUrl,
-                method: 'POST',
-                headers: {
-                    Accept: 'text/x-component',
-                    'Content-Type': 'text/plain;charset=UTF-8',
-                    'next-action': actionHash,
-                    // next-router-state-tree 是 Next.js App Router 内部状态，服务端用于路由匹配
-                    // 这里传一个最小化的 dashboard 路由树（通过请求分析得到的结构）
-                    'next-router-state-tree':
-                        '%5B%22%22%2C%7B%22children%22%3A%5B%22(nav)%22%2C%7B%22children%22%3A%5B%22dashboard%22%2C%7B%22children%22%3A%5B%22__PAGE__%22%2C%7B%7D%2Cnull%2Cnull%2C0%5D%7D%2Cnull%2Cnull%2C0%5D%7D%2Cnull%2Cnull%2C0%5D%7D%2Cnull%2Cnull%2C16%5D',
-                    'x-deployment-id': deploymentId,
-                    Referer: 'https://rewards.bing.com/dashboard',
-                    Cookie: this.buildCookieHeaderForUrl(this.bot.cookies.mobile, targetUrl)
-                },
-                // Server Action 参数序列化为 JSON 数组字符串
-                data: JSON.stringify(args)
-            }
-
-            this.bot.logger.debug(
-                this.bot.isMobile,
-                tag,
-                `发送 Server Action 请求 | action=${actionName} | deployment=${deploymentId} | hashPrefix=${actionHash.slice(0, 8)} | args=${JSON.stringify(args)}`
-            )
-
-            const response = await this.bot.axios.request(request)
-
-            this.bot.logger.debug(
-                this.bot.isMobile,
-                tag,
-                `收到 Server Action 响应 | action=${actionName} | 状态=${response.status}`
-            )
-
-            if (response.status >= 200 && response.status < 300) {
-                return true
-            }
-
-            this.bot.logger.warn(
-                this.bot.isMobile,
-                tag,
-                `Server Action 失败 | action=${actionName} | 状态=${response.status}`
-            )
-            return false
+            return data.dashboard.userStatus.availablePoints
         } catch (error) {
             this.bot.logger.error(
                 this.bot.isMobile,
-                tag,
-                `Server Action 出错 | action=${actionName} | 消息=${error instanceof Error ? error.message : String(error)}`
+                'GET-CURRENT-POINTS',
+                `An error occurred: ${error instanceof Error ? error.message : String(error)}`
             )
-            return false
+            throw error
         }
     }
 
-    private async clickVisibleClaimButton(page: Page, mode: ClaimButtonSearchMode): Promise<ClaimButtonClickResult> {
-        return page.evaluate(searchMode => {
-            const normalizeText = (value: string | null | undefined) => (value ?? '').replace(/\s+/g, ' ').trim()
-            const isVisible = (el: Element) => {
-                const rect = (el as HTMLElement).getBoundingClientRect()
-                const style = window.getComputedStyle(el)
-                return (
-                    rect.width > 0 &&
-                    rect.height > 0 &&
-                    style.visibility !== 'hidden' &&
-                    style.display !== 'none' &&
-                    style.pointerEvents !== 'none'
-                )
-            }
-            const isDisabled = (el: Element) =>
-                (el as HTMLButtonElement).disabled === true ||
-                el.getAttribute('aria-disabled') === 'true' ||
-                el.getAttribute('disabled') !== null
-            const selector = 'button,a,[role="button"],[data-testid],[aria-label],[title]'
-            const dialogSelector =
-                '[role="dialog"],[aria-modal="true"],[class*="modal" i],[class*="dialog" i],[class*="drawer" i]'
-            const dialogRoots = Array.from(document.querySelectorAll(dialogSelector)).filter(isVisible)
-            const confirmCandidates = dialogRoots
-                .flatMap(root => Array.from(root.querySelectorAll(selector)))
-                .filter(el => !isDisabled(el) && isVisible(el))
-                .map(el => {
-                    const element = el as HTMLElement
-                    const text = normalizeText(
-                        element.innerText ||
-                            element.textContent ||
-                            el.getAttribute('aria-label') ||
-                            el.getAttribute('title')
-                    )
-                    let score = 0
-                    if (text === '领取积分') score += 100
-                    if (/领取积分|claim points/i.test(text)) score += 80
-                    if (/领取|claim/i.test(text)) score += 40
-                    if (element.tagName.toLowerCase() === 'button') score += 10
-                    return { el, score }
-                })
-                .filter(candidate => candidate.score >= 50)
-                .sort((a, b) => b.score - a.score)
-
-            const confirmTarget = confirmCandidates[0]
-            if (confirmTarget) {
-                confirmTarget.el.scrollIntoView({ block: 'center', inline: 'center' })
-                ;(confirmTarget.el as HTMLElement).click()
-                return { clicked: true, phase: 'confirm' as const, score: confirmTarget.score }
-            }
-
-            if (searchMode === 'confirm') return { clicked: false, reason: 'no-confirm-button' }
-
-            const entryCandidates = Array.from(document.querySelectorAll(selector))
-                .filter(el => !el.closest(dialogSelector) && !isDisabled(el) && isVisible(el))
-                .map(el => {
-                    const element = el as HTMLElement
-                    const text = normalizeText(
-                        element.innerText ||
-                            element.textContent ||
-                            el.getAttribute('aria-label') ||
-                            el.getAttribute('title')
-                    )
-                    const context = normalizeText(
-                        [
-                            text,
-                            el.closest('[data-testid], section, article, div')?.textContent,
-                            el.closest('[data-testid], section, article, div')?.getAttribute('data-testid')
-                        ].join(' ')
-                    )
-                    let score = 0
-                    if (/可领取/.test(text)) score += 60
-                    if (/领取|claim/i.test(text)) score += 40
-                    if (/积分|points?|奖励|bonus/i.test(context)) score += 20
-                    if (element.tagName.toLowerCase() === 'button') score += 10
-                    return { el, score }
-                })
-                .filter(candidate => candidate.score >= 80)
-                .sort((a, b) => b.score - a.score)
-
-            const entryTarget = entryCandidates[0]
-            if (!entryTarget) return { clicked: false, reason: 'no-entry-button' }
-
-            entryTarget.el.scrollIntoView({ block: 'center', inline: 'center' })
-            ;(entryTarget.el as HTMLElement).click()
-            return { clicked: true, phase: 'entry' as const, score: entryTarget.score }
-        }, mode)
-    }
-
-    private async waitAndClickClaimButton(
-        page: Page,
-        mode: ClaimButtonSearchMode,
-        timeoutMs: number
-    ): Promise<ClaimButtonClickResult> {
-        const deadline = Date.now() + Math.max(0, timeoutMs)
-        let result = await this.clickVisibleClaimButton(page, mode)
-        while (!result.clicked && Date.now() < deadline) {
-            await new Promise(resolve => setTimeout(resolve, CLAIM_POLL_INTERVAL_MS))
-            result = await this.clickVisibleClaimButton(page, mode)
-        }
-        return result
-    }
-
-    async clickClaimBonusPointsButton(page: Page): Promise<boolean> {
+    async bootstrap(page: Page): Promise<void> {
         try {
-            const openDialogResult = await this.clickVisibleClaimButton(page, 'confirm').catch(
-                (): ClaimButtonClickResult => ({
-                    clicked: false,
-                    reason: 'confirm-precheck-failed'
-                })
-            )
-            if (openDialogResult.clicked) {
-                this.bot.logger.info(
-                    this.bot.isMobile,
-                    'CLAIM-BONUS-POINTS',
-                    `已直接点击打开抽屉中的领取确认按钮 | score=${openDialogResult.score ?? 0}`
+            // /earn is the offers page
+            await page.goto(URLs.rewards.earn, { waitUntil: 'domcontentloaded' })
+
+            // first-time welcome modal blocks the dashboard from rendering
+            await this.dismissRewardsWelcomeDialog(page)
+
+            const earnDom = await page.content()
+            const earnRaw = await this.fetchBootstrapHtml(page, URLs.rewards.earn, '/earn')
+
+            this.rewardsDeploymentId = this.bot.browser.react.buildId(earnRaw || earnDom) ?? ''
+
+            this.bot.nextRouterStateTree = this.bot.browser.react.routerStateTree('earn')
+
+            // pull /dashboard HTML to capture chunks that /earn doesn't show
+            const dashboardHtml = await this.fetchBootstrapHtml(page, URLs.rewards.dashboard, '/dashboard')
+
+            const sources = [earnRaw, earnDom, dashboardHtml].filter(Boolean)
+            const snapshot = this.bot.browser.react.snapshotPage(sources)
+            this.bot.reactSnapshot = snapshot
+            if (this.bot.isMobile) this.bot.reactSnapshots.mobile = snapshot
+            else this.bot.reactSnapshots.desktop = snapshot
+
+            // discovered from chunks referenced by either page
+            this.bot.nextActions = await this.resolveActionIds(page, sources)
+
+            const dashboardRendered = /<section\b[^>]*\bid=["']dailyset["']/i.test(sources.join('\n'))
+            if (!dashboardRendered) {
+                throw new Error(
+                    'Rewards dashboard did not render (no section#dailyset) - likely a login/redirect issue, aborting'
                 )
-                await this.bot.utils.wait(this.bot.utils.randomDelay(5000, 8000))
-                return true
             }
 
-            await page
-                .goto('https://rewards.bing.com/dashboard', { waitUntil: 'domcontentloaded', timeout: 15000 })
-                .catch(() => {})
-            await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {})
-
-            const entryResult = await this.waitAndClickClaimButton(page, 'entry-or-confirm', CLAIM_ENTRY_TIMEOUT_MS)
-            if (!entryResult.clicked) {
+            if (!this.bot.reactSnapshot.offers.length) {
                 this.bot.logger.warn(
                     this.bot.isMobile,
-                    'CLAIM-BONUS-POINTS',
-                    `页面点击兜底未找到奖励领取入口 | reason=${entryResult.reason ?? 'unknown'} | timeoutMs=${CLAIM_ENTRY_TIMEOUT_MS}`
+                    'BOOTSTRAP',
+                    'No offers parsed - page may not have rendered the RSC payload (check login/redirect)'
                 )
-                return false
             }
 
-            if (entryResult.phase === 'confirm') {
-                this.bot.logger.info(
+            if (!Object.keys(this.bot.nextActions).length) {
+                this.bot.logger.warn(
                     this.bot.isMobile,
-                    'CLAIM-BONUS-POINTS',
-                    `页面加载后直接点击领取确认按钮 | score=${entryResult.score ?? 0}`
+                    'BOOTSTRAP',
+                    'No action ids discovered - server-action calls will fail (bundle may have stripped names)'
                 )
-                await this.bot.utils.wait(this.bot.utils.randomDelay(5000, 8000))
-                return true
             }
 
             this.bot.logger.info(
                 this.bot.isMobile,
-                'CLAIM-BONUS-POINTS',
-                `已点击 dashboard 奖励领取入口 | score=${entryResult.score ?? 0}`
+                'BOOTSTRAP',
+                `Context ready | actions=${Object.keys(this.bot.nextActions).length} | reportable=${this.bot.reactSnapshot.reportable.length} | available=${this.bot.reactSnapshot.account.availablePoints}`
             )
-            await this.bot.utils.wait(this.bot.utils.randomDelay(1500, 3000))
-
-            const confirmResult = await this.waitAndClickClaimButton(page, 'confirm', CLAIM_CONFIRM_TIMEOUT_MS)
-            if (!confirmResult.clicked) {
-                this.bot.logger.warn(
-                    this.bot.isMobile,
-                    'CLAIM-BONUS-POINTS',
-                    `页面点击兜底未找到抽屉确认按钮 | reason=${confirmResult.reason ?? 'unknown'} | timeoutMs=${CLAIM_CONFIRM_TIMEOUT_MS}`
-                )
-                return false
-            }
 
             this.bot.logger.info(
                 this.bot.isMobile,
-                'CLAIM-BONUS-POINTS',
-                `已点击 dashboard 奖励领取确认按钮 | score=${confirmResult.score ?? 0}`
+                'BUILD',
+                `Rewards build | id=${this.rewardsDeploymentId || 'unknown'}`,
+                'cyan'
             )
-            await this.bot.utils.wait(this.bot.utils.randomDelay(5000, 8000))
-            return true
+        } catch (error) {
+            this.bot.logger.error(
+                this.bot.isMobile,
+                'BOOTSTRAP',
+                `Failed acquiring context | error=${error instanceof Error ? error.message : String(error)}`
+            )
+            throw error
+        }
+    }
+
+    /**
+     * Dismisses the first-time welcome modal on /earn, which otherwise
+     * prevents section#dailyset from rendering.
+     */
+    private async dismissRewardsWelcomeDialog(page: Page): Promise<void> {
+        try {
+            const welcomeButton = await page
+                .waitForSelector('section[role="dialog"] button[slot="close"]', { timeout: 5000 })
+                .catch(() => null)
+            if (!welcomeButton) return
+
+            await welcomeButton.click({ timeout: 5000 })
+            this.bot.logger.info(this.bot.isMobile, 'BOOTSTRAP', 'Dismissed welcome dialog')
+
+            await page.waitForSelector('section#dailyset', { timeout: 15000 }).catch(() => undefined)
         } catch (error) {
             this.bot.logger.warn(
                 this.bot.isMobile,
-                'CLAIM-BONUS-POINTS',
-                `页面点击兜底领取失败: ${error instanceof Error ? error.message : String(error)}`
+                'BOOTSTRAP',
+                `Failed to dismiss welcome dialog: ${error instanceof Error ? error.message : String(error)}`
             )
-            return false
         }
     }
 
-    async closeBrowser(browser: BrowserContext, email: string) {
-        const rootBrowser = browser.browser?.() ?? null
+    private async fetchBootstrapHtml(page: Page, url: string, route: string): Promise<string> {
+        try {
+            const res = await page.request.get(url, { timeout: 20000 })
+            if (res.ok()) return await res.text()
+
+            this.bot.logger.warn(
+                this.bot.isMobile,
+                'BOOTSTRAP',
+                `Failed to fetch ${route} HTML | status=${res.status()} - snapshot and action discovery may be incomplete`
+            )
+        } catch (error) {
+            this.bot.logger.warn(
+                this.bot.isMobile,
+                'BOOTSTRAP',
+                `Failed to fetch ${route} HTML | error=${error instanceof Error ? error.message : String(error)} - snapshot and action discovery may be incomplete`
+            )
+        }
+
+        return ''
+    }
+
+    private async resolveActionIds(page: Page, htmls: string[]): Promise<Record<string, string>> {
+        const result: Record<string, string> = {}
 
         try {
-            if (this.verifiedSessionContexts.has(browser)) {
-                const cookies = await browser.cookies()
-                this.bot.logger.debug(this.bot.isMobile, 'CLOSE-BROWSER', `Saving ${cookies.length} cookies.`)
-                await saveSessionData(this.bot.config.sessionPath, cookies, email, this.bot.isMobile)
-            } else {
-                this.bot.logger.warn(this.bot.isMobile, 'CLOSE-BROWSER', '会话未通过登录验证，跳过 Cookie 保存')
+            const initialChunks = new Set<string>()
+            const chunkRegex = /(?:\/_next\/)?(static\/(?:chunks|immutable|media)\/[\w\-./()]+?\.js)/g
+            for (const html of htmls) {
+                if (!html) continue
+                for (const match of html.matchAll(chunkRegex)) {
+                    initialChunks.add('/_next/' + match[1]!)
+                }
             }
 
-            await this.bot.utils.wait(2000)
+            if (initialChunks.size === 0) {
+                this.bot.logger.warn(
+                    this.bot.isMobile,
+                    'BOOTSTRAP',
+                    'No initial chunks discovered in HTML - chunk reference shape may have changed'
+                )
+            }
+
+            this.bot.logger.debug(this.bot.isMobile, 'BOOTSTRAP', `Fetching ${initialChunks.size} initial JS chunks`)
+            const jsByPath = await this.fetchJsChunks(page, [...initialChunks])
+
+            const dynamicPaths = new Set<string>()
+            for (const js of jsByPath.values()) {
+                for (const path of this.extractDynamicChunkPaths(js)) {
+                    if (!jsByPath.has(path)) dynamicPaths.add(path)
+                }
+            }
+
+            if (dynamicPaths.size) {
+                this.bot.logger.debug(
+                    this.bot.isMobile,
+                    'BOOTSTRAP',
+                    `Fetching ${dynamicPaths.size} dynamic chunks discovered via webpack manifest`
+                )
+                const moreJs = await this.fetchJsChunks(page, [...dynamicPaths])
+                for (const [path, js] of moreJs) jsByPath.set(path, js)
+            }
+
+            for (const [path, js] of jsByPath) {
+                const filename = path.split('/').pop() ?? path
+                const ids = this.bot.browser.react.extractActionIds(js)
+                const names = Object.keys(ids.byName)
+
+                if (names.length) {
+                    Object.assign(result, ids.byName)
+                    this.bot.logger.debug(
+                        this.bot.isMobile,
+                        'BOOTSTRAP',
+                        `Found ${names.length} action id(s) in ${filename}: [${names.join(', ')}]`
+                    )
+                } else {
+                    this.bot.logger.debug(this.bot.isMobile, 'BOOTSTRAP', `No server-action ids found in ${filename}`)
+                }
+
+                const namedSet = new Set(Object.values(ids.byName))
+                const unnamed = ids.all.filter(id => !namedSet.has(id))
+                if (unnamed.length) {
+                    this.bot.logger.debug(
+                        this.bot.isMobile,
+                        'BOOTSTRAP',
+                        `Found ${unnamed.length} unnamed action id(s) in ${filename}: [${unnamed.join(', ')}]`
+                    )
+                }
+            }
+
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                'BOOTSTRAP',
+                `Discovered ${Object.keys(result).length} action ids: [${Object.keys(result).join(', ')}]`
+            )
         } catch (error) {
-            this.bot.logger.error(this.bot.isMobile, 'CLOSE-BROWSER', `保存会话失败: ${error}`)
+            this.bot.logger.error(
+                this.bot.isMobile,
+                'BOOTSTRAP',
+                `Failed resolving action ids | error=${error instanceof Error ? error.message : String(error)}`
+            )
+        }
+
+        return result
+    }
+
+    private async fetchJsChunks(page: Page, paths: string[]): Promise<Map<string, string>> {
+        const result = new Map<string, string>()
+
+        await Promise.all(
+            paths.map(async path => {
+                try {
+                    const res = await page.request.get(URLs.rewards.path(path))
+                    if (res.ok()) {
+                        result.set(path, await res.text())
+                    }
+                } catch (error) {
+                    this.bot.logger.debug(
+                        this.bot.isMobile,
+                        'BOOTSTRAP',
+                        `Chunk fetch failed | path=${path} | ${error instanceof Error ? error.message : String(error)}`
+                    )
+                }
+            })
+        )
+
+        return result
+    }
+
+    private extractDynamicChunkPaths(js: string): string[] {
+        const seen = new Set<string>()
+
+        // Webpack builder
+        const builder = /static\/chunks\/"\s*\+\s*\w+\s*\+\s*"([-.])"\s*\+\s*\{([\s\S]*?)\}\s*\[/g
+        for (const match of js.matchAll(builder)) {
+            const sep = match[1]!
+            for (const [, id, hash] of match[2]!.matchAll(/(\d+)\s*:\s*"([a-f0-9]+)"/g)) {
+                seen.add(`/_next/static/chunks/${id}${sep}${hash}.js`)
+            }
+        }
+
+        // Webpack fallback
+        for (const [, id, hash] of js.matchAll(/\b(\d{2,6}):"([a-f0-9]{12,})"/g)) {
+            seen.add(`/_next/static/chunks/${id}-${hash}.js`)
+            seen.add(`/_next/static/chunks/${id}.${hash}.js`)
+        }
+
+        // Turbopack
+        const turbopackRegex = /"(static\/(?:immutable|chunks|media)\/[\w\-./()]+?\.js)"/g
+        for (const match of js.matchAll(turbopackRegex)) {
+            seen.add(`/_next/${match[1]}`)
+        }
+
+        return [...seen]
+    }
+
+    async closeBrowser(browser: BrowserContext, email: string, persistSession = true) {
+        const rootBrowser = browser.browser?.() || null
+
+        try {
+            if (persistSession) {
+                const storageState = await browser.storageState()
+                this.bot.logger.debug(
+                    this.bot.isMobile,
+                    'CLOSE-BROWSER',
+                    `Saving session | cookies=${storageState.cookies.length} | origins=${storageState.origins.length}`
+                )
+                saveStorageState(this.bot.config.sessionPath, email, this.bot.isMobile, storageState)
+            }
+        } catch (error) {
+            if (isBrowserClosedError(error)) {
+                this.bot.logger.debug(
+                    this.bot.isMobile,
+                    'CLOSE-BROWSER',
+                    `Session not saved (browser already closing): ${error instanceof Error ? error.message : String(error)}`
+                )
+            } else {
+                this.bot.logger.error(this.bot.isMobile, 'CLOSE-BROWSER', `Failed to save session: ${error}`)
+            }
         } finally {
             try {
                 await browser.close()
@@ -1827,50 +552,468 @@ export default class BrowserFunc {
                     await rootBrowser.close().catch(() => {})
                 }
 
-                this.bot.logger.info(this.bot.isMobile, 'CLOSE-BROWSER', '浏览器已干净地关闭！')
-            } catch {
-                this.bot.logger.warn(this.bot.isMobile, 'CLOSE-BROWSER', '关闭时遇到错误，但进程正在退出。')
+                this.bot.logger.info(this.bot.isMobile, 'CLOSE-BROWSER', 'All browser resources closed.')
+            } catch (error) {
+                if (isBrowserClosedError(error)) {
+                    this.bot.logger.debug(this.bot.isMobile, 'CLOSE-BROWSER', 'Browser was already closed.')
+                } else {
+                    this.bot.logger.warn(
+                        this.bot.isMobile,
+                        'CLOSE-BROWSER',
+                        'Shutdown encountered an error, but process exiting.'
+                    )
+                }
             }
         }
     }
 
-    buildCookieHeaderForUrl(cookies: Cookie[], targetUrl: string): string {
-        let url: URL
+    private getActivePage(): Page | null {
+        const page = this.bot.isMobile ? this.bot.mainMobilePage : this.bot.mainDesktopPage
+        return page && !page.isClosed() ? page : null
+    }
+
+    async getRewardsPageHtml(url: string, route: string): Promise<string | null> {
+        const direct = await this.fetchRewardsHtml(url, route)
+        if (direct !== null) return direct
+
+        const page = this.getActivePage()
+        if (!page) return null
+
         try {
-            url = new URL(targetUrl)
-        } catch {
-            throw new TypeError('Cookie Header target must be a valid HTTP(S) URL')
-        }
-        if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-            throw new TypeError(`Cookie Header target must use HTTP(S): ${url.protocol}`)
+            const response = await page.request.get(url, { timeout: 20000 })
+            if (response.ok()) {
+                await this.syncActiveCookies(page, 'REWARDS-PAGE')
+                return await response.text()
+            }
+
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                'REWARDS-PAGE',
+                `Failed to fetch ${route} | status=${response.status()}`
+            )
+        } catch (error) {
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                'REWARDS-PAGE',
+                `Browser fetch failed for ${route} | ${error instanceof Error ? error.message : String(error)}`
+            )
         }
 
-        const hostname = url.hostname.toLowerCase()
+        return null
+    }
+
+    private getCachedCookies(explicitCookies?: Cookie[], targetUrl?: string): Cookie[] {
+        const cookies = explicitCookies ?? (this.bot.isMobile ? this.bot.cookies.mobile : this.bot.cookies.desktop)
+        return targetUrl ? this.filterCookiesForUrl(cookies, targetUrl) : cookies
+    }
+
+    async checkpointActiveSession(source = 'SESSION-CHECKPOINT'): Promise<boolean> {
+        const page = this.getActivePage()
+        if (!page) {
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                source,
+                'Could not checkpoint session because no active browser page is available'
+            )
+            return false
+        }
+
+        try {
+            await this.syncActiveCookies(page, source, true)
+            return true
+        } catch (error) {
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                source,
+                `Could not checkpoint active session | error=${error instanceof Error ? error.message : String(error)}`
+            )
+            return false
+        }
+    }
+
+    async synchronizeActiveBrowserCookies(source: string, applyCached = false): Promise<boolean> {
+        const page = this.getActivePage()
+        if (!page) return false
+
+        try {
+            const context = page.context()
+            let liveCookies = await context.cookies()
+
+            if (applyCached) {
+                const now = Date.now() / 1000
+                const liveByKey = new Map(
+                    liveCookies.map(cookie => [`${cookie.domain}|${cookie.path}|${cookie.name}`, cookie])
+                )
+                const changed = this.getCachedCookies().filter(cookie => {
+                    if (cookie.expires !== -1 && cookie.expires <= now) return false
+                    const live = liveByKey.get(`${cookie.domain}|${cookie.path}|${cookie.name}`)
+                    return (
+                        !live ||
+                        live.value !== cookie.value ||
+                        live.expires !== cookie.expires ||
+                        live.httpOnly !== cookie.httpOnly ||
+                        live.secure !== cookie.secure ||
+                        live.sameSite !== cookie.sameSite
+                    )
+                })
+
+                if (changed.length) {
+                    await context.addCookies(changed)
+                    liveCookies = await context.cookies()
+                }
+            }
+
+            this.updateCookieCache(liveCookies, source)
+            return true
+        } catch (error) {
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                source,
+                `Could not synchronize active browser cookies | error=${error instanceof Error ? error.message : String(error)}`
+            )
+            return false
+        }
+    }
+
+    private updateCookieCache(liveCookies: Cookie[], source: string): boolean {
+        const cachedCookies = this.bot.isMobile ? this.bot.cookies.mobile : this.bot.cookies.desktop
+        const cookieState = (cookie: Cookie) =>
+            JSON.stringify({
+                value: cookie.value,
+                expires: cookie.expires,
+                httpOnly: cookie.httpOnly,
+                secure: cookie.secure,
+                sameSite: cookie.sameSite
+            })
+        const cachedByKey = new Map(
+            cachedCookies.map(cookie => [`${cookie.domain}|${cookie.path}|${cookie.name}`, cookieState(cookie)])
+        )
+        const changed =
+            cachedCookies.length !== liveCookies.length ||
+            liveCookies.some(
+                cookie => cachedByKey.get(`${cookie.domain}|${cookie.path}|${cookie.name}`) !== cookieState(cookie)
+            )
+
+        if (this.bot.isMobile) this.bot.cookies.mobile = liveCookies
+        else this.bot.cookies.desktop = liveCookies
+
+        if (changed) {
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                source,
+                `Refreshed cookie cache | previous=${cachedCookies.length} | current=${liveCookies.length}`
+            )
+        }
+
+        return changed
+    }
+
+    private async syncActiveCookies(page: Page, source: string, forcePersist = false): Promise<void> {
+        try {
+            const context = page.context()
+            const liveCookies = await context.cookies()
+            const changed = this.updateCookieCache(liveCookies, source)
+            if (!changed && !forcePersist) return
+
+            const email = this.bot.currentAccountEmail
+            if (!email) return
+
+            const storageState = await context.storageState()
+            saveStorageState(this.bot.config.sessionPath, email, this.bot.isMobile, storageState)
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                source,
+                `Persisted live browser session | cookies=${storageState.cookies.length} | origins=${storageState.origins.length}`
+            )
+        } catch (error) {
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                source,
+                `Could not persist refreshed cookies | error=${error instanceof Error ? error.message : String(error)}`
+            )
+        }
+    }
+
+    private filterCookiesForUrl(cookies: Cookie[], targetUrl: string): Cookie[] {
+        const url = new URL(targetUrl)
+        const host = url.hostname.toLowerCase()
         const requestPath = url.pathname || '/'
         const now = Date.now() / 1000
 
         return cookies
-            .map((cookie, index) => ({ cookie, index }))
-            .filter(({ cookie }) => {
-                const rawDomain = cookie.domain.toLowerCase()
-                const domainCookie = rawDomain.startsWith('.')
-                const cookieDomain = domainCookie ? rawDomain.slice(1) : rawDomain
-                const domainMatches = domainCookie
-                    ? hostname === cookieDomain || hostname.endsWith(`.${cookieDomain}`)
-                    : hostname === cookieDomain
-                if (!domainMatches) return false
-
-                const cookiePath = cookie.path
-                const pathMatches =
-                    requestPath === cookiePath ||
-                    (requestPath.startsWith(cookiePath) &&
-                        (cookiePath.endsWith('/') || requestPath.charAt(cookiePath.length) === '/'))
-                if (!pathMatches) return false
+            .filter(cookie => {
+                if (cookie.expires !== -1 && cookie.expires <= now) return false
                 if (cookie.secure && url.protocol !== 'https:') return false
-                return cookie.expires === -1 || cookie.expires > now
+
+                const domain = cookie.domain.replace(/^\./, '').toLowerCase()
+                if (host !== domain && !host.endsWith(`.${domain}`)) return false
+
+                const cookiePath = cookie.path || '/'
+                if (!requestPath.startsWith(cookiePath)) return false
+                if (
+                    requestPath.length > cookiePath.length &&
+                    !cookiePath.endsWith('/') &&
+                    requestPath.charAt(cookiePath.length) !== '/'
+                )
+                    return false
+
+                return true
             })
-            .sort((left, right) => right.cookie.path.length - left.cookie.path.length || left.index - right.index)
-            .map(({ cookie }) => `${cookie.name}=${cookie.value}`)
+            .sort((a, b) => (b.path?.length ?? 0) - (a.path?.length ?? 0))
+    }
+
+    private async applyResponseCookies(requestUrl: string, setCookieHeader?: string[] | string): Promise<void> {
+        if (!setCookieHeader) return
+
+        const rawCookies = Array.isArray(setCookieHeader)
+            ? setCookieHeader
+            : this.splitCombinedSetCookieHeader(setCookieHeader)
+        if (!rawCookies.length) return
+
+        const current = this.bot.isMobile ? this.bot.cookies.mobile : this.bot.cookies.desktop
+        const updated = [...current]
+        let changed = false
+
+        for (const raw of rawCookies) {
+            const parsed = this.parseSetCookie(raw, requestUrl)
+            if (!parsed) continue
+
+            const keyMatches = (cookie: Cookie) =>
+                cookie.name === parsed.cookie.name &&
+                cookie.domain === parsed.cookie.domain &&
+                cookie.path === parsed.cookie.path
+            const index = updated.findIndex(keyMatches)
+
+            if (parsed.remove) {
+                if (index >= 0) {
+                    updated.splice(index, 1)
+                    changed = true
+                }
+                continue
+            }
+
+            if (index >= 0) {
+                if (JSON.stringify(updated[index]) !== JSON.stringify(parsed.cookie)) {
+                    updated[index] = parsed.cookie
+                    changed = true
+                }
+            } else {
+                updated.push(parsed.cookie)
+                changed = true
+            }
+        }
+
+        if (!changed) return
+
+        this.updateCookieCache(updated, 'COOKIE-SYNC')
+
+        const email = this.bot.currentAccountEmail
+        if (!email) return
+
+        const saved = loadSession(this.bot.config.sessionPath, email, this.bot.isMobile)
+        saveStorageState(this.bot.config.sessionPath, email, this.bot.isMobile, {
+            cookies: updated,
+            origins: saved?.storageState?.origins ?? []
+        })
+        this.bot.logger.debug(
+            this.bot.isMobile,
+            'COOKIE-SYNC',
+            `Applied ${rawCookies.length} response cookie(s) and persisted the updated session`
+        )
+    }
+
+    private parseSetCookie(raw: string, requestUrl: string): { cookie: Cookie; remove: boolean } | null {
+        const parts = raw.split(';').map(part => part.trim())
+        const first = parts.shift()
+        if (!first) return null
+
+        const equals = first.indexOf('=')
+        if (equals <= 0) return null
+
+        const request = new URL(requestUrl)
+        const name = first.slice(0, equals).trim()
+        const value = first.slice(equals + 1)
+        let domain = request.hostname
+        let cookiePath = this.defaultCookiePath(request.pathname)
+        let expires = -1
+        let secure = false
+        let httpOnly = false
+        let sameSite: Cookie['sameSite'] = 'Lax'
+        let remove = false
+
+        for (const attribute of parts) {
+            const separator = attribute.indexOf('=')
+            const attributeName = (separator < 0 ? attribute : attribute.slice(0, separator)).trim().toLowerCase()
+            const attributeValue = separator < 0 ? '' : attribute.slice(separator + 1).trim()
+
+            if (attributeName === 'domain' && attributeValue) domain = attributeValue.toLowerCase()
+            else if (attributeName === 'path' && attributeValue) cookiePath = attributeValue
+            else if (attributeName === 'secure') secure = true
+            else if (attributeName === 'httponly') httpOnly = true
+            else if (attributeName === 'expires' && attributeValue) {
+                const parsed = Date.parse(attributeValue)
+                if (Number.isFinite(parsed)) expires = parsed / 1000
+            } else if (attributeName === 'max-age' && attributeValue) {
+                const seconds = Number(attributeValue)
+                if (Number.isFinite(seconds)) {
+                    if (seconds <= 0) remove = true
+                    else expires = Date.now() / 1000 + seconds
+                }
+            } else if (attributeName === 'samesite') {
+                const normalized = attributeValue.toLowerCase()
+                if (normalized === 'strict') sameSite = 'Strict'
+                else if (normalized === 'none') sameSite = 'None'
+                else sameSite = 'Lax'
+            }
+        }
+
+        if (expires !== -1 && expires <= Date.now() / 1000) remove = true
+
+        return {
+            cookie: { name, value, domain, path: cookiePath, expires, httpOnly, secure, sameSite },
+            remove
+        }
+    }
+
+    private defaultCookiePath(pathname: string): string {
+        if (!pathname || !pathname.startsWith('/') || pathname === '/') return '/'
+        const lastSlash = pathname.lastIndexOf('/')
+        return lastSlash <= 0 ? '/' : pathname.slice(0, lastSlash)
+    }
+
+    private splitCombinedSetCookieHeader(header: string): string[] {
+        return header
+            .split(/,(?=\s*[^;,=\s]+=[^;,]*)/g)
+            .map(value => value.trim())
+            .filter(Boolean)
+    }
+
+    buildCookieHeader(cookies: Cookie[], allowedDomains?: string[]): string {
+        return cookies
+            .filter(cookie => {
+                if (!allowedDomains?.length) return true
+                return allowedDomains.some(domain => cookie.domain.toLowerCase().endsWith(domain.toLowerCase()))
+            })
+            .map(cookie => `${cookie.name}=${cookie.value}`)
             .join('; ')
+    }
+
+    // Fire a nextjs RSC server action shared by UrlReward / ClaimReward / ClaimBonusPoints
+    async reportServerAction(
+        actionId: string,
+        body: unknown[],
+        opts?: { url?: string; referer?: string; routerStateTree?: string }
+    ): Promise<{ status: number; acknowledged: boolean; availablePoints: number | null }> {
+        const url = opts?.url ?? URLs.rewards.earn
+        const referer = opts?.referer ?? url
+        const routerStateTree = opts?.routerStateTree ?? this.bot.nextRouterStateTree
+
+        const fingerprintHeaders = { ...this.bot.fingerprint.headers }
+        delete fingerprintHeaders['Cookie']
+        delete fingerprintHeaders['cookie']
+
+        const headers = {
+            ...fingerprintHeaders,
+            Referer: referer,
+            Origin: URLs.rewards.origin,
+            Accept: 'text/x-component',
+            'Content-Type': 'text/plain;charset=UTF-8',
+            'Next-Action': actionId,
+            'Next-Router-State-Tree': routerStateTree,
+            ...(this.rewardsDeploymentId ? { 'X-Deployment-Id': this.rewardsDeploymentId } : {})
+        }
+
+        const response = await this.bot.http.request({
+            url,
+            method: 'POST',
+            headers: {
+                ...headers,
+                Cookie: this.buildCookieHeader(this.getCachedCookies(undefined, url))
+            },
+            data: JSON.stringify(body)
+        })
+        await this.applyResponseCookies(url, response.headers['set-cookie'])
+
+        return {
+            status: response.status,
+            acknowledged: this.bot.utils.serverActionAcknowledged(response.data),
+            availablePoints: this.bot.browser.react.availablePointsFromPayload(response.data)
+        }
+    }
+
+    async refreshEarnSnapshot(): Promise<PageSnapshot | null> {
+        const page = this.bot.isMobile ? this.bot.mainMobilePage : this.bot.mainDesktopPage
+        const usePage = !!page && !page.isClosed()
+
+        const fetchSnapshotPage = async (url: string, route: string): Promise<string | null> => {
+            if (!usePage) return await this.fetchRewardsHtml(url, route)
+            return await this.getRewardsPageHtml(url, route)
+        }
+
+        const pages = await Promise.all([
+            fetchSnapshotPage(URLs.rewards.earn, '/earn'),
+            fetchSnapshotPage(URLs.rewards.dashboard, '/dashboard')
+        ])
+        const availablePages = pages.filter((html): html is string => html !== null)
+
+        return availablePages.length ? this.bot.browser.react.snapshotPage(availablePages) : null
+    }
+
+    private async fetchRewardsHtml(url: string, route: string): Promise<string | null> {
+        try {
+            const headers = { ...(this.bot.fingerprint?.headers ?? {}) }
+            delete headers['Cookie']
+            delete headers['cookie']
+
+            const response = await this.bot.http.request<string>({
+                url,
+                method: 'GET',
+                headers: {
+                    ...headers,
+                    Cookie: this.buildCookieHeader(this.getCachedCookies(undefined, url)),
+                    Referer: URLs.rewards.referer,
+                    Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+                },
+                responseType: 'text'
+            })
+
+            await this.applyResponseCookies(url, response.headers['set-cookie'])
+            return typeof response.data === 'string' ? response.data : null
+        } catch (error) {
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                'EARN-SNAPSHOT',
+                `Failed to fetch ${route} over http | ${error instanceof Error ? error.message : String(error)}`
+            )
+            return null
+        }
+    }
+
+    async ensureOffer(offerId: string): Promise<ParsedOffer | null> {
+        const cached = this.bot.reactSnapshot?.offers.find(o => o.offerId === offerId)
+        if (cached) return cached
+
+        this.bot.logger.debug(
+            this.bot.isMobile,
+            'EARN-SNAPSHOT',
+            `${offerId} absent from the cached snapshot (offers=${this.bot.reactSnapshot?.offers.length ?? 0}) - refetching /earn and /dashboard`
+        )
+
+        const refreshed = await this.refreshEarnSnapshot()
+        if (!refreshed) return null
+
+        if (!this.bot.reactSnapshot || refreshed.offers.length >= this.bot.reactSnapshot.offers.length) {
+            this.bot.reactSnapshot = refreshed
+        }
+
+        const live = refreshed.offers.find(o => o.offerId === offerId) ?? null
+
+        this.bot.logger.debug(
+            this.bot.isMobile,
+            'EARN-SNAPSHOT',
+            `Refetched /earn and /dashboard | offers=${refreshed.offers.length} | ${offerId} found=${!!live}`
+        )
+
+        return live
     }
 }

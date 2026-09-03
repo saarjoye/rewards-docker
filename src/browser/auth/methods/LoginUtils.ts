@@ -8,7 +8,13 @@ export interface PromptOptions {
     transform?: (input: string) => string
 }
 
+export function canPromptForInput(): boolean {
+    return process.stdin.isTTY === true
+}
+
 export function promptInput(options: PromptOptions): Promise<string | null> {
+    if (!canPromptForInput()) return Promise.resolve(null)
+
     const { question, timeoutSeconds = 60, validate, transform } = options
 
     return new Promise(resolve => {
@@ -45,7 +51,10 @@ export function promptInput(options: PromptOptions): Promise<string | null> {
 
 export async function getSubtitleMessage(page: Page): Promise<string | null> {
     const message = await page
-        .waitForSelector('[data-testid="subtitle"], div#oneTimeCodeDescription', { state: 'visible', timeout: 1000 })
+        .waitForSelector('[data-testid="subtitle"], div#oneTimeCodeDescription, [data-testid="description"]', {
+            state: 'visible',
+            timeout: 1000
+        })
         .catch(() => null)
 
     if (!message) return null

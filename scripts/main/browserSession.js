@@ -1,162 +1,251 @@
-import fs from 'fs'
+/* global window */
+
 import { chromium } from 'patchright'
 import { newInjectedContext } from 'fingerprint-injector'
 import {
     getDirname,
     getProjectRoot,
+    findUnknownOptions,
     log,
     parseArgs,
-    validateEmail,
+    resolveEmailArgument,
     loadConfig,
-    loadAccounts,
+    loadAccountsFromEnv,
     findAccountByEmail,
-    getRuntimeBase,
-    getSessionPath,
-    loadCookies,
-    loadFingerprint,
     buildProxyConfig,
+    getSessionDbPath,
+    openSessionDb,
+    loadSessionRow,
+    closeSessionDb,
     setupCleanupHandlers
 } from '../utils.js'
+
+const REWARDS_URL = 'https://rewards.bing.com'
+
+const BROWSER_ARGS = [
+    '--mute-audio',
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--disable-web-authentication-ui',
+    '--disable-external-intent-requests',
+    '--disable-blink-features=AutomationControlled',
+    '--disable-features=WebAuthentication,PasswordManagerOnboarding,PasswordManager,EnablePasswordsAccountStorage,Passkeys,WebAuthenticationProxy,U2F',
+    '--disable-save-password-bubble',
+    '--disable-dev-shm-usage',
+    '--disable-background-networking',
+    '--disable-backgrounding-occluded-windows',
+    '--disable-renderer-backgrounding'
+]
 
 const __dirname = getDirname(import.meta.url)
 const projectRoot = getProjectRoot(__dirname)
 
-const args = parseArgs()
-args.dev = args.dev || false
+function printHelp() {
+    console.log(`
+Microsoft Rewards saved-session browser
 
-validateEmail(args.email)
+Usage:
+  npm run open-session -- <account-email> [--platform desktop|mobile]
+  npm run open-session -- --email <account-email> [--platform desktop|mobile]
 
-const { data: config } = loadConfig(projectRoot, args.dev)
-const { data: accounts } = loadAccounts(projectRoot, args.dev)
+Options:
+  --email       Optional named form of the account email.
+  --platform    Open a specific stored session. Defaults to desktop, then mobile.
+  --help        Show this help.
 
-const account = findAccountByEmail(accounts, args.email)
-if (!account) {
-    log('ERROR', `未找到账户: ${args.email}`)
-    log('ERROR', '可用账户:')
-    accounts.forEach(acc => {
-        if (acc?.email) log('ERROR', `  - ${acc.email}`)
-    })
+Examples:
+  npm run open-session -- user@example.com
+  npm run open-session -- user@example.com --platform mobile
+  npm run open-session -- --email user@example.com --platform desktop
+`)
+}
+
+function failUsage(message) {
+    log('ERROR', message)
+    printHelp()
     process.exit(1)
 }
 
+const args = parseArgs(process.argv.slice(2), { boolean: ['help', 'h'] })
+if (args.help || args.h) {
+    printHelp()
+    process.exit(0)
+}
+
+const unknownOptions = findUnknownOptions(args, ['email', 'platform', 'help', 'h'])
+if (unknownOptions.length) {
+    failUsage(
+        `Unknown option${unknownOptions.length === 1 ? '' : 's'}: ${unknownOptions.map(v => `--${v}`).join(', ')}`
+    )
+}
+
+let accountEmail
+try {
+    accountEmail = resolveEmailArgument(args)
+} catch (error) {
+    failUsage(error?.message ?? String(error))
+}
+
+const { data: config } = loadConfig(projectRoot)
+
+const accounts = loadAccountsFromEnv(projectRoot)
+const account = findAccountByEmail(accounts, accountEmail)
+if (!account) {
+    log('WARN', `No ACCOUNT_N_* block found in .env for ${accountEmail} - opening without a proxy`)
+}
+
+function platformsToTry() {
+    if (args.platform === undefined) return ['desktop', 'mobile']
+    if (args.platform === true) failUsage('--platform requires either desktop or mobile after it.')
+
+    const p = String(args.platform).trim().toLowerCase()
+    if (p === 'mobile' || p === 'desktop') return [p]
+    failUsage(`Invalid --platform value "${args.platform}"; expected desktop or mobile.`)
+}
+
+async function configureMediaBlocking(context) {
+    if (!config.experimental?.blockMedia) return
+
+    await context.route('**/*', async route => {
+        const resourceType = route.request().resourceType()
+        if (resourceType === 'image' || resourceType === 'media') {
+            await route.abort()
+            return
+        }
+
+        await route.fallback()
+    })
+
+    log('INFO', 'Media loading disabled (image/media requests blocked; HTTP cache disabled by routing)')
+}
+
 async function main() {
-    const runtimeBase = getRuntimeBase(projectRoot, args.dev)
-    const sessionBase = getSessionPath(runtimeBase, config.sessionPath, args.email)
-
-    log('INFO', '验证会话数据...')
-
-    if (!fs.existsSync(sessionBase)) {
-        log('ERROR', `会话目录不存在: ${sessionBase}`)
-        log('ERROR', '请确保此账户的会话已创建')
+    const { dbPath, exists } = getSessionDbPath(projectRoot, config.sessionPath)
+    if (!exists) {
+        log('ERROR', `No sessions.db found (looked for ${dbPath})`)
+        log('ERROR', 'Run the bot at least once so a session is stored for this account.')
         process.exit(1)
     }
 
-    if (!config.baseURL) {
-        log('ERROR', 'baseURL 在 config.json 中未设置')
-        process.exit(1)
-    }
+    const db = openSessionDb(dbPath, { readonly: true })
 
-    let cookies = await loadCookies(sessionBase, 'desktop')
-    let sessionType = 'desktop'
-
-    if (cookies.length === 0) {
-        log('WARN', '未找到桌面会话 cookies，尝试移动会话...')
-        cookies = await loadCookies(sessionBase, 'mobile')
-        sessionType = 'mobile'
-
-        if (cookies.length === 0) {
-            log('ERROR', '在桌面或移动会话中未找到 cookies')
-            log('ERROR', `会话目录: ${sessionBase}`)
-            log('ERROR', '请确保此账户存在有效会话')
-            process.exit(1)
+    let session = null
+    let platform = null
+    for (const p of platformsToTry()) {
+        try {
+            const row = loadSessionRow(db, accountEmail, p)
+            if (row && (row.storageState || row.fingerprint)) {
+                session = row
+                platform = p
+                break
+            }
+        } catch (error) {
+            log('WARN', `Could not read ${p} session: ${error.message}`)
         }
-
-        log('INFO', `使用移动会话 (${cookies.length} 个 cookies)`)
     }
+    closeSessionDb(db)
 
-    const isMobile = sessionType === 'mobile'
-    const fingerprintEnabled = isMobile ? account.saveFingerprint?.mobile : account.saveFingerprint?.desktop
-
-    let fingerprint = null
-    if (fingerprintEnabled) {
-        fingerprint = await loadFingerprint(sessionBase, sessionType)
-        if (!fingerprint) {
-            log('ERROR', `${sessionType} 的指纹功能已启用但未找到指纹文件`)
-            log('ERROR', `预期文件: ${sessionBase}/session_fingerprint_${sessionType}.json`)
-            log('ERROR', '当明确启用指纹时，无法在没有指纹的情况下启动浏览器')
-            process.exit(1)
-        }
-        log('INFO', `已加载 ${sessionType} 指纹`)
-    }
-
-    const proxy = buildProxyConfig(account)
-
-    if (account.proxy && account.proxy.url && (!proxy || !proxy.server)) {
-        log('ERROR', '账户中配置了代理但代理数据无效或不完整')
-        log('ERROR', '账户代理配置:', JSON.stringify(account.proxy, null, 2))
-        log('ERROR', '必需字段: proxy.url, proxy.port')
-        log('ERROR', '当明确配置代理时，无法在没有代理的情况下启动浏览器')
+    if (!session) {
+        log('ERROR', `No stored session for ${accountEmail} in ${dbPath}`)
+        log('ERROR', 'Run the bot first, or double-check the email.')
         process.exit(1)
     }
 
+    const isMobile = platform === 'mobile'
+    const { storageState, fingerprint } = session
+    const useInjector = Boolean(fingerprint)
+    const cookieCount = storageState?.cookies?.length ?? 0
+    const screen = fingerprint?.fingerprint?.screen
     const userAgent = fingerprint?.fingerprint?.navigator?.userAgent || fingerprint?.fingerprint?.userAgent || null
 
-    log('INFO', `会话: ${args.email} (${sessionType})`)
-    log('INFO', `  Cookies: ${cookies.length}`)
-    log('INFO', `  指纹: ${fingerprint ? '是' : '否'}`)
-    log('INFO', `  用户代理: ${userAgent || '默认'}`)
-    log('INFO', `  代理: ${proxy ? '是' : '否'}`)
-    log('INFO', '正在启动浏览器...')
+    const proxy = account ? buildProxyConfig(account) : null
+    if (account?.proxy?.url && (!proxy || !proxy.server)) {
+        log('ERROR', 'Account proxy is configured but invalid (needs proxy url + port)')
+        process.exit(1)
+    }
+
+    log('INFO', `Session: ${accountEmail} (${platform})`)
+    log('INFO', '  Engine: bundled patched Chromium')
+    log('INFO', `  Cookies: ${cookieCount}`)
+    log('INFO', `  Fingerprint: ${fingerprint ? 'Yes' : 'No'}`)
+    log('INFO', `  Fingerprint injector: ${useInjector ? 'Yes' : 'No (real browser)'}`)
+    log('INFO', `  User-Agent: ${userAgent || 'Default'}`)
+    log('INFO', `  Proxy: ${proxy ? 'Yes' : 'No'}`)
+    log('INFO', `  Updated: ${session.updatedAt ? new Date(session.updatedAt).toISOString() : 'unknown'}`)
+    log('INFO', 'Launching browser...')
+
+    const runningAsRoot = typeof process.getuid === 'function' && process.getuid() === 0
+    const sandboxArgs =
+        process.platform === 'linux' && runningAsRoot ? ['--no-sandbox', '--disable-setuid-sandbox'] : []
+    const ignoreCertificateErrors = Boolean(proxy && config.proxy?.ignoreCertificateErrors)
+    const certArgs = ignoreCertificateErrors
+        ? ['--ignore-certificate-errors', '--ignore-certificate-errors-spki-list', '--ignore-ssl-errors']
+        : []
 
     const browser = await chromium.launch({
         headless: false,
         ...(proxy ? { proxy } : {}),
-        args: [
-            '--no-sandbox',
-            '--mute-audio',
-            '--disable-setuid-sandbox',
-            '--ignore-certificate-errors',
-            '--ignore-certificate-errors-spki-list',
-            '--ignore-ssl-errors',
-            '--no-first-run',
-            '--no-default-browser-check',
-            '--disable-user-media-security=true',
-            '--disable-blink-features=Attestation',
-            '--disable-features=WebAuthentication,PasswordManagerOnboarding,PasswordManager,EnablePasswordsAccountStorage,Passkeys',
-            '--disable-save-password-bubble'
-        ]
+        args: [...BROWSER_ARGS, ...sandboxArgs, ...certArgs]
     })
 
     let context
-    if (fingerprint) {
-        context = await newInjectedContext(browser, { fingerprint })
-
-        await context.addInitScript(() => {
-            Object.defineProperty(navigator, 'credentials', {
-                value: {
-                    create: () => Promise.reject(new Error('WebAuthn disabled')),
-                    get: () => Promise.reject(new Error('WebAuthn disabled'))
-                }
-            })
+    if (useInjector && fingerprint) {
+        context = await newInjectedContext(browser, {
+            fingerprint,
+            newContextOptions: {
+                permissions: [],
+                ignoreHTTPSErrors: ignoreCertificateErrors,
+                ...(storageState ? { storageState } : {}),
+                ...(isMobile && screen
+                    ? {
+                          isMobile: true,
+                          hasTouch: true,
+                          deviceScaleFactor: screen.devicePixelRatio,
+                          viewport: { width: screen.width, height: screen.height },
+                          screen: { width: screen.width, height: screen.height }
+                      }
+                    : {})
+            }
         })
-
-        log('SUCCESS', '指纹已应用到浏览器上下文中')
+        log('SUCCESS', 'Fingerprint injected into browser context')
     } else {
         context = await browser.newContext({
-            viewport: isMobile ? { width: 375, height: 667 } : { width: 1366, height: 768 }
+            permissions: [],
+            ignoreHTTPSErrors: ignoreCertificateErrors,
+            ...(storageState ? { storageState } : {}),
+            ...(isMobile
+                ? {
+                      isMobile: true,
+                      hasTouch: true,
+                      ...(userAgent ? { userAgent } : {}),
+                      ...(screen
+                          ? {
+                                deviceScaleFactor: screen.devicePixelRatio,
+                                viewport: { width: screen.width, height: screen.height },
+                                screen: { width: screen.width, height: screen.height }
+                            }
+                          : { viewport: { width: 375, height: 667 } })
+                  }
+                : {})
         })
     }
 
-    if (cookies.length) {
-        await context.addCookies(cookies)
-        log('INFO', `添加了 ${cookies.length} 个 cookies 到上下文`)
+    if (proxy) {
+        await context.addInitScript(() => {
+            delete window.RTCPeerConnection
+            delete window.webkitRTCPeerConnection
+            delete window.RTCDataChannel
+        })
     }
 
-    const page = await context.newPage()
-    await page.goto(config.baseURL, { waitUntil: 'domcontentloaded' })
+    await configureMediaBlocking(context)
 
-    log('SUCCESS', '浏览器已打开并加载了会话')
-    log('INFO', `导航至: ${config.baseURL}`)
+    const page = await context.newPage()
+    await page.goto(REWARDS_URL, { waitUntil: 'domcontentloaded' })
+
+    log('SUCCESS', 'Browser opened with session loaded')
+    log('INFO', `Navigated to: ${REWARDS_URL}`)
+    log('INFO', 'Press Ctrl+C to close.')
 
     setupCleanupHandlers(async () => {
         if (browser?.isConnected?.()) {
@@ -165,4 +254,7 @@ async function main() {
     })
 }
 
-main()
+main().catch(error => {
+    log('ERROR', 'browserSession failed:', error?.message ?? error)
+    process.exit(1)
+})

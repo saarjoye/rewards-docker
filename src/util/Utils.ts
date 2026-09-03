@@ -1,5 +1,21 @@
 import ms, { StringValue } from 'ms'
 
+export function isBrowserClosedError(error: unknown): boolean {
+    const msg = (error instanceof Error ? error.message : String(error ?? '')).toLowerCase()
+    if (!msg) return false
+    return (
+        msg.includes('has been closed') ||
+        msg.includes('target closed') ||
+        msg.includes('target page, context or browser') ||
+        msg.includes('browser has disconnected') ||
+        msg.includes('browser closed') ||
+        msg.includes('connection closed') ||
+        msg.includes('session closed') ||
+        msg.includes('page closed') ||
+        msg.includes('websocket connection closed')
+    )
+}
+
 export default class Util {
     async wait(time: number | string): Promise<void> {
         if (typeof time === 'string') {
@@ -11,15 +27,9 @@ export default class Util {
         })
     }
 
-    async waitRandom(min_ms: number, max_ms: number, distribution: 'uniform' | 'normal' = 'uniform'): Promise<void> {
-        return new Promise<void>((resolve) => {
-            setTimeout(resolve, this.randomNumber(min_ms, max_ms, distribution))
-        })
-    }
-
     getFormattedDate(ms = Date.now()): string {
         const today = new Date(ms)
-        const month = String(today.getMonth() + 1).padStart(2, '0') //  一月是0
+        const month = String(today.getMonth() + 1).padStart(2, '0') // January is 0
         const day = String(today.getDate()).padStart(2, '0')
         const year = today.getFullYear()
 
@@ -42,18 +52,8 @@ export default class Util {
         return array
     }
 
-    randomNumber(min: number, max: number, distribution: 'uniform' | 'normal' = 'uniform'): number {
-        if (distribution === 'uniform') {
-            return Math.floor(Math.random() * (max - min + 1)) + min;
-        }
-        // 正态分布实现 (Box-Muller变换)
-        let u = 0, v = 0;
-        while (u === 0) u = Math.random();
-        while (v === 0) v = Math.random();
-        let num = Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
-        num = num / 10.0 + 0.5; // 标准化到0-1范围
-        if (num > 1 || num < 0) num = this.randomNumber(min, max, distribution); // 边界处理
-        return Math.floor(num * (max - min + 1)) + min;
+    randomNumber(min: number, max: number): number {
+        return Math.floor(Math.random() * (max - min + 1)) + min
     }
 
     chunkArray<T>(arr: T[], numChunks: number): T[][] {
@@ -102,5 +102,10 @@ export default class Util {
         const minMs = typeof min === 'number' ? min : this.stringToNumber(min)
         const maxMs = typeof max === 'number' ? max : this.stringToNumber(max)
         return Math.floor(this.randomNumber(minMs, maxMs))
+    }
+
+    serverActionAcknowledged(response: unknown): boolean {
+        const text = typeof response === 'string' ? response : String(response ?? '')
+        return /^\d+:true\s*$/m.test(text)
     }
 }

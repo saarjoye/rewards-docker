@@ -1,6 +1,6 @@
 {
     "name": "microsoft-rewards-script",
-    "version": "3.1.6.6",
+    "version": "4.3.2",
     "description": "Automatically do tasks for Microsoft Rewards but in TS!",
     "author": "Netsky",
     "license": "GPL-3.0-or-later",
@@ -9,24 +9,23 @@
     },
     "scripts": {
         "pre-build": "npm i && rimraf dist && npx patchright install chromium",
-        "build": "rimraf dist && tsc",
+        "install:browser": "npx patchright install chromium",
+        "build": "rimraf dist && tsc && node ./scripts/main/copyAssets.js",
         "start": "node ./dist/index.js",
-        "web": "node ./dist/web/server.js",
-        "web:dev": "ts-node ./src/web/server.ts",
         "ts-start": "ts-node ./src/index.ts",
         "dev": "ts-node ./src/index.ts -dev",
+        "api": "node ./scripts/api/server.js",
         "kill-chrome-win": "powershell -Command \"Get-Process | Where-Object { $_.MainModule.FileVersionInfo.FileDescription -eq 'Google Chrome for Testing' } | ForEach-Object { Stop-Process -Id $_.Id -Force }\"",
         "create-docker": "docker build -t microsoft-rewards-script-docker .",
         "lint": "eslint .",
         "lint:fix": "eslint . --fix",
+        "test:log-parser": "node --test scripts/api/logParser.test.js",
         "format": "prettier --write .",
         "format:check": "prettier --check .",
-        "test:dashboard": "node scripts/tests/cookieHeader.test.js && node scripts/tests/dashboardParser.test.js && node scripts/tests/dashboardAcquisition.test.js && node scripts/tests/searchCounterStatus.test.js && node scripts/tests/searchTimeoutBudget.test.js && node scripts/tests/claimBonusVerification.test.js && node scripts/tests/axiosTimeout.test.js && node scripts/tests/loginStateDetection.test.js && node scripts/tests/loginFailurePropagation.test.js && node scripts/tests/searchFailureState.test.js && node scripts/tests/runAccountRequest.test.js && node scripts/tests/runCheckpointSelection.test.js && node scripts/tests/runSummary.test.js && npm run test:task-progress",
-        "test:task-progress": "node scripts/tests/localDateBoundary.test.js && node scripts/tests/webTaskProgressState.test.js",
         "clear-diagnostics": "rimraf diagnostics",
         "clear-sessions": "node ./scripts/main/clearSessions.js",
-        "open-session": "node ./scripts/main/browserSession.js -email",
-        "open-session:dev": "node ./scripts/main/browserSession.js -dev -email ItsNetsky@protonmail.com"
+        "manual-login": "node ./scripts/main/manualLogin.js",
+        "open-session": "node ./scripts/main/browserSession.js -email"
     },
     "keywords": [
         "Bing Rewards",
@@ -34,8 +33,7 @@
         "Bot",
         "Script",
         "TypeScript",
-        "Playwright",
-        "Cheerio"
+        "Playwright"
     ],
     "devDependencies": {
         "@eslint/js": "^10.0.1",
@@ -48,24 +46,20 @@
         "prettier": "^3.8.3",
         "rimraf": "^6.1.3",
         "typescript": "^6.0.3",
-        "typescript-eslint": "^8.59.4"
+        "typescript-eslint": "^8.60.0"
     },
     "dependencies": {
-        "axios": "^1.16.1",
-        "axios-retry": "^4.5.0",
         "chalk": "^4.1.2",
-        "cheerio": "^1.2.0",
-        "fingerprint-generator": "^2.1.82",
-        "fingerprint-injector": "^2.1.82",
+        "fast-xml-parser": "^5.9.3",
+        "fingerprint-generator": "^2.1.88",
+        "fingerprint-injector": "^2.1.88",
         "ghost-cursor-playwright-port": "^1.4.3",
-        "http-proxy-agent": "^9.0.0",
-        "https-proxy-agent": "^9.0.0",
+        "impit": "^0.14.2",
         "ms": "^2.1.3",
         "otpauth": "^9.5.1",
         "p-queue": "^9.3.0",
-        "patchright": "^1.60.0",
+        "patchright": "^1.61.1",
         "semver": "^7.8.1",
-        "socks-proxy-agent": "^10.0.0",
         "ts-node": "^10.9.2",
         "zod": "^4.4.3"
     }

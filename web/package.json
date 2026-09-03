@@ -1,0 +1,14 @@
+{
+    "name": "mrs-cn-control-web",
+    "version": "4.3.2-cn1",
+    "private": true,
+    "type": "module",
+    "engines": {
+        "node": ">=24.0.0"
+    },
+    "scripts": {
+        "start": "node src/server.mjs",
+        "test": "node --test test/*.test.mjs",
+        "check": "node --check src/server.mjs && node --check public/app.js"
+    }
+}

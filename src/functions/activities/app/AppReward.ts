@@ -1,9 +1,11 @@
-import type { AxiosRequestConfig } from 'axios'
+import { URLs } from '../../../constants/urls'
+import { BING_APP_USER_AGENT } from '../../../constants/userAgents'
+import type { HttpRequestConfig } from '../../../util/Http'
 import { randomUUID } from 'crypto'
 import type { Promotion } from '../../../interface/AppDashBoardData'
-import { Workers } from '../../Workers'
+import { BaseActivity } from '../BaseActivity'
 
-export class AppReward extends Workers {
+export class AppReward extends BaseActivity {
     private gainedPoints: number = 0
 
     private oldBalance: number = this.bot.userData.currentPoints
@@ -13,7 +15,7 @@ export class AppReward extends Workers {
             this.bot.logger.warn(
                 this.bot.isMobile,
                 'APP-REWARD',
-                '跳过：应用访问令牌不可用，此活动需要它！'
+                'Skipping: App access token not available, this activity requires it!'
             )
             return
         }
@@ -23,7 +25,7 @@ export class AppReward extends Workers {
         this.bot.logger.info(
             this.bot.isMobile,
             'APP-REWARD',
-            `开始App奖励 | offerId=${offerId} | 国家=${this.bot.userData.geoLocale} | 原始余额=${this.oldBalance}`
+            `Starting AppReward | offerId=${offerId} | country=${this.bot.userData.geoLocale} | currentBalance=${this.oldBalance}`
         )
 
         try {
@@ -40,19 +42,18 @@ export class AppReward extends Workers {
             this.bot.logger.debug(
                 this.bot.isMobile,
                 'APP-REWARD',
-                `准备活动载荷 | offerId=${offerId} | id=${jsonData.id} | 数量=${jsonData.amount} | 类型=${jsonData.type} | 国家=${jsonData.country}`
+                `Prepared activity payload | offerId=${offerId} | id=${jsonData.id} | amount=${jsonData.amount} | type=${jsonData.type} | country=${jsonData.country}`
             )
 
-            const request: AxiosRequestConfig = {
-                url: 'https://prod.rewardsplatform.microsoft.com/dapi/me/activities',
+            const request: HttpRequestConfig = {
+                url: URLs.platform.activities,
                 method: 'POST',
                 headers: {
                     Authorization: `Bearer ${this.bot.accessToken}`,
-                    'User-Agent':
-                        'Bing/32.5.431027001 (com.microsoft.bing; build:431027001; iOS 17.6.1) Alamofire/5.10.2',
+                    'User-Agent': BING_APP_USER_AGENT,
                     'Content-Type': 'application/json',
                     'X-Rewards-Country': this.bot.userData.geoLocale,
-                    'X-Rewards-Language': 'zh-CN',
+                    'X-Rewards-Language': this.bot.userData.langCode,
                     'X-Rewards-ismobile': 'true'
                 },
                 data: JSON.stringify(jsonData)
@@ -61,15 +62,15 @@ export class AppReward extends Workers {
             this.bot.logger.debug(
                 this.bot.isMobile,
                 'APP-REWARD',
-                `发送活动请求 | offerId=${offerId} | url=${request.url}`
+                `Sending activity request | offerId=${offerId} | url=${request.url}`
             )
 
-            const response = await this.bot.axios.request(request)
+            const response = await this.bot.http.request<{ response?: { balance?: number } }>(request)
 
             this.bot.logger.debug(
                 this.bot.isMobile,
                 'APP-REWARD',
-                `收到活动响应 | offerId=${offerId} | 状态=${response.status}`
+                `Received activity response | offerId=${offerId} | status=${response.status}`
             )
 
             const newBalance = Number(response?.data?.response?.balance ?? this.oldBalance)
@@ -78,40 +79,37 @@ export class AppReward extends Workers {
             this.bot.logger.debug(
                 this.bot.isMobile,
                 'APP-REWARD',
-                `App奖励后余额变化 | offerId=${offerId} | 原始余额=${this.oldBalance} | 新余额=${newBalance} | 获得积分=${this.gainedPoints}`
+                `Balance delta after AppReward | offerId=${offerId} | previousBalance=${this.oldBalance} | currentBalance=${newBalance} | pointsGained=${this.gainedPoints}`
             )
 
             if (this.gainedPoints > 0) {
-                this.bot.recordPointGain('App奖励', this.gainedPoints, newBalance)
+                this.bot.userData.currentPoints = newBalance
+                this.bot.userData.gainedPoints = (this.bot.userData.gainedPoints ?? 0) + this.gainedPoints
 
                 this.bot.logger.info(
                     this.bot.isMobile,
                     'APP-REWARD',
-                    `完成App奖励 | offerId=${offerId} | 获得积分=${this.gainedPoints} | 原始余额=${this.oldBalance} | 新余额=${newBalance}`,
+                    `Completed AppReward | offerId=${offerId} | pointsGained=${this.gainedPoints} | currentBalance=${newBalance}`,
                     'green'
                 )
             } else {
                 this.bot.logger.warn(
                     this.bot.isMobile,
                     'APP-REWARD',
-                    `Completed AppReward with no points | offerId=${offerId} | oldBalance=${this.oldBalance} | newBalance=${newBalance}`
+                    `Completed AppReward with no points | offerId=${offerId} | pointsGained=0 | currentBalance=${newBalance}`
                 )
             }
-
-            this.bot.logger.debug(this.bot.isMobile, 'APP-REWARD', `App奖励后等待 | offerId=${offerId}`)
-
-            await this.bot.utils.wait(this.bot.utils.randomDelay(5000, 10000))
 
             this.bot.logger.info(
                 this.bot.isMobile,
                 'APP-REWARD',
-                `完成App奖励 | offerId=${offerId} | 最终余额=${this.bot.userData.currentPoints}`
+                `Finished AppReward | offerId=${offerId} | currentBalance=${this.bot.userData.currentPoints}`
             )
         } catch (error) {
             this.bot.logger.error(
                 this.bot.isMobile,
                 'APP-REWARD',
-                `doAppReward中出现错误 | offerId=${offerId} | 消息=${error instanceof Error ? error.message : String(error)}`
+                `Error in doAppReward | offerId=${offerId} | message=${error instanceof Error ? error.message : String(error)}`
             )
         }
     }

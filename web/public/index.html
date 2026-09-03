@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="color-scheme" content="light" />
+        <title>Microsoft Rewards 中文控制台</title>
+        <link rel="stylesheet" href="/styles.css" />
+    </head>
+    <body>
+        <main id="authShell" class="auth-shell" hidden>
+            <form id="authForm" class="auth-panel" autocomplete="on">
+                <div class="brand-mark">MR</div>
+                <h1 id="authTitle">管理登录</h1>
+                <label>用户名<input id="authUser" name="username" autocomplete="username" required /></label>
+                <label
+                    >密码<input
+                        id="authPassword"
+                        name="password"
+                        type="password"
+                        autocomplete="current-password"
+                        required
+                /></label>
+                <p id="authError" class="form-error" role="alert"></p>
+                <button class="primary" type="submit">登录</button>
+            </form>
+        </main>
+
+        <div id="app" class="app" hidden>
+            <aside class="sidebar">
+                <div class="brand"><span class="brand-mark small">MR</span><strong>Rewards 控制台</strong></div>
+                <nav id="nav">
+                    <button data-view="dashboard" class="active">仪表盘</button>
+                    <button data-view="accounts">账号状态</button>
+                    <button data-view="tasks">任务状态</button>
+                    <button data-view="calendar">积分日历</button>
+                    <button data-view="history">运行历史</button>
+                    <button data-view="logs">运行日志</button>
+                    <button data-view="wecom">企业微信</button>
+                    <button data-view="system">系统状态</button>
+                </nav>
+                <div class="sidebar-footer">
+                    <span id="connectionDot" class="dot"></span><span id="connectionText">正在连接</span>
+                </div>
+            </aside>
+            <section class="workspace">
+                <header class="topbar">
+                    <div>
+                        <h1 id="pageTitle">仪表盘</h1>
+                        <p id="pageMeta">等待核心状态</p>
+                    </div>
+                    <div class="top-actions">
+                        <button id="refreshBtn" class="ghost" type="button">刷新</button>
+                        <button id="logoutBtn" class="ghost" type="button">退出</button>
+                    </div>
+                </header>
+                <div id="notice" class="notice" hidden></div>
+                <div id="content" class="content"></div>
+            </section>
+        </div>
+        <script src="/app.js" type="module"></script>
+    </body>
+</html>

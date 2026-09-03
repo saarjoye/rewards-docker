@@ -1,45 +1,72 @@
-name: Docker Image
+name: Build versioned images
 
 on:
-  push:
-    branches:
-      - main
-  workflow_dispatch:
+    push:
+        branches: [main]
+    workflow_dispatch:
 
 permissions:
-  contents: read
-  packages: write
+    contents: read
+    packages: write
+
+concurrency:
+    group: docker-images-${{ github.ref }}
+    cancel-in-progress: true
+
+env:
+    CORE_IMAGE: ghcr.io/${{ github.repository_owner }}/mrs-core
+    CORE_TAG: 4.3.2-d0f07d7
+    WEB_IMAGE: ghcr.io/${{ github.repository_owner }}/mrs-web
+    WEB_TAG: 4.3.2-cn1
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+    build:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
 
-      - name: Validate Compose configuration
-        run: docker compose config --quiet
+            - name: Validate Compose configuration
+              run: |
+                  cp runtime/core.env.example runtime/core.env
+                  cp runtime/web.env.example runtime/web.env
+                  docker compose config --quiet
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+            - name: Set up QEMU
+              uses: docker/setup-qemu-action@v3
 
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@v3
 
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          cache-from: type=gha,scope=rewards-docker-app
-          cache-to: type=gha,mode=max,scope=rewards-docker-app
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.description=Microsoft Rewards Script Web UI Docker image
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/rewards-docker-app:latest
-            ghcr.io/${{ github.repository_owner }}/rewards-docker-app:${{ github.sha }}
+            - name: Log in to GHCR
+              uses: docker/login-action@v3
+              with:
+                  registry: ghcr.io
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Build and push core
+              uses: docker/build-push-action@v6
+              with:
+                  context: .
+                  push: true
+                  platforms: linux/amd64,linux/arm64
+                  cache-from: type=gha,scope=mrs-core
+                  cache-to: type=gha,mode=max,scope=mrs-core
+                  labels: |
+                      org.opencontainers.image.source=https://github.com/${{ github.repository }}
+                      org.opencontainers.image.description=Microsoft Rewards Script v4.3.2 core
+                  tags: ${{ env.CORE_IMAGE }}:${{ env.CORE_TAG }}
+
+            - name: Build and push Chinese Web
+              uses: docker/build-push-action@v6
+              with:
+                  context: ./web
+                  push: true
+                  platforms: linux/amd64,linux/arm64
+                  cache-from: type=gha,scope=mrs-web
+                  cache-to: type=gha,mode=max,scope=mrs-web
+                  labels: |
+                      org.opencontainers.image.source=https://github.com/${{ github.repository }}
+                      org.opencontainers.image.description=Microsoft Rewards Chinese control Web
+                  tags: ${{ env.WEB_IMAGE }}:${{ env.WEB_TAG }}
