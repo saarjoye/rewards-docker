@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import crypto from 'node:crypto'
 import { EventEmitter } from 'node:events'
+import { interruptTasks } from './taskEvents.js'
 
 import { parseLogLine, createRunState, applyLogToRunState, summarizeRunState, severityRank } from './logParser.js'
 
@@ -189,6 +190,12 @@ export class ProcessManager extends EventEmitter {
     getPoints() {
         const run = summarizeRunState(this.runState)
         const accounts = run.accounts.map(a => ({
+            telemetryVersion: a.telemetryVersion ?? null,
+            status: a.status ?? null,
+            tasks: a.tasks,
+            pendingVerification: a.pendingVerification ?? null,
+            balanceChange: a.balanceChange ?? null,
+            unattributedBalanceChange: a.unattributedBalanceChange ?? null,
             email: a.email,
             collected: a.collectedPoints ?? a.live.gained,
             balance: a.live.balance ?? a.finalPoints ?? null,
@@ -397,7 +404,10 @@ export class ProcessManager extends EventEmitter {
                 : `code ${code ?? 'n/a'}${signal ? ` / signal ${signal}` : ''}`
         this._controllerLog(code === 0 && errorMessage == null ? 'info' : 'error', `Run finished (${label}).`)
 
-        const record = this._runRecord({ endedAt, exit: this.lastExit })
+        const record = interruptTasks(this._runRecord({ endedAt, exit: this.lastExit }))
+        for (const account of record.run.accounts) {
+            if (account.telemetryVersion === 2) this.runState.accounts[account.email].status = account.status
+        }
         this.history.unshift(record)
         if (this.history.length > this.historySize) this.history.pop()
         this.ledger?.finish(record)

@@ -4,6 +4,8 @@ export function stripAnsi(str) {
     return typeof str === 'string' ? str.replace(ANSI_RE, '') : str
 }
 
+import { applyTaskEvent, structuredAccountStatus, accountRef } from './taskEvents.js'
+
 const LINE_RE = /^\[([^\]]*)\] \[([^\]]*)\] \[(INFO|WARN|ERROR|DEBUG)\] (MAIN|MOBILE|DESKTOP) \[([^\]]*)\] ([\s\S]*)$/
 
 const SEVERITY = { debug: 0, info: 1, warn: 2, error: 3 }
@@ -152,19 +154,74 @@ function applyTaskSnapshot(state, entry) {
     } catch {
         return false
     }
-    const account = ensureAccount(state, payload?.account || accountEmailForEntry(state, entry))
+    const account =
+        payload?.version === 2
+            ? Object.values(state.accounts).find(item => accountRef(item.email) === payload.accountRef)
+            : ensureAccount(state, payload?.account || accountEmailForEntry(state, entry))
     if (!account || !Array.isArray(payload?.tasks)) return false
+    const structured = payload.version === 2
+    if (structured) {
+        if (account.telemetryVersion !== 2) {
+            account.live.gained = null
+            account.collectedPoints = null
+        }
+        account.telemetryVersion = 2
+        account.taskSources ??= {}
+        account.taskSources[`${payload.source}:${payload.platform}`] = payload.dataStatus
+        const statuses = Object.values(account.taskSources)
+        account.taskDataStatus = statuses.every(status => status === 'available')
+            ? 'available'
+            : statuses.includes('available')
+              ? 'partial'
+              : 'unavailable'
+    }
     for (const item of payload.tasks.slice(0, 500)) {
-        const id = safeTaskText(item?.id, 180)
+        const id = safeTaskText(structured ? `${payload.source}:${payload.platform}:${item?.id}` : item?.id, 180)
         if (!id) continue
         const previous = account.tasks[id]
+        if (previous?.invocationId) continue
         const expected = typeof item?.points === 'number' ? item.points : null
         account.tasks[id] = {
             id,
+            planned: Boolean(payload.planned),
+            ...(structured
+                ? {
+                      telemetryVersion: 2,
+                      source: payload.source,
+                      platform: payload.platform,
+                      verification: 'not-applicable',
+                      action: item.unavailable
+                          ? '任务来源不可用，本轮跳过'
+                          : item.completed
+                            ? '读取时已完成，本轮得分尚无记录'
+                            : item.locked
+                              ? '活动尚未解锁'
+                              : '等待执行'
+                  }
+                : {}),
             title: safeTaskText(item?.title) || previous?.title || 'Rewards 任务',
-            status: item?.completed ? 'completed' : item?.locked ? 'locked' : previous?.status || 'pending',
-            progress: previous?.progress ?? null,
-            expectedPoints: Number.isFinite(expected) && expected > 0 ? expected : null,
+            status: item.unavailable
+                ? 'skipped'
+                : item?.completed
+                  ? 'completed'
+                  : item?.locked
+                    ? 'locked'
+                    : previous?.status || 'pending',
+            progress:
+                typeof item.current === 'number' &&
+                Number.isFinite(item.current) &&
+                typeof expected === 'number' &&
+                Number.isFinite(expected)
+                    ? { current: item.current, total: expected, unit: 'points' }
+                    : (previous?.progress ?? null),
+            remainingPoints:
+                typeof item.current === 'number' &&
+                Number.isFinite(item.current) &&
+                typeof expected === 'number' &&
+                Number.isFinite(expected)
+                    ? Math.max(0, expected - item.current)
+                    : null,
+            expectedPoints: Number.isFinite(expected) && expected >= 0 ? expected : null,
             earnedPoints: previous?.earnedPoints ?? null,
             updatedAt: eventTime(entry)
         }
@@ -183,6 +240,7 @@ function applyActivityTask(state, entry) {
     const id = offerId ? `${entry.title}:${offerId}` : `${entry.title}:${platform}`
     const matchingSnapshot = offerId ? account.tasks[offerId] : null
     const previous = account.tasks[id] ?? matchingSnapshot
+    if (account.telemetryVersion === 2) return false
     const gained = numericField(message, 'pointsGained')
     const expected = numericField(message, 'expected') ?? numericField(message, 'targetPoints')
     const quotedTitle = message.match(/(?:^| \| )title="([^"]+)"/)?.[1]
@@ -275,6 +333,7 @@ function pointEventSource(title, message) {
 
 function applyLivePoints(state, entry) {
     const msg = entry.message ?? ''
+    if (state.accounts[accountEmailForEntry(state, entry)]?.telemetryVersion === 2) return false
 
     const target = email => ensureAccount(state, email || accountEmailForEntry(state, entry))
     const num = s => {
@@ -472,6 +531,8 @@ export function applyLogToRunState(state, entry) {
 
     if (!entry.parsed) return null
 
+    if (applyTaskEvent(state, entry)) return 'task-event'
+
     if (applyTaskSnapshot(state, entry)) return 'task-snapshot'
     const activityChanged = applyActivityTask(state, entry)
 
@@ -524,11 +585,13 @@ export function applyLogToRunState(state, entry) {
                 const acc = ensureAccount(state, email)
                 if (acc) {
                     acc.earnable = { mobile: Number(m[1]), browser: Number(m[2]), app: Number(m[3]) }
-                    for (const [id, title, points] of [
-                        ['search-mobile', '移动搜索', Number(m[1])],
-                        ['search-desktop', '桌面搜索', Number(m[2])],
-                        ['app-pool', '应用任务额度', Number(m[3])]
-                    ]) {
+                    for (const [id, title, points] of acc.telemetryVersion === 2
+                        ? []
+                        : [
+                              ['search-mobile', '移动搜索', Number(m[1])],
+                              ['search-desktop', '桌面搜索', Number(m[2])],
+                              ['app-pool', '应用任务额度', Number(m[3])]
+                          ]) {
                         acc.tasks[id] = {
                             id,
                             title,
@@ -578,6 +641,12 @@ export function applyLogToRunState(state, entry) {
             if ((m = msg.match(RE.accountEnd))) {
                 const acc = ensureAccount(state, m[1])
                 if (acc) {
+                    if (acc.telemetryVersion === 2) {
+                        acc.durationSeconds = Number(m[5])
+                        acc.status = structuredAccountStatus(acc, true)
+                        acc.success = acc.status === 'completed'
+                        return 'account-end'
+                    }
                     acc.collectedPoints = Number(m[2])
                     acc.initialPoints = Number(m[3])
                     acc.finalPoints = Number(m[4])
@@ -627,6 +696,7 @@ export function applyLogToRunState(state, entry) {
 }
 
 function accountCollected(a) {
+    if (a.telemetryVersion === 2) return a.live?.gained ?? null
     if (typeof a.collectedPoints === 'number') return a.collectedPoints
     return a.live?.gained ?? 0
 }
@@ -636,11 +706,20 @@ export function summarizeRunState(state) {
         ...state.accounts[email],
         tasks: Object.values(state.accounts[email].tasks ?? {})
     }))
-    const collected = state.totals?.collected ?? accounts.reduce((sum, a) => sum + accountCollected(a), 0)
+    const structured = accounts.some(account => account.telemetryVersion === 2)
+    const values = (structured ? accounts.filter(account => account.telemetryVersion === 2) : accounts)
+        .map(accountCollected)
+        .filter(value => value !== null)
+    const collected = structured
+        ? values.length
+            ? values.reduce((sum, value) => sum + value, 0)
+            : null
+        : (state.totals?.collected ?? values.reduce((sum, value) => sum + value, 0))
 
     const current = state.currentEmail ? state.accounts[state.currentEmail] : null
     return {
         version: state.version,
+        telemetryVersion: structured ? 2 : null,
         clusters: state.clusters,
         accountsTotal: state.accountsTotal,
         accountsSeen: accounts.length,

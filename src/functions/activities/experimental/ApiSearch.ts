@@ -3,6 +3,7 @@ import { BaseActivity } from '../BaseActivity'
 import { BonusTracker } from '../search/BonusTracker'
 import { SearchProgress } from '../search/SearchProgress'
 import { BingSearchApi } from './BingSearchApi'
+import { reportTaskProgress } from '../../../util/TaskTelemetry'
 
 const STAGNANT_LIMIT = 10
 const MAX_SEARCHES = 60
@@ -56,6 +57,7 @@ export class ApiSearch extends BaseActivity {
 
                 const res = await this.searchApi.report(query)
                 performed++
+                reportTaskProgress('已提交搜索，正在核对额度', performed, MAX_SEARCHES)
 
                 if (!res.ig) {
                     this.bot.logger.warn(isMobile, 'SEARCH-BING', `No IG for query="${query}" - skipping`)
@@ -205,6 +207,7 @@ export class ApiSearch extends BaseActivity {
 
                 const res = await this.searchApi.report(query)
                 performed++
+                reportTaskProgress('已执行奖励搜索，正在核对活动', performed, tracker.maxSearches)
 
                 if (!res.ig) {
                     this.bot.logger.warn(isMobile, tracker.context, `No IG for query="${query}" - skipping`)

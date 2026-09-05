@@ -3,10 +3,12 @@ import { BING_APP_USER_AGENT } from '../../../constants/userAgents'
 import type { HttpRequestConfig } from '../../../util/Http'
 import { randomBytes } from 'crypto'
 import { BaseActivity } from '../BaseActivity'
+import { finitePoints, markTaskStatus, reportTaskProgress } from '../../../util/TaskTelemetry'
 
 export class ReadToEarn extends BaseActivity {
     public async doReadToEarn() {
         if (!this.bot.accessToken) {
+            markTaskStatus('skipped', '缺少 App 登录状态，跳过阅读任务')
             this.bot.logger.warn(
                 this.bot.isMobile,
                 'READ-TO-EARN',
@@ -17,7 +19,7 @@ export class ReadToEarn extends BaseActivity {
 
         const delayMin = this.bot.config.searchSettings.readDelay.min
         const delayMax = this.bot.config.searchSettings.readDelay.max
-        const startBalance = Number(this.bot.userData.currentPoints ?? 0)
+        const startBalance = finitePoints(this.bot.userData.currentPoints)
 
         this.bot.logger.info(
             this.bot.isMobile,
@@ -42,17 +44,19 @@ export class ReadToEarn extends BaseActivity {
             let oldBalance = startBalance
 
             for (let i = 0; i < articleCount; ++i) {
+                reportTaskProgress('正在提交阅读活动', i + 1, articleCount)
                 jsonData.id = randomBytes(64).toString('hex')
 
                 this.bot.logger.debug(
                     this.bot.isMobile,
                     'READ-TO-EARN',
-                    `Submitting Read to Earn activity | article=${i + 1}/${articleCount} | id=${jsonData.id} | country=${jsonData.country}`
+                    `Submitting Read to Earn activity | article=${i + 1}/${articleCount}`
                 )
 
                 const request: HttpRequestConfig = {
                     url: URLs.platform.activities,
                     method: 'POST',
+                    retries: 0,
                     headers: {
                         Authorization: `Bearer ${this.bot.accessToken}`,
                         'User-Agent': BING_APP_USER_AGENT,
@@ -72,7 +76,11 @@ export class ReadToEarn extends BaseActivity {
                     `Received Read to Earn response | article=${i + 1}/${articleCount} | status=${response?.status ?? 'unknown'}`
                 )
 
-                const newBalance = Number(response?.data?.response?.balance ?? oldBalance)
+                const newBalance = finitePoints(response?.data?.response?.balance)
+                if (newBalance === null || oldBalance === null) {
+                    markTaskStatus('verifying', '阅读响应缺少有效余额，停止上报并复核任务进度')
+                    break
+                }
                 const gainedPoints = newBalance - oldBalance
 
                 this.bot.logger.debug(
@@ -82,6 +90,7 @@ export class ReadToEarn extends BaseActivity {
                 )
 
                 if (gainedPoints <= 0) {
+                    markTaskStatus('stopped', '本次阅读未确认积分增加，停止继续上报')
                     this.bot.logger.info(
                         this.bot.isMobile,
                         'READ-TO-EARN',
@@ -110,16 +119,18 @@ export class ReadToEarn extends BaseActivity {
                 )
 
                 if (i < articleCount - 1) {
-                    await this.bot.utils.wait(this.bot.utils.randomDelay(delayMin, delayMax))
+                    const delay = this.bot.utils.randomDelay(delayMin, delayMax)
+                    reportTaskProgress('等待下一次阅读', i + 1, articleCount, delay)
+                    await this.bot.utils.wait(delay)
                 }
             }
 
-            const finalBalance = Number(this.bot.userData.currentPoints ?? startBalance)
+            const finalBalance = finitePoints(this.bot.userData.currentPoints)
 
             this.bot.logger.info(
                 this.bot.isMobile,
                 'READ-TO-EARN',
-                `Completed Read to Earn | articlesRead=${articlesRead} | pointsGained=${totalGained} | previousBalance=${startBalance} | currentBalance=${finalBalance}`
+                `阅读上报流程结束，等待任务数据核对 | articlesRead=${articlesRead} | observedBalanceChange=${totalGained} | previousBalance=${startBalance} | currentBalance=${finalBalance}`
             )
         } catch (error) {
             this.bot.logger.error(
@@ -127,6 +138,7 @@ export class ReadToEarn extends BaseActivity {
                 'READ-TO-EARN',
                 `Error during Read to Earn | message=${error instanceof Error ? error.message : String(error)}`
             )
+            throw error
         }
     }
 }

@@ -1,4 +1,5 @@
 import type { MicrosoftRewardsBot } from '../index'
+import { accountReference, finitePoints } from '../util/TaskTelemetry'
 
 export interface ParsedOffer {
     offerId: string
@@ -6,6 +7,9 @@ export interface ParsedOffer {
     title: string
     description: string
     points: number
+    observedPoints?: number | null
+    pointProgress?: number | null
+    completionKnown?: boolean
     promotionSubtype: string | null
     destination: string
     isCompleted: boolean
@@ -80,7 +84,7 @@ export default class ReactFunc {
     }
 
     // Parse all available data from the provided pages into one snapshot
-    public snapshotPage(html: string | readonly string[]): PageSnapshot {
+    public snapshotPage(html: string | readonly string[], emit = true): PageSnapshot {
         const combined = this.concatFlightChunks(html)
 
         const offers = this.parseOffers(combined)
@@ -89,26 +93,37 @@ export default class ReactFunc {
         const account = this.parseAccountData(combined)
         const accountEmail = this.bot.currentAccountEmail
 
-        this.bot.logger.info(
-            this.bot.isMobile,
-            'REACT-PARSE',
-            `Snapshot complete | offers=${offers.length} | reportable=${offers.filter(o => o.reportable).length} | streaks=${streaks.length} | streakProtectionEnabled=${streakProtection?.isProtectionOn ?? 'null'} | streakProtectionRemainingDays=${streakProtection?.remainingDays ?? 'null'} | streakCounter=${streakProtection?.streakCounter ?? 'null'} | level=${account.level} | account=${accountEmail ?? 'null'}`
-        )
+        if (emit)
+            this.bot.logger.info(
+                this.bot.isMobile,
+                'REACT-PARSE',
+                `Snapshot complete | offers=${offers.length} | reportable=${offers.filter(o => o.reportable).length} | streaks=${streaks.length} | streakProtectionEnabled=${streakProtection?.isProtectionOn ?? 'null'} | streakProtectionRemainingDays=${streakProtection?.remainingDays ?? 'null'} | streakCounter=${streakProtection?.streakCounter ?? 'null'} | level=${account.level} | account=${accountEmail ?? 'null'}`
+            )
 
-        this.bot.logger.info(
-            this.bot.isMobile,
-            'TASK-SNAPSHOT',
-            JSON.stringify({
-                account: accountEmail,
-                tasks: offers.map(offer => ({
-                    id: offer.offerId,
-                    title: offer.title,
-                    points: offer.points,
-                    completed: offer.isCompleted,
-                    locked: offer.isLocked
-                }))
-            })
-        )
+        if (emit)
+            this.bot.logger.info(
+                this.bot.isMobile,
+                'TASK-SNAPSHOT',
+                JSON.stringify({
+                    version: 2,
+                    accountRef: accountReference(accountEmail ?? ''),
+                    source: 'rsc',
+                    platform: this.bot.isMobile ? 'mobile' : 'desktop',
+                    dataStatus:
+                        offers.length ||
+                        this.extractObjects(combined, '"offers"').some(item => Array.isArray(item.offers))
+                            ? 'available'
+                            : 'unavailable',
+                    tasks: offers.map(offer => ({
+                        id: offer.offerId,
+                        title: offer.title,
+                        points: offer.observedPoints ?? null,
+                        current: offer.pointProgress ?? null,
+                        completed: offer.isCompleted,
+                        locked: offer.isLocked
+                    }))
+                })
+            )
 
         return {
             offers,
@@ -312,6 +327,9 @@ export default class ReactFunc {
                     title: (obj.title as string) ?? '',
                     description: (obj.description as string) ?? '',
                     points: (obj.points as number) ?? (obj.pointProgressMax as number) ?? 0,
+                    observedPoints: finitePoints(obj.points) ?? finitePoints(obj.pointProgressMax),
+                    pointProgress: finitePoints(obj.pointProgress),
+                    completionKnown: typeof (obj.isCompleted ?? obj.complete) === 'boolean',
                     promotionSubtype: (obj.promotionSubtype as string | null) ?? null,
                     destination: (obj.destination as string) ?? (obj.destinationUrl as string) ?? '',
                     isCompleted,
@@ -334,6 +352,9 @@ export default class ReactFunc {
                 existing.title ||= candidate.title
                 existing.description ||= candidate.description
                 existing.points ||= candidate.points
+                existing.observedPoints ??= candidate.observedPoints
+                existing.pointProgress ??= candidate.pointProgress
+                existing.completionKnown ||= candidate.completionKnown
                 existing.promotionSubtype ??= candidate.promotionSubtype
                 existing.destination ||= candidate.destination
                 existing.isCompleted ||= candidate.isCompleted

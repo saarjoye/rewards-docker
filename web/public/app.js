@@ -1,3 +1,5 @@
+import { taskTableMarkup, taskStatusLabel, filterAndGroupLogs } from './run-view.js'
+import { calendarRange, calendarMarkup } from './calendar-view.js'
 const authShell = document.querySelector('#authShell')
 const appShell = document.querySelector('#app')
 const content = document.querySelector('#content')
@@ -24,6 +26,10 @@ let events = null
 let liveLogs = []
 let accountManagement = null
 let historyRefreshTimer = null
+let selectedRunId = null
+let displayedLogs = []
+const logFilters = { level: '', query: '', autoRefresh: true }
+let calendarFilters = { preset: 'month', accountId: '', start: '', end: '' }
 
 function esc(value) {
     return String(value ?? '')
@@ -166,7 +172,7 @@ content.addEventListener('click', async event => {
             await renderAccounts()
         } else if (action === 'wecom-test') {
             await api('/api/wecom/test', { method: 'POST', body: '{}' })
-            showNotice('企业微信测试通知已发送')
+            showNotice('企业微信接口已接受测试通知；客户端收件仍需确认')
             await renderWeCom()
         } else if (action === 'history-detail') {
             await renderRunDetail(event.target.closest('[data-id]')?.dataset.id)
@@ -222,7 +228,9 @@ content.addEventListener('submit', async event => {
         event.preventDefault()
         const data = new FormData(form)
         try {
-            await api('/api/wecom', {
+            if (data.get('clearSecret') === 'on' && String(data.get('corpSecret') || '').trim())
+                throw new Error('不能同时填写新 Secret 和清除已保存的 Secret')
+            const result = await api('/api/wecom', {
                 method: 'POST',
                 body: JSON.stringify({
                     enabled: data.get('enabled') === 'on',
@@ -235,7 +243,9 @@ content.addEventListener('submit', async event => {
                     clearSecret: data.get('clearSecret') === 'on'
                 })
             })
-            showNotice('企业微信配置已加密保存')
+            showNotice(
+                `企业微信配置已加密保存；${result.configurationMessage}；通知${result.enabled ? '已启用' : '未启用'}`
+            )
             await loadState()
             await renderWeCom()
         } catch (error) {
@@ -291,9 +301,9 @@ function renderDashboard() {
     content.innerHTML = `
         <section class="metrics">
             ${metric('核心状态', core.label || '核心离线', core.version ? `版本 ${core.version}` : '等待连接')}
-            ${metric('本次积分', valueOrUnknown(run.collected, ' 分'), run.currentAccount || '当前无执行账号')}
+            ${metric('本轮已确认新增', valueOrUnknown(run.collected, ' 分'), run.currentAccount || '当前无执行账号')}
             ${metric('执行进度', run.accountsTotal === null || run.accountsTotal === undefined ? '待确认' : `${run.accountsSeen || 0}/${run.accountsTotal}`, run.running ? '任务正在运行' : '当前未运行')}
-            ${metric('当日得分', `+${state?.history?.todayCollected || 0}`, `${state?.history?.today || '今日'} · 含当前运行`)}
+            ${metric('今日已确认新增', valueOrUnknown(state?.history?.todayCollected, ' 分'), `${state?.history?.today || '今日'} · ${state?.history?.pendingVerification ?? 0} 项待复核`)}
         </section>
         <section class="section">
             <div class="section-head"><div><h2>运行控制</h2><p>Control API 只接受全部账号或单个账号启动。</p></div></div>
@@ -355,94 +365,87 @@ function renderAccountForm(account = null) {
 }
 
 function renderTasks() {
-    const accounts = state?.accounts || []
-    const body = accounts.length
-        ? accounts
-              .map(account => {
-                  const tasks = account.tasks?.length
-                      ? account.tasks
-                            .map(
-                                task =>
-                                    `<tr><td>${esc(task.title)}</td><td>${taskStatusLabel(task.status)}</td><td>${task.progress ? `${task.progress.current}/${task.progress.total}` : '待确认'}</td><td>${valueOrUnknown(task.expectedPoints, ' 分')}</td><td>${valueOrUnknown(task.earnedPoints, ' 分')}</td></tr>`
-                            )
-                            .join('')
-                      : '<tr><td colspan="5" class="empty">运行后将显示从 Rewards 数据源读取的当日任务</td></tr>'
-                  return `<article class="task-account"><h3>${esc(account.label)}</h3><p>${esc(account.status.label)} · ${esc(account.status.message)}</p>
-                    <div class="task-summary"><span>本次已得 <strong>${valueOrUnknown(account.points.collected, ' 分')}</strong></span><span>当前积分 <strong>${valueOrUnknown(account.points.balance)}</strong></span></div>
-                    <div class="table-wrap"><table><thead><tr><th>任务</th><th>状态</th><th>进度</th><th>预计分值</th><th>实际得分</th></tr></thead><tbody>${tasks}</tbody></table></div></article>`
-              })
-              .join('')
-        : '<div class="empty">暂无结构化任务状态</div>'
-    content.innerHTML = `<section class="section"><div class="section-head"><div><h2>当日任务与得分</h2><p>任务来自当前账号的 Rewards 数据源；未返回的分值显示“待确认”。</p></div></div><div class="task-grid">${body}</div></section>`
-}
-
-function taskStatusLabel(status) {
-    return (
-        {
-            pending: '待执行',
-            running: '执行中',
-            completed: '已完成',
-            partial: '部分完成',
-            failed: '失败',
-            skipped: '已跳过',
-            locked: '未解锁'
-        }[status] || '待确认'
-    )
+    const body = (state?.accounts || [])
+        .map(
+            account =>
+                `<article class="task-account"><h3>${esc(account.label)}</h3><p>${esc(account.status.label)} · ${esc(account.status.message)}</p><div class="task-summary"><span>本轮已确认新增 <strong>${valueOrUnknown(account.points.collected, ' 分')}</strong></span><span>账号余额 <strong>${valueOrUnknown(account.points.balance)}</strong></span><span>未归类余额变化 ${valueOrUnknown(account.points.unattributedBalanceChange, ' 分')}</span></div>${account.taskDataStatus === 'partial' ? '<p class="warn">部分任务来源不可用</p>' : ''}${taskTableMarkup(account.tasks, account.taskDataStatus)}</article>`
+        )
+        .join('')
+    content.innerHTML = `<section class="section"><h2>当日任务与得分</h2><div class="task-grid">${body || '<div class="empty">尚未配置账号</div>'}</div></section>`
 }
 
 async function renderCalendar(load = false) {
-    content.innerHTML = '<div class="panel empty">正在读取积分日历...</div>'
     try {
-        const start = load ? document.querySelector('#calendarStart')?.value : ''
-        const end = load ? document.querySelector('#calendarEnd')?.value : ''
-        const accountId = load ? document.querySelector('#calendarAccount')?.value : ''
-        const params = new URLSearchParams()
-        if (start) params.set('start', start)
-        if (end) params.set('end', end)
+        if (load)
+            calendarFilters = {
+                preset: document.querySelector('#calendarPreset')?.value || calendarFilters.preset,
+                accountId: document.querySelector('#calendarAccount')?.value || '',
+                start: document.querySelector('#calendarStart')?.value || '',
+                end: document.querySelector('#calendarEnd')?.value || ''
+            }
+        const today = state?.history?.today || new Date().toISOString().slice(0, 10)
+        const range = calendarRange(calendarFilters.preset, today, calendarFilters)
+        const { accountId } = calendarFilters
+        const params = new URLSearchParams(range)
         if (accountId) params.set('accountId', accountId)
+        content.innerHTML = '<div class="panel empty">正在读取积分日历...</div>'
         const data = await api(`/api/points-calendar?${params}`)
+        calendarFilters = { ...calendarFilters, ...data.range }
         const options = data.accounts
             .map(
                 account =>
                     `<option value="${esc(account.id)}" ${account.id === accountId ? 'selected' : ''}>${esc(account.label)}</option>`
             )
             .join('')
-        const days = data.days.length
-            ? data.days
-                  .map(
-                      day =>
-                          `<div class="calendar-day"><strong>${esc(day.date)}</strong><b>+${day.totalGained}</b><span>${day.records} 条账号记录 · ${esc(day.status)}</span></div>`
-                  )
-                  .join('')
-            : '<div class="panel empty">所选范围没有积分记录</div>'
+        const presets = [
+            ['week', '本周'],
+            ['month', '本月'],
+            ['quarter', '本季度'],
+            ['year', '本年'],
+            ['custom', '自定义']
+        ]
+            .map(
+                ([value, label]) =>
+                    `<option value="${value}" ${calendarFilters.preset === value ? 'selected' : ''}>${label}</option>`
+            )
+            .join('')
+        const knownDays = data.days.filter(day => typeof day.totalGained === 'number')
+        const average = knownDays.length
+            ? Math.round((knownDays.reduce((sum, day) => sum + day.totalGained, 0) / knownDays.length) * 100) / 100
+            : null
         content.innerHTML = `<section class="section"><div class="filter-row">
+            <label>账号<select id="calendarAccount"><option value="">全部账号</option>${options}</select></label>
+            <label>范围<select id="calendarPreset">${presets}</select></label>
             <label>开始日期<input id="calendarStart" type="date" value="${esc(data.range.start)}"></label>
             <label>结束日期<input id="calendarEnd" type="date" value="${esc(data.range.end)}"></label>
-            <label>账号<select id="calendarAccount"><option value="">全部账号</option>${options}</select></label>
-            <button class="ghost" data-action="load-calendar">查询</button></div>
-            <section class="metrics">${metric('范围积分', `+${data.summary.totalPoints}`, `${data.range.start} 至 ${data.range.end}`)}${metric('完成天数', data.summary.completedDays, '有完成记录的日期')}${metric('异常天数', data.summary.failedDays, '失败或部分完成')}${metric('最高单日', `+${data.summary.highestPointDay.points}`, data.summary.highestPointDay.date || '-')}</section>
-            <section class="section"><div class="calendar-grid">${days}</div></section></section>`
+            <button class="ghost" data-action="load-calendar">应用筛选</button></div></section>
+            <section class="metrics">${metric('范围已确认新增', valueOrUnknown(data.summary.totalPoints, ' 分'), `${data.range.start} 至 ${data.range.end}`)}${metric('平均每日', valueOrUnknown(average, ' 分'), '按已确认日期计算')}${metric('完成天数', data.summary.completedDays, `异常 ${data.summary.failedDays} 天`)}${metric('最高积分日', valueOrUnknown(data.summary.highestPointDay.points, ' 分'), data.summary.highestPointDay.date || '-')}</section>
+            ${calendarMarkup(data)}`
     } catch (error) {
-        content.innerHTML = `<div class="panel empty">${esc(error.message)}</div>`
+        showNotice(error.message)
+        if (!document.querySelector('#calendarStart'))
+            content.innerHTML = `<div class="panel empty">积分日历加载失败：${esc(error.message)}<button class="ghost" data-action="load-calendar">重试</button></div>`
     }
 }
 
 async function renderHistory() {
+    selectedRunId = null
     content.innerHTML = '<div class="panel empty">正在读取运行记录...</div>'
     try {
         const [data, logData] = await Promise.all([api('/api/history?limit=100'), api('/api/logs?limit=400')])
         liveLogs = logData.logs || liveLogs
-        const runs = data.active ? [data.active, ...data.runs] : data.runs
+        const runs = data.active ? [data.active, ...data.runs.filter(run => run.id !== data.active.id)] : data.runs
+        displayedLogs = data.active ? liveLogs.filter(log => log.runId === data.active.id) : []
         const rows = runs.length
             ? runs
                   .map(
                       run =>
-                          `<tr><td>${formatTime(run.startedAt)}</td><td>${run.endedAt ? formatTime(run.endedAt) : '进行中'}</td><td><span class="status ${esc(run.status)}">${taskStatusLabel(run.status)}</span></td><td>${valueOrUnknown(run.collected, ' 分')}</td><td>${run.accounts.length}</td><td><button class="small-button" data-action="history-detail" data-id="${esc(run.id || '')}" ${run.id ? '' : 'disabled'}>查看</button></td></tr>`
+                          `<tr><td>${formatTime(run.startedAt)}</td><td>${run.endedAt ? formatTime(run.endedAt) : '进行中'}</td><td><span class="status ${esc(run.status)}">${taskStatusLabel(run.status)}</span></td><td>${valueOrUnknown(run.collected, ' 分')}${run.verification === 'legacy' ? '<small>旧记录未核验</small>' : ''}</td><td>${run.accounts.length}</td><td><button class="small-button" data-action="history-detail" data-id="${esc(run.id || '')}" ${run.id ? '' : 'disabled'}>查看</button></td></tr>`
                   )
                   .join('')
             : '<tr><td colspan="6" class="empty">暂无运行记录</td></tr>'
         content.innerHTML = `<section class="section"><div class="section-head"><div><h2>运行记录</h2><p>结构化结果长期保留，折叠诊断日志保留 7 天并限制容量。</p></div></div><div class="panel table-wrap"><table><thead><tr><th>开始</th><th>结束</th><th>状态</th><th>得分</th><th>账号数</th><th>详情</th></tr></thead><tbody>${rows}</tbody></table></div></section>
-            ${data.active ? `<section class="section"><div class="section-head"><div><h2>实时步骤</h2></div></div><div class="timeline">${stepMarkup(liveLogs.slice(-80))}</div><details class="diagnostic"><summary>展开原始脱敏诊断日志</summary><div class="log-view">${logMarkup(liveLogs.slice(-200))}</div></details></section>` : ''}`
+            ${data.active ? logSection() : ''}`
     } catch (error) {
         content.innerHTML = `<div class="panel empty">${esc(error.message)}</div>`
     }
@@ -450,27 +453,53 @@ async function renderHistory() {
 
 function logMarkup(logs) {
     if (!logs.length) return '<div class="empty">暂无可显示的脱敏日志</div>'
-    return logs
+    const filtered = filterAndGroupLogs(logs, logFilters)
+    if (!filtered.length) return '<div class="empty">没有匹配的日志</div>'
+    return filtered
         .map(log => {
             const displayMessage = log.displayMessage || '任务状态已更新'
             const rawDetail =
                 log.message && log.message !== displayMessage
                     ? `<details class="raw-log"><summary>查看原始脱敏信息</summary><code>${esc(log.message)}</code></details>`
                     : ''
-            return `<div class="log-line"><span>${esc(formatTime(log.receivedAt || log.ts))}</span><span class="${esc(log.level)}">${esc(log.levelLabel)}</span><span>${esc(log.titleLabel)}</span><span class="log-message">${esc(displayMessage)}${rawDetail}</span></div>`
+            return `<div class="log-line"><span>${esc(formatTime(log.receivedAt || log.ts))}</span><span class="${esc(log.level)}">${esc(log.levelLabel)}</span><span>${esc(log.titleLabel)}</span><span class="log-message">${esc(displayMessage)}${log.repeatCount > 1 ? `<small>重复 ${log.repeatCount} 次 · ${formatTime(log.lastReceivedAt)}</small>` : ''}${rawDetail}</span></div>`
         })
         .join('')
 }
 
-function stepMarkup(logs) {
-    if (!logs.length) return '<div class="empty">暂无实时步骤</div>'
-    return logs
-        .map(
-            log =>
-                `<div class="step ${esc(log.level)}"><time>${esc(formatTime(log.receivedAt || log.ts))}</time><strong>${esc(log.titleLabel)}</strong><span>${esc(log.displayMessage || '任务状态已更新')}</span></div>`
-        )
-        .join('')
+function logSection() {
+    return `<section class="section"><h2>执行日志</h2><div class="filter-row"><label>级别<select id="logLevel"><option value="">全部</option>${[
+        ['info', '信息'],
+        ['warn', '警告'],
+        ['error', '错误'],
+        ['debug', '调试']
+    ]
+        .map(([key, label]) => `<option value="${key}" ${logFilters.level === key ? 'selected' : ''}>${label}</option>`)
+        .join(
+            ''
+        )}</select></label><label>关键词<input id="logQuery" value="${esc(logFilters.query)}" type="search"></label><label class="check"><input id="logAutoRefresh" type="checkbox" ${logFilters.autoRefresh ? 'checked' : ''}>自动刷新</label></div><div id="runLogLines" class="log-view">${logMarkup(displayedLogs)}</div></section>`
 }
+
+content.addEventListener('input', event => {
+    if (event.target.form?.id === 'wecomForm') {
+        const form = event.target.form
+        const secret = form.elements.corpSecret
+        const clear = form.elements.clearSecret
+        clear.disabled = Boolean(secret.value.trim())
+        secret.disabled = clear.checked
+        return
+    }
+    if (['calendarStart', 'calendarEnd'].includes(event.target.id)) {
+        document.querySelector('#calendarPreset').value = 'custom'
+        return
+    }
+    if (event.target.id === 'logQuery') logFilters.query = event.target.value
+    else if (event.target.id === 'logLevel') logFilters.level = event.target.value
+    else if (event.target.id === 'logAutoRefresh') logFilters.autoRefresh = event.target.checked
+    else return
+    const lines = document.querySelector('#runLogLines')
+    if (lines) lines.innerHTML = logMarkup(displayedLogs)
+})
 
 async function renderRunDetail(id) {
     if (!id) return renderHistory()
@@ -478,13 +507,15 @@ async function renderRunDetail(id) {
     try {
         if (state?.run?.running && state?.core && id === state.core.runId) return renderHistory()
         const data = await api(`/api/history/${encodeURIComponent(id)}`)
+        selectedRunId = id
+        displayedLogs = data.logs
         const accounts = data.run.accounts
             .map(
                 account =>
-                    `<article class="task-account"><h3>${esc(account.label)}</h3><p>${account.success === true ? '完成' : account.success === false ? '失败' : '待确认'} · ${valueOrUnknown(account.collected, ' 分')}</p><div class="table-wrap"><table><thead><tr><th>任务</th><th>状态</th><th>进度</th><th>预计分值</th><th>实际得分</th></tr></thead><tbody>${account.tasks?.length ? account.tasks.map(task => `<tr><td>${esc(task.title)}</td><td>${taskStatusLabel(task.status)}</td><td>${task.progress ? `${task.progress.current}/${task.progress.total}` : '待确认'}</td><td>${valueOrUnknown(task.expectedPoints, ' 分')}</td><td>${valueOrUnknown(task.earnedPoints, ' 分')}</td></tr>`).join('') : '<tr><td colspan="5" class="empty">此记录没有结构化任务明细</td></tr>'}</tbody></table></div></article>`
+                    `<article class="task-account"><h3>${esc(account.label)}</h3><p>${taskStatusLabel(account.status)} · ${valueOrUnknown(account.collected, ' 分')}${account.verification === 'legacy' ? ' · 旧记录未核验' : ''}</p>${taskTableMarkup(account.tasks)}</article>`
             )
             .join('')
-        content.innerHTML = `<section class="section"><div class="section-head"><div><h2>运行详情</h2><p>${formatTime(data.run.startedAt)} 至 ${formatTime(data.run.endedAt)} · ${valueOrUnknown(data.run.collected, ' 分')}</p></div><button class="ghost" data-action="history-back">返回</button></div><div class="task-grid">${accounts}</div></section><section class="section"><div class="section-head"><div><h2>执行步骤</h2></div></div><div class="timeline">${stepMarkup(data.logs)}</div><details class="diagnostic"><summary>展开原始脱敏诊断日志</summary><div class="log-view">${logMarkup(data.logs)}</div></details></section>`
+        content.innerHTML = `<section class="section"><div class="section-head"><h2>运行详情</h2><button class="ghost" data-action="history-back">返回</button></div><p>${formatTime(data.run.startedAt)} 至 ${formatTime(data.run.endedAt)} · ${valueOrUnknown(data.run.collected, ' 分')}</p><div class="task-grid">${accounts}</div></section>${logSection()}`
     } catch (error) {
         content.innerHTML = `<div class="panel empty">${esc(error.message)}</div>`
     }
@@ -496,7 +527,7 @@ async function renderWeCom() {
         const item = await api('/api/wecom')
         content.innerHTML = `<section class="section"><div class="section-head"><div><h2>企业微信通知</h2><p>凭证加密保存且永不回显；自定义反代会接触 Secret 和访问令牌，只应填写可信地址。</p></div><button class="ghost" data-action="wecom-test" ${!item.configured ? 'disabled' : ''}>发送测试通知</button></div>
             <form id="wecomForm" class="panel form-grid panel-body"><label class="check full"><input name="enabled" type="checkbox" ${item.enabled ? 'checked' : ''}>启用企业微信通知</label><label>连接方式<select name="mode"><option value="direct" ${item.mode !== 'custom' ? 'selected' : ''}>直连</option><option value="custom" ${item.mode === 'custom' ? 'selected' : ''}>自定义反代</option></select></label><label>反代基础地址<input name="baseUrl" type="url" placeholder="${item.customBaseConfigured ? '已保存，留空保留' : 'https://proxy.example.com'}"></label><label>企业 ID<input name="corpId" placeholder="${item.hasCorpId ? '已保存，留空保留' : '未配置'}"></label><label>应用 AgentId<input name="agentId" placeholder="${item.hasAgentId ? '已保存，留空保留' : '未配置'}"></label><label>应用 Secret<input name="corpSecret" type="password" autocomplete="new-password" placeholder="${item.hasSecret ? '已保存，留空保留' : '未配置'}"></label><label>接收成员<input name="toUser" placeholder="留空保留，默认 @all"></label><label class="check full danger-zone"><input name="clearSecret" type="checkbox">明确清除已保存的 Secret</label><div class="form-actions full"><button class="primary" type="submit" ${!item.writable ? 'disabled' : ''}>保存配置</button></div></form>
-            <div class="panel"><dl class="details-list"><dt>配置来源</dt><dd>${item.source === 'encrypted' ? 'Web 加密配置库' : '环境变量（保存后转入加密配置库）'}</dd><dt>连接模式</dt><dd>${item.mode === 'custom' ? '自定义反代' : '直连'}</dd><dt>配置状态</dt><dd>${item.configured ? '配置完整' : '未配置完整'}</dd><dt>接收范围</dt><dd>${esc(item.recipient || '-')}</dd><dt>最近成功</dt><dd>${formatTime(item.lastSuccessAt)}</dd><dt>最近错误</dt><dd>${esc(item.lastError || '-')}</dd></dl></div></section>`
+            <div class="panel"><dl class="details-list"><dt>配置来源</dt><dd>${item.source === 'encrypted' ? 'Web 加密配置库' : '环境变量（保存后转入加密配置库）'}</dd><dt>连接模式</dt><dd>${item.mode === 'custom' ? '自定义反代' : '直连'}</dd><dt>配置状态</dt><dd>${esc(item.configurationMessage || '待确认')}</dd><dt>通知开关</dt><dd>${item.enabled ? '已启用' : '未启用，不发送通知'}</dd><dt>最近保存</dt><dd>${formatTime(item.savedAt)}</dd><dt>运行通知</dt><dd>${Number(item.delivery?.pending || 0)} 条待发送，${Number(item.delivery?.failed || 0)} 条失败${item.delivery?.sending ? '，正在发送' : ''}</dd><dt>发送状态</dt><dd>${esc(item.delivery?.lastError || '-')}</dd><dt>接收范围</dt><dd>${esc(item.recipient || '-')}</dd><dt>接口最近接受</dt><dd>${formatTime(item.lastSuccessAt)}</dd><dt>最近错误</dt><dd>${esc(item.lastError || '-')}</dd></dl></div></section>`
     } catch (error) {
         content.innerHTML = `<div class="panel empty">${esc(error.message)}</div>`
     }
@@ -521,7 +552,7 @@ function renderCurrent() {
 async function refreshCurrent() {
     try {
         await loadState()
-        if (currentView === 'history') await renderHistory()
+        if (currentView === 'history') await (selectedRunId ? renderRunDetail(selectedRunId) : renderHistory())
     } catch (error) {
         showNotice(error.message)
     }
@@ -531,18 +562,32 @@ function connectEvents() {
     if (events) events.close()
     events = new EventSource('/api/events')
     events.addEventListener('state', event => {
+        const previousRunId = state?.core?.runId
         state = JSON.parse(event.data)
         renderConnection()
+        if (
+            currentView === 'history' &&
+            logFilters.autoRefresh &&
+            !selectedRunId &&
+            previousRunId !== state?.core?.runId
+        )
+            void renderHistory()
         if (!['calendar', 'history', 'accounts', 'wecom'].includes(currentView)) renderCurrent()
     })
     events.addEventListener('log', event => {
         const log = JSON.parse(event.data)
         liveLogs.push(log)
         liveLogs = liveLogs.slice(-500)
-        if (currentView === 'history' && !historyRefreshTimer) {
+        if (currentView === 'history' && logFilters.autoRefresh && !selectedRunId && !historyRefreshTimer) {
             historyRefreshTimer = setTimeout(() => {
                 historyRefreshTimer = null
-                void renderHistory()
+                if (currentView === 'history' && logFilters.autoRefresh && !selectedRunId) {
+                    const lines = document.querySelector('#runLogLines')
+                    if (lines && state?.run?.running) {
+                        displayedLogs = liveLogs.filter(log => log.runId === state.core.runId)
+                        lines.innerHTML = logMarkup(displayedLogs)
+                    } else void renderHistory()
+                }
             }, 500)
         }
     })

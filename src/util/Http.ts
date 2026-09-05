@@ -2,6 +2,7 @@ import { Impit } from 'impit'
 import type { HttpMethod, ImpitResponse, RequestInit as ImpitRequestInit } from 'impit'
 import type { AccountProxy } from '../interface/Account'
 import { parseBrowserProxyUrl } from './Proxy'
+import { taskContext, confirmationContext } from './TaskTelemetry'
 
 const DEFAULT_TIMEOUT = 20000
 const MAX_RETRIES = 3
@@ -128,8 +129,7 @@ async function send<T>(
     init: ImpitRequestInit,
     config: HttpRequestConfig
 ): Promise<HttpResponse<T>> {
-    const configuredRetries = config.retries ?? MAX_RETRIES
-    const maxRetries = Number.isFinite(configuredRetries) ? Math.max(0, Math.floor(configuredRetries)) : MAX_RETRIES
+    const maxRetries = requestRetryLimit(config)
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
         let responseStatus: number | undefined
@@ -165,6 +165,13 @@ async function send<T>(
     }
 
     throw new Error('Request failed after maximum retries')
+}
+
+export function requestRetryLimit(config: HttpRequestConfig): number {
+    const taskMutation =
+        taskContext.getStore() && !['GET', 'HEAD', 'OPTIONS'].includes((config.method ?? 'GET').toUpperCase())
+    const configuredRetries = taskMutation || confirmationContext.getStore() ? 0 : (config.retries ?? MAX_RETRIES)
+    return Number.isFinite(configuredRetries) ? Math.max(0, Math.floor(configuredRetries)) : MAX_RETRIES
 }
 
 class HttpClient {

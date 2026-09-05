@@ -41,9 +41,14 @@ function environmentConfig() {
 }
 
 export class WeComNotifier {
-    constructor({ fetchImpl = fetch, settings = null } = {}) {
+    constructor({
+        fetchImpl = fetch,
+        settings = null,
+        wait = ms => new Promise(resolve => setTimeout(resolve, ms))
+    } = {}) {
         this.fetchImpl = fetchImpl
         this.settings = settings
+        this.wait = wait
         this.token = null
         this.tokenExpiresAt = 0
         this.lastSuccessAt = null
@@ -62,12 +67,21 @@ export class WeComNotifier {
         this.corpSecret = String(config.corpSecret || '').trim()
         this.toUser = String(config.toUser || '').trim() || '@all'
         this.source = stored ? 'encrypted' : 'environment'
+        this.savedAt = stored?.updatedAt ?? null
         this.token = null
         this.tokenExpiresAt = 0
     }
 
     update(input) {
         if (!this.settings) throw new Error('Web 加密配置存储不可用')
+        for (const field of ['enabled', 'clearSecret']) {
+            if (input[field] !== undefined && typeof input[field] !== 'boolean')
+                throw Object.assign(new Error('企业微信开关必须是布尔值'), { code: 'WECOM_CONFIG_INVALID' })
+        }
+        if (input.clearSecret && String(input.corpSecret || '').trim())
+            throw Object.assign(new Error('不能同时填写新 Secret 和清除已保存的 Secret，配置未修改'), {
+                code: 'WECOM_CONFIG_INVALID'
+            })
         const current = this.settings.getWeCom() || environmentConfig()
         const mode = input.mode === 'custom' ? 'custom' : 'direct'
         const baseUrl = String(input.baseUrl || '').trim() || (current.mode === 'custom' ? current.baseUrl : '')
@@ -98,9 +112,19 @@ export class WeComNotifier {
     }
 
     status() {
+        const missingFields = [
+            ...(!this.corpId ? ['企业 ID'] : []),
+            ...(!this.agentId ? ['应用 AgentId'] : []),
+            ...(!this.corpSecret ? ['应用 Secret'] : []),
+            ...(!this.toUser ? ['接收成员'] : [])
+        ]
         return {
             enabled: this.enabled,
             configured: this.configured(),
+            configComplete: missingFields.length === 0,
+            missingFields,
+            configurationMessage: missingFields.length ? '缺少：' + missingFields.join('、') : '配置完整',
+            savedAt: this.savedAt,
             mode: this.mode,
             source: this.source,
             writable: this.settings?.status().writable ?? false,
@@ -145,7 +169,9 @@ export class WeComNotifier {
                         msgtype: 'text',
                         agentid: Number(this.agentId),
                         text: { content: sanitizeText(content, 1900) },
-                        safe: 0
+                        safe: 0,
+                        enable_duplicate_check: 1,
+                        duplicate_check_interval: 1800
                     }),
                     signal: AbortSignal.timeout(10000)
                 })
@@ -157,12 +183,14 @@ export class WeComNotifier {
                     }
                     throw new Error(`企业微信发送失败（${data?.errcode ?? response.status}）`)
                 }
+                if (data.invaliduser || data.invalidparty || data.invalidtag || data.unlicenseduser)
+                    throw new Error('企业微信拒绝部分或全部接收成员，请检查应用可见范围、成员状态和许可')
                 this.lastSuccessAt = new Date().toISOString()
                 this.lastError = null
                 return { sent: true }
             } catch (error) {
                 lastError = error
-                if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 500 * 2 ** attempt))
+                if (attempt < 2) await this.wait(500 * 2 ** attempt)
             }
         }
         this.lastError = lastError instanceof Error ? lastError.message : String(lastError)
@@ -170,16 +198,22 @@ export class WeComNotifier {
     }
 
     async sendRun(run) {
-        const status = run.status === 'completed' ? '完成' : run.status === 'partial' ? '部分完成' : '失败'
+        const status =
+            { completed: '完成', partial: '部分完成', interrupted: '中断', failed: '失败' }[run.status] ?? '待确认'
         const lines = [
             `Microsoft Rewards 任务${status}`,
             `时间：${run.endedAt}`,
-            `本次积分：+${run.collected}`,
+            `本次已确认积分：${run.verification === 'legacy' ? '旧记录未核验' : run.collected == null ? '待确认' : `+${run.collected}`}`,
+            `待复核任务：${run.pendingVerification ?? '未知'}`,
             `账号数：${run.accounts.length}`
         ]
         for (const account of run.accounts) {
-            const accountStatus = account.success === true ? '完成' : account.success === false ? '失败' : '待确认'
-            lines.push(`${account.label}：+${account.collected}，${accountStatus}`)
+            const accountStatus =
+                { completed: '完成', partial: '部分完成', interrupted: '中断', failed: '失败' }[account.status] ??
+                (account.success === true ? '完成' : account.success === false ? '失败' : '待确认')
+            lines.push(
+                `${account.label}：${account.verification === 'legacy' ? '旧记录未核验' : account.collected == null ? '得分待确认' : `已确认 +${account.collected}`}，${accountStatus}`
+            )
         }
         return this.sendText(lines.join('\n'))
     }

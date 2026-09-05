@@ -1,9 +1,11 @@
 import { BaseActivity } from '../BaseActivity'
+import { markTaskStatus, finitePoints } from '../../../util/TaskTelemetry'
 
 export class ClaimBonusPoints extends BaseActivity {
     public async claimBonusPoints() {
         const actionId = this.bot.nextActions.reportClaimAllPoints
         if (!actionId) {
+            markTaskStatus('skipped', '未发现奖励领取入口')
             this.bot.logger.warn(
                 this.bot.isMobile,
                 'CLAIM-BONUS-POINTS',
@@ -21,9 +23,16 @@ export class ClaimBonusPoints extends BaseActivity {
         )
 
         try {
-            const { status, acknowledged } = await this.bot.browser.func.reportServerAction(actionId, [])
+            const { status, acknowledged, availablePoints } = await this.bot.browser.func.reportServerAction(
+                actionId,
+                []
+            )
 
-            const newBalance = await this.bot.browser.func.getCurrentPoints()
+            const newBalance = finitePoints(availablePoints)
+            if (newBalance === null) {
+                markTaskStatus('verifying', '领取请求已结束，等待对应任务数据复核')
+                return
+            }
             const gainedPoints = newBalance - oldBalance
 
             this.bot.logger.debug(

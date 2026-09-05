@@ -7,6 +7,8 @@ import type {
     Profile
 } from '../interface/DashboardData'
 
+import { finitePoints } from '../util/TaskTelemetry'
+
 export const BOT_SCORE_WARNING = 'Fraud_UserWarning_BotScore_UX'
 
 type FlyoutProfileAttributes = Profile['attributes'] & {
@@ -119,6 +121,8 @@ export function mapFlyoutToDashboard(data: RewardsFlyoutData): DashboardData {
     }
 
     const counters = flyoutStatus.counters ?? {}
+    const balance = finitePoints(flyoutStatus.availablePoints) ?? finitePoints(userInfo.balance)
+    if (balance === null) throw new Error('Flyout response did not provide a valid balance')
     const highValuePromotions = flyout.highValueActionPromotions ?? []
     const additionalPromotions = uniquePromotions([
         ...(flyout.edgeHighValueActionPromotions ?? []),
@@ -132,7 +136,7 @@ export function mapFlyoutToDashboard(data: RewardsFlyoutData): DashboardData {
         ...flyout,
         userStatus: {
             ...flyoutStatus,
-            availablePoints: numberOrFallback(flyoutStatus.availablePoints, userInfo.balance),
+            availablePoints: balance,
             lifetimePoints: numberOrFallback(flyoutStatus.lifetimePoints, 0),
             lifetimePointsRedeemed: numberOrFallback(flyoutStatus.lifetimePointsRedeemed, 0),
             lifetimeGivingPoints: numberOrFallback(flyoutStatus.lifetimeGivingPoints, userInfo.lifetimeGivingPoints),

@@ -730,6 +730,7 @@ export class MicrosoftRewardsBot {
                 this.userData.initialPoints = data.dashboard.userStatus.availablePoints
                 this.userData.currentPoints = data.dashboard.userStatus.availablePoints
                 const initialPoints = this.userData.initialPoints ?? 0
+                this.activities.telemetry.publish({ kind: 'balance', phase: 'start', balance: initialPoints })
 
                 const browserEarnable = await this.browser.func.getBrowserEarnablePoints(data)
                 let appEarnable: AppEarnablePoints | null = null
@@ -749,6 +750,7 @@ export class MicrosoftRewardsBot {
                 }
 
                 const appAvailable = Boolean(this.accessToken && appData)
+                this.activities.publishPlan(data, appAvailable)
 
                 this.logger.info(
                     'main',
@@ -920,6 +922,7 @@ export class MicrosoftRewardsBot {
 
                 const finalPoints = await this.browser.func.getCurrentPoints()
                 const collectedPoints = finalPoints - initialPoints
+                this.activities.telemetry.publish({ kind: 'balance', phase: 'end', balance: finalPoints })
 
                 this.logger.info(
                     'main',

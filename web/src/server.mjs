@@ -10,6 +10,7 @@ import { AccountIdentity, sanitizeLog, sanitizeText, timingSafeTextEqual } from 
 import { SettingsStore } from './settings.mjs'
 import { buildPublicState, publicErrorMessage, publicLog } from './status.mjs'
 import { WeComNotifier } from './wecom.mjs'
+import { RunNotifications } from './run-notifications.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const publicDir = path.resolve(__dirname, '..', 'public')
@@ -32,6 +33,7 @@ const history = new HistoryStore(dataDir, identity, {
 const control = new ControlApiClient({ baseUrl: controlUrl, token: controlToken })
 const settings = new SettingsStore({ dataDir })
 const wecom = new WeComNotifier({ settings })
+const runNotifications = new RunNotifications({ history, notifier: wecom })
 const authFile = path.join(dataDir, 'web-auth.json')
 const sessions = new Map()
 const loginAttempts = new Map()
@@ -205,17 +207,8 @@ function loginAllowed(req) {
 }
 
 async function notifyRuns(runKeys) {
-    if (!wecom.configured()) return
-    for (const runKey of runKeys) {
-        const eventKey = `run:${runKey}`
-        if (history.wasNotified(eventKey)) continue
-        try {
-            const run = history.getRun(runKey)
-            if (!run) continue
-            await wecom.sendRun(run)
-            history.recordNotification(eventKey, 'run')
-        } catch {}
-    }
+    runNotifications.enqueue(runKeys)
+    await runNotifications.drain()
 }
 
 async function noteCoreFailure() {
@@ -269,7 +262,7 @@ function publicState() {
         points: cache.points,
         configuredAccounts: cache.accounts,
         identity,
-        historySummary: history.summary(),
+        historySummary: history.summary(cache.status?.state === 'idle' ? null : cache.status?.runId),
         notificationStatus: wecom.status()
     })
     if (cache.error) state.core.error = cache.error
@@ -329,6 +322,8 @@ function serveStatic(res, pathname) {
     const files = {
         '/': ['index.html', 'text/html; charset=utf-8'],
         '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
+        '/run-view.js': ['run-view.js', 'text/javascript; charset=utf-8'],
+        '/calendar-view.js': ['calendar-view.js', 'text/javascript; charset=utf-8'],
         '/styles.css': ['styles.css', 'text/css; charset=utf-8']
     }
     const target = files[pathname]
@@ -352,7 +347,7 @@ async function handleApi(req, res, url) {
             authenticated: Boolean(session),
             username: session?.username ?? null,
             csrfToken: session?.csrfToken ?? null,
-            version: '4.3.2-cn2'
+            version: '4.3.2-cn3'
         })
     }
 
@@ -523,7 +518,7 @@ async function handleApi(req, res, url) {
     }
 
     if (req.method === 'GET' && url.pathname === '/api/wecom') {
-        return sendJson(res, 200, wecom.status())
+        return sendJson(res, 200, { ...wecom.status(), delivery: runNotifications.status() })
     }
 
     if (req.method === 'POST' && url.pathname === '/api/wecom') {
@@ -539,7 +534,9 @@ async function handleApi(req, res, url) {
             'clearSecret'
         ])
         if (Object.keys(body).some(key => !allowed.has(key))) return sendError(res, 400, '企业微信配置包含未知字段')
-        return sendJson(res, 200, wecom.update(body))
+        const updated = wecom.update(body)
+        void runNotifications.drain()
+        return sendJson(res, 200, { ...updated, delivery: runNotifications.status() })
     }
 
     if (req.method === 'POST' && url.pathname === '/api/wecom/test') {
@@ -577,7 +574,9 @@ const server = http.createServer(async (req, res) => {
                     : 502
                 : error?.code === 'BODY_TOO_LARGE'
                   ? 413
-                  : 500
+                  : error?.code === 'WECOM_CONFIG_INVALID'
+                    ? 400
+                    : 500
         return sendError(res, status, publicErrorMessage(error), error?.code || 'INTERNAL_ERROR')
     }
 })

@@ -13,6 +13,8 @@ import type { AppUserData } from '../interface/AppUserData'
 import type { AppEarnablePoints, BrowserEarnablePoints } from '../interface/Points'
 import type { AppDashboardData } from '../interface/AppDashBoardData'
 import { detectFlyoutBotWarning, mapFlyoutToDashboard, type RewardsFlyoutData } from './FlyoutDashboard'
+import { evidenceFromPayload } from '../util/TaskEvidence'
+import { finitePoints, type TaskSpec, type TaskEvidence } from '../util/TaskTelemetry'
 
 export default class BrowserFunc {
     private bot: MicrosoftRewardsBot
@@ -23,6 +25,42 @@ export default class BrowserFunc {
 
     constructor(bot: MicrosoftRewardsBot) {
         this.bot = bot
+    }
+
+    taskDashboardSource(): 'dashboard' | 'flyout' {
+        return this.useFlyoutDashboardFallback ? 'flyout' : 'dashboard'
+    }
+
+    async observeTask(spec: TaskSpec): Promise<TaskEvidence> {
+        const url =
+            spec.source === 'app'
+                ? URLs.platform.me(spec.channel ?? 'SAAndroid')
+                : spec.source === 'rsc'
+                  ? spec.parentOfferId
+                      ? URLs.rewards.quest(spec.parentOfferId)
+                      : URLs.rewards.earn
+                  : spec.source === 'flyout'
+                    ? URLs.bing.rewardsFlyoutUserInfo
+                    : URLs.rewards.userInfoApi
+        const headers: Record<string, string> = { ...(this.bot.fingerprint?.headers ?? {}) }
+        delete headers.Cookie
+        delete headers.cookie
+        if (spec.source === 'app') {
+            if (!this.bot.accessToken) throw new Error('App authentication unavailable')
+            headers.Authorization = `Bearer ${this.bot.accessToken}`
+            headers['X-Rewards-Country'] = this.bot.userData.geoLocale
+        } else headers.Cookie = this.buildCookieHeader(this.getCachedCookies(undefined, url))
+        headers.Referer = spec.source === 'flyout' ? `${URLs.bing.origin}/` : URLs.rewards.referer
+        const response = await this.bot.http.request({
+            url,
+            method: 'GET',
+            headers,
+            retries: 0,
+            responseType: spec.source === 'rsc' ? 'text' : 'json'
+        })
+        const payload =
+            spec.source === 'rsc' ? this.bot.browser.react.snapshotPage(String(response.data), false) : response.data
+        return evidenceFromPayload(spec, payload)
     }
 
     async getDashboardData(cookies?: Cookie[]): Promise<DashboardData> {
@@ -49,7 +87,11 @@ export default class BrowserFunc {
 
                     await this.applyResponseCookies(URLs.rewards.userInfoApi, response.headers['set-cookie'])
 
-                    if (response.data?.dashboard) return response.data
+                    if (
+                        response.data?.dashboard &&
+                        finitePoints(response.data.dashboard.userStatus?.availablePoints) !== null
+                    )
+                        return response.data
                     throw new Error('Dashboard data missing from API response')
                 } catch (error) {
                     primaryError = error
@@ -259,7 +301,9 @@ export default class BrowserFunc {
         try {
             const data = await this.getDashboardData()
 
-            return data.dashboard.userStatus.availablePoints
+            const points = finitePoints(data.dashboard.userStatus.availablePoints)
+            if (points === null) throw new Error('Current balance is unavailable')
+            return points
         } catch (error) {
             this.bot.logger.error(
                 this.bot.isMobile,
@@ -926,6 +970,7 @@ export default class BrowserFunc {
         const response = await this.bot.http.request({
             url,
             method: 'POST',
+            retries: 0,
             headers: {
                 ...headers,
                 Cookie: this.buildCookieHeader(this.getCachedCookies(undefined, url))

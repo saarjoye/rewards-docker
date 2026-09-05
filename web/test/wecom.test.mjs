@@ -34,3 +34,28 @@ test('sends a redacted Chinese run summary', async () => {
         process.env = previous
     }
 })
+
+test('a zero error code with rejected recipients does not report a successful delivery', async () => {
+    const notifier = new WeComNotifier({
+        settings: {
+            getWeCom: () => ({
+                enabled: true,
+                mode: 'direct',
+                corpId: 'synthetic-corp',
+                agentId: '100001',
+                corpSecret: 'synthetic-secret',
+                toUser: '@all'
+            }),
+            status: () => ({ writable: true })
+        },
+        wait: async () => {},
+        fetchImpl: async url =>
+            String(url).includes('gettoken')
+                ? new Response('{"errcode":0,"access_token":"synthetic-token"}')
+                : new Response('{"errcode":0,"invaliduser":"synthetic-member"}')
+    })
+    await assert.rejects(() => notifier.sendTest(), /接收成员/)
+    assert.equal(notifier.status().lastSuccessAt, null)
+    assert.match(notifier.status().lastError, /接收成员/)
+    assert.doesNotMatch(JSON.stringify(notifier.status()), /synthetic-member|synthetic-secret/)
+})

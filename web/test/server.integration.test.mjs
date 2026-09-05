@@ -208,6 +208,26 @@ test('BFF authenticates users, redacts state and restricts control bodies', { ti
             fs.readFileSync(path.join(dataDir, 'settings.enc.json'), 'utf8'),
             /synthetic-corp|synthetic-secret/
         )
+        const conflict = await fetch(`${baseUrl}/api/wecom`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+                enabled: true,
+                mode: 'custom',
+                corpSecret: 'synthetic-new-secret',
+                clearSecret: true
+            })
+        })
+        assert.equal(conflict.status, 400)
+        assert.match((await conflict.json()).error, /不能同时/)
+        const saved = await fetch(`${baseUrl}/api/wecom`, { headers }).then(response => response.json())
+        assert.equal(saved.configured, true)
+        assert.equal(saved.hasSecret, true)
+        assert.equal(saved.configComplete, true)
+        assert.ok(saved.savedAt)
+        assert.equal(saved.delivery.pending, 0)
+        const calendarScript = await fetch(`${baseUrl}/calendar-view.js`)
+        assert.equal(calendarScript.status, 200)
     } finally {
         child.kill('SIGTERM')
         await Promise.race([

@@ -3,6 +3,7 @@ import { BaseActivity } from '../BaseActivity'
 import type { ParsedOffer, StreakState } from '../../../browser/ReactFunc'
 import type { DashboardData } from '../../../interface/DashboardData'
 import { VisualSearchBrowser } from './VisualSearchBrowser'
+import { reportTaskEvidence, markTaskStatus, reportTaskProgress } from '../../../util/TaskTelemetry'
 
 const VISUAL_SEARCH_ACTIVATION_OFFER = 'visualsearch_streak_activation_v2'
 
@@ -32,6 +33,7 @@ export class VisualSearch extends BaseActivity {
 
     public async doVisualSearch(data: DashboardData): Promise<number> {
         if (this.bot.isMobile) {
+            markTaskStatus('skipped', '视觉搜索仅在桌面端执行')
             this.bot.logger.debug(this.bot.isMobile, 'VISUAL-SEARCH', 'Skipping on mobile - desktop-only activity')
             return 0
         }
@@ -40,6 +42,7 @@ export class VisualSearch extends BaseActivity {
         this.logStreakState(streak)
 
         if (streak?.isCurrentDayCompleted) {
+            reportTaskEvidence({ completed: true, current: null, total: null, balance: null, unit: 'items' })
             this.bot.logger.info(
                 this.bot.isMobile,
                 'VISUAL-SEARCH',
@@ -53,6 +56,7 @@ export class VisualSearch extends BaseActivity {
 
         const available = streak?.isEnabled === true || activation === 'activated' || activation === 'already-active'
         if (!available) {
+            markTaskStatus('skipped', '当前账号没有可用的视觉搜索活动')
             this.bot.logger.info(
                 this.bot.isMobile,
                 'VISUAL-SEARCH',
@@ -412,6 +416,7 @@ export class VisualSearch extends BaseActivity {
         const candidateSeeds = await this.browserFlow.getSeedUrls()
 
         for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+            reportTaskProgress('正在准备视觉搜索', attempt, MAX_ATTEMPTS)
             const visual = await this.acquireFreshVisualSearch(seenBcids, candidateSeeds, attempt)
             if (!visual) {
                 await this.bot.utils.wait(this.bot.utils.randomDelay(3000, 6000))
@@ -423,7 +428,15 @@ export class VisualSearch extends BaseActivity {
             if (res.balance != null) this.bot.userData.currentPoints = res.balance
 
             const gained = res.gained ?? 0
-            if (gained >= 5) {
+            if (res.acknowledged && gained >= 5) {
+                reportTaskEvidence({
+                    completed: true,
+                    current: null,
+                    total: null,
+                    balance: res.balance,
+                    creditedPoints: gained,
+                    unit: 'points'
+                })
                 this.bot.userData.gainedPoints = (this.bot.userData.gainedPoints ?? 0) + gained
                 this.bot.logger.info(
                     this.bot.isMobile,
@@ -435,6 +448,7 @@ export class VisualSearch extends BaseActivity {
             }
 
             if (await this.waitForDayRegistration()) {
+                reportTaskEvidence({ completed: true, current: null, total: null, balance: res.balance, unit: 'items' })
                 this.bot.logger.info(
                     this.bot.isMobile,
                     'VISUAL-SEARCH',
@@ -458,7 +472,8 @@ export class VisualSearch extends BaseActivity {
                 )
             }
 
-            await this.bot.utils.wait(this.bot.utils.randomDelay(3000, 6000))
+            markTaskStatus('verifying', '视觉搜索已经上报，积分待复核，不重复提交')
+            return 0
         }
 
         this.bot.logger.warn(

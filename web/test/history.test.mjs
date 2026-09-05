@@ -14,6 +14,7 @@ test('persists completed runs once and never stores the full email', () => {
         const history = {
             runs: [
                 {
+                    id: 'synthetic-run',
                     startedAt: '2026-09-03T01:00:00.000Z',
                     endedAt: '2026-09-03T02:00:00.000Z',
                     version: '4.3.2',
@@ -24,6 +25,7 @@ test('persists completed runs once and never stores the full email', () => {
             ]
         }
         const status = {
+            runId: 'synthetic-run',
             lastExit: { at: '2026-09-03T02:00:00.000Z' },
             run: {
                 accounts: [
@@ -66,7 +68,9 @@ test('persists completed runs once and never stores the full email', () => {
         assert.doesNotMatch(JSON.stringify(logs), /person@example\.com|hidden-value/)
         assert.doesNotMatch(JSON.stringify(saved), /private@example\.com/)
         const calendar = store.calendar({ start: '2026-09-03', end: '2026-09-03' })
-        assert.equal(calendar.summary.totalPoints, 66)
+        assert.equal(calendar.summary.totalPoints, null)
+        assert.equal(saved.runs[0].verification, 'legacy')
+        assert.equal(calendar.records[0].runGained, 66)
     } finally {
         store.close()
         const databaseBytes = fs.readFileSync(path.join(directory, 'history.db')).toString('latin1')

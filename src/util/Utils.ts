@@ -1,4 +1,5 @@
 import ms, { StringValue } from 'ms'
+import { reportTaskProgress, confirmationContext } from './TaskTelemetry'
 
 export function isBrowserClosedError(error: unknown): boolean {
     const msg = (error instanceof Error ? error.message : String(error ?? '')).toLowerCase()
@@ -22,6 +23,8 @@ export default class Util {
             time = this.stringToNumber(time)
         }
 
+        if (!confirmationContext.getStore())
+            reportTaskProgress(`等待 ${Math.ceil(time / 1000)} 秒`, undefined, undefined, time)
         return new Promise<void>(resolve => {
             setTimeout(resolve, time)
         })

@@ -6,6 +6,7 @@ import { sendTelegram } from './Telegram'
 import type { MicrosoftRewardsBot } from '../index'
 import { errorDiagnostic } from '../util/ErrorDiagnostic'
 import type { LogFilter } from '../interface/Config'
+import { recordTaskError } from '../util/TaskTelemetry'
 
 export type Platform = boolean | 'main'
 export type LogLevel = 'info' | 'warn' | 'error' | 'debug'
@@ -80,6 +81,7 @@ export class Logger {
         message: string | Error,
         color?: ColorKey
     ): void {
+        if (level === 'error') recordTaskError()
         const config = this.bot.config
         if (level === 'debug' && !config.debugLogs && !process.argv.includes('-dev')) return
 
@@ -88,6 +90,12 @@ export class Logger {
         const userName = this.bot.userData.userName || 'MAIN'
         const levelTag = level.toUpperCase()
         const cleanMsg = `[${now}] [${userName}] [${levelTag}] ${platformText(isMobile)} [${title}] ${formatted}`
+
+        // State transport must not depend on display filters or notification delivery.
+        if (title === 'TASK-EVENT' || title === 'TASK-SNAPSHOT') {
+            console.log(cleanMsg)
+            return
+        }
 
         if (level === 'error' && config.errorDiagnostics) {
             const page = this.bot.isMobile ? this.bot.mainMobilePage : this.bot.mainDesktopPage

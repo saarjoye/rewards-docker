@@ -4,6 +4,7 @@ import type { HttpRequestConfig } from '../../../util/Http'
 import { randomUUID } from 'crypto'
 import type { Promotion } from '../../../interface/AppDashBoardData'
 import { BaseActivity } from '../BaseActivity'
+import { finitePoints, markTaskStatus } from '../../../util/TaskTelemetry'
 
 export class AppReward extends BaseActivity {
     private gainedPoints: number = 0
@@ -12,6 +13,7 @@ export class AppReward extends BaseActivity {
 
     public async doAppReward(promotion: Promotion) {
         if (!this.bot.accessToken) {
+            markTaskStatus('skipped', '缺少 App 登录状态，跳过应用活动')
             this.bot.logger.warn(
                 this.bot.isMobile,
                 'APP-REWARD',
@@ -48,6 +50,7 @@ export class AppReward extends BaseActivity {
             const request: HttpRequestConfig = {
                 url: URLs.platform.activities,
                 method: 'POST',
+                retries: 0,
                 headers: {
                     Authorization: `Bearer ${this.bot.accessToken}`,
                     'User-Agent': BING_APP_USER_AGENT,
@@ -73,7 +76,11 @@ export class AppReward extends BaseActivity {
                 `Received activity response | offerId=${offerId} | status=${response.status}`
             )
 
-            const newBalance = Number(response?.data?.response?.balance ?? this.oldBalance)
+            const newBalance = finitePoints(response?.data?.response?.balance)
+            if (newBalance === null) {
+                markTaskStatus('verifying', '应用活动响应缺少余额，等待复核')
+                return
+            }
             this.gainedPoints = newBalance - this.oldBalance
 
             this.bot.logger.debug(

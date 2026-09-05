@@ -1,3 +1,32 @@
+.task-table {
+    min-width: 780px;
+    table-layout: fixed;
+}
+.task-table td,
+.task-table th {
+    overflow-wrap: anywhere;
+    white-space: normal;
+}
+.task-table th:nth-child(3) {
+    width: 28%;
+}
+.task-table small,
+.task-action strong {
+    display: block;
+    margin-top: 4px;
+    font-size: 12px;
+}
+.task-account {
+    min-width: 0;
+}
+.log-message {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+.filter-row input[type='search'] {
+    max-width: 100%;
+}
+
 :root {
     --bg: #f4f5f3;
     --surface: #ffffff;
@@ -445,26 +474,67 @@ tr:last-child td {
     grid-template-columns: repeat(7, minmax(90px, 1fr));
     gap: 8px;
 }
-.calendar-day {
+.calendar-cell {
     min-height: 92px;
-    padding: 11px;
+    min-width: 0;
+    padding: 10px;
     border: 1px solid var(--line);
-    border-radius: 6px;
-    background: var(--surface);
+    border-radius: 8px;
+    background: #f7fbfa;
+    display: grid;
+    align-content: space-between;
+    gap: 8px;
+    overflow-wrap: anywhere;
 }
-.calendar-day strong,
-.calendar-day span {
+.calendar-cell strong,
+.calendar-cell span {
     display: block;
 }
-.calendar-day b {
+.calendar-cell strong {
+    font-size: 13px;
+}
+.calendar-cell b {
     display: block;
-    margin: 9px 0 3px;
-    font-size: 20px;
+    font-size: 18px;
     color: var(--green);
 }
-.calendar-day span {
+.calendar-cell span {
     color: var(--muted);
-    font-size: 11px;
+    font-size: 12px;
+}
+.calendar-cell.heat-1 {
+    background: #e2f1ed;
+}
+.calendar-cell.heat-2 {
+    background: #c5e4dc;
+}
+.calendar-cell.heat-3 {
+    background: #a6d7cb;
+}
+.calendar-cell.heat-4 {
+    background: #87cabb;
+}
+.calendar-records small {
+    display: block;
+    color: var(--muted);
+}
+.calendar-runs {
+    background: #f7fbfa;
+}
+.calendar-runs summary {
+    cursor: pointer;
+}
+.calendar-runs .table-wrap {
+    margin-top: 12px;
+}
+.calendar-category {
+    display: inline-block;
+    margin: 3px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 3px 8px;
+    font-size: 12px;
+    color: var(--green);
 }
 .filter-row {
     display: flex;

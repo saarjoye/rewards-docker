@@ -50,6 +50,28 @@ test('encrypts Web settings and preserves the configured WeCom reverse proxy pat
         assert.doesNotMatch(fs.readFileSync(dataFile, 'utf8'), /synthetic-secret|synthetic-corp/)
         assert.equal(notifier.status().hasSecret, true)
         assert.equal('corpSecret' in notifier.status(), false)
+        const disabled = notifier.update({ enabled: false, mode: 'custom' })
+        assert.equal(disabled.configComplete, true)
+        assert.equal(disabled.configured, false)
+        assert.deepEqual(disabled.missingFields, [])
+        assert.equal(disabled.configurationMessage, '配置完整')
+        assert.ok(disabled.savedAt)
+        assert.throws(
+            () =>
+                notifier.update({
+                    enabled: true,
+                    mode: 'custom',
+                    corpSecret: 'synthetic-new-secret',
+                    clearSecret: true
+                }),
+            /不能同时/
+        )
+        assert.equal(settings.getWeCom().corpSecret, 'synthetic-secret')
+        assert.equal(notifier.status().enabled, false)
+        const cleared = notifier.update({ enabled: true, mode: 'custom', clearSecret: true })
+        assert.equal(cleared.configured, false)
+        assert.deepEqual(cleared.missingFields, ['应用 Secret'])
+        assert.match(cleared.configurationMessage, /应用 Secret/)
     } finally {
         fs.rmSync(dir, { recursive: true, force: true })
     }

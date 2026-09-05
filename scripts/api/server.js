@@ -5,6 +5,7 @@ import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 
 import { ProcessManager } from './processManager.js'
+import { historyRecord } from './taskEvents.js'
 import { buildExcludedAccountsEnv, buildSingleAccountEnv, loadAccounts, mergeAccountStats } from './accounts.js'
 import { AccountStore } from './accountStore.js'
 import { RunLedger } from './runLedger.js'
@@ -161,26 +162,7 @@ pm.on('log', entry => {
 })
 
 function toHistoryRecord(entry) {
-    return {
-        id: entry.id ?? null,
-        startedAt: entry.startedAt,
-        endedAt: entry.endedAt,
-        exit: entry.exit,
-        version: entry.run?.version ?? null,
-        collected: entry.run?.collected ?? 0,
-        accounts: (entry.run?.accounts ?? []).map(a => ({
-            email: a.email,
-            initialPoints: a.initialPoints ?? null,
-            finalPoints: a.finalPoints ?? a.live?.balance ?? null,
-            collected: a.collectedPoints ?? a.live?.gained ?? 0,
-            bySource: a.live?.bySource ?? {},
-            success: a.success,
-            error: a.error,
-            streakProtection: a.streakProtection ?? null,
-            edgeBrowsing: a.edgeBrowsing ?? null,
-            tasks: a.tasks ?? []
-        }))
-    }
+    return historyRecord(entry)
 }
 
 function accountEnvironment() {

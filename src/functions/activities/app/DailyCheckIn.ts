@@ -2,6 +2,7 @@ import { URLs } from '../../../constants/urls'
 import type { HttpRequestConfig } from '../../../util/Http'
 import { randomUUID } from 'crypto'
 import { BaseActivity } from '../BaseActivity'
+import { finitePoints, markTaskStatus } from '../../../util/TaskTelemetry'
 
 export class DailyCheckIn extends BaseActivity {
     private gainedPoints: number = 0
@@ -10,6 +11,7 @@ export class DailyCheckIn extends BaseActivity {
 
     public async doDailyCheckIn() {
         if (!this.bot.accessToken) {
+            markTaskStatus('skipped', '缺少 App 登录状态，跳过签到')
             this.bot.logger.warn(
                 this.bot.isMobile,
                 'DAILY-CHECK-IN',
@@ -35,7 +37,11 @@ export class DailyCheckIn extends BaseActivity {
                 `Received Daily Check-In response | status=${response?.status ?? 'unknown'}`
             )
 
-            const newBalance = Number(response?.data?.response?.balance ?? this.oldBalance)
+            const newBalance = finitePoints(response?.data?.response?.balance)
+            if (newBalance === null) {
+                markTaskStatus('verifying', '签到请求已结束，余额缺失，等待复核')
+                return
+            }
             this.gainedPoints = newBalance - this.oldBalance
 
             this.bot.logger.debug(
@@ -91,6 +97,7 @@ export class DailyCheckIn extends BaseActivity {
             const request: HttpRequestConfig = {
                 url: URLs.platform.activities,
                 method: 'POST',
+                retries: 0,
                 headers: {
                     Authorization: `Bearer ${this.bot.accessToken}`,
                     'Content-Type': 'application/json',

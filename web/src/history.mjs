@@ -4,6 +4,7 @@ import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
 import { sanitizeText } from './security.mjs'
+import { normalizedTasks } from './task-view.mjs'
 
 const TIMEZONE = process.env.TZ || 'Asia/Shanghai'
 
@@ -28,6 +29,15 @@ function localDate(iso) {
 
 function runStatus(run) {
     const accounts = Array.isArray(run?.accounts) ? run.accounts : []
+    if (accounts.some(account => account.telemetryVersion === 2)) {
+        if (accounts.some(account => account.status === 'interrupted')) return 'interrupted'
+        if (accounts.length && accounts.every(account => account.status === 'completed')) return 'completed'
+        return accounts.some(account => account.collectedPoints > 0 || account.status === 'completed')
+            ? 'partial'
+            : accounts.some(account => account.success === false)
+              ? 'failed'
+              : 'partial'
+    }
     const successes = accounts.filter(account => account.success === true).length
     const failures = accounts.filter(account => account.success === false).length
     if (run?.exit?.code === 0 && failures === 0) return 'completed'
@@ -120,7 +130,61 @@ export class HistoryStore {
         if (!accountColumns.has('tasks_json')) {
             this.db.exec("ALTER TABLE account_runs ADD COLUMN tasks_json TEXT NOT NULL DEFAULT '[]'")
         }
+        try {
+            this.migrateVerification()
+        } catch (error) {
+            this.db.close()
+            throw error
+        }
         this.pruneLogs()
+    }
+
+    migrateVerification() {
+        this.db.exec('BEGIN IMMEDIATE')
+        try {
+            for (const table of ['runs', 'account_runs']) {
+                const columns = this.db.prepare(`PRAGMA table_info(${table})`).all()
+                if (!columns.some(column => column.name === 'verification_json'))
+                    this.db.exec(`ALTER TABLE ${table} ADD COLUMN verification_json TEXT`)
+            }
+            this.db.exec(`CREATE TABLE IF NOT EXISTS point_events (
+                event_key TEXT PRIMARY KEY, run_key TEXT NOT NULL, account_key TEXT NOT NULL,
+                points REAL NOT NULL, confirmed_at TEXT NOT NULL, local_date TEXT NOT NULL, source TEXT NOT NULL
+            ); CREATE INDEX IF NOT EXISTS idx_point_events_date ON point_events(local_date);`)
+            this.db.exec('COMMIT')
+        } catch (error) {
+            this.db.exec('ROLLBACK')
+            throw error
+        }
+    }
+
+    ingestPoints(runKey, accounts) {
+        if (!safeIdentifier(runKey)) return
+        const insert = this.db.prepare('INSERT OR IGNORE INTO point_events VALUES (?, ?, ?, ?, ?, ?, ?)')
+        for (const account of accounts ?? []) {
+            if (account.telemetryVersion !== 2) continue
+            const accountKey = this.identity.keyFor(account.email ?? 'unknown')
+            for (const record of account.pointRecords ?? []) {
+                if (
+                    !safeIdentifier(record.id) ||
+                    typeof record.points !== 'number' ||
+                    !Number.isFinite(record.points) ||
+                    record.points < 0 ||
+                    !Number.isFinite(Date.parse(record.confirmedAt))
+                )
+                    continue
+                const key = crypto.createHash('sha256').update(`${runKey}|${accountKey}|${record.id}`).digest('hex')
+                insert.run(
+                    key,
+                    runKey,
+                    accountKey,
+                    record.points,
+                    record.confirmedAt,
+                    localDate(record.confirmedAt),
+                    sanitizeText(record.source, 40)
+                )
+            }
+        }
     }
 
     close() {
@@ -156,11 +220,13 @@ export class HistoryStore {
 
         this.db.exec('BEGIN IMMEDIATE')
         try {
+            this.ingestPoints(status?.runId, status?.run?.accounts)
             for (const run of history) {
                 if (!run?.startedAt || !run?.endedAt) continue
                 const accounts = Array.isArray(run.accounts) ? run.accounts : []
                 const accountKeys = accounts.map(account => this.identity.keyFor(account.email ?? 'unknown'))
                 const runKey = safeIdentifier(run.id) || this.runKey(run, accountKeys)
+                this.ingestPoints(runKey, accounts)
                 const result = insertRun.run(
                     runKey,
                     run.startedAt,
@@ -177,7 +243,10 @@ export class HistoryStore {
 
                 for (const account of accounts) {
                     const email = String(account.email ?? '')
-                    const enhanced = liveAccounts.get(email.toLowerCase()) ?? account
+                    const enhanced =
+                        run.id && run.id === status?.runId
+                            ? (liveAccounts.get(email.toLowerCase()) ?? account)
+                            : account
                     insertAccount.run(
                         runKey,
                         this.identity.keyFor(email || 'unknown'),
@@ -192,6 +261,38 @@ export class HistoryStore {
                         account.error ? sanitizeText(account.error, 800) : null,
                         JSON.stringify(normalizedSources(enhanced)),
                         JSON.stringify(this.normalizedTasks(enhanced.tasks))
+                    )
+                    if (enhanced.telemetryVersion === 2) {
+                        this.db
+                            .prepare(
+                                'UPDATE account_runs SET verification_json = ? WHERE run_key = ? AND account_key = ?'
+                            )
+                            .run(
+                                JSON.stringify({
+                                    version: 2,
+                                    collected: numberOrNull(enhanced.collectedPoints ?? enhanced.live?.gained),
+                                    pending: enhanced.pendingVerification ?? 0,
+                                    status: enhanced.status ?? 'unknown',
+                                    balanceChange: numberOrNull(enhanced.balanceChange),
+                                    unattributedBalanceChange: numberOrNull(enhanced.unattributedBalanceChange)
+                                }),
+                                runKey,
+                                this.identity.keyFor(email || 'unknown')
+                            )
+                    }
+                }
+                if (accounts.some(account => account.telemetryVersion === 2)) {
+                    const confirmed = this.db
+                        .prepare('SELECT SUM(points) AS points FROM point_events WHERE run_key = ?')
+                        .get(runKey)
+                    this.db.prepare('UPDATE runs SET verification_json = ?, status = ? WHERE run_key = ?').run(
+                        JSON.stringify({
+                            version: 2,
+                            collected: confirmed.points,
+                            pending: accounts.reduce((sum, account) => sum + (account.pendingVerification ?? 0), 0)
+                        }),
+                        runStatus(run),
+                        runKey
                     )
                 }
             }
@@ -218,7 +319,11 @@ export class HistoryStore {
                 label: account.account_label,
                 initialPoints: numberOrNull(account.initial_points),
                 finalPoints: numberOrNull(account.final_points),
-                collected: Number(account.collected || 0),
+                collected: account.verification_json
+                    ? JSON.parse(account.verification_json).collected
+                    : Number(account.collected || 0),
+                verification: account.verification_json ? 'tracked' : 'legacy',
+                ...(account.verification_json ? JSON.parse(account.verification_json) : {}),
                 success: account.success === null ? null : Boolean(account.success),
                 error: account.error_summary,
                 sources: JSON.parse(account.sources_json || '{}'),
@@ -231,7 +336,9 @@ export class HistoryStore {
             date: run.local_date,
             version: run.version,
             exit: { code: numberOrNull(run.exit_code), signal: run.exit_signal },
-            collected: Number(run.collected || 0),
+            collected: run.verification_json ? JSON.parse(run.verification_json).collected : Number(run.collected || 0),
+            verification: run.verification_json ? 'tracked' : 'legacy',
+            pendingVerification: run.verification_json ? JSON.parse(run.verification_json).pending : null,
             status: run.status,
             imported: Boolean(run.imported),
             accounts
@@ -245,21 +352,7 @@ export class HistoryStore {
     }
 
     normalizedTasks(tasks) {
-        if (!Array.isArray(tasks)) return []
-        return tasks.slice(0, 500).map(task => ({
-            id: sanitizeText(task?.id ?? '', 180),
-            title: sanitizeText(task?.title ?? 'Rewards 任务', 180),
-            status: ['pending', 'running', 'completed', 'failed', 'skipped', 'locked'].includes(task?.status)
-                ? task.status
-                : 'pending',
-            progress:
-                Number.isFinite(Number(task?.progress?.current)) && Number.isFinite(Number(task?.progress?.total))
-                    ? { current: Number(task.progress.current), total: Number(task.progress.total) }
-                    : null,
-            expectedPoints: numberOrNull(task?.expectedPoints),
-            earnedPoints: numberOrNull(task?.earnedPoints),
-            updatedAt: typeof task?.updatedAt === 'string' ? task.updatedAt : null
-        }))
+        return normalizedTasks(tasks)
     }
 
     recordLog(log) {
@@ -313,7 +406,7 @@ export class HistoryStore {
             .run(this.logLimit)
     }
 
-    summary() {
+    summary(activeRunId = null) {
         const row = this.db
             .prepare(
                 'SELECT COUNT(*) AS runs, COALESCE(SUM(collected), 0) AS collected, MAX(ended_at) AS last_run FROM runs'
@@ -321,12 +414,22 @@ export class HistoryStore {
             .get()
         const today = localDate(new Date().toISOString())
         const todayRow = this.db
-            .prepare('SELECT COALESCE(SUM(collected), 0) AS collected FROM runs WHERE local_date = ?')
+            .prepare('SELECT SUM(points) AS collected FROM point_events WHERE local_date = ?')
             .get(today)
+        const pending = this.db
+            .prepare('SELECT verification_json FROM runs WHERE local_date = ? AND run_key != ?')
+            .all(today, activeRunId ?? '')
+            .reduce(
+                (sum, run) =>
+                    sum + (run.verification_json ? Number(JSON.parse(run.verification_json).pending) || 0 : 0),
+                0
+            )
+        const confirmed = this.db.prepare('SELECT SUM(points) AS points FROM point_events').get()
         return {
             runs: Number(row?.runs || 0),
-            collected: Number(row?.collected || 0),
-            todayCollected: Number(todayRow?.collected || 0),
+            collected: numberOrNull(confirmed.points),
+            pendingVerification: pending,
+            todayCollected: numberOrNull(todayRow?.collected),
             today,
             lastRunAt: row?.last_run ?? null,
             durable: true
@@ -352,7 +455,7 @@ export class HistoryStore {
                 `
                 SELECT r.local_date, r.run_key, r.status, r.started_at, r.ended_at,
                        ar.account_key, ar.account_label, ar.initial_points, ar.final_points,
-                       ar.collected, ar.success, ar.error_summary, ar.sources_json
+                       ar.collected, ar.success, ar.error_summary, ar.sources_json, ar.verification_json
                 FROM runs r JOIN account_runs ar ON ar.run_key = r.run_key
                 WHERE r.local_date BETWEEN ? AND ?${accountWhere}
                 ORDER BY r.local_date DESC, r.ended_at DESC
@@ -371,17 +474,32 @@ export class HistoryStore {
                 records: 0,
                 sources: {}
             }
-            day.totalGained += Number(row.collected || 0)
+            // Legacy amounts remain in records, never in confirmed daily totals.
             day.statuses.push(row.status)
             day.records += 1
-            for (const [key, value] of Object.entries(JSON.parse(row.sources_json || '{}'))) {
-                day.sources[key] = (day.sources[key] || 0) + Number(value || 0)
-            }
             dayMap.set(row.local_date, day)
+        }
+        const pointRows = this.db
+            .prepare(
+                'SELECT * FROM point_events WHERE local_date BETWEEN ? AND ?' +
+                    (accountId ? ' AND account_key = ?' : '')
+            )
+            .all(...params)
+        for (const point of pointRows) {
+            const day = dayMap.get(point.local_date) ?? {
+                date: point.local_date,
+                totalGained: 0,
+                statuses: [],
+                records: 0,
+                sources: {}
+            }
+            day.totalGained += point.points
+            day.sources[point.source] = (day.sources[point.source] ?? 0) + point.points
+            dayMap.set(point.local_date, day)
         }
         const days = [...dayMap.values()].map(day => ({
             date: day.date,
-            totalGained: day.totalGained,
+            totalGained: pointRows.some(point => point.local_date === day.date) ? day.totalGained : null,
             status: day.statuses.includes('failed')
                 ? day.totalGained > 0
                     ? 'partial'
@@ -396,12 +514,15 @@ export class HistoryStore {
             accounts: [...accountMap.values()],
             range: { start: safeStart, end: safeEnd },
             summary: {
-                totalPoints: sum(days.map(day => day.totalGained)),
-                completedDays: days.filter(day => day.status === 'completed').length,
+                totalPoints: pointRows.length ? sum(days.map(day => day.totalGained)) : null,
+                completedDays: days.filter(day => day.totalGained !== null && day.status === 'completed').length,
                 failedDays: days.filter(day => ['failed', 'partial'].includes(day.status)).length,
                 highestPointDay: days.reduce(
-                    (best, day) => (day.totalGained > best.points ? { date: day.date, points: day.totalGained } : best),
-                    { date: '', points: 0 }
+                    (best, day) =>
+                        day.totalGained !== null && (best.points === null || day.totalGained > best.points)
+                            ? { date: day.date, points: day.totalGained }
+                            : best,
+                    { date: '', points: null }
                 )
             },
             days,
@@ -414,7 +535,10 @@ export class HistoryStore {
                 endedAt: row.ended_at,
                 beforePoints: numberOrNull(row.initial_points),
                 afterPoints: numberOrNull(row.final_points),
-                runGained: Number(row.collected || 0),
+                runGained: row.verification_json
+                    ? JSON.parse(row.verification_json).collected
+                    : Number(row.collected || 0),
+                verification: row.verification_json ? 'tracked' : 'legacy',
                 status: row.status,
                 success: row.success === null ? null : Boolean(row.success),
                 error: row.error_summary,

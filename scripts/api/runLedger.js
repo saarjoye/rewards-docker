@@ -1,4 +1,5 @@
 import { CryptoVault } from './cryptoVault.js'
+import { interruptTasks } from './taskEvents.js'
 
 export class RunLedger {
     constructor({ keyFile, dataFile, limit = 100 }) {
@@ -13,7 +14,7 @@ export class RunLedger {
         if (this.data.active) {
             const endedAt = new Date().toISOString()
             this.data.runs.unshift({
-                ...this.data.active,
+                ...interruptTasks(this.data.active),
                 endedAt,
                 exit: { code: null, signal: null, at: endedAt, error: 'Core service restarted before run completion.' }
             })

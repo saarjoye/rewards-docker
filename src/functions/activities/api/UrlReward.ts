@@ -1,17 +1,19 @@
 import { URLs } from '../../../constants/urls'
 import type { BasePromotion } from '../../../interface/DashboardData'
 import { BaseActivity } from '../BaseActivity'
+import { markTaskStatus, finitePoints } from '../../../util/TaskTelemetry'
 
 export class UrlReward extends BaseActivity {
     public async doUrlReward(promotion: BasePromotion) {
-        await this.runUrlReward(promotion, true)
+        await this.runUrlReward(promotion)
     }
 
-    private async runUrlReward(promotion: BasePromotion, allowSessionRepair: boolean) {
+    private async runUrlReward(promotion: BasePromotion) {
         const offerId = promotion.offerId
 
         const actionId = this.bot.nextActions.reportActivity
         if (!actionId) {
+            markTaskStatus('skipped', '未找到活动提交入口')
             this.bot.logger.warn(
                 this.bot.isMobile,
                 'URL-REWARD',
@@ -22,6 +24,7 @@ export class UrlReward extends BaseActivity {
 
         const live = await this.bot.browser.func.ensureOffer(offerId)
         if (!live) {
+            markTaskStatus('skipped', '任务数据源中未找到此活动')
             this.bot.logger.warn(
                 this.bot.isMobile,
                 'URL-REWARD',
@@ -30,6 +33,10 @@ export class UrlReward extends BaseActivity {
             return
         }
         if (!live.reportable) {
+            markTaskStatus(
+                live.isCompleted ? 'completed' : live.isLocked ? 'locked' : 'skipped',
+                '活动已完成、锁定或不可提交'
+            )
             this.bot.logger.warn(
                 this.bot.isMobile,
                 'URL-REWARD',
@@ -39,6 +46,7 @@ export class UrlReward extends BaseActivity {
         }
 
         if (this.bot.config.skipNonPointTasks && live.points === 0) {
+            markTaskStatus('skipped', '按配置跳过无积分活动')
             this.bot.logger.info(
                 this.bot.isMobile,
                 'URL-REWARD',
@@ -86,10 +94,15 @@ export class UrlReward extends BaseActivity {
                     'URL-REWARD',
                     `UrlReward request was not acknowledged | offerId=${offerId} | status=${status}`
                 )
-                if (await this.retryAfterRequestFailure(promotion, allowSessionRepair)) return
+                markTaskStatus('verifying', '提交未得到确认，仅复核，不重复领取')
+                return
             }
 
-            const newBalance = availablePoints ?? (await this.bot.browser.func.getCurrentPoints())
+            const newBalance = finitePoints(availablePoints)
+            if (newBalance === null) {
+                markTaskStatus('verifying', '活动请求已结束，等待对应任务数据复核')
+                return
+            }
             const gainedPoints = newBalance - oldBalance
 
             this.bot.logger.debug(
@@ -129,22 +142,7 @@ export class UrlReward extends BaseActivity {
                 'URL-REWARD',
                 `Error in doUrlReward | offerId=${offerId} | message=${error instanceof Error ? error.message : String(error)}`
             )
-            await this.retryAfterRequestFailure(promotion, allowSessionRepair)
+            throw error
         }
-    }
-
-    private async retryAfterRequestFailure(promotion: BasePromotion, allowSessionRepair: boolean): Promise<boolean> {
-        if (!allowSessionRepair) return false
-
-        const refreshed = await this.bot.refreshCurrentRewardsContext(`URL-REWARD:${promotion.offerId}`)
-        if (!refreshed) return false
-
-        this.bot.logger.info(
-            this.bot.isMobile,
-            'URL-REWARD',
-            `Retrying UrlReward once with refreshed cookies and bootstrap data | offerId=${promotion.offerId}`
-        )
-        await this.runUrlReward(promotion, false)
-        return true
     }
 }

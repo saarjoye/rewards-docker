@@ -1,4 +1,5 @@
 import { sanitizeLog, sanitizeText } from './security.mjs'
+import { normalizedTasks } from './task-view.mjs'
 
 const CORE_STATES = {
     idle: '空闲',
@@ -11,6 +12,13 @@ export const LEVEL_LABELS = { debug: '调试', info: '信息', warn: '警告', e
 export const PLATFORM_LABELS = { MAIN: '主流程', MOBILE: '移动端', DESKTOP: '桌面端' }
 export const TITLE_LABELS = {
     CONTROLLER: '运行控制',
+    'TASK-EVENT': '任务进展',
+    'DETECT-STATE': '登录状态检测',
+    BROWSER: '浏览器操作',
+    'GET-DASHBOARD-DATA': '读取任务数据',
+    'GET-CURRENT-POINTS': '核对账号余额',
+    'REACT-PARSE': '解析网页任务',
+    'EDGE-BROWSING': 'Edge 浏览任务',
     'RUN-START': '任务启动',
     'RUN-END': '任务结束',
     'ACCOUNT-START': '账号开始',
@@ -76,6 +84,23 @@ function publicLastExit(lastExit) {
 
 function accountState({ coreState, account, currentEmail, hasRun }) {
     if (!hasRun) return { state: 'not-run', label: '未运行', message: '暂无运行记录' }
+    if (account?.telemetryVersion === 2 && account?.status) {
+        const labels = {
+            completed: '已完成',
+            partial: '部分完成',
+            failed: '失败',
+            interrupted: '已中断',
+            unknown: '待确认',
+            running: '运行中'
+        }
+        return {
+            state: account.status,
+            label: labels[account.status] ?? '待确认',
+            message: account.pendingVerification
+                ? `仍有 ${account.pendingVerification} 项积分待复核`
+                : (labels[account.status] ?? '待确认')
+        }
+    }
     if (account?.success === true) return { state: 'completed', label: '已完成', message: '本次账号任务已完成' }
     if (account?.success === false) {
         return { state: 'failed', label: '失败', message: sanitizeText(account.error || '账号任务失败', 500) }
@@ -93,9 +118,16 @@ function pointsView(account) {
         .filter(([, value]) => finiteOrNull(value) !== null)
         .map(([key, value]) => ({ key, label: SOURCE_LABELS[key] ?? key, points: finiteOrNull(value) }))
     return {
+        verification: account?.telemetryVersion === 2 ? 'tracked' : 'legacy',
+        pendingVerification: account?.pendingVerification ?? null,
+        balanceChange: finiteOrNull(account?.balanceChange),
+        unattributedBalanceChange: finiteOrNull(account?.unattributedBalanceChange),
         initial: finiteOrNull(account?.initialPoints),
         balance: finiteOrNull(account?.live?.balance ?? account?.balance ?? account?.finalPoints),
-        collected: finiteOrNull(account?.collectedPoints ?? account?.collected ?? account?.live?.gained),
+        collected:
+            account?.telemetryVersion === 2
+                ? finiteOrNull(account?.collectedPoints ?? account?.collected ?? account?.live?.gained)
+                : null,
         bySource
     }
 }
@@ -109,21 +141,7 @@ function earnableView(earnable) {
 }
 
 function tasksView(tasks) {
-    if (!Array.isArray(tasks)) return []
-    return tasks.slice(0, 500).map(task => ({
-        id: sanitizeText(task?.id ?? '', 180),
-        title: sanitizeText(task?.title ?? 'Rewards 任务', 180),
-        status: ['pending', 'running', 'completed', 'failed', 'skipped', 'locked'].includes(task?.status)
-            ? task.status
-            : 'pending',
-        progress:
-            finiteOrNull(task?.progress?.current) !== null && finiteOrNull(task?.progress?.total) !== null
-                ? { current: finiteOrNull(task.progress.current), total: finiteOrNull(task.progress.total) }
-                : null,
-        expectedPoints: finiteOrNull(task?.expectedPoints),
-        earnedPoints: finiteOrNull(task?.earnedPoints),
-        updatedAt: typeof task?.updatedAt === 'string' ? task.updatedAt : null
-    }))
+    return normalizedTasks(tasks)
 }
 
 export function buildPublicState({ status, points, configuredAccounts, identity, historySummary, notificationStatus }) {
@@ -164,6 +182,8 @@ export function buildPublicState({ status, points, configuredAccounts, identity,
             points: pointsView(runAccount),
             earnable: earnableView(runAccount?.earnable),
             tasks: tasksView(runAccount?.tasks),
+            taskDataStatus: runAccount?.taskDataStatus ?? 'not-read',
+            taskSources: runAccount?.taskSources ?? {},
             error: runAccount?.error ? sanitizeText(runAccount.error, 500) : null
         }
     })
@@ -188,7 +208,7 @@ export function buildPublicState({ status, points, configuredAccounts, identity,
             finished: Boolean(run.finished),
             startedAt: status.startedAt ?? null,
             currentAccount: currentConfigured ? identity.labelFor(currentConfigured.email) : null,
-            collected: finiteOrNull(points?.collected ?? run.collected),
+            collected: run.telemetryVersion === 2 ? finiteOrNull(points?.collected ?? run.collected) : null,
             currentBalance: finiteOrNull(points?.balance ?? run.live?.currentBalance),
             accountsTotal: finiteOrNull(run.accountsTotal ?? points?.accountsTotal),
             accountsSeen: finiteOrNull(run.accountsSeen ?? points?.accountsSeen),
@@ -198,9 +218,12 @@ export function buildPublicState({ status, points, configuredAccounts, identity,
         accounts,
         history: {
             ...historySummary,
-            todayCollected:
-                Number(historySummary?.todayCollected || 0) +
-                (status.state === 'idle' ? 0 : finiteOrNull(points?.collected ?? run.collected) || 0)
+            todayCollected: finiteOrNull(historySummary?.todayCollected),
+            pendingVerification:
+                (historySummary?.pendingVerification ?? 0) +
+                (status.state === 'idle'
+                    ? 0
+                    : accounts.reduce((sum, account) => sum + (account.points.pendingVerification ?? 0), 0))
         },
         notifications: notificationStatus,
         updatedAt: new Date().toISOString()
@@ -208,8 +231,36 @@ export function buildPublicState({ status, points, configuredAccounts, identity,
 }
 
 export function publicLog(entry) {
+    if (entry?.title === 'TASK-SNAPSHOT') {
+        entry = { ...entry, message: translateLogMessage(entry) }
+    }
+    if (entry?.title === 'TASK-EVENT') {
+        try {
+            const event = JSON.parse(entry.message)
+            entry = {
+                ...entry,
+                platform: { mobile: 'MOBILE', desktop: 'DESKTOP', main: 'MAIN' }[event.platform] ?? entry.platform
+            }
+            entry = {
+                ...entry,
+                level:
+                    event.status === 'failed'
+                        ? 'error'
+                        : ['partial', 'stopped', 'verifying', 'interrupted'].includes(event.status)
+                          ? 'warn'
+                          : 'info'
+            }
+            entry = {
+                ...entry,
+                title: 'TASK-EVENT',
+                message: `${sanitizeText(event.title || '任务状态', 180)}：${sanitizeText(event.action || (event.kind === 'balance' ? '已读取账号余额' : '状态已更新'), 500)}`
+            }
+        } catch {
+            entry = { ...entry, message: '结构化任务消息无效，未据此更新状态' }
+        }
+    }
     const safeEntry = sanitizeLog(entry)
-    const titleLabel = TITLE_LABELS[safeEntry.title] ?? '运行步骤'
+    const titleLabel = TITLE_LABELS[safeEntry.title] ?? sanitizeText(safeEntry.title || '系统消息', 100)
     return {
         ...safeEntry,
         levelLabel: LEVEL_LABELS[safeEntry.level] ?? safeEntry.level,
@@ -234,13 +285,61 @@ function loginFailureReason(value) {
 
 export function translateLogMessage(entry, titleLabel = TITLE_LABELS[entry?.title] ?? '运行任务') {
     const message = sanitizeText(entry?.message ?? '', 8000)
-    if (entry?.title === 'LOGIN-RETRY') return message
+    const common = {
+        'Starting login process': '开始登录',
+        'Entering email': '正在填写登录邮箱',
+        'Email entered successfully': '登录邮箱已提交',
+        'Entering password': '正在填写登录密码',
+        'Password entered successfully': '登录密码已提交',
+        'Successfully logged in': '登录状态已确认',
+        'Finalizing login': '正在验证并保存登录会话',
+        'Login completed, session saved': '登录完成，会话已保存',
+        'Accepting KMSI prompt': '正在确认保持登录提示',
+        'KMSI prompt accepted': '已确认保持登录',
+        'Skipping Passkey prompt': '正在跳过通行密钥提示',
+        'Passkey prompt skipped': '已跳过通行密钥提示',
+        'Starting Bing session verification': '开始验证 Bing 会话',
+        'Verifying Bing session': '正在验证 Bing 会话',
+        'Bing session verified successfully': 'Bing 会话验证通过',
+        'Acquiring rewards context': '正在读取 Rewards 任务上下文',
+        'Bootstrapping rewards context': '正在初始化 Rewards 任务上下文',
+        'No matching states found': '当前页面未识别到登录状态',
+        'Alternative sign-in methods are available': '页面提供其他登录方式',
+        'Account locked selector found': '页面提示账号被锁定',
+        'Detected chromewebdata error page': '浏览器显示页面加载错误'
+    }
+    if (common[message]) return common[message]
+    const states = {
+        EMAIL: '填写邮箱',
+        PASSWORD: '填写密码',
+        KMSI: '保持登录',
+        PASSKEY: '通行密钥提示',
+        TOTP: '动态验证码',
+        OTP: '一次性验证码',
+        PASSWORDLESS: '无密码验证',
+        LOGGED_IN: '已登录',
+        UNKNOWN: '尚未识别',
+        ERROR_ALERT: '页面错误提示',
+        ACCOUNT_LOCKED: '账号锁定'
+    }
+    const stateMessage = message.match(
+        /^(Current state|Processing state|Selected state by priority|Returning first found state): ([A-Z_]+)$/
+    )
+    if (stateMessage)
+        return `${stateMessage[1] === 'Processing state' ? '正在处理' : '检测到登录状态'}：${states[stateMessage[2]] ?? stateMessage[2]}`
+    const iteration = message.match(/^State check iteration (\d+)\/(\d+)$/)
+    if (iteration) return `第 ${iteration[1]}/${iteration[2]} 次检查登录页面`
+    if (entry?.title === 'LOGIN-RETRY' || entry?.title === 'TASK-EVENT') return message
     if (entry?.title === 'TASK-SNAPSHOT') {
+        if (!message.startsWith('{')) return message
         try {
-            const count = JSON.parse(message)?.tasks?.length
+            const snapshot = JSON.parse(message)
+            if (snapshot.dataStatus === 'unavailable') return '任务数据源不可用，清单尚未确认'
+            if (snapshot.dataStatus === 'pending') return '已生成待执行清单，正在等待读取任务数据'
+            const count = snapshot?.tasks?.length
             return Number.isSafeInteger(count) ? `已读取当日任务列表，共 ${count} 项` : '已读取当日任务列表'
         } catch {
-            return '当日任务列表读取完成'
+            return '任务列表消息无效，读取结果待确认'
         }
     }
     if (entry?.title === 'RUN-START') {
@@ -249,13 +348,13 @@ export function translateLogMessage(entry, titleLabel = TITLE_LABELS[entry?.titl
     }
     if (entry?.title === 'RUN-END') {
         const points = numeric(message, 'pointsGained')
-        return points === null ? '全部账号处理结束' : `全部账号处理结束，本次获得 ${points} 分`
+        return points === null ? '全部账号处理结束' : `全部账号处理结束，余额变化 ${points} 分，任务得分以确认记录为准`
     }
     if (entry?.title === 'ACCOUNT-START')
         return `开始处理 ${message.match(/^Starting account: ([^|]+)/)?.[1]?.trim() || '当前账号'}`
     if (entry?.title === 'ACCOUNT-END') {
         const points = numeric(message, 'pointsGained')
-        return points === null ? '当前账号处理完成' : `当前账号处理完成，本次获得 ${points} 分`
+        return points === null ? '当前账号处理结束' : `当前账号处理结束，余额变化 ${points} 分，任务得分以确认记录为准`
     }
     if (entry?.title === 'ACCOUNT-DELAY') {
         const seconds = message.match(/^Waiting ([\d.]+) seconds/)?.[1]
@@ -264,8 +363,8 @@ export function translateLogMessage(entry, titleLabel = TITLE_LABELS[entry?.titl
     if (entry?.title === 'POINTS') {
         const match = message.match(/Mobile: (\d+) \| Browser: (\d+) \| App: (\d+)/)
         return match
-            ? `今日可得：移动搜索 ${match[1]} 分，桌面搜索 ${match[2]} 分，应用任务 ${match[3]} 分`
-            : '已读取今日积分额度'
+            ? `旧格式额度报告：移动 ${match[1]}、桌面 ${match[2]}、应用 ${match[3]} 分；以任务清单的确认状态为准`
+            : message
     }
     if (entry?.title === 'CONTROLLER') {
         if (message.startsWith('Starting run:')) return '正在启动任务进程'
@@ -290,20 +389,20 @@ export function translateLogMessage(entry, titleLabel = TITLE_LABELS[entry?.titl
     }
 
     const points = numeric(message, 'pointsGained')
-    const suffix = points === null ? '' : `，获得 ${points} 分`
+    const suffix = points === null ? '' : `，日志报告增量 ${points} 分，尚未归因`
     if (
         /^(Completed|Finished|Reward claimed|Nothing claimed)|already (?:been )?completed|already complete/i.test(
             message
         )
     ) {
-        return `${titleLabel}已完成${suffix}`
+        return `${titleLabel}流程结束${suffix ? '，日志报告值仅供核对' : ''}：${message}`
     }
-    if (/^(Starting|Started)/i.test(message)) return `正在执行${titleLabel}`
-    if (/^(Skipping|Skip )/i.test(message)) return `${titleLabel}已跳过`
-    if (entry?.level === 'error' || /failed|failure/i.test(message)) return `${titleLabel}执行失败，请展开诊断详情`
-    if (entry?.level === 'warn') return `${titleLabel}出现警告，请展开诊断详情`
+    if (/^(Starting|Started)/i.test(message)) return `正在执行${titleLabel}：${message}`
+    if (/^(Skipping|Skip )/i.test(message)) return `${titleLabel}已跳过：${message}`
+    if (entry?.level === 'error' || /failed|failure/i.test(message)) return `${titleLabel}执行失败：${message}`
+    if (entry?.level === 'warn') return `${titleLabel}：${message}`
     if (points !== null) return `${titleLabel}进度已更新${suffix}`
-    return `${titleLabel}正在处理`
+    return message || `${titleLabel}未提供具体消息`
 }
 
 export function publicErrorMessage(error) {

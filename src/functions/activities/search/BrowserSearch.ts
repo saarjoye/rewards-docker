@@ -8,6 +8,7 @@ import { SearchProgress } from './SearchProgress'
 import type { SearchTracker } from '../../../interface/Search'
 import type { MissingSearchPoints } from '../../../interface/Points'
 import type { MicrosoftRewardsBot } from '../../../index'
+import { reportTaskProgress, markTaskStatus } from '../../../util/TaskTelemetry'
 
 const REFRESH_EVERY = 10
 const MAX_QUERY_ATTEMPTS = 5
@@ -92,6 +93,7 @@ export class Search extends BaseActivity {
             const queryQueue = new SearchQueryQueue(this.bot)
             const topicCount = await queryQueue.prepare()
             if (!topicCount) {
+                markTaskStatus('skipped', '没有可用搜索主题，跳过搜索')
                 this.bot.logger.warn(isMobile, tracker.context, 'No main search topics available, skipping')
                 return stats
             }
@@ -116,6 +118,7 @@ export class Search extends BaseActivity {
                 await this.bot.browser.func.synchronizeActiveBrowserCookies('SEARCH-COOKIE-SEED', true)
                 await this.bingSearch(page, query, isMobile)
                 stats.performed++
+                reportTaskProgress('已执行搜索，正在核对额度', stats.performed, tracker.maxSearches)
 
                 await this.bot.browser.func.synchronizeActiveBrowserCookies('SEARCH-COOKIE-CAPTURE')
                 const gained = await tracker.measure()

@@ -1,6 +1,7 @@
 import type { QuestChild } from '../../../browser/ReactFunc'
 import { BaseActivity } from '../BaseActivity'
 import { URLs } from '../../../constants/urls'
+import { markTaskStatus, finitePoints } from '../../../util/TaskTelemetry'
 
 export class ClaimReward extends BaseActivity {
     public async claimReward(child: QuestChild, parentId: string) {
@@ -8,6 +9,7 @@ export class ClaimReward extends BaseActivity {
 
         const actionId = this.bot.nextActions.reportActivity
         if (!actionId) {
+            markTaskStatus('skipped', '未发现领取入口')
             this.bot.logger.warn(
                 this.bot.isMobile,
                 'CLAIM-REWARD',
@@ -17,10 +19,12 @@ export class ClaimReward extends BaseActivity {
         }
 
         if (!child.hash) {
+            markTaskStatus('skipped', '任务缺少提交信息')
             this.bot.logger.warn(this.bot.isMobile, 'CLAIM-REWARD', `Skipping ${offerId}: no live hash on quest child`)
             return
         }
         if (!child.reportable) {
+            markTaskStatus(child.isLocked ? 'locked' : 'skipped', '该任务不可提交')
             this.bot.logger.warn(
                 this.bot.isMobile,
                 'CLAIM-REWARD',
@@ -39,7 +43,7 @@ export class ClaimReward extends BaseActivity {
 
         try {
             const questUrl = URLs.rewards.quest(parentId)
-            const { status, acknowledged } = await this.bot.browser.func.reportServerAction(
+            const { status, acknowledged, availablePoints } = await this.bot.browser.func.reportServerAction(
                 actionId,
                 [
                     child.hash,
@@ -53,7 +57,11 @@ export class ClaimReward extends BaseActivity {
                 }
             )
 
-            const newBalance = await this.bot.browser.func.getCurrentPoints()
+            const newBalance = finitePoints(availablePoints)
+            if (newBalance === null) {
+                markTaskStatus('verifying', '领取请求已结束，等待对应任务数据复核')
+                return
+            }
             const gained = newBalance - oldBalance
 
             this.bot.logger.debug(

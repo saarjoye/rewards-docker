@@ -55,7 +55,7 @@ test('maps core and account states to Chinese without exposing email', () => {
         assert.equal(state.accounts[1].status.label, '等待执行')
         assert.equal(state.accounts[0].earnable.mobile, null)
         assert.equal(state.accounts[0].tasks[0].expectedPoints, null)
-        assert.equal(state.history.todayCollected, 35)
+        assert.equal(state.history.todayCollected, 20)
         assert.doesNotMatch(JSON.stringify(state), /first@example\.com|second@example\.com/)
     } finally {
         fs.rmSync(directory, { recursive: true, force: true })

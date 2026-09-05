@@ -13,9 +13,9 @@ concurrency:
 
 env:
     CORE_IMAGE: ghcr.io/${{ github.repository_owner }}/mrs-core
-    CORE_TAG: 4.3.2-cn2
+    CORE_TAG: 4.3.2-cn3
     WEB_IMAGE: ghcr.io/${{ github.repository_owner }}/mrs-web
-    WEB_TAG: 4.3.2-cn2
+    WEB_TAG: 4.3.2-cn3
 
 jobs:
     build:

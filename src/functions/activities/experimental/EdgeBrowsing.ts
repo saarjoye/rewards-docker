@@ -6,6 +6,7 @@ import type { AppDashboardData, Promotion } from '../../../interface/AppDashBoar
 import type { DashboardData } from '../../../interface/DashboardData'
 import { BaseActivity } from '../BaseActivity'
 import { EdgeBrowsingProgress, type EdgeBrowsingProgressSnapshot } from './EdgeBrowsingProgress'
+import { reportTaskProgress, reportTaskEvidence, markTaskStatus } from '../../../util/TaskTelemetry'
 
 const LOG_TAG = 'EDGE-BROWSING'
 const PROMOTION_NAME = 'edge_browsing_streak_flight'
@@ -61,6 +62,7 @@ export class EdgeBrowsing extends BaseActivity {
     public async run(data: DashboardData, signal?: AbortSignal): Promise<void> {
         const accessToken = this.bot.accessToken
         if (!accessToken) {
+            markTaskStatus('skipped', '缺少 App 登录状态，跳过 Edge 浏览任务')
             this.bot.logger.warn(this.bot.isMobile, LOG_TAG, 'Skipping: mobile app access token is unavailable')
             return
         }
@@ -74,6 +76,7 @@ export class EdgeBrowsing extends BaseActivity {
                 if (signal?.aborted) return
 
                 if (activation === 'absent') {
+                    markTaskStatus('skipped', '当前账号没有 Edge 浏览活动')
                     this.bot.logger.info(
                         this.bot.isMobile,
                         LOG_TAG,
@@ -82,7 +85,10 @@ export class EdgeBrowsing extends BaseActivity {
                     return
                 }
 
-                if (activation === 'failed') return
+                if (activation === 'failed') {
+                    markTaskStatus('failed', 'Edge 活动激活失败')
+                    return
+                }
 
                 profile = await this.getEdgeProfile(accessToken)
                 if (signal?.aborted) return
@@ -93,6 +99,7 @@ export class EdgeBrowsing extends BaseActivity {
 
             const complete = settings.promotion.attributes['complete']?.toLowerCase() === 'true'
             if (complete) {
+                reportTaskEvidence({ completed: true, balance: null, current: null, total: null, unit: 'items' })
                 this.bot.logger.info(this.bot.isMobile, LOG_TAG, 'Browsing Streak on Edge is already complete')
                 return
             }
@@ -125,6 +132,12 @@ export class EdgeBrowsing extends BaseActivity {
             )
 
             for (let reportNumber = 1; reportNumber <= reportCount; reportNumber++) {
+                reportTaskProgress(
+                    '等待下一次 Edge 活动上报',
+                    reportNumber - 1,
+                    reportCount,
+                    progress.delayBeforeReport(reportNumber)
+                )
                 const beforeReport = progress.snapshot(reportNumber - 1)
 
                 this.bot.logger.info(
@@ -134,6 +147,7 @@ export class EdgeBrowsing extends BaseActivity {
                 )
 
                 if (!(await this.wait(progress.delayBeforeReport(reportNumber), signal))) {
+                    markTaskStatus('interrupted', 'Edge 浏览任务已取消')
                     this.bot.logger.debug(this.bot.isMobile, LOG_TAG, 'Background activity cancelled')
                     return
                 }
@@ -155,6 +169,7 @@ export class EdgeBrowsing extends BaseActivity {
 
                 if (signal?.aborted) return
                 reportsProcessed = reportNumber
+                reportTaskProgress('Edge 上报结束，正在核对服务端状态', reportsProcessed, reportCount)
 
                 if (!result) {
                     failedReports += 1
@@ -203,6 +218,9 @@ export class EdgeBrowsing extends BaseActivity {
             }
 
             const finished = progress.snapshot(reportsProcessed)
+            reportTaskEvidence({ completed: serverComplete, balance: null, current: null, total: null, unit: 'items' })
+            if (!serverComplete)
+                markTaskStatus(signal?.aborted ? 'interrupted' : 'partial', 'Edge 浏览流程结束，服务端尚未确认全部完成')
             const summary =
                 `Finished background Edge browsing activity | reports=${reportsProcessed}` +
                 ` | reportsCompleted=${reportsProcessed}/${reportCount}` +
