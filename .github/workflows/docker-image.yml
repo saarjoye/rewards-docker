@@ -13,9 +13,9 @@ concurrency:
 
 env:
     CORE_IMAGE: ghcr.io/${{ github.repository_owner }}/mrs-core
-    CORE_TAG: 4.3.2-cn3
+    CORE_TAG: 4.3.2-cn4
     WEB_IMAGE: ghcr.io/${{ github.repository_owner }}/mrs-web
-    WEB_TAG: 4.3.2-cn3
+    WEB_TAG: 4.3.2-cn4
 
 jobs:
     build:
@@ -57,6 +57,7 @@ jobs:
                   labels: |
                       org.opencontainers.image.source=https://github.com/${{ github.repository }}
                       org.opencontainers.image.description=Microsoft Rewards Script v4.3.2 core
+                      org.opencontainers.image.revision=${{ github.sha }}
                   tags: ${{ env.CORE_IMAGE }}:${{ env.CORE_TAG }}
 
             - name: Build and push Chinese Web
@@ -70,4 +71,5 @@ jobs:
                   labels: |
                       org.opencontainers.image.source=https://github.com/${{ github.repository }}
                       org.opencontainers.image.description=Microsoft Rewards Chinese control Web
+                      org.opencontainers.image.revision=${{ github.sha }}
                   tags: ${{ env.WEB_IMAGE }}:${{ env.WEB_TAG }}

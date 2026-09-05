@@ -29,6 +29,7 @@ import type { AppDashboardData, Promotion } from '../interface/AppDashBoardData'
 import type { QuestChild } from '../browser/ReactFunc'
 import { TaskTelemetry, accountReference, type TaskSpec, type TaskSource } from '../util/TaskTelemetry'
 import { evidenceFromPayload } from '../util/TaskEvidence'
+import { promotionEligibility } from '../util/TaskEligibility'
 
 export default class Activities {
     private bot: MicrosoftRewardsBot
@@ -73,6 +74,28 @@ export default class Activities {
                 })
             )
         const workers = this.bot.config.workers
+        const today = this.bot.utils.getFormattedDate()
+        const promotions = new Map<string, { promotion: BasePromotion; group: 'daily' | 'more' }>()
+        for (const promotion of [
+            ...(data.dashboard.morePromotions ?? []),
+            ...(data.dashboard.morePromotionsWithoutPromotionalItems ?? [])
+        ])
+            promotions.set(promotion.offerId, { promotion, group: 'more' })
+        for (const promotion of data.dashboard.dailySetPromotions?.[today] ?? [])
+            promotions.set(promotion.offerId, { promotion, group: 'daily' })
+        emit(
+            'rsc',
+            this.bot.isMobile ? 'mobile' : 'desktop',
+            'available',
+            [...promotions.values()].map(({ promotion, group }) => ({
+                id: promotion.offerId,
+                title: promotion.title,
+                points: promotion.pointProgressMax,
+                current: promotion.pointProgress,
+                completed: promotion.complete,
+                ...promotionEligibility(promotion, this.bot.config, group)
+            }))
+        )
         for (const platform of ['mobile', 'desktop'] as const) {
             if (!(platform === 'mobile' ? workers.doMobileSearch : workers.doDesktopSearch)) continue
             const evidence = evidenceFromPayload(

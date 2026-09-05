@@ -1,7 +1,9 @@
 import { URLs } from '../../../constants/urls'
 import { BaseActivity } from '../BaseActivity'
 import type { ParentQuest, QuestChild } from '../../../browser/ReactFunc'
-import type { BasePromotion, DashboardData, PunchCard } from '../../../interface/DashboardData'
+import type { DashboardData, PunchCard } from '../../../interface/DashboardData'
+import { questEligibility, isClaimQuestChild } from '../../../util/TaskEligibility'
+import { accountReference, markTaskStatus } from '../../../util/TaskTelemetry'
 
 export class PunchCards extends BaseActivity {
     public async runMobile(data: DashboardData): Promise<void> {
@@ -44,7 +46,10 @@ export class PunchCards extends BaseActivity {
 
     private async run(data: DashboardData): Promise<void> {
         const parents = await this.getParentQuests()
-        if (!parents) return
+        if (!parents) {
+            markTaskStatus('verifying', '打卡列表读取失败，不能判定为没有任务')
+            return
+        }
 
         const apiById = new Map(
             (data.dashboard.punchCards ?? [])
@@ -135,7 +140,10 @@ export class PunchCards extends BaseActivity {
         const parentId = parent.offerId
         const title = parent.title || apiCard?.parentPromotion?.title || parentId
         const children = await this.getQuestChildren(parentId, title)
-        if (!children) return
+        if (!children) {
+            markTaskStatus('verifying', '打卡子任务读取失败，不能判定为已完成')
+            return
+        }
 
         const apiChildById = new Map(
             (apiCard?.childPromotions ?? [])
@@ -146,6 +154,25 @@ export class PunchCards extends BaseActivity {
             (left, right) =>
                 (apiChildById.get(left.offerId)?.priority ?? Number.MAX_SAFE_INTEGER) -
                 (apiChildById.get(right.offerId)?.priority ?? Number.MAX_SAFE_INTEGER)
+        )
+        this.bot.logger.info(
+            this.bot.isMobile,
+            'TASK-SNAPSHOT',
+            JSON.stringify({
+                version: 2,
+                accountRef: accountReference(this.bot.currentAccountEmail ?? ''),
+                source: 'rsc',
+                platform: this.bot.isMobile ? 'mobile' : 'desktop',
+                dataStatus: 'available',
+                planned: true,
+                tasks: ordered.map(child => ({
+                    id: child.offerId,
+                    title: apiChildById.get(child.offerId)?.title || title + '：子任务',
+                    points: child.points,
+                    completed: child.isCompleted,
+                    ...questEligibility(child, this.bot.config, apiChildById.get(child.offerId))
+                }))
+            })
         )
 
         this.bot.logger.info(
@@ -161,35 +188,31 @@ export class PunchCards extends BaseActivity {
         for (const child of ordered) {
             const apiChild = apiChildById.get(child.offerId)
 
-            if (!child.reportable) {
-                remaining += 1
-                this.bot.logger.debug(
-                    this.bot.isMobile,
-                    'PUNCHCARD',
-                    `Skip ${child.offerId}: not reportable (locked=${child.isLocked} disabled=${child.isDisabled} done=${child.isCompleted} hash=${Boolean(child.hash)})`
-                )
-                continue
-            }
-
-            if (this.isSearchQuotaChild(child.offerId, apiChild)) {
-                remaining += 1
-                this.bot.logger.info(this.bot.isMobile, 'PUNCHCARD', `Skip ${child.offerId}: multi-day search task`)
-                continue
-            }
-
-            if (this.isClaimChild(child.offerId, apiChild)) {
-                if (!this.bot.config.autoClaimPunchcardRewards) {
+            if (child.isCompleted) continue
+            const eligibility = questEligibility(child, this.bot.config, apiChild)
+            if (eligibility.eligibility !== 'eligible') {
+                if (eligibility.eligibility === 'unknown') {
                     remaining += 1
-                    this.bot.logger.info(
-                        this.bot.isMobile,
-                        'PUNCHCARD',
-                        `Reward for "${title}" is ready for manual redemption | offerId=${child.offerId}`
-                    )
-                    continue
+                    markTaskStatus('verifying', eligibility.eligibilityReason)
                 }
+                this.bot.logger.info(this.bot.isMobile, 'PUNCHCARD', eligibility.eligibilityReason)
+                continue
+            }
+
+            if (isClaimQuestChild(child.offerId, apiChild)) {
                 await this.bot.activities.doClaimReward(child, parentId)
             } else {
-                await this.reportQuestChild(child, parentId)
+                await this.bot.activities.telemetry.run(
+                    {
+                        key: 'quest-child',
+                        title: apiChild?.title || title + '：子任务',
+                        source: 'rsc',
+                        platform: this.bot.isMobile ? 'mobile' : 'desktop',
+                        offerId: child.offerId,
+                        parentOfferId: parentId
+                    },
+                    () => this.reportQuestChild(child, parentId)
+                )
             }
 
             reported += 1
@@ -200,7 +223,7 @@ export class PunchCards extends BaseActivity {
         this.bot.logger.info(
             this.bot.isMobile,
             'PUNCHCARD',
-            `Quest "${title}" ${remaining === 0 ? 'COMPLETE' : 'in progress'} | reported=${reported}` +
+            `打卡子任务处理结束，完成情况以任务复核为准 | reported=${reported}` +
                 `${remaining ? ` | remaining=${remaining}` : ''} | pointsGained=${gained}` +
                 ` | currentBalance=${this.bot.userData.currentPoints}` +
                 `${parent.pointProgressMax > 0 ? ` | targetPoints=${parent.pointProgressMax}` : ''}`,
@@ -236,6 +259,7 @@ export class PunchCards extends BaseActivity {
     private async reportQuestChild(child: QuestChild, parentId: string): Promise<void> {
         const actionId = this.bot.nextActions.reportActivity
         if (!actionId) {
+            markTaskStatus('verifying', '未读取到打卡提交入口，未提交活动')
             this.bot.logger.warn(
                 this.bot.isMobile,
                 'PUNCHCARD',
@@ -244,6 +268,7 @@ export class PunchCards extends BaseActivity {
             return
         }
         if (!child.hash) {
+            markTaskStatus('verifying', '打卡提交数据缺失，未提交活动')
             this.bot.logger.warn(this.bot.isMobile, 'PUNCHCARD', `Skip ${child.offerId}: no live hash`)
             return
         }
@@ -284,6 +309,7 @@ export class PunchCards extends BaseActivity {
                 gained > 0 || acknowledged ? 'green' : undefined
             )
         } catch (error) {
+            markTaskStatus('failed', '打卡子任务上报失败')
             this.bot.logger.error(
                 this.bot.isMobile,
                 'PUNCHCARD',
@@ -292,26 +318,5 @@ export class PunchCards extends BaseActivity {
                 }`
             )
         }
-    }
-
-    private isSearchQuotaChild(offerId: string, promotion?: BasePromotion): boolean {
-        if (promotion) {
-            const type = (promotion.promotionType ?? '').toLowerCase()
-            const attributeType = String(this.getAttribute(promotion, 'type') ?? '').toLowerCase()
-            const progressMax = Number(promotion.activityProgressMax ?? 0)
-            if (type === 'search' || attributeType === 'search' || progressMax > 1) return true
-        }
-        return /search/i.test(offerId) && /(day|streak|\dx)/i.test(offerId)
-    }
-
-    private isClaimChild(offerId: string, promotion?: BasePromotion): boolean {
-        if (/\/redeem\//.test((promotion?.destinationUrl ?? '').toLowerCase())) return true
-        return /(redeem|claim|(?<!url)reward)/i.test(offerId)
-    }
-
-    private getAttribute(promotion: BasePromotion, key: string): unknown {
-        const attributes = promotion.attributes
-        if (!attributes || typeof attributes !== 'object') return undefined
-        return (attributes as Record<string, unknown>)[key]
     }
 }

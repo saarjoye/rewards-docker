@@ -1,5 +1,5 @@
 import { sanitizeLog, sanitizeText } from './security.mjs'
-import { normalizedTasks } from './task-view.mjs'
+import { normalizedTasks, currentTasks } from './task-view.mjs'
 
 const CORE_STATES = {
     idle: '空闲',
@@ -141,7 +141,7 @@ function earnableView(earnable) {
 }
 
 function tasksView(tasks) {
-    return normalizedTasks(tasks)
+    return normalizedTasks(currentTasks(tasks))
 }
 
 export function buildPublicState({ status, points, configuredAccounts, identity, historySummary, notificationStatus }) {

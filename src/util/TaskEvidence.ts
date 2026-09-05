@@ -41,7 +41,7 @@ export function evidenceFromPayload(spec: TaskSpec, payload: unknown): TaskEvide
             finitePoints(object(item).pointProgress),
             finitePoints(object(item).pointProgressMax)
         ])
-        if (pairs.some(pair => pair[0] === null || pair[1] === null)) return evidence
+        if (pairs.some(pair => pair[0] === null || pair[1] === null || pair[0]! > pair[1]!)) return evidence
         evidence.current = pairs.reduce((sum, pair) => sum + pair[0]!, 0)
         evidence.total = pairs.reduce((sum, pair) => sum + pair[1]!, 0)
         evidence.completed = evidence.current >= evidence.total

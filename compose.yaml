@@ -2,7 +2,7 @@ name: microsoft-rewards
 
 services:
     rewards-core:
-        image: ghcr.io/saarjoye/mrs-core:4.3.2-cn3
+        image: ghcr.io/saarjoye/mrs-core:4.3.2-cn4
         container_name: microsoft-rewards-core
         restart: unless-stopped
         env_file:
@@ -47,7 +47,7 @@ services:
             - rewards-control
 
     rewards-web:
-        image: ghcr.io/saarjoye/mrs-web:4.3.2-cn3
+        image: ghcr.io/saarjoye/mrs-web:4.3.2-cn4
         container_name: microsoft-rewards-web
         restart: unless-stopped
         env_file:

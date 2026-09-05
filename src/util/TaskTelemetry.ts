@@ -40,6 +40,7 @@ interface TaskContext {
     id: string
     stopped: boolean
     explicitStatus?: TaskStatus
+    explicitAction?: string
     evidence?: TaskEvidence
 }
 export const taskContext = new AsyncLocalStorage<TaskContext>()
@@ -68,6 +69,7 @@ export function markTaskStatus(status: TaskStatus, action: string): void {
     const context = taskContext.getStore()
     if (!context) return
     context.explicitStatus = status
+    context.explicitAction = action
     if (status === 'stopped') context.stopped = true
     if (status === 'failed') context.failed = true
     context.publish({ status, action })
@@ -223,9 +225,13 @@ export class TaskTelemetry {
                 status =
                     context.failed || context.children.includes('failed')
                         ? 'partial'
-                        : context.children.every(item => ['completed', 'skipped', 'locked'].includes(item))
-                          ? 'completed'
-                          : 'partial'
+                        : context.explicitStatus
+                          ? context.explicitStatus
+                          : context.children.length === 0
+                            ? 'skipped'
+                            : context.children.every(item => ['completed', 'skipped', 'locked'].includes(item))
+                              ? 'completed'
+                              : 'partial'
             } else if (!context.failed && !['skipped', 'locked', 'interrupted'].includes(status)) {
                 status =
                     after?.completed === true
@@ -253,7 +259,10 @@ export class TaskTelemetry {
             }
             publish({
                 status,
-                action: `${spec.title}：${actions[status]}`,
+                action:
+                    context.explicitAction && status !== 'completed'
+                        ? `${spec.title}：${actions[status]}；${context.explicitAction}`
+                        : `${spec.title}：${actions[status]}`,
                 waitUntil: null,
                 verification: spec.group
                     ? 'not-applicable'

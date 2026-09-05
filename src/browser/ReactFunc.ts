@@ -1,5 +1,6 @@
 import type { MicrosoftRewardsBot } from '../index'
 import { accountReference, finitePoints } from '../util/TaskTelemetry'
+import { offerEligibility } from '../util/TaskEligibility'
 
 export interface ParsedOffer {
     offerId: string
@@ -11,6 +12,9 @@ export interface ParsedOffer {
     pointProgress?: number | null
     completionKnown?: boolean
     promotionSubtype: string | null
+    promotionType?: string | null
+    name?: string | null
+    isDisabled?: boolean
     destination: string
     isCompleted: boolean
     isPromotional: boolean
@@ -120,7 +124,8 @@ export default class ReactFunc {
                         points: offer.observedPoints ?? null,
                         current: offer.pointProgress ?? null,
                         completed: offer.isCompleted,
-                        locked: offer.isLocked
+                        locked: offer.isLocked,
+                        ...(this.bot.config ? offerEligibility(offer, this.bot.config, this.todayStamp()) : {})
                     }))
                 })
             )
@@ -319,7 +324,8 @@ export default class ReactFunc {
                     (typeof promotionalValue === 'string' && promotionalValue.toLowerCase() === 'true')
 
                 // Never try future-dated offers, lol
-                const reportable = !!hash && !isCompleted && !isLocked && (date === null || date <= today)
+                const reportable =
+                    !!hash && !isCompleted && !isLocked && obj.isDisabled !== true && (date === null || date <= today)
 
                 const candidate: ParsedOffer = {
                     offerId,
@@ -331,6 +337,9 @@ export default class ReactFunc {
                     pointProgress: finitePoints(obj.pointProgress),
                     completionKnown: typeof (obj.isCompleted ?? obj.complete) === 'boolean',
                     promotionSubtype: (obj.promotionSubtype as string | null) ?? null,
+                    promotionType: typeof obj.promotionType === 'string' ? obj.promotionType : null,
+                    name: typeof obj.name === 'string' ? obj.name : null,
+                    isDisabled: obj.isDisabled === true,
                     destination: (obj.destination as string) ?? (obj.destinationUrl as string) ?? '',
                     isCompleted,
                     isPromotional,
@@ -356,6 +365,9 @@ export default class ReactFunc {
                 existing.pointProgress ??= candidate.pointProgress
                 existing.completionKnown ||= candidate.completionKnown
                 existing.promotionSubtype ??= candidate.promotionSubtype
+                existing.promotionType ??= candidate.promotionType
+                existing.name ??= candidate.name
+                existing.isDisabled ||= candidate.isDisabled
                 existing.destination ||= candidate.destination
                 existing.isCompleted ||= candidate.isCompleted
                 existing.isPromotional ||= candidate.isPromotional
@@ -367,6 +379,7 @@ export default class ReactFunc {
                     !!existing.hash &&
                     !existing.isCompleted &&
                     !existing.isLocked &&
+                    !existing.isDisabled &&
                     (existing.date === null || existing.date <= today)
             }
 
@@ -823,6 +836,7 @@ export default class ReactFunc {
 
     private normaliseDate(rawDate: string | undefined): string | null {
         if (!rawDate) return null
+        if (/^\d{4}-\d{2}-\d{2}$/.test(rawDate)) return rawDate
         const m = rawDate.match(/^(\d{2})\/(\d{2})\/(\d{4})$/)
         if (!m) return null
         return `${m[3]}-${m[1]}-${m[2]}`

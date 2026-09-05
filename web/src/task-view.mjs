@@ -82,3 +82,13 @@ export function normalizedTasks(tasks, now = Date.now()) {
         }
     })
 }
+
+export function currentTasks(tasks) {
+    if (!Array.isArray(tasks)) return []
+    return tasks.filter(
+        task =>
+            task?.eligibility !== 'excluded' ||
+            task?.invocationId ||
+            ['running', 'verifying', 'partial', 'stopped', 'failed', 'interrupted'].includes(task?.status)
+    )
+}

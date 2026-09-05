@@ -154,7 +154,7 @@ export function mapFlyoutToDashboard(data: RewardsFlyoutData): DashboardData {
         promotionalItems: uniquePromotions([...highValuePromotions.slice(1), ...additionalPromotions]),
         dailySetPromotions: flyout.dailySetPromotions ?? {},
         morePromotions: flyout.morePromotions ?? [],
-        morePromotionsWithoutPromotionalItems: [],
+        morePromotionsWithoutPromotionalItems: uniquePromotions([...highValuePromotions, ...additionalPromotions]),
         punchCards: [],
         componentImpressionPromotions: flyout.impressionPromotions ?? []
     } as unknown as Dashboard

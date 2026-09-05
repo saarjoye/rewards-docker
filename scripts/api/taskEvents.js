@@ -158,7 +158,10 @@ export function applyTaskEvent(state, entry) {
 
 export function structuredAccountStatus(account, finished = false) {
     const tasks = Object.values(account.tasks ?? {}).filter(
-        task => task.telemetryVersion === 2 && !task.group && (task.invocationId || task.planned)
+        task =>
+            task.telemetryVersion === 2 &&
+            !task.group &&
+            (task.invocationId || (task.planned && task.eligibility !== 'excluded'))
     )
     if (!tasks.length) return account.error ? 'failed' : finished ? 'unknown' : 'running'
     if (account.error || tasks.some(task => task.status === 'failed'))

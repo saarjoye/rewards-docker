@@ -180,28 +180,38 @@ function applyTaskSnapshot(state, entry) {
         if (!id) continue
         const previous = account.tasks[id]
         if (previous?.invocationId) continue
+        // A dashboard execution plan has stronger routing evidence than a generic page snapshot.
+        const keepPlan = previous?.eligibilityPlanned && !payload.planned && item.eligibility !== 'excluded'
+        const eligibility = keepPlan ? previous.eligibility : item.eligibility
+        const eligibilityReason = keepPlan ? previous.eligibilityReason : safeTaskText(item.eligibilityReason)
         const expected = typeof item?.points === 'number' ? item.points : null
         account.tasks[id] = {
             id,
-            planned: Boolean(payload.planned),
+            planned: Boolean(previous?.planned || payload.planned),
+            eligibility: ['eligible', 'excluded', 'unknown'].includes(eligibility) ? eligibility : null,
+            eligibilityReason,
+            eligibilityPlanned: Boolean(previous?.eligibilityPlanned || payload.planned),
             ...(structured
                 ? {
                       telemetryVersion: 2,
                       source: payload.source,
                       platform: payload.platform,
-                      verification: 'not-applicable',
-                      action: item.unavailable
-                          ? '任务来源不可用，本轮跳过'
-                          : item.completed
-                            ? '读取时已完成，本轮得分尚无记录'
-                            : item.locked
-                              ? '活动尚未解锁'
-                              : '等待执行'
+                      verification: item.unavailable || eligibility === 'unknown' ? 'pending' : 'not-applicable',
+                      action:
+                          eligibility === 'unknown' || eligibility === 'excluded'
+                              ? eligibilityReason
+                              : item.unavailable
+                                ? '任务来源不可用，执行情况待核对'
+                                : item.completed
+                                  ? '读取时已完成，本轮得分尚无记录'
+                                  : item.locked
+                                    ? '活动尚未解锁'
+                                    : '等待执行'
                   }
                 : {}),
             title: safeTaskText(item?.title) || previous?.title || 'Rewards 任务',
             status: item.unavailable
-                ? 'skipped'
+                ? 'verifying'
                 : item?.completed
                   ? 'completed'
                   : item?.locked

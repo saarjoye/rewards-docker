@@ -1,5 +1,6 @@
 import { BaseActivity } from '../BaseActivity'
 import type { BasePromotion } from '../../../interface/DashboardData'
+import { markTaskStatus } from '../../../util/TaskTelemetry'
 
 export class PromotionActivityRunner extends BaseActivity {
     public async run(promotions: BasePromotion[]): Promise<void> {
@@ -10,6 +11,7 @@ export class PromotionActivityRunner extends BaseActivity {
                     await this.bot.utils.wait(this.bot.utils.randomDelay(5000, 15000))
                 }
             } catch (error) {
+                markTaskStatus('failed', '活动执行失败')
                 this.bot.logger.error(
                     this.bot.isMobile,
                     'ACTIVITY',

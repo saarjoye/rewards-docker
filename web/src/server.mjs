@@ -347,7 +347,7 @@ async function handleApi(req, res, url) {
             authenticated: Boolean(session),
             username: session?.username ?? null,
             csrfToken: session?.csrfToken ?? null,
-            version: '4.3.2-cn3'
+            version: '4.3.2-cn4'
         })
     }
 

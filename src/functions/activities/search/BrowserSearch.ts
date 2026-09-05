@@ -47,7 +47,7 @@ export class Search extends BaseActivity {
             this.bot.logger.info(
                 isMobile,
                 tracker.context,
-                `Completed Bing searches | pointsGained=${stats.totalGained} | currentBalance=${this.bot.userData.currentPoints} | previousBalance=${startBalance} | searches=${stats.performed} | ${tracker.progress()}`
+                `${tracker.done() ? '搜索额度已完成' : '本轮搜索已停止，仍有剩余额度'} | pointsGained=${stats.totalGained} | currentBalance=${this.bot.userData.currentPoints} | previousBalance=${startBalance} | searches=${stats.performed} | ${tracker.progress()}`
             )
             return stats.totalGained
         } finally {
@@ -93,7 +93,7 @@ export class Search extends BaseActivity {
             const queryQueue = new SearchQueryQueue(this.bot)
             const topicCount = await queryQueue.prepare()
             if (!topicCount) {
-                markTaskStatus('skipped', '没有可用搜索主题，跳过搜索')
+                markTaskStatus('failed', '没有可用搜索主题，搜索未执行')
                 this.bot.logger.warn(isMobile, tracker.context, 'No main search topics available, skipping')
                 return stats
             }
@@ -111,6 +111,7 @@ export class Search extends BaseActivity {
             while (!tracker.done() && stats.performed < tracker.maxSearches && stats.stagnant < tracker.stagnantLimit) {
                 const query = await queryQueue.next()
                 if (!query) {
+                    markTaskStatus('stopped', '搜索词队列已耗尽，停止本轮搜索')
                     this.bot.logger.warn(isMobile, tracker.context, 'Query queue exhausted, stopping')
                     break
                 }
@@ -141,14 +142,19 @@ export class Search extends BaseActivity {
                 }
             }
 
+            if (!tracker.done() && stats.stagnant >= tracker.stagnantLimit)
+                markTaskStatus('stopped', '连续搜索未获积分，停止本轮搜索')
+            if (!tracker.done() && stats.performed >= tracker.maxSearches)
+                markTaskStatus('stopped', '达到本轮搜索次数上限，仍有剩余额度')
             return stats
         } catch (error) {
+            markTaskStatus('failed', '搜索执行或额度读取失败，已停止，未判定完成')
             this.bot.logger.error(
                 isMobile,
                 tracker.context,
                 `Search session error | ${error instanceof Error ? error.message : String(error)}`
             )
-            return stats
+            throw error
         }
     }
     private async bingSearch(page: Page, query: string, isMobile: boolean): Promise<void> {

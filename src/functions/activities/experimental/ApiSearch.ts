@@ -3,7 +3,7 @@ import { BaseActivity } from '../BaseActivity'
 import { BonusTracker } from '../search/BonusTracker'
 import { SearchProgress } from '../search/SearchProgress'
 import { BingSearchApi } from './BingSearchApi'
-import { reportTaskProgress } from '../../../util/TaskTelemetry'
+import { reportTaskProgress, markTaskStatus } from '../../../util/TaskTelemetry'
 
 const STAGNANT_LIMIT = 10
 const MAX_SEARCHES = 60
@@ -35,6 +35,7 @@ export class ApiSearch extends BaseActivity {
             const queryQueue = new SearchQueryQueue(this.bot)
             const topicCount = await queryQueue.prepare()
             if (!topicCount) {
+                markTaskStatus('failed', '没有可用搜索主题，搜索未执行')
                 this.bot.logger.warn(isMobile, 'SEARCH-BING', 'No main search topics available, skipping')
                 return 0
             }
@@ -99,6 +100,7 @@ export class ApiSearch extends BaseActivity {
                                 error instanceof Error ? error.message : String(error)
                             }`
                         )
+                        throw error
                     }
                 }
 
@@ -161,10 +163,11 @@ export class ApiSearch extends BaseActivity {
             this.bot.logger.info(
                 isMobile,
                 'SEARCH-BING',
-                `Completed Bing searches | pointsGained=${totalGained} | currentBalance=${this.bot.userData.currentPoints} | previousBalance=${startBalance} | searches=${performed}`
+                `本轮搜索已结束，完成情况以额度复核为准 | pointsGained=${totalGained} | currentBalance=${this.bot.userData.currentPoints} | previousBalance=${startBalance} | searches=${performed}`
             )
             return totalGained
         } catch (error) {
+            markTaskStatus('failed', '搜索执行或额度读取失败，已停止，未判定完成')
             this.bot.logger.error(
                 isMobile,
                 'SEARCH-BING',

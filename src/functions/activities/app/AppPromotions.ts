@@ -1,22 +1,24 @@
 import { BaseActivity } from '../BaseActivity'
 import type { AppDashboardData } from '../../../interface/AppDashBoardData'
+import { appEligibility } from '../../../util/TaskEligibility'
+import { markTaskStatus } from '../../../util/TaskTelemetry'
 
 export class AppPromotions extends BaseActivity {
     public async run(data: AppDashboardData): Promise<void> {
-        const pending = data.response.promotions.filter(promotion => {
+        const pending = (data.response?.promotions ?? []).filter(promotion => {
             const attributes = promotion.attributes
             return (
                 attributes['complete']?.toLowerCase() === 'false' &&
-                Boolean(attributes['offerid']) &&
-                attributes['type'] === 'sapphire'
+                appEligibility(promotion, this.bot.config).eligibility === 'eligible'
             )
         })
 
         if (!pending.length) {
+            markTaskStatus('skipped', '没有可自动执行的应用活动')
             this.bot.logger.info(
                 this.bot.isMobile,
                 'APP-PROMOTIONS',
-                'All "App Promotions" items have already been completed'
+                '没有可自动执行的应用活动；已完成或不满足执行条件'
             )
             return
         }
