@@ -10,6 +10,7 @@ export interface EnvOverrideEntry {
 
 export const ENV_OVERRIDES: EnvOverrideEntry[] = [
     // General
+    { env: 'CONFIG_SESSION_PATH', path: 'sessionPath', type: 'string' },
     { env: 'CONFIG_CLUSTERS', path: 'clusters', type: 'number' },
     { env: 'CONFIG_DEBUG_LOGS', path: 'debugLogs', type: 'bool' },
     { env: 'CONFIG_ERROR_DIAGNOSTICS', path: 'errorDiagnostics', type: 'bool' },

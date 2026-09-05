@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { ControlApiClient, ControlApiError } from './control-client.mjs'
 import { HistoryStore } from './history.mjs'
 import { AccountIdentity, sanitizeLog, sanitizeText, timingSafeTextEqual } from './security.mjs'
+import { SettingsStore } from './settings.mjs'
 import { buildPublicState, publicErrorMessage, publicLog } from './status.mjs'
 import { WeComNotifier } from './wecom.mjs'
 
@@ -24,9 +25,13 @@ if (!controlToken) throw new Error('必须配置 CONTROL_API_TOKEN')
 
 fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 })
 const identity = new AccountIdentity(dataDir)
-const history = new HistoryStore(dataDir, identity)
+const history = new HistoryStore(dataDir, identity, {
+    logRetentionDays: Number(process.env.WEB_LOG_RETENTION_DAYS || 7),
+    logLimit: Number(process.env.WEB_LOG_LIMIT || 10000)
+})
 const control = new ControlApiClient({ baseUrl: controlUrl, token: controlToken })
-const wecom = new WeComNotifier()
+const settings = new SettingsStore({ dataDir })
+const wecom = new WeComNotifier({ settings })
 const authFile = path.join(dataDir, 'web-auth.json')
 const sessions = new Map()
 const loginAttempts = new Map()
@@ -304,6 +309,7 @@ async function coreEventLoop() {
                     retryMs = 1000
                     if (frame.event === 'log') {
                         const log = publicLog(sanitizeLog(frame.data))
+                        history.recordLog(log)
                         broadcast('log', log, log.id)
                     } else if (frame.event === 'hello' || frame.event === 'status') {
                         scheduleRefresh()
@@ -346,7 +352,7 @@ async function handleApi(req, res, url) {
             authenticated: Boolean(session),
             username: session?.username ?? null,
             csrfToken: session?.csrfToken ?? null,
-            version: '4.3.2-cn1'
+            version: '4.3.2-cn2'
         })
     }
 
@@ -417,13 +423,45 @@ async function handleApi(req, res, url) {
         const params = new URLSearchParams({ limit: String(limit) })
         if (level) params.set('level', level)
         if (Number.isSafeInteger(afterId) && afterId > 0) params.set('afterId', String(afterId))
-        const data = await control.get(`/logs?${params}`)
-        const logs = (data.logs || []).map(entry => publicLog(sanitizeLog(entry)))
-        return sendJson(res, 200, { logs, count: logs.length, latestLogId: Number(data.latestLogId || 0) })
+        let latestLogId = 0
+        try {
+            const data = await control.get(`/logs?${params}`)
+            for (const entry of data.logs || []) history.recordLog(publicLog(sanitizeLog(entry)))
+            latestLogId = Number(data.latestLogId || 0)
+        } catch {}
+        const logs = history.listLogs({ limit })
+        return sendJson(res, 200, {
+            logs,
+            count: logs.length,
+            latestLogId,
+            persistent: true,
+            retentionDays: history.logRetentionDays
+        })
     }
 
     if (req.method === 'GET' && url.pathname === '/api/history') {
-        return sendJson(res, 200, history.list(url.searchParams.get('limit')))
+        const result = history.list(url.searchParams.get('limit'))
+        const current = publicState()
+        return sendJson(res, 200, {
+            ...result,
+            active: current.run?.running
+                ? {
+                      id: cache.status?.runId ?? null,
+                      startedAt: current.run.startedAt,
+                      endedAt: null,
+                      status: 'running',
+                      collected: current.run.collected,
+                      accounts: current.accounts
+                  }
+                : null
+        })
+    }
+
+    if (req.method === 'GET' && url.pathname.startsWith('/api/history/')) {
+        const id = decodeURIComponent(url.pathname.slice('/api/history/'.length))
+        const run = history.getRun(id)
+        if (!run) return sendError(res, 404, '运行记录不存在', 'RUN_NOT_FOUND')
+        return sendJson(res, 200, { run, logs: history.listLogs({ runId: id, limit: 1000 }) })
     }
 
     if (req.method === 'GET' && url.pathname === '/api/points-calendar') {
@@ -451,6 +489,64 @@ async function handleApi(req, res, url) {
         await refreshCore()
         broadcast('state', publicState())
         return sendJson(res, 202, { started: true, startedAt: result.startedAt ?? null })
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/accounts/manage') {
+        return sendJson(res, 200, await control.get('/accounts/manage'))
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/accounts/migrate-env') {
+        const body = await readJson(req)
+        if (Object.keys(body).length) return sendError(res, 400, '迁移请求不接受附加参数', 'BAD_REQUEST')
+        const result = await control.post('/accounts/migrate-env', {})
+        await refreshCore()
+        broadcast('state', publicState())
+        return sendJson(res, 201, result)
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/accounts') {
+        const result = await control.post('/accounts', await readJson(req))
+        await refreshCore()
+        broadcast('state', publicState())
+        return sendJson(res, 201, result)
+    }
+
+    if ((req.method === 'PATCH' || req.method === 'DELETE') && url.pathname.startsWith('/api/accounts/')) {
+        const id = encodeURIComponent(decodeURIComponent(url.pathname.slice('/api/accounts/'.length)))
+        const result =
+            req.method === 'PATCH'
+                ? await control.patch(`/accounts/${id}`, await readJson(req))
+                : await control.delete(`/accounts/${id}`, await readJson(req))
+        await refreshCore()
+        broadcast('state', publicState())
+        return sendJson(res, 200, result)
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/wecom') {
+        return sendJson(res, 200, wecom.status())
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/wecom') {
+        const body = await readJson(req)
+        const allowed = new Set([
+            'enabled',
+            'mode',
+            'baseUrl',
+            'corpId',
+            'agentId',
+            'corpSecret',
+            'toUser',
+            'clearSecret'
+        ])
+        if (Object.keys(body).some(key => !allowed.has(key))) return sendError(res, 400, '企业微信配置包含未知字段')
+        return sendJson(res, 200, wecom.update(body))
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/wecom/test') {
+        const body = await readJson(req)
+        if (Object.keys(body).length) return sendError(res, 400, '测试通知不接受附加参数')
+        const result = await wecom.sendTest()
+        return sendJson(res, result.sent ? 200 : 409, result.sent ? { sent: true } : { error: '企业微信配置未完整' })
     }
 
     if (req.method === 'POST' && url.pathname === '/api/stop') {

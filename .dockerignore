@@ -4,6 +4,15 @@ dist
 .gitignore
 .vscode
 .DS_Store
+.env
+.env.*
+**/.env
+**/.env.*
+config/
+secrets/
+logs/
+src/accounts.json
+accounts.json
 sessions/
 sessions-v4/
 config-v4/

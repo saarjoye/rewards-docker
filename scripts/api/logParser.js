@@ -80,6 +80,7 @@ function ensureAccount(state, email) {
             searchSummary: null, // { mobile, desktop, bonus, total }
             streakProtection: null, // { enabled, remainingDays, streakCounter, updatedAt }
             edgeBrowsing: null, // background Edge activity progress and ETA
+            tasks: {}, // task id -> current structured task state
             durationSeconds: null,
             success: null,
             error: null,
@@ -93,6 +94,111 @@ function ensureAccount(state, email) {
         state.order.push(email)
     }
     return state.accounts[email]
+}
+
+const TASK_LABELS = {
+    'SEARCH-BING': 'Bing 搜索',
+    'SEARCH-BONUS': '奖励搜索',
+    'READ-TO-EARN': '阅读文章',
+    'DAILY-CHECK-IN': '每日签到',
+    'CLAIM-BONUS-POINTS': '领取奖励积分',
+    'CLAIM-REWARD': '领取活动奖励',
+    'URL-REWARD': '每日活动',
+    'VISUAL-SEARCH': '视觉搜索',
+    'APP-REWARD': '应用任务',
+    PUNCHCARD: '打卡任务',
+    'SEARCH-ON-BING-SEARCH': 'Bing 活动搜索',
+    'EDGE-BROWSING': 'Edge 浏览任务',
+    'ENABLE-STREAK-PROTECTION': '连续签到保护'
+}
+
+function safeTaskText(value, max = 160) {
+    return [...String(value ?? '')]
+        .map(character => {
+            const code = character.charCodeAt(0)
+            return code < 32 || code === 127 ? ' ' : character
+        })
+        .join('')
+        .trim()
+        .slice(0, max)
+}
+
+function taskStatus(message, level) {
+    if (level === 'error' || /^(Failed|Unexpected .* failure|.* failed)/i.test(message)) return 'failed'
+    if (/^(Skipping|Skip )/i.test(message)) return 'skipped'
+    if (
+        /^(Completed|Finished|Nothing claimed|Reward claimed)|already (?:been )?completed|already complete/i.test(
+            message
+        )
+    ) {
+        return 'completed'
+    }
+    return 'running'
+}
+
+function taskProgress(message) {
+    for (const name of ['offerProgress', 'article', 'reportsCompleted', 'report']) {
+        const match = message.match(new RegExp(`(?:^| \\| )${name}=(\\d+)\\/(\\d+)(?= \\| |$)`))
+        if (match) return { current: Number(match[1]), total: Number(match[2]) }
+    }
+    return null
+}
+
+function applyTaskSnapshot(state, entry) {
+    if (entry.title !== 'TASK-SNAPSHOT') return false
+    let payload
+    try {
+        payload = JSON.parse(entry.message)
+    } catch {
+        return false
+    }
+    const account = ensureAccount(state, payload?.account || accountEmailForEntry(state, entry))
+    if (!account || !Array.isArray(payload?.tasks)) return false
+    for (const item of payload.tasks.slice(0, 500)) {
+        const id = safeTaskText(item?.id, 180)
+        if (!id) continue
+        const previous = account.tasks[id]
+        const expected = typeof item?.points === 'number' ? item.points : null
+        account.tasks[id] = {
+            id,
+            title: safeTaskText(item?.title) || previous?.title || 'Rewards 任务',
+            status: item?.completed ? 'completed' : item?.locked ? 'locked' : previous?.status || 'pending',
+            progress: previous?.progress ?? null,
+            expectedPoints: Number.isFinite(expected) && expected > 0 ? expected : null,
+            earnedPoints: previous?.earnedPoints ?? null,
+            updatedAt: eventTime(entry)
+        }
+    }
+    return true
+}
+
+function applyActivityTask(state, entry) {
+    const fallbackLabel = TASK_LABELS[entry.title]
+    if (!fallbackLabel) return false
+    const account = ensureAccount(state, accountEmailForEntry(state, entry))
+    if (!account) return false
+    const message = entry.message ?? ''
+    const offerId = message.match(/(?:^| \| )offerId=([^|\s]+)/)?.[1]
+    const platform = entry.platform === 'MOBILE' ? 'mobile' : entry.platform === 'DESKTOP' ? 'desktop' : 'main'
+    const id = offerId ? `${entry.title}:${offerId}` : `${entry.title}:${platform}`
+    const matchingSnapshot = offerId ? account.tasks[offerId] : null
+    const previous = account.tasks[id] ?? matchingSnapshot
+    const gained = numericField(message, 'pointsGained')
+    const expected = numericField(message, 'expected') ?? numericField(message, 'targetPoints')
+    const quotedTitle = message.match(/(?:^| \| )title="([^"]+)"/)?.[1]
+    const status = taskStatus(message, entry.level)
+    const task = {
+        id,
+        title: safeTaskText(quotedTitle) || previous?.title || fallbackLabel,
+        status,
+        progress: taskProgress(message) ?? previous?.progress ?? null,
+        expectedPoints: expected ?? previous?.expectedPoints ?? null,
+        earnedPoints: gained ?? previous?.earnedPoints ?? null,
+        updatedAt: eventTime(entry)
+    }
+    if (matchingSnapshot && offerId !== id) delete account.tasks[offerId]
+    account.tasks[id] = task
+    return true
 }
 
 const RE = {
@@ -366,7 +472,10 @@ export function applyLogToRunState(state, entry) {
 
     if (!entry.parsed) return null
 
-    if (applyLivePoints(state, entry)) return 'points'
+    if (applyTaskSnapshot(state, entry)) return 'task-snapshot'
+    const activityChanged = applyActivityTask(state, entry)
+
+    if (applyLivePoints(state, entry)) return activityChanged ? 'task-points' : 'points'
     const edgeBrowsingEvent = applyEdgeBrowsing(state, entry)
     if (edgeBrowsingEvent) return edgeBrowsingEvent
 
@@ -415,6 +524,21 @@ export function applyLogToRunState(state, entry) {
                 const acc = ensureAccount(state, email)
                 if (acc) {
                     acc.earnable = { mobile: Number(m[1]), browser: Number(m[2]), app: Number(m[3]) }
+                    for (const [id, title, points] of [
+                        ['search-mobile', '移动搜索', Number(m[1])],
+                        ['search-desktop', '桌面搜索', Number(m[2])],
+                        ['app-pool', '应用任务额度', Number(m[3])]
+                    ]) {
+                        acc.tasks[id] = {
+                            id,
+                            title,
+                            status: points === 0 ? 'completed' : acc.tasks[id]?.status || 'pending',
+                            progress: acc.tasks[id]?.progress ?? null,
+                            expectedPoints: points,
+                            earnedPoints: acc.tasks[id]?.earnedPoints ?? null,
+                            updatedAt: eventTime(entry)
+                        }
+                    }
                     acc.locale ??= m[5]
                 }
                 state.currentEmail = email
@@ -499,7 +623,7 @@ export function applyLogToRunState(state, entry) {
             break
     }
 
-    return null
+    return activityChanged ? 'task' : null
 }
 
 function accountCollected(a) {
@@ -508,7 +632,10 @@ function accountCollected(a) {
 }
 
 export function summarizeRunState(state) {
-    const accounts = state.order.map(email => state.accounts[email])
+    const accounts = state.order.map(email => ({
+        ...state.accounts[email],
+        tasks: Object.values(state.accounts[email].tasks ?? {})
+    }))
     const collected = state.totals?.collected ?? accounts.reduce((sum, a) => sum + accountCollected(a), 0)
 
     const current = state.currentEmail ? state.accounts[state.currentEmail] : null

@@ -61,8 +61,14 @@ test('BFF authenticates users, redacts state and restricts control bodies', { ti
             })
         }
         if (url.pathname === '/points') return json({ state: 'idle', accounts: [], collected: 0 })
-        if (url.pathname === '/accounts') {
+        if (req.method === 'GET' && url.pathname === '/accounts') {
             return json({ accounts: [{ index: 1, email: 'secret@example.com', geoLocale: 'CN', langCode: 'zh-CN' }] })
+        }
+        if (req.method === 'GET' && url.pathname === '/accounts/manage') {
+            return json({
+                accounts: [{ id: '11111111-1111-4111-8111-111111111111', index: 1, label: 's***@e***.com' }],
+                store: { encrypted: true, writable: true, migrationAvailable: false }
+            })
         }
         if (url.pathname === '/history') return json({ runs: [] })
         if (url.pathname === '/logs') {
@@ -97,6 +103,8 @@ test('BFF authenticates users, redacts state and restricts control bodies', { ti
     const corePort = await listen(mockCore)
     const webPort = await freePort()
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mrs-web-server-'))
+    const settingsKey = path.join(dataDir, 'settings.key')
+    fs.writeFileSync(settingsKey, Buffer.alloc(32, 17))
     const stderr = []
     const child = spawn(process.execPath, ['src/server.mjs'], {
         cwd: webRoot,
@@ -109,6 +117,7 @@ test('BFF authenticates users, redacts state and restricts control bodies', { ti
             WEB_DATA_DIR: dataDir,
             CONTROL_API_URL: `http://127.0.0.1:${corePort}`,
             CONTROL_API_TOKEN: token,
+            WEB_SETTINGS_KEY_FILE: settingsKey,
             WEB_WECOM_ENABLED: 'false'
         },
         stdio: ['ignore', 'pipe', 'pipe']
@@ -123,7 +132,8 @@ test('BFF authenticates users, redacts state and restricts control bodies', { ti
         const appScript = await fetch(`${baseUrl}/app.js`).then(response => response.text())
         assert.equal(stylesResponse.headers.get('cache-control'), 'no-cache')
         assert.match(styles, /\[hidden\]\s*\{\s*display:\s*none\s*!important;/)
-        assert.match(appScript, /运行历史可能缺失/)
+        assert.match(appScript, /结构化结果长期保留/)
+        assert.doesNotMatch(appScript, /data-view="logs"/)
 
         const initial = await fetch(`${baseUrl}/api/bootstrap`).then(response => response.json())
         assert.equal(initial.setupRequired, true)
@@ -172,6 +182,32 @@ test('BFF authenticates users, redacts state and restricts control bodies', { ti
             response.text()
         )
         assert.doesNotMatch(logsText, /secret@example\.com|abcdefghijklmno/)
+
+        const managed = await fetch(`${baseUrl}/api/accounts/manage`, { headers: { Cookie: cookie } }).then(response =>
+            response.json()
+        )
+        assert.equal(managed.accounts[0].label, 's***@e***.com')
+
+        const wecomResponse = await fetch(`${baseUrl}/api/wecom`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+                enabled: true,
+                mode: 'custom',
+                baseUrl: 'https://proxy.example.com',
+                corpId: 'synthetic-corp',
+                agentId: '100001',
+                corpSecret: 'synthetic-secret',
+                toUser: '@all'
+            })
+        })
+        assert.equal(wecomResponse.status, 200)
+        const wecomText = await wecomResponse.text()
+        assert.doesNotMatch(wecomText, /synthetic-corp|synthetic-secret|proxy\.example/)
+        assert.doesNotMatch(
+            fs.readFileSync(path.join(dataDir, 'settings.enc.json'), 'utf8'),
+            /synthetic-corp|synthetic-secret/
+        )
     } finally {
         child.kill('SIGTERM')
         await Promise.race([

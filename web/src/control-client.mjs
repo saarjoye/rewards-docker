@@ -61,6 +61,14 @@ export class ControlApiClient {
         return this.request(pathname, { method: 'POST', body, timeoutMs: 20000 })
     }
 
+    patch(pathname, body) {
+        return this.request(pathname, { method: 'PATCH', body, timeoutMs: 20000 })
+    }
+
+    delete(pathname, body = {}) {
+        return this.request(pathname, { method: 'DELETE', body, timeoutMs: 20000 })
+    }
+
     async openEventStream({ signal, onEvent }) {
         let response
         try {

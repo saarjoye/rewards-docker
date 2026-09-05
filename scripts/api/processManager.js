@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import crypto from 'node:crypto'
 import { EventEmitter } from 'node:events'
 
 import { parseLogLine, createRunState, applyLogToRunState, summarizeRunState, severityRank } from './logParser.js'
@@ -23,6 +24,7 @@ export class ProcessManager extends EventEmitter {
         stopTimeoutMs = 15000,
         logBufferSize = 2000,
         historySize = 20,
+        ledger = null,
         name = 'microsoft-rewards-script',
         version = '0.0.0'
     }) {
@@ -35,6 +37,7 @@ export class ProcessManager extends EventEmitter {
         this.stopTimeoutMs = stopTimeoutMs
         this.logBufferSize = logBufferSize
         this.historySize = historySize
+        this.ledger = ledger
         this.name = name
         this.version = version
 
@@ -42,6 +45,7 @@ export class ProcessManager extends EventEmitter {
         this.child = null
         this.pid = null
         this.startedAt = null
+        this.runId = null
         this.lastExit = null
         this.currentArgs = args
 
@@ -69,11 +73,14 @@ export class ProcessManager extends EventEmitter {
         this.state = 'starting'
         this.runState = createRunState()
         this.startedAt = new Date().toISOString()
+        this.runId = crypto.randomUUID()
         this.lastExit = null
         this.currentArgs = args
         this._stdoutBuf = ''
         this._stderrBuf = ''
         this._finalized = false
+
+        this.ledger?.begin(this._runRecord())
 
         this._controllerLog('info', `Starting run: ${this.command} ${args.join(' ')}`.trim())
 
@@ -115,7 +122,7 @@ export class ProcessManager extends EventEmitter {
 
         child.once('exit', (code, signal) => this._finalize(code, signal))
 
-        return { pid: this.pid, startedAt: this.startedAt, command: this.command, args }
+        return { pid: this.pid, runId: this.runId, startedAt: this.startedAt, command: this.command, args }
     }
 
     stop({ force = false } = {}) {
@@ -174,6 +181,7 @@ export class ProcessManager extends EventEmitter {
             logCount: this.logBuffer.length,
             logBufferSize: this.logBufferSize,
             latestLogId: this.logSeq,
+            runId: this.runId,
             run: summarizeRunState(this.runState)
         }
     }
@@ -237,7 +245,7 @@ export class ProcessManager extends EventEmitter {
     }
 
     getHistory() {
-        return this.history
+        return this.ledger?.available() ? this.ledger.history() : this.history
     }
 
     note(level, message) {
@@ -310,11 +318,15 @@ export class ProcessManager extends EventEmitter {
         const entry = parseLogLine(rawLine, source)
         this._appendLog(entry)
         const milestone = applyLogToRunState(this.runState, entry)
-        if (milestone) this._emitStatus(milestone)
+        if (milestone) {
+            this.ledger?.update(this._runRecord())
+            this._emitStatus(milestone)
+        }
     }
 
     _appendLog(entry) {
         entry.id = ++this.logSeq
+        entry.runId = this.runId
         entry.receivedAt = new Date().toISOString()
         this.logBuffer.push(entry)
         if (this.logBuffer.length > this.logBufferSize) this.logBuffer.shift()
@@ -354,6 +366,16 @@ export class ProcessManager extends EventEmitter {
         } catch {}
     }
 
+    _runRecord({ endedAt = null, exit = null } = {}) {
+        return {
+            id: this.runId,
+            startedAt: this.startedAt,
+            endedAt,
+            exit,
+            run: summarizeRunState(this.runState)
+        }
+    }
+
     _finalize(code, signal, errorMessage = null) {
         if (this._finalized) return
         this._finalized = true
@@ -375,13 +397,10 @@ export class ProcessManager extends EventEmitter {
                 : `code ${code ?? 'n/a'}${signal ? ` / signal ${signal}` : ''}`
         this._controllerLog(code === 0 && errorMessage == null ? 'info' : 'error', `Run finished (${label}).`)
 
-        this.history.unshift({
-            startedAt: this.startedAt,
-            endedAt,
-            exit: this.lastExit,
-            run: summarizeRunState(this.runState)
-        })
+        const record = this._runRecord({ endedAt, exit: this.lastExit })
+        this.history.unshift(record)
         if (this.history.length > this.historySize) this.history.pop()
+        this.ledger?.finish(record)
 
         this.child = null
         this.pid = null
@@ -389,6 +408,7 @@ export class ProcessManager extends EventEmitter {
 
         this._emitStatus('exit')
         this.emit('exit', { ...this.lastExit })
+        this.runId = null
     }
 }
 

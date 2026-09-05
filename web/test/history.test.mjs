@@ -31,7 +31,16 @@ test('persists completed runs once and never stores the full email', () => {
                         email: 'private@example.com',
                         initialPoints: 100,
                         finalPoints: 166,
-                        live: { gained: 66, balance: 166, bySource: { read: 21, checkIn: 15 } }
+                        live: { gained: 66, balance: 166, bySource: { read: 21, checkIn: 15 } },
+                        tasks: [
+                            {
+                                id: 'daily-1',
+                                title: '每日活动',
+                                status: 'completed',
+                                expectedPoints: 10,
+                                earnedPoints: 10
+                            }
+                        ]
                     }
                 ]
             }
@@ -42,6 +51,19 @@ test('persists completed runs once and never stores the full email', () => {
         assert.equal(saved.count, 1)
         assert.equal(saved.runs[0].accounts[0].collected, 66)
         assert.deepEqual(saved.runs[0].accounts[0].sources, { read: 21, checkIn: 15 })
+        assert.equal(saved.runs[0].accounts[0].tasks[0].title, '每日活动')
+        store.recordLog({
+            id: 1,
+            runId: saved.runs[0].id,
+            receivedAt: '2026-09-03T01:30:00.000Z',
+            level: 'info',
+            titleLabel: '每日活动',
+            displayMessage: '每日活动已完成',
+            message: 'person@example.com token=hidden-value'
+        })
+        const logs = store.listLogs({ runId: saved.runs[0].id })
+        assert.equal(logs[0].displayMessage, '每日活动已完成')
+        assert.doesNotMatch(JSON.stringify(logs), /person@example\.com|hidden-value/)
         assert.doesNotMatch(JSON.stringify(saved), /private@example\.com/)
         const calendar = store.calendar({ start: '2026-09-03', end: '2026-09-03' })
         assert.equal(calendar.summary.totalPoints, 66)

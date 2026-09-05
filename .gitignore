@@ -18,3 +18,9 @@ note
 .playwright-chromium-installed
 .stfolder/
 .env
+.env.*
+secrets/
+config/
+logs/
+src/accounts.json
+accounts.json

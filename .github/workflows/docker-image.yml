@@ -1,8 +1,6 @@
 name: Build versioned images
 
 on:
-    push:
-        branches: [main]
     workflow_dispatch:
 
 permissions:
@@ -15,9 +13,9 @@ concurrency:
 
 env:
     CORE_IMAGE: ghcr.io/${{ github.repository_owner }}/mrs-core
-    CORE_TAG: 4.3.2-d0f07d7
+    CORE_TAG: 4.3.2-cn2
     WEB_IMAGE: ghcr.io/${{ github.repository_owner }}/mrs-web
-    WEB_TAG: 4.3.2-cn1
+    WEB_TAG: 4.3.2-cn2
 
 jobs:
     build:
@@ -28,9 +26,12 @@ jobs:
 
             - name: Validate Compose configuration
               run: |
-                  cp runtime/core.env.example runtime/core.env
-                  cp runtime/web.env.example runtime/web.env
-                  docker compose config --quiet
+                  sudo install -d -m 700 /home/docker/rewards/runtime /home/docker/rewards/secrets
+                  sudo cp runtime/core.env.example /home/docker/rewards/runtime/core.env
+                  sudo cp runtime/web.env.example /home/docker/rewards/runtime/web.env
+                  head -c 32 /dev/zero | sudo tee /home/docker/rewards/secrets/core_accounts.key >/dev/null
+                  head -c 32 /dev/zero | sudo tee /home/docker/rewards/secrets/web_settings.key >/dev/null
+                  sudo docker compose config --quiet
 
             - name: Set up QEMU
               uses: docker/setup-qemu-action@v3

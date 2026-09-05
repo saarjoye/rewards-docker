@@ -49,10 +49,18 @@ function sum(values) {
     return values.reduce((total, value) => total + (numberOrNull(value) ?? 0), 0)
 }
 
+function safeIdentifier(value) {
+    const normalized = String(value ?? '').trim()
+    return /^[A-Za-z0-9_-]{1,100}$/.test(normalized) ? normalized : null
+}
+
 export class HistoryStore {
-    constructor(dataDir, identity) {
+    constructor(dataDir, identity, { logRetentionDays = 7, logLimit = 10000 } = {}) {
         fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 })
         this.identity = identity
+        this.logRetentionDays = Math.max(1, Math.min(Number(logRetentionDays) || 7, 30))
+        this.logLimit = Math.max(100, Math.min(Number(logLimit) || 10000, 100000))
+        this.logWrites = 0
         this.dbPath = path.join(dataDir, 'history.db')
         this.db = new DatabaseSync(this.dbPath)
         try {
@@ -83,6 +91,7 @@ export class HistoryStore {
                 success INTEGER,
                 error_summary TEXT,
                 sources_json TEXT NOT NULL DEFAULT '{}',
+                tasks_json TEXT NOT NULL DEFAULT '[]',
                 PRIMARY KEY (run_key, account_key)
             );
             CREATE TABLE IF NOT EXISTS notifications (
@@ -90,9 +99,28 @@ export class HistoryStore {
                 event_type TEXT NOT NULL,
                 sent_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS diagnostic_logs (
+                event_key TEXT PRIMARY KEY,
+                run_key TEXT,
+                received_at TEXT NOT NULL,
+                level TEXT NOT NULL,
+                payload_json TEXT NOT NULL
+            );
             CREATE INDEX IF NOT EXISTS idx_runs_date ON runs(local_date DESC, ended_at DESC);
             CREATE INDEX IF NOT EXISTS idx_account_runs_account ON account_runs(account_key);
+            CREATE INDEX IF NOT EXISTS idx_diagnostic_logs_time ON diagnostic_logs(received_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_diagnostic_logs_run ON diagnostic_logs(run_key, received_at);
         `)
+        const accountColumns = new Set(
+            this.db
+                .prepare('PRAGMA table_info(account_runs)')
+                .all()
+                .map(column => column.name)
+        )
+        if (!accountColumns.has('tasks_json')) {
+            this.db.exec("ALTER TABLE account_runs ADD COLUMN tasks_json TEXT NOT NULL DEFAULT '[]'")
+        }
+        this.pruneLogs()
     }
 
     close() {
@@ -122,8 +150,8 @@ export class HistoryStore {
         `)
         const insertAccount = this.db.prepare(`
             INSERT OR REPLACE INTO account_runs
-            (run_key, account_key, account_label, initial_points, final_points, collected, success, error_summary, sources_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (run_key, account_key, account_label, initial_points, final_points, collected, success, error_summary, sources_json, tasks_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `)
 
         this.db.exec('BEGIN IMMEDIATE')
@@ -132,7 +160,7 @@ export class HistoryStore {
                 if (!run?.startedAt || !run?.endedAt) continue
                 const accounts = Array.isArray(run.accounts) ? run.accounts : []
                 const accountKeys = accounts.map(account => this.identity.keyFor(account.email ?? 'unknown'))
-                const runKey = this.runKey(run, accountKeys)
+                const runKey = safeIdentifier(run.id) || this.runKey(run, accountKeys)
                 const result = insertRun.run(
                     runKey,
                     run.startedAt,
@@ -162,7 +190,8 @@ export class HistoryStore {
                         ),
                         account.success === null || account.success === undefined ? null : account.success ? 1 : 0,
                         account.error ? sanitizeText(account.error, 800) : null,
-                        JSON.stringify(normalizedSources(enhanced))
+                        JSON.stringify(normalizedSources(enhanced)),
+                        JSON.stringify(this.normalizedTasks(enhanced.tasks))
                     )
                 }
             }
@@ -192,7 +221,8 @@ export class HistoryStore {
                 collected: Number(account.collected || 0),
                 success: account.success === null ? null : Boolean(account.success),
                 error: account.error_summary,
-                sources: JSON.parse(account.sources_json || '{}')
+                sources: JSON.parse(account.sources_json || '{}'),
+                tasks: JSON.parse(account.tasks_json || '[]')
             }))
         return {
             id: run.run_key,
@@ -214,15 +244,90 @@ export class HistoryStore {
         return { runs: rows.map(row => this.toPublicRun(row)), count: rows.length, persistent: true }
     }
 
+    normalizedTasks(tasks) {
+        if (!Array.isArray(tasks)) return []
+        return tasks.slice(0, 500).map(task => ({
+            id: sanitizeText(task?.id ?? '', 180),
+            title: sanitizeText(task?.title ?? 'Rewards 任务', 180),
+            status: ['pending', 'running', 'completed', 'failed', 'skipped', 'locked'].includes(task?.status)
+                ? task.status
+                : 'pending',
+            progress:
+                Number.isFinite(Number(task?.progress?.current)) && Number.isFinite(Number(task?.progress?.total))
+                    ? { current: Number(task.progress.current), total: Number(task.progress.total) }
+                    : null,
+            expectedPoints: numberOrNull(task?.expectedPoints),
+            earnedPoints: numberOrNull(task?.earnedPoints),
+            updatedAt: typeof task?.updatedAt === 'string' ? task.updatedAt : null
+        }))
+    }
+
+    recordLog(log) {
+        const receivedAt = typeof log?.receivedAt === 'string' ? log.receivedAt : new Date().toISOString()
+        const runKey = safeIdentifier(log?.runId)
+        const payload = {
+            id: numberOrNull(log?.id),
+            runId: runKey,
+            receivedAt,
+            ts: typeof log?.ts === 'string' ? sanitizeText(log.ts, 120) : null,
+            level: ['debug', 'info', 'warn', 'error'].includes(log?.level) ? log.level : 'info',
+            platformLabel: sanitizeText(log?.platformLabel ?? '系统', 40),
+            titleLabel: sanitizeText(log?.titleLabel ?? '运行记录', 80),
+            displayMessage: sanitizeText(log?.displayMessage ?? log?.message ?? '', 2000),
+            message: sanitizeText(log?.message ?? '', 8000)
+        }
+        const eventKey = crypto
+            .createHash('sha256')
+            .update(`${runKey || ''}|${receivedAt}|${payload.id ?? ''}|${payload.titleLabel}|${payload.message}`)
+            .digest('hex')
+        this.db
+            .prepare(
+                'INSERT OR IGNORE INTO diagnostic_logs(event_key, run_key, received_at, level, payload_json) VALUES (?, ?, ?, ?, ?)'
+            )
+            .run(eventKey, runKey, receivedAt, payload.level, JSON.stringify(payload))
+        this.logWrites++
+        if (this.logWrites % 100 === 0) this.pruneLogs()
+    }
+
+    listLogs({ limit = 400, runId = null } = {}) {
+        const safeLimit = Math.max(1, Math.min(Number(limit) || 400, 2000))
+        const rows = runId
+            ? this.db
+                  .prepare(
+                      'SELECT payload_json FROM diagnostic_logs WHERE run_key = ? ORDER BY received_at DESC LIMIT ?'
+                  )
+                  .all(String(runId), safeLimit)
+            : this.db
+                  .prepare('SELECT payload_json FROM diagnostic_logs ORDER BY received_at DESC LIMIT ?')
+                  .all(safeLimit)
+        return rows.map(row => JSON.parse(row.payload_json)).reverse()
+    }
+
+    pruneLogs() {
+        const cutoff = new Date(Date.now() - this.logRetentionDays * 86400000).toISOString()
+        this.db.prepare('DELETE FROM diagnostic_logs WHERE received_at < ?').run(cutoff)
+        this.db
+            .prepare(
+                'DELETE FROM diagnostic_logs WHERE event_key IN (SELECT event_key FROM diagnostic_logs ORDER BY received_at DESC LIMIT -1 OFFSET ?)'
+            )
+            .run(this.logLimit)
+    }
+
     summary() {
         const row = this.db
             .prepare(
                 'SELECT COUNT(*) AS runs, COALESCE(SUM(collected), 0) AS collected, MAX(ended_at) AS last_run FROM runs'
             )
             .get()
+        const today = localDate(new Date().toISOString())
+        const todayRow = this.db
+            .prepare('SELECT COALESCE(SUM(collected), 0) AS collected FROM runs WHERE local_date = ?')
+            .get(today)
         return {
             runs: Number(row?.runs || 0),
             collected: Number(row?.collected || 0),
+            todayCollected: Number(todayRow?.collected || 0),
+            today,
             lastRunAt: row?.last_run ?? null,
             durable: true
         }
@@ -371,8 +476,8 @@ export class HistoryStore {
         `)
         const insertAccount = this.db.prepare(`
             INSERT OR IGNORE INTO account_runs
-            (run_key, account_key, account_label, initial_points, final_points, collected, success, error_summary, sources_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (run_key, account_key, account_label, initial_points, final_points, collected, success, error_summary, sources_json, tasks_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `)
         let inserted = 0
         this.db.exec('BEGIN IMMEDIATE')
@@ -398,7 +503,8 @@ export class HistoryStore {
                     item.collected,
                     item.status === 'completed' ? 1 : item.status === 'failed' ? 0 : null,
                     item.error,
-                    JSON.stringify(item.sources)
+                    JSON.stringify(item.sources),
+                    '[]'
                 )
             }
             this.db.exec('COMMIT')

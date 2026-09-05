@@ -1,12 +1,12 @@
-name: microsoft-rewards-v4
+name: microsoft-rewards
 
 services:
     rewards-core:
-        image: ghcr.io/saarjoye/mrs-core:4.3.2-d0f07d7
+        image: ghcr.io/saarjoye/mrs-core:4.3.2-cn2
         container_name: microsoft-rewards-core
         restart: unless-stopped
         env_file:
-            - ./runtime/core.env
+            - /home/docker/rewards/runtime/core.env
         environment:
             API_MODE: 'true'
             API_HOST: '0.0.0.0'
@@ -16,6 +16,11 @@ services:
             API_ALLOW_CONFIG_REVEAL: 'false'
             API_ALLOW_CONFIG_WRITE: 'false'
             API_ALLOW_SCHEDULE_WRITE: 'false'
+            CONFIG_FILE: '/usr/src/microsoft-rewards-script/dist/config/config.json'
+            CONFIG_SESSION_PATH: 'dist/browser/sessions'
+            ACCOUNT_KEY_FILE: '/run/secrets/core_accounts.key'
+            ACCOUNT_STORE_FILE: '/usr/src/microsoft-rewards-script/dist/config/accounts.enc.json'
+            API_RUN_LEDGER_FILE: '/usr/src/microsoft-rewards-script/dist/config/runs.enc.json'
             CONFIG_SEARCH_QUERY_ENGINES: 'local'
             CONFIG_SEARCH_ON_BING_LOCAL: 'true'
             CONFIG_PROXY_QUERY_ENGINE: 'false'
@@ -24,8 +29,12 @@ services:
         expose:
             - '3010'
         volumes:
-            - ./config-v4:/usr/src/microsoft-rewards-script/config
-            - ./sessions-v4:/usr/src/microsoft-rewards-script/sessions
+            - /home/docker/rewards/config:/usr/src/microsoft-rewards-script/dist/config
+            - /home/docker/rewards/sessions:/usr/src/microsoft-rewards-script/dist/browser/sessions
+            - /home/docker/rewards/logs:/usr/src/microsoft-rewards-script/logs
+        secrets:
+            - source: core_accounts_key
+              target: core_accounts.key
         healthcheck:
             test: ['CMD-SHELL', 'scripts/docker/healthcheck.sh']
             interval: 60s
@@ -38,21 +47,27 @@ services:
             - rewards-control
 
     rewards-web:
-        image: ghcr.io/saarjoye/mrs-web:4.3.2-cn1
+        image: ghcr.io/saarjoye/mrs-web:4.3.2-cn2
         container_name: microsoft-rewards-web
         restart: unless-stopped
         env_file:
-            - ./runtime/web.env
+            - /home/docker/rewards/runtime/web.env
         environment:
             TZ: ${TZ:-Asia/Shanghai}
             WEB_HOST: '0.0.0.0'
             WEB_PORT: '3000'
             WEB_DATA_DIR: '/app/data'
+            WEB_SETTINGS_KEY_FILE: '/run/secrets/web_settings.key'
+            WEB_LOG_RETENTION_DAYS: '7'
+            WEB_LOG_LIMIT: '10000'
             CONTROL_API_URL: 'http://rewards-core:3010'
         ports:
             - '${WEB_PORT:-8787}:3000'
         volumes:
-            - ./web-data:/app/data
+            - /home/docker/rewards/web-data:/app/data
+        secrets:
+            - source: web_settings_key
+              target: web_settings.key
         depends_on:
             - rewards-core
         healthcheck:
@@ -78,3 +93,9 @@ services:
 networks:
     rewards-control:
         driver: bridge
+
+secrets:
+    core_accounts_key:
+        file: /home/docker/rewards/secrets/core_accounts.key
+    web_settings_key:
+        file: /home/docker/rewards/secrets/web_settings.key

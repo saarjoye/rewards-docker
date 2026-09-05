@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url'
 
 import { ProcessManager } from './processManager.js'
 import { buildExcludedAccountsEnv, buildSingleAccountEnv, loadAccounts, mergeAccountStats } from './accounts.js'
+import { AccountStore } from './accountStore.js'
+import { RunLedger } from './runLedger.js'
 import {
     validateConfig,
     deepMerge,
@@ -117,6 +119,12 @@ const ALLOW_SCHEDULE_WRITE = envBool('API_ALLOW_SCHEDULE_WRITE', false)
 
 const RUN_HISTORY = integerSetting('API_RUN_HISTORY', envStr('API_RUN_HISTORY'), 20)
 const DIAG_DIR = envStr('API_DIAGNOSTICS_DIR') ?? path.join(projectRoot, 'diagnostics')
+const ACCOUNT_KEY_FILE = envStr('ACCOUNT_KEY_FILE') ?? '/run/secrets/core_accounts.key'
+const ACCOUNT_STORE_FILE = envStr('ACCOUNT_STORE_FILE') ?? path.join(projectRoot, 'config', 'accounts.enc.json')
+const RUN_LEDGER_FILE = envStr('API_RUN_LEDGER_FILE') ?? path.join(projectRoot, 'config', 'runs.enc.json')
+
+const accountStore = new AccountStore({ keyFile: ACCOUNT_KEY_FILE, dataFile: ACCOUNT_STORE_FILE })
+const runLedger = new RunLedger({ keyFile: ACCOUNT_KEY_FILE, dataFile: RUN_LEDGER_FILE, limit: RUN_HISTORY })
 
 const { command, args } = resolveRunCommand({ projectRoot })
 
@@ -127,6 +135,7 @@ const pm = new ProcessManager({
     stopTimeoutMs: STOP_TIMEOUT_MS,
     logBufferSize: LOG_BUFFER,
     historySize: RUN_HISTORY,
+    ledger: runLedger,
     name: pkgName,
     version: pkgVersion
 })
@@ -153,6 +162,7 @@ pm.on('log', entry => {
 
 function toHistoryRecord(entry) {
     return {
+        id: entry.id ?? null,
         startedAt: entry.startedAt,
         endedAt: entry.endedAt,
         exit: entry.exit,
@@ -160,13 +170,40 @@ function toHistoryRecord(entry) {
         collected: entry.run?.collected ?? 0,
         accounts: (entry.run?.accounts ?? []).map(a => ({
             email: a.email,
+            initialPoints: a.initialPoints ?? null,
+            finalPoints: a.finalPoints ?? a.live?.balance ?? null,
             collected: a.collectedPoints ?? a.live?.gained ?? 0,
+            bySource: a.live?.bySource ?? {},
             success: a.success,
             error: a.error,
             streakProtection: a.streakProtection ?? null,
-            edgeBrowsing: a.edgeBrowsing ?? null
+            edgeBrowsing: a.edgeBrowsing ?? null,
+            tasks: a.tasks ?? []
         }))
     }
+}
+
+function accountEnvironment() {
+    const stored = accountStore.runEnvironment()
+    return stored ? { ...process.env, ...stored } : process.env
+}
+
+function requireIdle(res) {
+    if (pm.getStatus().state === 'idle') return true
+    sendJson(res, 409, { error: 'Accounts cannot be changed while a run is active.', code: 'RUN_ACTIVE' })
+    return false
+}
+
+function accountMutationError(res, error) {
+    const code = error?.code || 'ACCOUNT_STORE_ERROR'
+    const status = /key file is unavailable/i.test(error?.message || '')
+        ? 503
+        : code === 'ACCOUNT_NOT_FOUND'
+          ? 404
+          : ['ALREADY_MIGRATED', 'DUPLICATE_ACCOUNT', 'MIGRATION_REQUIRED'].includes(code)
+            ? 409
+            : 400
+    return sendJson(res, status, { error: error instanceof Error ? error.message : String(error), code })
 }
 
 function applyCors(res) {
@@ -338,7 +375,7 @@ const requestHandler = async (req, res) => {
                 version: pkgVersion,
                 message: 'Control API',
                 authRequired: Boolean(TOKEN),
-                stateless: true,
+                stateless: false,
                 endpoints: [
                     'GET /health',
                     'GET /status',
@@ -347,6 +384,10 @@ const requestHandler = async (req, res) => {
                     'GET /errors',
                     'GET /history',
                     'GET /accounts',
+                    'GET /accounts/manage',
+                    'POST /accounts',
+                    'POST /accounts/migrate-env',
+                    'PATCH|DELETE /accounts/:id',
                     'GET /sessions',
                     'GET /diagnostics',
                     'GET /events',
@@ -421,8 +462,63 @@ const requestHandler = async (req, res) => {
 
         // account overview
         if (method === 'GET' && pathname === '/accounts') {
-            const accounts = mergeAccountStats(loadAccounts(), pm.getHistory().map(toHistoryRecord))
-            return sendJson(res, 200, { accounts, count: accounts.length })
+            const accounts = accountStore.sourceAccounts().length
+                ? mergeAccountStats(loadAccounts(accountEnvironment()), pm.getHistory().map(toHistoryRecord))
+                : []
+            return sendJson(res, 200, { accounts, count: accounts.length, store: accountStore.status() })
+        }
+
+        if (method === 'GET' && pathname === '/accounts/manage') {
+            const accounts = accountStore.publicAccounts()
+            return sendJson(res, 200, { accounts, count: accounts.length, store: accountStore.status() })
+        }
+
+        if (method === 'POST' && pathname === '/accounts/migrate-env') {
+            if (!requireIdle(res)) return
+            const body = await readJsonObject(req)
+            if (Object.keys(body).length) return sendJson(res, 400, { error: 'Migration does not accept parameters.' })
+            try {
+                return sendJson(res, 201, accountStore.migrateEnvironment())
+            } catch (error) {
+                return accountMutationError(res, error)
+            }
+        }
+
+        if (method === 'POST' && pathname === '/accounts') {
+            if (!requireIdle(res)) return
+            try {
+                const id = accountStore.create(await readJsonObject(req))
+                return sendJson(res, 201, { created: true, id })
+            } catch (error) {
+                return accountMutationError(res, error)
+            }
+        }
+
+        if ((method === 'PATCH' || method === 'DELETE') && pathname.startsWith('/accounts/')) {
+            if (!requireIdle(res)) return
+            const id = decodeURIComponent(pathname.slice('/accounts/'.length)).trim()
+            if (!/^[a-f0-9-]{16,64}$/i.test(id)) return sendJson(res, 400, { error: 'Account id is invalid.' })
+            try {
+                if (method === 'PATCH') {
+                    const result = accountStore.update(id, await readJsonObject(req))
+                    if (result.previousEmail.toLowerCase() !== result.email.toLowerCase()) {
+                        const loaded = loadConfigSafe(projectRoot)
+                        deleteStoredSessions(projectRoot, loaded?.data?.sessionPath || 'sessions', result.previousEmail)
+                    }
+                    return sendJson(res, 200, { updated: true, id })
+                }
+
+                const removed = accountStore.delete(id)
+                const loaded = loadConfigSafe(projectRoot)
+                const sessions = deleteStoredSessions(
+                    projectRoot,
+                    loaded?.data?.sessionPath || 'sessions',
+                    removed.email
+                )
+                return sendJson(res, 200, { deleted: true, id, sessionsRemoved: sessions.removed })
+            } catch (error) {
+                return accountMutationError(res, error)
+            }
         }
 
         // session list
@@ -578,7 +674,12 @@ const requestHandler = async (req, res) => {
         // start
         if (method === 'POST' && pathname === '/start') {
             const body = await readJsonObject(req)
-            const overrides = {}
+            if (!accountStore.sourceAccounts().length) {
+                return sendJson(res, 400, { error: 'No accounts are configured.', code: 'NO_ACCOUNTS' })
+            }
+            const storedAccountEnv = accountStore.runEnvironment()
+            const overrides = storedAccountEnv ? { env: storedAccountEnv } : {}
+            const sourceEnv = accountEnvironment()
             let selectedAccount = null
             let excludedAccounts = []
             if (body.args != null) overrides.args = body.args
@@ -598,11 +699,11 @@ const requestHandler = async (req, res) => {
                     })
                 }
                 if (body.accountIndex != null) {
-                    const selection = buildSingleAccountEnv(body.accountIndex)
+                    const selection = buildSingleAccountEnv(body.accountIndex, sourceEnv)
                     overrides.env = { ...(overrides.env || {}), ...selection.env }
                     selectedAccount = selection.account
                 } else if (body.excludedAccountIndexes != null) {
-                    const selection = buildExcludedAccountsEnv(body.excludedAccountIndexes)
+                    const selection = buildExcludedAccountsEnv(body.excludedAccountIndexes, sourceEnv)
                     overrides.env = { ...(overrides.env || {}), ...selection.env }
                     excludedAccounts = selection.excludedAccounts
                 }
@@ -632,7 +733,9 @@ const requestHandler = async (req, res) => {
         // restart
         if (method === 'POST' && pathname === '/restart') {
             const body = await readJsonObject(req)
-            const overrides = { force: readForce(body) }
+            const storedAccountEnv = accountStore.runEnvironment()
+            const overrides = { force: readForce(body), ...(storedAccountEnv ? { env: storedAccountEnv } : {}) }
+            const sourceEnv = accountEnvironment()
             let selectedAccount = null
             let excludedAccounts = []
             if (body.args != null) overrides.args = body.args
@@ -652,11 +755,11 @@ const requestHandler = async (req, res) => {
                     })
                 }
                 if (body.accountIndex != null) {
-                    const selection = buildSingleAccountEnv(body.accountIndex)
+                    const selection = buildSingleAccountEnv(body.accountIndex, sourceEnv)
                     overrides.env = { ...(overrides.env || {}), ...selection.env }
                     selectedAccount = selection.account
                 } else if (body.excludedAccountIndexes != null) {
-                    const selection = buildExcludedAccountsEnv(body.excludedAccountIndexes)
+                    const selection = buildExcludedAccountsEnv(body.excludedAccountIndexes, sourceEnv)
                     overrides.env = { ...(overrides.env || {}), ...selection.env }
                     excludedAccounts = selection.excludedAccounts
                 }

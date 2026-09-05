@@ -361,3 +361,30 @@ test('marks Edge browsing partial when the local maximum ends before Microsoft r
     assert.equal(finished.reportsCompleted, 6)
     assert.equal(finished.reportsTotal, 6)
 })
+
+test('keeps an account task list with expected and earned points', () => {
+    const state = createRunState()
+    applyLogToRunState(
+        state,
+        parseLogLine(
+            '[2026-09-05] [user] [INFO] MAIN [ACCOUNT-START] Starting account: person@example.com | geoLocale: auto | locale: zh-CN'
+        )
+    )
+    applyLogToRunState(
+        state,
+        parseLogLine(
+            '[2026-09-05] [user] [INFO] DESKTOP [TASK-SNAPSHOT] {"account":"person@example.com","tasks":[{"id":"offer-1","title":"每日活动","points":10,"completed":false,"locked":false}]}'
+        )
+    )
+    applyLogToRunState(
+        state,
+        parseLogLine(
+            '[2026-09-05] [user] [INFO] DESKTOP [URL-REWARD] Completed UrlReward | offerId=offer-1 | pointsGained=10 | currentBalance=110'
+        )
+    )
+    const task = summarizeRunState(state).accounts[0].tasks[0]
+    assert.equal(task.title, '每日活动')
+    assert.equal(task.status, 'completed')
+    assert.equal(task.expectedPoints, 10)
+    assert.equal(task.earnedPoints, 10)
+})

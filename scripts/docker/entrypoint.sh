@@ -34,14 +34,19 @@ for i in "${account_indexes[@]}"; do
   acct_count=$((acct_count + 1))
 done
 
-if [ "$acct_count" -eq 0 ]; then
+ACCOUNT_STORE_FILE="${ACCOUNT_STORE_FILE:-$SCRIPT_DIR/dist/config/accounts.enc.json}"
+export ACCOUNT_STORE_FILE
+
+if [ -f "$ACCOUNT_STORE_FILE" ]; then
+  echo "[entrypoint] Encrypted account store found"
+elif [ "$acct_count" -eq 0 ]; then
   echo "WARNING: No ACCOUNT_N_EMAIL found in environment - the script will fail." >&2
   echo "         Set at least one ACCOUNT_N_EMAIL in your .env file." >&2
 else
   echo "[entrypoint] Found $acct_count account(s) in environment"
 fi
 
-CONFIG_FILE="$SCRIPT_DIR/config/config.json"
+CONFIG_FILE="${CONFIG_FILE:-$SCRIPT_DIR/dist/config/config.json}"
 CONFIG_EXAMPLE="$SCRIPT_DIR/config.example.json"
 
 if ! [ -f "$CONFIG_EXAMPLE" ]; then

@@ -40,6 +40,7 @@ export function sanitizeText(value, maxLength = 4000) {
 export function sanitizeLog(entry) {
     const safe = {
         id: Number.isSafeInteger(Number(entry?.id)) ? Number(entry.id) : null,
+        runId: typeof entry?.runId === 'string' ? sanitizeText(entry.runId, 100) : null,
         receivedAt: typeof entry?.receivedAt === 'string' ? entry.receivedAt : null,
         ts: typeof entry?.ts === 'string' ? sanitizeText(entry.ts, 120) : null,
         level: ['debug', 'info', 'warn', 'error'].includes(entry?.level) ? entry.level : 'info',

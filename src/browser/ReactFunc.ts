@@ -95,6 +95,21 @@ export default class ReactFunc {
             `Snapshot complete | offers=${offers.length} | reportable=${offers.filter(o => o.reportable).length} | streaks=${streaks.length} | streakProtectionEnabled=${streakProtection?.isProtectionOn ?? 'null'} | streakProtectionRemainingDays=${streakProtection?.remainingDays ?? 'null'} | streakCounter=${streakProtection?.streakCounter ?? 'null'} | level=${account.level} | account=${accountEmail ?? 'null'}`
         )
 
+        this.bot.logger.info(
+            this.bot.isMobile,
+            'TASK-SNAPSHOT',
+            JSON.stringify({
+                account: accountEmail,
+                tasks: offers.map(offer => ({
+                    id: offer.offerId,
+                    title: offer.title,
+                    points: offer.points,
+                    completed: offer.isCompleted,
+                    locked: offer.isLocked
+                }))
+            })
+        )
+
         return {
             offers,
             reportable: offers.filter(o => o.reportable),

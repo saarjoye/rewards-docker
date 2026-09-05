@@ -1,4 +1,4 @@
-import { sanitizeText } from './security.mjs'
+import { sanitizeLog, sanitizeText } from './security.mjs'
 
 const CORE_STATES = {
     idle: '空闲',
@@ -17,6 +17,16 @@ export const TITLE_LABELS = {
     'ACCOUNT-END': '账号完成',
     'ACCOUNT-ERROR': '账号失败',
     'ACCOUNT-DELAY': '账号间隔',
+    LOGIN: '账号登录',
+    'LOGIN-RETRY': '重新登录',
+    'LOGIN-BING': 'Bing 登录验证',
+    'LOGIN-ENTER-EMAIL': '填写登录邮箱',
+    'LOGIN-ENTER-PASSWORD': '填写登录密码',
+    'LOGIN-PASSWORDLESS': '无密码登录',
+    'LOGIN-TOTP': '动态验证码验证',
+    'LOGIN-CODE': '邮箱验证码验证',
+    'LOGIN-APP': '移动应用登录',
+    'HANDLE-STATE': '登录状态识别',
     POINTS: '积分额度',
     FLOW: '任务流程',
     'SEARCH-MANAGER': '搜索任务',
@@ -29,7 +39,8 @@ export const TITLE_LABELS = {
     'URL-REWARD': '每日活动',
     'APP-REWARD': '应用任务',
     PUNCHCARD: '打卡任务',
-    'SEARCH-ON-BING-SEARCH': 'Bing 活动搜索'
+    'SEARCH-ON-BING-SEARCH': 'Bing 活动搜索',
+    'TASK-SNAPSHOT': '当日任务清单'
 }
 
 const SOURCE_LABELS = {
@@ -97,6 +108,24 @@ function earnableView(earnable) {
     }
 }
 
+function tasksView(tasks) {
+    if (!Array.isArray(tasks)) return []
+    return tasks.slice(0, 500).map(task => ({
+        id: sanitizeText(task?.id ?? '', 180),
+        title: sanitizeText(task?.title ?? 'Rewards 任务', 180),
+        status: ['pending', 'running', 'completed', 'failed', 'skipped', 'locked'].includes(task?.status)
+            ? task.status
+            : 'pending',
+        progress:
+            finiteOrNull(task?.progress?.current) !== null && finiteOrNull(task?.progress?.total) !== null
+                ? { current: finiteOrNull(task.progress.current), total: finiteOrNull(task.progress.total) }
+                : null,
+        expectedPoints: finiteOrNull(task?.expectedPoints),
+        earnedPoints: finiteOrNull(task?.earnedPoints),
+        updatedAt: typeof task?.updatedAt === 'string' ? task.updatedAt : null
+    }))
+}
+
 export function buildPublicState({ status, points, configuredAccounts, identity, historySummary, notificationStatus }) {
     if (!status) {
         return {
@@ -134,6 +163,7 @@ export function buildPublicState({ status, points, configuredAccounts, identity,
             status: accountState({ coreState: status.state, account: runAccount, currentEmail, hasRun }),
             points: pointsView(runAccount),
             earnable: earnableView(runAccount?.earnable),
+            tasks: tasksView(runAccount?.tasks),
             error: runAccount?.error ? sanitizeText(runAccount.error, 500) : null
         }
     })
@@ -150,7 +180,8 @@ export function buildPublicState({ status, points, configuredAccounts, identity,
             startedAt: status.startedAt ?? null,
             lastExit: publicLastExit(status.lastExit),
             logCount: finiteOrNull(status.logCount),
-            latestLogId: finiteOrNull(status.latestLogId)
+            latestLogId: finiteOrNull(status.latestLogId),
+            runId: typeof status.runId === 'string' ? sanitizeText(status.runId, 100) : null
         },
         run: {
             running: ['starting', 'running', 'stopping'].includes(status.state),
@@ -165,19 +196,114 @@ export function buildPublicState({ status, points, configuredAccounts, identity,
             updatedAt: points?.updatedAt ?? run.live?.updatedAt ?? null
         },
         accounts,
-        history: historySummary,
+        history: {
+            ...historySummary,
+            todayCollected:
+                Number(historySummary?.todayCollected || 0) +
+                (status.state === 'idle' ? 0 : finiteOrNull(points?.collected ?? run.collected) || 0)
+        },
         notifications: notificationStatus,
         updatedAt: new Date().toISOString()
     }
 }
 
 export function publicLog(entry) {
+    const safeEntry = sanitizeLog(entry)
+    const titleLabel = TITLE_LABELS[safeEntry.title] ?? '运行步骤'
     return {
-        ...entry,
-        levelLabel: LEVEL_LABELS[entry.level] ?? entry.level,
-        platformLabel: PLATFORM_LABELS[entry.platform] ?? entry.platform ?? '系统',
-        titleLabel: TITLE_LABELS[entry.title] ?? entry.title ?? '运行日志'
+        ...safeEntry,
+        levelLabel: LEVEL_LABELS[safeEntry.level] ?? safeEntry.level,
+        platformLabel: PLATFORM_LABELS[safeEntry.platform] ?? safeEntry.platform ?? '系统',
+        titleLabel,
+        displayMessage: translateLogMessage(safeEntry, titleLabel)
     }
+}
+
+function numeric(message, key) {
+    const match = String(message).match(new RegExp(`(?:^| \\| )${key}=(-?\\d+(?:\\.\\d+)?)(?= \\| |$)`))
+    return match ? Number(match[1]) : null
+}
+
+function loginFailureReason(value) {
+    const reason = String(value ?? '').trim()
+    if (!reason || /^Unknown Error$/i.test(reason) || reason === '登录页面未返回可识别的错误原因') {
+        return '登录页面未返回可识别的错误原因'
+    }
+    return sanitizeText(reason, 500)
+}
+
+export function translateLogMessage(entry, titleLabel = TITLE_LABELS[entry?.title] ?? '运行任务') {
+    const message = sanitizeText(entry?.message ?? '', 8000)
+    if (entry?.title === 'LOGIN-RETRY') return message
+    if (entry?.title === 'TASK-SNAPSHOT') {
+        try {
+            const count = JSON.parse(message)?.tasks?.length
+            return Number.isSafeInteger(count) ? `已读取当日任务列表，共 ${count} 项` : '已读取当日任务列表'
+        } catch {
+            return '当日任务列表读取完成'
+        }
+    }
+    if (entry?.title === 'RUN-START') {
+        const accounts = message.match(/Accounts: (\d+)/)?.[1]
+        return accounts ? `任务已启动，共 ${accounts} 个账号` : '任务已启动'
+    }
+    if (entry?.title === 'RUN-END') {
+        const points = numeric(message, 'pointsGained')
+        return points === null ? '全部账号处理结束' : `全部账号处理结束，本次获得 ${points} 分`
+    }
+    if (entry?.title === 'ACCOUNT-START')
+        return `开始处理 ${message.match(/^Starting account: ([^|]+)/)?.[1]?.trim() || '当前账号'}`
+    if (entry?.title === 'ACCOUNT-END') {
+        const points = numeric(message, 'pointsGained')
+        return points === null ? '当前账号处理完成' : `当前账号处理完成，本次获得 ${points} 分`
+    }
+    if (entry?.title === 'ACCOUNT-DELAY') {
+        const seconds = message.match(/^Waiting ([\d.]+) seconds/)?.[1]
+        return seconds ? `等待 ${seconds} 秒后处理下一个账号` : '正在等待下一个账号'
+    }
+    if (entry?.title === 'POINTS') {
+        const match = message.match(/Mobile: (\d+) \| Browser: (\d+) \| App: (\d+)/)
+        return match
+            ? `今日可得：移动搜索 ${match[1]} 分，桌面搜索 ${match[2]} 分，应用任务 ${match[3]} 分`
+            : '已读取今日积分额度'
+    }
+    if (entry?.title === 'CONTROLLER') {
+        if (message.startsWith('Starting run:')) return '正在启动任务进程'
+        if (message.startsWith('Run started')) return '任务进程已启动'
+        if (message.startsWith('Run finished')) return '任务进程已结束'
+        if (message.startsWith('Stopping run')) return '正在停止任务进程'
+        if (message.startsWith('Force-stopping run')) return '正在强制停止任务进程'
+    }
+    if (entry?.title === 'LOGIN') {
+        const accountError = message.match(/^Account error:\s*(.*)$/i)
+        if (accountError) return `账号登录失败：${loginFailureReason(accountError[1])}`
+        const fatalError = message.match(/^Fatal error:\s*(?:Microsoft login error:\s*)?(.*)$/i)
+        if (fatalError) return `账号登录失败：${loginFailureReason(fatalError[1])}`
+    }
+    if (entry?.title === 'FLOW') {
+        const flowError = message.match(
+            /^(Mobile|Desktop) flow failed for [^:]+:\s*(?:Microsoft login error:\s*)?(.*)$/i
+        )
+        if (flowError) {
+            return `${flowError[1].toLowerCase() === 'mobile' ? '移动端' : '桌面端'}账号流程失败：${loginFailureReason(flowError[2])}`
+        }
+    }
+
+    const points = numeric(message, 'pointsGained')
+    const suffix = points === null ? '' : `，获得 ${points} 分`
+    if (
+        /^(Completed|Finished|Reward claimed|Nothing claimed)|already (?:been )?completed|already complete/i.test(
+            message
+        )
+    ) {
+        return `${titleLabel}已完成${suffix}`
+    }
+    if (/^(Starting|Started)/i.test(message)) return `正在执行${titleLabel}`
+    if (/^(Skipping|Skip )/i.test(message)) return `${titleLabel}已跳过`
+    if (entry?.level === 'error' || /failed|failure/i.test(message)) return `${titleLabel}执行失败，请展开诊断详情`
+    if (entry?.level === 'warn') return `${titleLabel}出现警告，请展开诊断详情`
+    if (points !== null) return `${titleLabel}进度已更新${suffix}`
+    return `${titleLabel}正在处理`
 }
 
 export function publicErrorMessage(error) {
@@ -186,7 +312,14 @@ export function publicErrorMessage(error) {
         NOT_RUNNING: '当前没有正在运行的任务',
         CONTROL_TIMEOUT: '核心接口请求超时',
         CONTROL_UNAVAILABLE: '核心接口不可用',
-        CONTROL_HTTP_ERROR: '核心接口请求失败'
+        CONTROL_HTTP_ERROR: '核心接口请求失败',
+        RUN_ACTIVE: '任务运行期间不能修改账号',
+        ACCOUNT_NOT_FOUND: '账号不存在',
+        DUPLICATE_ACCOUNT: '该账号已存在',
+        MIGRATION_REQUIRED: '请先迁移环境变量中的旧账号',
+        ALREADY_MIGRATED: '账号已经迁移到加密账号库',
+        NO_ENV_ACCOUNTS: '没有可迁移的环境账号',
+        NO_ACCOUNTS: '尚未配置账号'
     }
     return codes[error?.code] ?? sanitizeText(error?.message || '请求失败', 500)
 }

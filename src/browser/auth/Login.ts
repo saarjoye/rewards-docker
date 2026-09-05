@@ -44,6 +44,17 @@ type SignInMethodOption = {
 
 type SignInMethodType = 'PASSWORD' | 'AUTHENTICATOR' | 'EMAIL' | 'PASSKEY' | 'TOTP' | 'UNKNOWN'
 
+class UnknownLoginError extends Error {
+    constructor(
+        readonly reason: 'unreadable-alert' | 'unknown-state',
+        message = '登录页面未返回可识别的错误原因'
+    ) {
+        super(message)
+    }
+}
+
+const LOGIN_RETRY_DELAYS = [10000, 30000, 60000] as const
+
 export class Login {
     emailLogin: EmailLogin
     passwordlessLogin: PasswordlessLogin
@@ -91,90 +102,142 @@ export class Login {
     }
 
     async login(page: Page, account: Account) {
+        const platform = this.bot.isMobile ? '移动端' : '桌面端'
+        let retries = 0
         try {
-            suspendMediaBlocking(this.bot, page.context())
-            this.capturedUnknownUrls.clear()
-            this.signInMethodsLogged = false
-            this.passwordlessMethodSelected = false
-            this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Starting login process')
-
-            await page
-                .goto(URLs.rewards.userLogin, {
-                    waitUntil: 'domcontentloaded'
-                })
-                .catch(() => {})
-            await this.bot.utils.wait(2000)
-            await this.bot.browser.utils.reloadBadPage(page)
-            await this.bot.browser.utils.disableFido(page)
-
-            const maxIterations = 25
-            let iteration = 0
-            let previousState: LoginState = 'UNKNOWN'
-            let sameStateCount = 0
-
-            while (iteration < maxIterations) {
+            for (;;) {
                 if (page.isClosed()) throw new Error('Page closed unexpectedly')
-
-                iteration++
-                this.bot.logger.debug(this.bot.isMobile, 'LOGIN', `State check iteration ${iteration}/${maxIterations}`)
-
-                const state = await this.detectCurrentState(page)
-                this.bot.logger.debug(this.bot.isMobile, 'LOGIN', `Current state: ${state}`)
-
-                if (state !== previousState && previousState !== 'UNKNOWN') {
-                    this.bot.logger.info(this.bot.isMobile, 'LOGIN', `State transition: ${previousState} → ${state}`)
-                }
-
-                if (state === previousState && state !== 'LOGGED_IN' && state !== 'UNKNOWN') {
-                    sameStateCount++
-                    this.bot.logger.debug(
-                        this.bot.isMobile,
-                        'LOGIN',
-                        `Same state count: ${sameStateCount}/4 for state "${state}"`
-                    )
-                    if (sameStateCount >= 4) {
-                        this.bot.logger.warn(
-                            this.bot.isMobile,
-                            'LOGIN',
-                            `Stuck in state "${state}" for 4 loops, refreshing page`
-                        )
-                        await page.reload({ waitUntil: 'domcontentloaded' })
-                        await this.bot.utils.wait(3000)
-                        sameStateCount = 0
-                        previousState = 'UNKNOWN'
-                        continue
-                    }
-                } else {
-                    sameStateCount = 0
-                }
-                previousState = state
-
-                if (state === 'LOGGED_IN') {
-                    this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Successfully logged in')
+                try {
+                    await this.loginAttempt(page, account)
                     break
+                } catch (error) {
+                    if (page.isClosed()) throw new Error('Page closed unexpectedly')
+                    if (!(error instanceof UnknownLoginError)) throw error
+                    const delay = LOGIN_RETRY_DELAYS[retries]
+                    if (delay === undefined) {
+                        throw new UnknownLoginError(
+                            error.reason,
+                            `${platform}已重试登录 3 次，仍未成功，本次${platform}流程结束`
+                        )
+                    }
+                    retries++
+                    this.bot.logger.warn(
+                        this.bot.isMobile,
+                        'LOGIN-RETRY',
+                        `${platform}登录原因未知，${delay / 1000} 秒后第 ${retries}/3 次重新登录`
+                    )
+                    await this.bot.utils.wait(delay)
                 }
-
-                const shouldContinue = await this.handleState(state, page, account)
-                if (!shouldContinue) {
-                    throw new Error(`Login failed or aborted at state: ${state}`)
-                }
-
-                await this.bot.utils.wait(1000)
             }
 
-            if (iteration >= maxIterations) {
-                throw new Error('Login timeout: exceeded maximum iterations')
-            }
-
+            // Session verification and persistence must not restart authentication.
+            if (page.isClosed()) throw new Error('Page closed unexpectedly')
             await this.finalizeLogin(page, account)
+            if (retries > 0) {
+                this.bot.logger.info(this.bot.isMobile, 'LOGIN-RETRY', `${platform}重新登录成功，继续后续任务`)
+            }
         } catch (error) {
             this.bot.logger.error(
                 this.bot.isMobile,
-                'LOGIN',
-                `Fatal error: ${error instanceof Error ? error.message : String(error)}`
+                error instanceof UnknownLoginError ? 'LOGIN-RETRY' : 'LOGIN',
+                error instanceof UnknownLoginError
+                    ? error.message
+                    : `Fatal error: ${error instanceof Error ? error.message : String(error)}`
             )
             throw error
         }
+    }
+
+    private async loginAttempt(page: Page, account: Account): Promise<void> {
+        suspendMediaBlocking(this.bot, page.context())
+        this.capturedUnknownUrls.clear()
+        this.signInMethodsLogged = false
+        this.passwordlessMethodSelected = false
+        this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Starting login process')
+
+        await page
+            .goto(URLs.rewards.userLogin, {
+                waitUntil: 'domcontentloaded'
+            })
+            .catch(() => {})
+        await this.bot.utils.wait(2000)
+        await this.bot.browser.utils.reloadBadPage(page)
+        await this.bot.browser.utils.disableFido(page)
+
+        const maxIterations = 25
+        let iteration = 0
+        let previousState: LoginState = 'UNKNOWN'
+        let sameStateCount = 0
+        let unknownStateCount = 0
+
+        while (iteration < maxIterations) {
+            if (page.isClosed()) throw new Error('Page closed unexpectedly')
+
+            iteration++
+            this.bot.logger.debug(this.bot.isMobile, 'LOGIN', `State check iteration ${iteration}/${maxIterations}`)
+
+            const state = await this.detectCurrentState(page)
+            unknownStateCount = state === 'UNKNOWN' ? unknownStateCount + 1 : 0
+            this.bot.logger.debug(this.bot.isMobile, 'LOGIN', `Current state: ${state}`)
+
+            if (state !== previousState && previousState !== 'UNKNOWN') {
+                this.bot.logger.info(this.bot.isMobile, 'LOGIN', `State transition: ${previousState} → ${state}`)
+            }
+
+            if (state === previousState && state !== 'LOGGED_IN' && state !== 'UNKNOWN') {
+                sameStateCount++
+                this.bot.logger.debug(
+                    this.bot.isMobile,
+                    'LOGIN',
+                    `Same state count: ${sameStateCount}/4 for state "${state}"`
+                )
+                if (sameStateCount >= 4) {
+                    this.bot.logger.warn(
+                        this.bot.isMobile,
+                        'LOGIN',
+                        `Stuck in state "${state}" for 4 loops, refreshing page`
+                    )
+                    await page.reload({ waitUntil: 'domcontentloaded' })
+                    await this.bot.utils.wait(3000)
+                    sameStateCount = 0
+                    previousState = 'UNKNOWN'
+                    continue
+                }
+            } else {
+                sameStateCount = 0
+            }
+            previousState = state
+
+            if (state === 'LOGGED_IN') {
+                this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Successfully logged in')
+                return
+            }
+
+            const shouldContinue = await this.handleState(state, page, account)
+            if (!shouldContinue) {
+                throw new Error(`Login failed or aborted at state: ${state}`)
+            }
+
+            await this.bot.utils.wait(1000)
+        }
+
+        if (unknownStateCount >= 2) throw new UnknownLoginError('unknown-state')
+        throw new Error('Login timeout: exceeded maximum iterations')
+    }
+
+    private async hasKnownLoginAlert(page: Page): Promise<boolean> {
+        const alerts = page.locator(this.selectors.errorAlert)
+        const count = await alerts.count().catch(() => 0)
+        for (let index = 0; index < count; index++) {
+            const alert = alerts.nth(index)
+            if (!(await alert.isVisible().catch(() => false))) continue
+            const innerText = (await alert.innerText({ timeout: 500 }).catch(() => '')).trim()
+            const content = innerText || (await alert.textContent({ timeout: 500 }).catch(() => ''))?.trim() || ''
+            if (content && !/^Unknown\s+Error$/i.test(content) && content !== '登录页面未返回可识别的错误原因') {
+                return true
+            }
+        }
+        return false
     }
 
     private async detectCurrentState(page: Page): Promise<LoginState> {
@@ -467,10 +530,8 @@ export class Login {
             }
 
             case 'ERROR_ALERT': {
-                const alertEl = page.locator(this.selectors.errorAlert)
-                const errorMsg = await alertEl.innerText().catch(() => 'Unknown Error')
-                this.bot.logger.error(this.bot.isMobile, 'LOGIN', `Account error: ${errorMsg}`)
-                throw new Error(`Microsoft login error: ${errorMsg}`)
+                if (!(await this.hasKnownLoginAlert(page))) throw new UnknownLoginError('unreadable-alert')
+                throw new Error('Microsoft login error: 登录页面返回明确错误提示，停止自动重试')
             }
 
             case 'LOGGED_IN':

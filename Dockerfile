@@ -93,11 +93,11 @@ RUN set -eux; \
 # when the user hasn't mounted their own config.json
 COPY config.example.json ./config.example.json
 
-# config.json is managed via the ./config bind mount (compose.yaml mounts
-# ./config to /usr/src/microsoft-rewards-script/config). On first run the
-# entrypoint generates config/config.json from this example if none exists,
+# config.json is managed via the persistent config bind mount. On first run the
+# entrypoint generates dist/config/config.json from this example if none exists,
 # then symlinks it to the project root where the script expects it.
-# Accounts come from ACCOUNT_N_* env vars, so no accounts.json is needed.
+# Accounts are injected from the encrypted account store for each run. Existing
+# ACCOUNT_N_* values remain available only for the explicit one-time migration.
 
 # Copy runtime scripts with proper permissions from the start
 COPY --chmod=755 scripts/docker/run_daily.sh ./scripts/docker/run_daily.sh
