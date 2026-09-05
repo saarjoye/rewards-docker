@@ -2,10 +2,7 @@ name: microsoft-rewards-v4
 
 services:
     rewards-core:
-        image: mrs-core:4.3.2-d0f07d7
-        build:
-            context: .
-            dockerfile: Dockerfile
+        image: ghcr.io/saarjoye/mrs-core:4.3.2-d0f07d7
         container_name: microsoft-rewards-core
         restart: unless-stopped
         env_file:
@@ -41,10 +38,7 @@ services:
             - rewards-control
 
     rewards-web:
-        image: mrs-web:4.3.2-cn1
-        build:
-            context: ./web
-            dockerfile: Dockerfile
+        image: ghcr.io/saarjoye/mrs-web:4.3.2-cn1
         container_name: microsoft-rewards-web
         restart: unless-stopped
         env_file:

@@ -16,7 +16,7 @@
 2. 生成至少 32 字节的随机 Token，分别写入 `API_TOKEN` 和 `CONTROL_API_TOKEN`，两个值必须相同。
 3. 在 `runtime/core.env` 填写 `ACCOUNT_N_*`，旧 `PROXY_AXIOS` 改为 `PROXY_HTTP`。
 4. 初次验证保持 `CRON_SCHEDULE=`、`RUN_ON_START=false`，不要让旧、新容器同时运行同一账号。
-5. 执行 `docker compose build rewards-core rewards-web`，然后执行 `docker compose up -d`。
+5. 执行 `docker compose pull`，然后执行 `docker compose up -d`。
 6. 打开 `http://<NAS地址>:8787` 初始化管理员，通过 Web 一次只运行一个账号。
 
 ## 配置原则
