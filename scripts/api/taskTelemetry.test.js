@@ -377,7 +377,10 @@ test('read-only confirmation selects the original source without browser navigat
             react: {
                 snapshotPage: (_html, emit) => {
                     assert.equal(emit, false)
-                    return { offers: [] }
+                    return {
+                        account: { availablePoints: 100 },
+                        offers: [{ offerId: spec.offerId, isCompleted: false, completionKnown: true, points: 1 }]
+                    }
                 }
             }
         }
@@ -390,4 +393,105 @@ test('read-only confirmation selects the original source without browser navigat
     assert.match(requests[2].url, /rewardsplatform/)
     assert.match(requests[3].url, /getuserinfo/)
     assert.ok(requests.every(request => request.method === 'GET' && request.retries === 0))
+})
+
+test('RSC confirmation falls back to the read-only dashboard when fields are missing', async () => {
+    const BrowserFunc = require('../../dist/browser/BrowserFunc.js').default
+    const requests = []
+    const bot = {
+        isMobile: false,
+        accessToken: 'synthetic-placeholder',
+        fingerprint: { headers: {} },
+        userData: { geoLocale: 'test' },
+        cookies: { desktop: [] },
+        utils: { getFormattedDate: () => '2026-09-07' },
+        http: {
+            request: async request => {
+                requests.push(request)
+                return { status: 200, data: 'synthetic-rsc' }
+            }
+        },
+        browser: {
+            react: {
+                snapshotPage: () => ({
+                    account: { availablePoints: null },
+                    offers: []
+                })
+            }
+        }
+    }
+    const func = new BrowserFunc(bot)
+    func.getCachedCookies = () => []
+    func.getDashboardData = async () => ({
+        dashboard: {
+            userStatus: { availablePoints: 1234 },
+            dailySetPromotions: {
+                '2026-09-07': [{ offerId: 'offer-1', complete: true, pointProgress: 10, pointProgressMax: 10 }]
+            },
+            morePromotions: [],
+            morePromotionsWithoutPromotionalItems: [],
+            promotionalItems: []
+        }
+    })
+
+    const evidence = await func.observeTask({
+        key: 'offer-1',
+        title: 'synthetic offer',
+        source: 'rsc',
+        platform: 'desktop',
+        offerId: 'offer-1'
+    })
+
+    assert.equal(evidence.balance, 1234)
+    assert.equal(evidence.completed, true)
+    assert.equal(evidence.current, 10)
+    assert.equal(evidence.total, 10)
+    assert.equal(requests.length, 1)
+})
+
+test('offer lookup recovers a missing RSC hash from the read-only dashboard', async () => {
+    const BrowserFunc = require('../../dist/browser/BrowserFunc.js').default
+    const bot = {
+        isMobile: false,
+        reactSnapshot: {
+            offers: [{ offerId: 'offer-2', hash: null, isCompleted: false, isLocked: false }]
+        },
+        logger: { debug() {} }
+    }
+    const func = new BrowserFunc(bot)
+    func.refreshEarnSnapshot = async () => ({
+        offers: [{ offerId: 'offer-2', hash: null, isCompleted: false, isLocked: false }]
+    })
+    func.getDashboardData = async () => ({
+        dashboard: {
+            dailySetPromotions: {},
+            morePromotions: [
+                {
+                    offerId: 'offer-2',
+                    hash: 'dashboard-hash',
+                    title: 'synthetic dashboard offer',
+                    description: '',
+                    pointProgress: 0,
+                    pointProgressMax: 10,
+                    promotionType: 'urlreward',
+                    promotionSubtype: '',
+                    name: 'synthetic',
+                    destinationUrl: 'https://example.invalid/rewards',
+                    complete: false,
+                    isHidden: false,
+                    exclusiveLockedFeatureStatus: 'unlocked',
+                    activityType: '11',
+                    attributes: {}
+                }
+            ],
+            morePromotionsWithoutPromotionalItems: [],
+            promotionalItems: []
+        }
+    })
+
+    const offer = await func.ensureOffer('offer-2')
+    assert.equal(offer.hash, 'dashboard-hash')
+    assert.equal(offer.reportable, true)
+    assert.equal(offer.activityType, 11)
+    assert.equal(offer.points, 10)
 })

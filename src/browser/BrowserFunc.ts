@@ -69,7 +69,33 @@ export default class BrowserFunc {
                           : {})
                   }
                 : response.data
-        return evidenceFromPayload(spec, payload)
+        const evidence = evidenceFromPayload(spec, payload)
+        if (spec.source !== 'rsc' || (evidence.balance !== null && evidence.completed !== null)) return evidence
+
+        // The earn RSC response can omit the account header or the offer after a mutation.
+        // Re-read the read-only dashboard so completion and the live balance are not lost.
+        try {
+            const dashboard = await this.getDashboardData()
+            const today = this.bot.utils.getFormattedDate()
+            const dashboardData = dashboard.dashboard
+            const candidates = [
+                ...(dashboardData.dailySetPromotions?.[today] ?? []),
+                ...(dashboardData.morePromotions ?? []),
+                ...(dashboardData.morePromotionsWithoutPromotionalItems ?? []),
+                ...(dashboardData.promotionalItems ?? [])
+            ]
+            const offer = candidates.find(item => item.offerId === spec.offerId)
+            return {
+                ...evidence,
+                balance: evidence.balance ?? finitePoints(dashboardData.userStatus?.availablePoints),
+                completed: evidence.completed ?? (typeof offer?.complete === 'boolean' ? offer.complete : null),
+                current: evidence.current ?? finitePoints(offer?.pointProgress),
+                total: evidence.total ?? finitePoints(offer?.pointProgressMax),
+                source: evidence.source ?? 'dashboard'
+            }
+        } catch {
+            return evidence
+        }
     }
 
     async getDashboardData(cookies?: Cookie[]): Promise<DashboardData> {
@@ -1054,7 +1080,7 @@ export default class BrowserFunc {
 
     async ensureOffer(offerId: string): Promise<ParsedOffer | null> {
         const cached = this.bot.reactSnapshot?.offers.find(o => o.offerId === offerId)
-        if (cached) return cached
+        if (cached?.hash || cached?.isCompleted || cached?.isLocked) return cached
 
         this.bot.logger.debug(
             this.bot.isMobile,
@@ -1070,6 +1096,72 @@ export default class BrowserFunc {
         }
 
         const live = refreshed.offers.find(o => o.offerId === offerId) ?? null
+
+        if (live?.hash || live?.isCompleted || live?.isLocked) {
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                'EARN-SNAPSHOT',
+                `Refetched /earn and /dashboard | offers=${refreshed.offers.length} | ${offerId} found=true`
+            )
+            return live
+        }
+
+        // RSC frequently includes the offer id but omits its submission hash.
+        // The read-only dashboard API is the authoritative fallback for that metadata.
+        try {
+            const dashboard = await this.getDashboardData()
+            const dashboardOffers = [
+                ...Object.values(dashboard.dashboard.dailySetPromotions ?? {}).flat(),
+                ...(dashboard.dashboard.morePromotions ?? []),
+                ...(dashboard.dashboard.morePromotionsWithoutPromotionalItems ?? []),
+                ...(dashboard.dashboard.promotionalItems ?? [])
+            ]
+            const source = dashboardOffers.find(item => item.offerId === offerId)
+            if (source) {
+                const hash = typeof source.hash === 'string' && source.hash.trim() ? source.hash : null
+                const expectedPoints = finitePoints(source.pointProgressMax)
+                const currentPoints = finitePoints(source.pointProgress)
+                const activityTypeValue = Number(source.activityType)
+                const locked = source.exclusiveLockedFeatureStatus === 'locked'
+                const complete = source.complete === true
+                const attributes =
+                    source.attributes && typeof source.attributes === 'object'
+                        ? (source.attributes as Record<string, unknown>)
+                        : {}
+                const promotional =
+                    attributes.promotional === true || String(attributes.promotional).toLowerCase() === 'true'
+                const recovered: ParsedOffer = {
+                    offerId,
+                    hash,
+                    title: source.title ?? offerId,
+                    description: source.description ?? '',
+                    points: expectedPoints ?? 0,
+                    observedPoints: expectedPoints,
+                    pointProgress: currentPoints,
+                    completionKnown: true,
+                    promotionSubtype: source.promotionSubtype ?? null,
+                    promotionType: source.promotionType ?? null,
+                    name: source.name ?? null,
+                    isDisabled: source.isHidden === true,
+                    destination: source.destinationUrl ?? '',
+                    isCompleted: complete,
+                    isPromotional: promotional,
+                    isLocked: locked,
+                    unlockCriteria: null,
+                    date: null,
+                    activityType:
+                        Number.isInteger(activityTypeValue) && activityTypeValue > 0 ? activityTypeValue : null,
+                    reportable: Boolean(hash) && !complete && !locked && source.isHidden !== true
+                }
+                if (recovered.reportable || recovered.isCompleted || recovered.isLocked) return recovered
+            }
+        } catch (error) {
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                'EARN-SNAPSHOT',
+                `Dashboard metadata fallback failed for ${offerId} | error=${error instanceof Error ? error.message : String(error)}`
+            )
+        }
 
         this.bot.logger.debug(
             this.bot.isMobile,

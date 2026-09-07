@@ -59,7 +59,7 @@
 
 ## 交付状态
 
-本次为 cn7 基线上的 cn8 源码修复。完整更新配置见 [compose.yaml](../compose.yaml)，生产使用 `ghcr.io/saarjoye/mrs-core:latest` 和 `ghcr.io/saarjoye/mrs-web:latest`；工作流同时保留 `4.3.2-cn8` 版本标签用于回滚。确认发布工作流成功后即可拉取，无须自行构建；发布不会自动部署运行机。
+本次为 cn8 基线上的 cn9 源码修复。完整更新配置见 [compose.yaml](../compose.yaml)，生产使用 `ghcr.io/saarjoye/mrs-core:latest` 和 `ghcr.io/saarjoye/mrs-web:latest`；工作流同时保留 `4.3.2-cn9` 版本标签用于回滚。确认发布工作流成功后即可拉取，无须自行构建；发布不会自动部署运行机。cn9 增加 RSC 只读确认回退，并在活动 hash 缺失时从 Dashboard 恢复可提交元数据。
 
 ## 配置与权限
 
