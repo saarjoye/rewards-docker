@@ -76,6 +76,7 @@ export function calendarMarkup(data) {
     const grid = days
         .map(day => {
             const known = number(day.totalGained) !== null
+            const breakdown = ` · 已确认 ${points(day.confirmedPoints)} · 未归属 ${points(day.unattributedPoints)} · 待确认 ${points(day.pendingPoints)}`
             const heat =
                 known && day.totalGained > 0 ? Math.min(4, Math.max(1, Math.ceil((day.totalGained / max) * 4))) : 0
             return (
@@ -89,6 +90,7 @@ export function calendarMarkup(data) {
                 (day.status === 'not-run' ? '未运行或无记录' : esc(taskStatusLabel(day.status))) +
                 ' · ' +
                 Number(day.records || 0) +
+                breakdown +
                 ' 条记录</span></article>'
             )
         })
@@ -103,7 +105,11 @@ export function calendarMarkup(data) {
         .map(records => {
             const record = records[0]
             const ordered = records.toSorted((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)))
-            const verified = records.filter(item => item.verification !== 'legacy' && number(item.runGained) !== null)
+            const verified = records.filter(
+                item =>
+                    number(item.runGained) !== null &&
+                    (item.verification !== 'legacy' || item.balanceReconciliation?.status === 'confirmed')
+            )
             const subtotal = verified.length ? verified.reduce((sum, item) => sum + item.runGained, 0) : null
             const unknown = records.length - verified.length
             const status = records.every(item => item.status === 'completed')
@@ -126,7 +132,7 @@ export function calendarMarkup(data) {
                         (number(run.afterPoints) ?? '待确认') +
                         '</td><td>' +
                         points(run.runGained) +
-                        (run.verification === 'legacy' ? '（旧记录未核验）' : '') +
+                        (run.legacyUnverified || run.verification === 'legacy' ? '（旧记录未核验）' : '') +
                         '</td><td>' +
                         esc(taskStatusLabel(run.status)) +
                         '</td><td>' +

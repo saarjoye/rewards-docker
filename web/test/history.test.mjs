@@ -68,7 +68,7 @@ test('persists completed runs once and never stores the full email', () => {
         assert.doesNotMatch(JSON.stringify(logs), /person@example\.com|hidden-value/)
         assert.doesNotMatch(JSON.stringify(saved), /private@example\.com/)
         const calendar = store.calendar({ start: '2026-09-03', end: '2026-09-03' })
-        assert.equal(calendar.summary.totalPoints, null)
+        assert.equal(calendar.summary.totalPoints, 66)
         assert.equal(saved.runs[0].verification, 'legacy')
         assert.equal(calendar.records[0].runGained, 66)
     } finally {

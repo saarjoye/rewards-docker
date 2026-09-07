@@ -92,6 +92,48 @@ test('reports unavailable core without inventing account state', () => {
     assert.deepEqual(state.accounts, [])
 })
 
+test('separates task-confirmed points from reconciled balance gains', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'mrs-status-reconciliation-'))
+    try {
+        const identity = new AccountIdentity(directory)
+        const accountId = identity.keyFor('first@example.com')
+        const state = buildPublicState({
+            status: { state: 'idle', run: { accounts: [] } },
+            points: { accounts: [] },
+            configuredAccounts: { accounts: [{ index: 1, email: 'first@example.com' }] },
+            identity,
+            historySummary: {
+                today: '2026-09-05',
+                todayGained: 22,
+                confirmedPoints: 6,
+                unattributedPoints: 16,
+                pendingPoints: null,
+                balanceReconciliation: [
+                    {
+                        accountKey: accountId,
+                        runGained: 22,
+                        todayGained: 22,
+                        confirmedPoints: 6,
+                        unattributedPoints: 16,
+                        pendingPoints: null,
+                        pendingTaskCount: 1,
+                        balanceDelta: 22,
+                        balanceReconciliation: { status: 'confirmed' }
+                    }
+                ]
+            },
+            notificationStatus: { enabled: false }
+        })
+        assert.equal(state.accounts[0].points.runGained, 22)
+        assert.equal(state.accounts[0].points.confirmedPoints, 6)
+        assert.equal(state.accounts[0].points.unattributedPoints, 16)
+        assert.equal(state.accounts[0].points.collected, null)
+        assert.equal(state.history.todayGained, 22)
+    } finally {
+        fs.rmSync(directory, { recursive: true, force: true })
+    }
+})
+
 test('translates login failures into clear Chinese summaries', () => {
     const accountError = publicLog({
         level: 'error',

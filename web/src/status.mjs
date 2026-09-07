@@ -118,7 +118,7 @@ function accountState({ coreState, account, currentEmail, hasRun }) {
     return { state: 'unknown', label: '待确认', message: '最近运行未提供最终账号状态' }
 }
 
-function pointsView(account) {
+function pointsView(account, historical = null) {
     const source = account?.live?.bySource ?? account?.bySource ?? {}
     const bySource = Object.entries(source)
         .filter(([, value]) => finiteOrNull(value) !== null)
@@ -134,15 +134,15 @@ function pointsView(account) {
                 ? account.live.balance
                 : (account?.balance ?? account?.finalPoints)
         ),
-        collected:
-            account?.telemetryVersion === 2
-                ? finiteOrNull(
-                      account?.collectedPoints ??
-                          account?.collected ??
-                          account?.live?.gained ??
-                          account?.balanceChange
-                  )
-                : null,
+        collected: account?.telemetryVersion === 2 ? finiteOrNull(account?.collectedPoints ?? account?.collected) : null,
+        runGained: finiteOrNull(historical?.runGained),
+        todayGained: finiteOrNull(historical?.todayGained),
+        confirmedPoints: finiteOrNull(historical?.confirmedPoints ?? account?.collectedPoints),
+        unattributedPoints: finiteOrNull(historical?.unattributedPoints),
+        pendingPoints: finiteOrNull(historical?.pendingPoints),
+        pendingTaskCount: finiteOrNull(historical?.pendingTaskCount ?? account?.pendingVerification),
+        balanceDelta: finiteOrNull(historical?.balanceDelta),
+        balanceReconciliation: historical?.balanceReconciliation ?? null,
         bySource
     }
 }
@@ -177,6 +177,9 @@ export function buildPublicState({ status, points, configuredAccounts, identity,
         (points?.accounts ?? []).map(account => [String(account.email).toLowerCase(), account])
     )
     const runAccounts = new Map((run.accounts ?? []).map(account => [String(account.email).toLowerCase(), account]))
+    const historicalAccounts = new Map(
+        (historySummary?.balanceReconciliation ?? []).map(account => [String(account.accountKey), account])
+    )
     const currentEmail = String(points?.currentAccount ?? run.live?.currentAccount ?? '').toLowerCase()
     const hasRun = Boolean(run.version || run.accountsSeen || run.finished || status.lastExit)
 
@@ -184,6 +187,7 @@ export function buildPublicState({ status, points, configuredAccounts, identity,
         const email = String(configured.email ?? '')
         const key = email.toLowerCase()
         const runAccount = runAccounts.get(key) ?? pointAccounts.get(key) ?? null
+        const historical = historicalAccounts.get(identity.keyFor(email)) ?? null
         return {
             id: identity.keyFor(email),
             index: Number(configured.index),
@@ -194,7 +198,7 @@ export function buildPublicState({ status, points, configuredAccounts, identity,
             hasTotp: Boolean(configured.hasTotp),
             hasProxy: Boolean(configured.proxy?.url),
             status: accountState({ coreState: status.state, account: runAccount, currentEmail, hasRun }),
-            points: pointsView(runAccount),
+            points: pointsView(runAccount, historical),
             earnable: earnableView(runAccount?.earnable),
             tasks: tasksView(runAccount?.tasks),
             excludedTasks: normalizedTasks((runAccount?.tasks || []).filter(task => !currentTasks([task]).length)),
@@ -235,6 +239,11 @@ export function buildPublicState({ status, points, configuredAccounts, identity,
         history: {
             ...historySummary,
             todayCollected: finiteOrNull(historySummary?.todayCollected),
+            todayGained: finiteOrNull(historySummary?.todayGained ?? historySummary?.todayCollected),
+            confirmedPoints: finiteOrNull(historySummary?.confirmedPoints),
+            unattributedPoints: finiteOrNull(historySummary?.unattributedPoints),
+            pendingPoints: finiteOrNull(historySummary?.pendingPoints),
+            pendingTaskCount: finiteOrNull(historySummary?.pendingTaskCount),
             pendingVerification:
                 (historySummary?.pendingVerification ?? 0) +
                 (status.state === 'idle'

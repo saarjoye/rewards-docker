@@ -101,7 +101,7 @@ test('calendar never treats an interrupted run with credited points as completed
         run.accounts[0].status = 'interrupted'
         store.ingest({}, { runs: [run] })
         const calendar = store.calendar({ start: '2026-09-06', end: '2026-09-06' })
-        assert.equal(calendar.summary.totalPoints, 10)
+        assert.equal(calendar.summary.totalPoints, 3)
         assert.equal(calendar.days[0].status, 'interrupted')
         assert.equal(calendar.summary.completedDays, 0)
         assert.equal(calendar.summary.failedDays, 1)
@@ -112,13 +112,13 @@ test('active points and completed import deduplicate by run/account/event across
         store.ingest({ runId: run.id, run: { accounts: run.accounts } }, { runs: [] })
         store.ingest({ runId: run.id, run: { accounts: run.accounts } }, { runs: [run] })
         store.ingest({}, { runs: [run, run] })
-        assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM point_events').get().count, 2)
+        assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM point_events').get().count, 1)
         assert.equal(store.calendar({ start: '2026-09-05', end: '2026-09-05' }).summary.totalPoints, null)
-        assert.equal(store.calendar({ start: '2026-09-06', end: '2026-09-06' }).summary.totalPoints, 10)
+        assert.equal(store.calendar({ start: '2026-09-06', end: '2026-09-06' }).summary.totalPoints, 3)
         const saved = store.getRun(run.id)
-        assert.equal(saved.collected, 10)
+        assert.equal(saved.collected, 3)
         assert.equal(saved.pendingVerification, 1)
-        assert.equal(saved.accounts[0].unattributedBalanceChange, 0)
+        assert.equal(saved.accounts[0].unattributedBalanceChange, null)
         assert.doesNotMatch(JSON.stringify(saved), /synthetic@example.com/)
     }))
 test('different runs for the same account never overwrite historical task evidence', () =>
@@ -126,7 +126,7 @@ test('different runs for the same account never overwrite historical task eviden
         const old = fixture('old-run', 3)
         const current = fixture('new-run', 10)
         store.ingest({ runId: current.id, run: { accounts: current.accounts } }, { runs: [old] })
-        assert.equal(store.getRun(old.id).accounts[0].collected, 10)
+        assert.equal(store.getRun(old.id).accounts[0].collected, 3)
         assert.equal(store.getRun(old.id).accounts[0].tasks[0].earnedPoints, 3)
         assert.equal(store.getRun(old.id).accounts[0].initialPoints, 100)
     }))
@@ -148,11 +148,12 @@ test('account balance gain remains visible while task attribution is pending', (
                 ]
             }
         )
-        assert.equal(store.getRun('pending-run').collected, 10)
-        assert.equal(store.getRun('pending-run').accounts[0].collected, 10)
+        assert.equal(store.getRun('pending-run').collected, null)
+        assert.equal(store.getRun('pending-run').accounts[0].collected, null)
+        assert.equal(store.getRun('pending-run').accounts[0].runGained, 10)
         assert.equal(store.getRun('legacy-run').collected, 40)
         assert.equal(store.getRun('legacy-run').verification, 'legacy')
-        assert.equal(store.calendar({ start: '2026-09-06', end: '2026-09-06' }).summary.totalPoints, 10)
+        assert.equal(store.calendar({ start: '2026-09-06', end: '2026-09-06' }).summary.totalPoints, null)
     }))
 test('verification migration is idempotent and preserves legacy amounts', () =>
     withHistory(store => {

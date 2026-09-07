@@ -659,6 +659,61 @@ function connectEvents() {
     }
 }
 
+// Keep the existing navigation and event wiring while exposing the reconciled point dimensions.
+/* eslint-disable no-func-assign */
+accountRows = function reconciledAccountRows(accounts = []) {
+    if (!accounts.length) return '<tr><td colspan="6" class="empty">没有可显示的账号</td></tr>'
+    return accounts
+        .map(
+            account => `<tr><td>${esc(account.index)}</td><td>${esc(account.label)}</td><td>${statusPill(account.status)}<div class="subtle">${esc(account.status.message)}</div></td><td>${valueOrUnknown(account.points.balance, ' 分', '余额待确认')}</td><td>${valueOrUnknown(account.points.runGained, ' 分', '本轮增加待确认')}</td><td>${esc(localeLabel(account.geoLocale, account.langCode))}</td></tr>`
+        )
+        .join('')
+}
+
+renderDashboard = function reconciledDashboard() {
+    const core = state?.core || {}
+    const run = state?.run || {}
+    const accounts = state?.accounts || []
+    const history = state?.history || {}
+    const options = accounts.map(account => `<option value="${account.index}">${esc(account.index)} · ${esc(account.label)}</option>`).join('')
+    content.innerHTML = `<section class="metrics">${metric('核心状态', core.label || '核心离线', core.version ? `版本 ${core.version}` : '等待连接')}${metric('本轮增加', valueOrUnknown(run.collected, ' 分', '积分待确认'), run.currentAccount || '当前无执行账号')}${metric('执行进度', run.accountsTotal === null || run.accountsTotal === undefined ? '待确认' : `${run.accountsSeen || 0}/${run.accountsTotal}`, run.running ? '任务正在运行' : '当前未运行')}${metric('今日累计增加', valueOrUnknown(history.todayGained ?? history.todayCollected, ' 分', '待确认'), `${history.confirmedPoints ?? '待确认'} 分已确认，${history.unattributedPoints ?? '待确认'} 分未归属`)}</section><section class="section"><div class="section-head"><div><h2>运行控制</h2></div></div><div class="panel run-bar"><select id="runAccount" ${run.running || !core.available ? 'disabled' : ''}><option value="">全部账号</option>${options}</select><div class="run-actions"><button class="primary" data-action="start" ${run.running || !core.available || !accounts.length ? 'disabled' : ''}>开始运行</button><button class="danger" data-action="stop" ${!run.running ? 'disabled' : ''}>停止任务</button></div></div></section><section class="section"><div class="section-head"><div><h2>账号概览</h2></div></div><div class="panel table-wrap"><table><thead><tr><th>序号</th><th>账号</th><th>状态</th><th>账号余额</th><th>本轮增加</th><th>地区 / 语言</th></tr></thead><tbody>${accountRows(accounts)}</tbody></table></div></section>`
+}
+
+renderTasks = function reconciledTasks() {
+    const body = (state?.accounts || [])
+        .map(account => `<article class="task-account"><h3>${esc(account.label)}</h3><p>${esc(account.status.label)} · ${esc(account.status.message)}</p><div class="task-summary"><span>本轮余额增加 <strong>${valueOrUnknown(account.points.runGained, ' 分', '待确认')}</strong></span><span>本轮确认积分 <strong>${valueOrUnknown(account.points.confirmedPoints, ' 分', '待确认')}</strong></span><span>今日累计 <strong>${valueOrUnknown(account.points.todayGained, ' 分', '待确认')}</strong></span><span>未归属余额变化 ${valueOrUnknown(account.points.unattributedPoints, ' 分', '待确认')}</span><span>待确认积分 ${valueOrUnknown(account.points.pendingPoints, ' 分', '待确认')}</span></div>${account.taskDataStatus === 'partial' ? '<p class="warn">部分任务来源不可用</p>' : ''}${taskTableMarkup(account.tasks, account.taskDataStatus)}${account.excludedTasks?.length ? `<details><summary>未列入执行的任务（${account.excludedTasks.length}）</summary>${taskTableMarkup(account.excludedTasks)}</details>` : ''}</article>`)
+        .join('')
+    content.innerHTML = `<section class="section"><h2>当日任务与得分</h2><div class="task-grid">${body || '<div class="empty">尚未配置账号</div>'}</div></section>`
+}
+
+renderRunDetail = async function reconciledRunDetail(id) {
+    if (!id) return renderHistory()
+    content.innerHTML = '<div class="panel empty">正在读取运行详情...</div>'
+    try {
+        const data = await api(`/api/history/${encodeURIComponent(id)}`)
+        selectedRunId = id
+        displayedLogs = data.logs
+        const accounts = data.run.accounts
+            .map(account => `<article class="task-account"><h3>${esc(account.label)}</h3><p>${taskStatusLabel(account.status)} · 本轮增加 ${valueOrUnknown(account.runGained, ' 分', '待确认')} · 确认积分 ${valueOrUnknown(account.confirmedPoints, ' 分', '待确认')} · 未归属余额 ${valueOrUnknown(account.unattributedPoints, ' 分', '待确认')}</p>${account.pendingTaskCount ? `<p>待确认任务：${account.pendingTaskCount}</p>` : ''}${taskTableMarkup(account.tasks)}</article>`)
+            .join('')
+        content.innerHTML = `<section class="section"><div class="section-head"><h2>运行详情</h2><button class="ghost" data-action="history-back">返回</button></div><p>${formatTime(data.run.startedAt)} 至 ${formatTime(data.run.endedAt)} · 本轮增加 ${valueOrUnknown(data.run.collected, ' 分', '待确认')} · 确认积分 ${valueOrUnknown(data.run.confirmedPoints, ' 分', '待确认')}</p><div class="task-grid">${accounts}</div></section>${logSection()}`
+    } catch (error) {
+        content.innerHTML = `<div class="panel empty">${esc(error.message)}</div>`
+    }
+}
+const reconciledRunDetailBase = renderRunDetail
+renderRunDetail = async function reconciledRunDetailSummary(id) {
+    await reconciledRunDetailBase(id)
+    if (!id) return
+    const summary = content.querySelector('.section > p')
+    if (!summary) return
+    try {
+        const data = await api(`/api/history/${encodeURIComponent(id)}`)
+        summary.textContent = `${formatTime(data.run.startedAt)} 至 ${formatTime(data.run.endedAt)} · 本轮增加 ${valueOrUnknown(data.run.runGained, ' 分', '待确认')} · 确认积分 ${valueOrUnknown(data.run.confirmedPoints, ' 分', '待确认')}`
+    } catch {}
+}
+/* eslint-enable no-func-assign */
+
 bootstrap().catch(error => {
     authShell.hidden = false
     document.querySelector('#authError').textContent = error.message
