@@ -127,7 +127,7 @@ test('separates task-confirmed points from reconciled balance gains', () => {
         assert.equal(state.accounts[0].points.runGained, 22)
         assert.equal(state.accounts[0].points.confirmedPoints, 6)
         assert.equal(state.accounts[0].points.unattributedPoints, 16)
-        assert.equal(state.accounts[0].points.collected, null)
+        assert.equal(state.accounts[0].points.collected, 6)
         assert.equal(state.history.todayGained, 22)
     } finally {
         fs.rmSync(directory, { recursive: true, force: true })

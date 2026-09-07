@@ -66,6 +66,10 @@ test('v3 snapshot never overwrites a terminal task event', () => {
         status: 'completed',
         verification: 'confirmed',
         earnedPoints: 5,
+        evidenceSource: 'official-progress',
+        progressBefore: 0,
+        progressAfter: 5,
+        startedAt: now,
         confirmedAt: now,
         terminal: true,
         dataStatus: 'available'
@@ -125,8 +129,8 @@ test('account balance gain is visible before task-level evidence is confirmed', 
         true
     )
     const account = summarizeRunState(state).accounts[0]
-    assert.equal(account.collectedPoints, 135)
-    assert.equal(account.live.gained, 135)
+    assert.equal(account.collectedPoints, 0)
+    assert.equal(account.live.gained, 0)
     assert.equal(account.balanceChange, 135)
     assert.equal(account.pendingVerification, 0)
 })

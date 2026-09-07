@@ -110,7 +110,8 @@ export function calendarMarkup(data) {
                     number(item.runGained) !== null &&
                     (item.verification !== 'legacy' || item.balanceReconciliation?.status === 'confirmed')
             )
-            const subtotal = verified.length ? verified.reduce((sum, item) => sum + item.runGained, 0) : null
+            const daily = data.days?.find(day => day.date === record.date)?.balanceReconciliation?.find(account => account.accountKey === record.accountId)
+            const subtotal = daily?.dailyBalanceDelta ?? null
             const unknown = records.length - verified.length
             const status = records.every(item => item.status === 'completed')
                 ? 'completed'

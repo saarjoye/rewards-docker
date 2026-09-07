@@ -59,7 +59,11 @@
 
 ## 交付状态
 
-本次为 cn8 基线上的 cn9 源码修复。完整更新配置见 [compose.yaml](../compose.yaml)，生产使用 `ghcr.io/saarjoye/mrs-core:latest` 和 `ghcr.io/saarjoye/mrs-web:latest`；工作流同时保留 `4.3.2-cn9` 版本标签用于回滚。确认发布工作流成功后即可拉取，无须自行构建；发布不会自动部署运行机。cn9 增加 RSC 只读确认回退，并在活动 hash 缺失时从 Dashboard 恢复可提交元数据。
+本次 cn10 修复积分证据、运行范围与每日余额统计。完整配置见 [compose.yaml](../compose.yaml)，生产使用 `ghcr.io/saarjoye/mrs-core:latest` 和 `ghcr.io/saarjoye/mrs-web:latest`；工作流同时保留 `4.3.2-cn10` 固定标签。确认发布工作流成功后即可拉取，无须修改 Compose 标签或自行构建；发布不会自动部署运行机。
+
+cn10 将任务上报与确认积分分开，单次运行不再累加历史，上海日期余额净变化不回退为任务事件合计；缺少可靠观测时间或结束余额显示待确认，余额下降保留负数。余额变化并不等同微软官方全天赚取。
+
+Web 首次启动会在事务中添加 `point_events.evidence_json` 和 `balance_snapshots`，不会重写历史积分，旧记录按未核验处理。升级前应在维护窗口完成 SQLite 一致性备份，保留数据库、WAL 及原有挂载和密钥，不删除数据。新增列可能不兼容旧版本无列名 INSERT；不要直接降级旧镜像写入升级后的数据库。回退须验证兼容版本或备份恢复方案，并保全升级后产生的新记录。
 
 ## 配置与权限
 

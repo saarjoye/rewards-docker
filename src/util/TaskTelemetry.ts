@@ -30,6 +30,7 @@ export interface TaskSpec {
     group?: boolean
 }
 export interface TaskEvidence {
+    officialCreditId?: string
     creditedPoints?: number | null
     balance: number | null
     current: number | null
@@ -276,7 +277,10 @@ export class TaskTelemetry {
                   after.current >= before.current
                       ? after.current - before.current
                       : null))
-            const verified = earned !== null
+            const officialCreditKey = after?.officialCreditId && earned !== null
+                ? createHash('sha256').update(`${accountReference(this.options.account())}|${spec.source}|${after.officialCreditId}`).digest('hex')
+                : null
+            const verified = earned !== null && (officialCreditKey !== null || finitePoints(after?.creditedPoints) === null)
             let status: TaskStatus = context.failed ? 'failed' : (context.explicitStatus ?? 'running')
             if (spec.group) {
                 status =
@@ -345,6 +349,11 @@ export class TaskTelemetry {
                         ? 'not-applicable'
                         : 'pending',
                 earnedPoints: earned,
+                reportedPoints: earned,
+                officialCreditKey,
+                evidenceSource: officialCreditKey ? 'official-credit' : finitePoints(after?.creditedPoints) !== null ? 'reported-credit' : verified ? 'official-progress' : null,
+                progressBefore: before?.unit === 'points' ? before.current : null,
+                progressAfter: after?.unit === 'points' ? after.current : null,
                 confirmedAt: verified ? after?.observedAt : null,
                 progress:
                     after?.current !== null && after?.current !== undefined && after.total !== null

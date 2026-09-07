@@ -89,7 +89,7 @@ test('App balance changes alone are unattributed; explicit credit including zero
             assert.equal(result.earnedPoints, response.creditedPoints ?? null)
             assert.equal(
                 result.verification,
-                response.creditedPoints === 0 ? 'confirmed-zero' : response.creditedPoints ? 'confirmed' : 'pending'
+                'pending'
             )
             assert.equal(f.submissions(), 1)
             if (response.balance !== undefined) assert.equal(f.bot.userData.currentPoints, response.balance)

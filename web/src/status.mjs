@@ -134,10 +134,19 @@ function pointsView(account, historical = null) {
                 ? account.live.balance
                 : (account?.balance ?? account?.finalPoints)
         ),
-        collected: account?.telemetryVersion === 2 ? finiteOrNull(account?.collectedPoints ?? account?.collected) : null,
+        collected: finiteOrNull(historical?.confirmedPoints),
+        runBalanceDelta: finiteOrNull(historical?.runBalanceDelta),
+        dailyBalanceDelta: finiteOrNull(historical?.dailyBalanceDelta),
+        reportedTaskPoints: finiteOrNull(historical?.reportedTaskPoints),
+        overreportedPoints: finiteOrNull(historical?.overreportedPoints),
+        unattributedBalanceDelta: finiteOrNull(historical?.unattributedBalanceDelta),
+        statisticsDate: historical?.date ?? null,
+        timeZone: 'Asia/Shanghai',
+        legacyUnverified: historical?.legacyUnverified ?? true,
+        interrupted: historical?.interrupted ?? false,
         runGained: finiteOrNull(historical?.runGained),
         todayGained: finiteOrNull(historical?.todayGained),
-        confirmedPoints: finiteOrNull(historical?.confirmedPoints ?? account?.collectedPoints),
+        confirmedPoints: finiteOrNull(historical?.confirmedPoints),
         unattributedPoints: finiteOrNull(historical?.unattributedPoints),
         pendingPoints: finiteOrNull(historical?.pendingPoints),
         pendingTaskCount: finiteOrNull(historical?.pendingTaskCount ?? account?.pendingVerification),
@@ -173,9 +182,6 @@ export function buildPublicState({ status, points, configuredAccounts, identity,
 
     const coreState = CORE_STATES[status.state] ? status.state : 'unknown'
     const run = status.run ?? {}
-    const pointAccounts = new Map(
-        (points?.accounts ?? []).map(account => [String(account.email).toLowerCase(), account])
-    )
     const runAccounts = new Map((run.accounts ?? []).map(account => [String(account.email).toLowerCase(), account]))
     const historicalAccounts = new Map(
         (historySummary?.balanceReconciliation ?? []).map(account => [String(account.accountKey), account])
@@ -186,7 +192,7 @@ export function buildPublicState({ status, points, configuredAccounts, identity,
     const accounts = (configuredAccounts?.accounts ?? []).map(configured => {
         const email = String(configured.email ?? '')
         const key = email.toLowerCase()
-        const runAccount = runAccounts.get(key) ?? pointAccounts.get(key) ?? null
+        const runAccount = runAccounts.get(key) ?? null
         const historical = historicalAccounts.get(identity.keyFor(email)) ?? null
         return {
             id: identity.keyFor(email),
@@ -224,6 +230,8 @@ export function buildPublicState({ status, points, configuredAccounts, identity,
             runId: typeof status.runId === 'string' ? sanitizeText(status.runId, 100) : null
         },
         run: {
+            runBalanceDelta: finiteOrNull(historySummary?.runBalanceDelta),
+            runGained: finiteOrNull(historySummary?.runBalanceDelta),
             running: ['starting', 'running', 'stopping'].includes(status.state),
             finished: Boolean(run.finished),
             startedAt: status.startedAt ?? null,

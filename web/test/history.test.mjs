@@ -51,7 +51,8 @@ test('persists completed runs once and never stores the full email', () => {
         assert.equal(store.ingest(status, history).length, 0)
         const saved = store.list()
         assert.equal(saved.count, 1)
-        assert.equal(saved.runs[0].accounts[0].collected, 66)
+        assert.equal(saved.runs[0].accounts[0].collected, null)
+        assert.equal(saved.runs[0].accounts[0].legacyCollected, 66)
         assert.deepEqual(saved.runs[0].accounts[0].sources, { read: 21, checkIn: 15 })
         assert.equal(saved.runs[0].accounts[0].tasks[0].title, '每日活动')
         store.recordLog({
@@ -68,9 +69,9 @@ test('persists completed runs once and never stores the full email', () => {
         assert.doesNotMatch(JSON.stringify(logs), /person@example\.com|hidden-value/)
         assert.doesNotMatch(JSON.stringify(saved), /private@example\.com/)
         const calendar = store.calendar({ start: '2026-09-03', end: '2026-09-03' })
-        assert.equal(calendar.summary.totalPoints, 66)
+        assert.equal(calendar.summary.totalPoints, null)
         assert.equal(saved.runs[0].verification, 'legacy')
-        assert.equal(calendar.records[0].runGained, 66)
+        assert.equal(calendar.records[0].runGained, null)
     } finally {
         store.close()
         const databaseBytes = fs.readFileSync(path.join(directory, 'history.db')).toString('latin1')

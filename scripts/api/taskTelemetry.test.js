@@ -244,7 +244,8 @@ test('event reducer deduplicates and ignores late running events and legacy poin
         message: 'Completed Read to Earn | pointsGained=500'
     })
     const result = summarizeRunState(state).accounts[0]
-    assert.equal(result.pointRecords.length, 1)
+    assert.equal(result.pointRecords.length, 30)
+    assert.equal(new Set(result.pointRecords.map(record => record.creditKey)).size, 30)
     assert.equal(result.collectedPoints, 30)
     assert.equal(result.tasks.length, 1)
     assert.equal(result.tasks[0].status, 'completed')

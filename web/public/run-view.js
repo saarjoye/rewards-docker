@@ -41,6 +41,8 @@ export function taskStatusLabel(status) {
     )
 }
 export function taskEligibilityLabel(task) {
+    if (task?.status === 'completed' && (task?.verification === 'pending' || task?.earnedPoints == null))
+        return '任务完成，积分待确认'
     const hasPlanMetadata = Boolean(task?.capability || task?.eligibility || task?.dataStatus || task?.taskType)
     if (!hasPlanMetadata) return ''
     if (task?.capability === 'unsupported') return '当前版本不支持此任务类型'

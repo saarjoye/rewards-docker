@@ -1,12 +1,13 @@
 const TIMEZONE = 'Asia/Shanghai'
 
 function finiteNumber(value) {
-    if (value === null || value === undefined || value === '') return null
+    if ((typeof value !== 'number' && typeof value !== 'string') || String(value).trim() === '') return null
     const number = Number(value)
     return Number.isFinite(number) ? number : null
 }
 
 export function localDateInTimeZone(value, timeZone = TIMEZONE) {
+    if (!value) return null
     const date = new Date(value)
     if (!Number.isFinite(date.getTime())) return null
     const parts = new Intl.DateTimeFormat('en-CA', {
@@ -22,12 +23,12 @@ export function localDateInTimeZone(value, timeZone = TIMEZONE) {
 function observed(value, source, at) {
     const points = finiteNumber(value)
     const observedAt = typeof at === 'string' && Number.isFinite(Date.parse(at)) ? at : null
-    return points === null || !observedAt ? null : { points, source, observedAt }
+    return points === null || points < 0 || !observedAt ? null : { points, source, observedAt }
 }
 
 function pendingSummary(tasks) {
     const pending = (tasks ?? []).filter(task =>
-        ['pending', 'submitted', 'verifying'].includes(task?.status) || task?.verification === 'pending'
+        !task.group && (['submitted', 'verifying'].includes(task?.status) || task?.verification === 'pending')
     )
     if (!pending.length) return { count: 0, points: 0 }
     const expected = pending.map(task => finiteNumber(task?.expectedPoints))
@@ -38,32 +39,61 @@ function pendingSummary(tasks) {
 }
 
 function explicitEvents(events) {
+    const seen = new Set()
     return (events ?? []).filter(event => {
         const points = finiteNumber(event?.points)
-        return points !== null && points >= 0 && event?.source !== 'account-balance'
+        const key = event.creditKey && `${event.accountKey}:${event.creditKey}`
+        if (!key || seen.has(key)) return false
+        const valid = points !== null && points >= 0 && event?.source !== 'account-balance' &&
+            event.identityStable === true && !event.legacyUnverified &&
+            ['confirmed', 'confirmed-zero'].includes(event.verificationStatus) &&
+            ['official-credit', 'official-progress', 'isolated-balance'].includes(event.evidenceSource)
+        if (valid) seen.add(key)
+        return valid
     })
 }
 
-function accountRunResult(row, nextRows, date, events, tasks) {
-    const initial = observed(row.initialPoints, 'initial', row.startedAt)
-    const ownFinal = observed(row.finalPoints, row.finalSource || 'final', row.endedAt)
-    const nextInitialRow = nextRows.find(next => {
-        const nextDate = localDateInTimeZone(next.startedAt)
-        return nextDate === date && finiteNumber(next.initialPoints) !== null
-    })
-    const nextInitial = nextInitialRow ? observed(nextInitialRow.initialPoints, 'next-initial', nextInitialRow.startedAt) : null
-    const last = ownFinal ?? nextInitial
-    const balanceDelta = initial && last ? Math.max(0, last.points - initial.points) : null
-    const runEvents = explicitEvents(events).filter(event => event.runKey === row.runKey)
-    const confirmedPoints = runEvents.length ? runEvents.reduce((total, event) => total + event.points, 0) : 0
+function creditSummary(events, delta, first, last) {
+    const unique = new Map()
+    for (const event of events) {
+        if (event.source === 'account-balance' || finiteNumber(event.points) === null || finiteNumber(event.points) < 0) continue
+        const key = event.creditKey || event.eventKey || event
+        if (!unique.has(key)) unique.set(key, event)
+    }
+    const reports = [...unique.values()]
+    const verified = explicitEvents(reports)
+    const reported = reports.length ? reports.reduce((sum, event) => sum + finiteNumber(event.points), 0) : null
+    const rawConfirmed = verified.reduce((sum, event) => sum + finiteNumber(event.points), 0)
+    const conflict = delta !== null && rawConfirmed > Math.max(0, delta)
+    const confirmed = conflict ? 0 : rawConfirmed
+    const uncertain = reports.length !== verified.length
+    const over = delta === null || reported === null ? null : Math.max(0, reported - Math.max(0, delta))
+    const outside = reports.some(event => !first || !last || Date.parse(event.confirmedAt) < Date.parse(first.observedAt) || Date.parse(event.confirmedAt) > Date.parse(last.observedAt))
+    const unattributed = delta === null || delta < 0 || uncertain || conflict || outside || over > 0 || events.some(event => event.source === 'account-balance')
+        ? null : Math.max(0, delta - confirmed)
+    return { reportedTaskPoints: reported, confirmedPoints: (uncertain || conflict) && !confirmed ? null : confirmed,
+        pendingPoints: reported === null ? null : reported - confirmed, overreportedPoints: over,
+        unattributedBalanceDelta: unattributed, unattributedPoints: unattributed,
+        legacyUnverified: reports.some(event => event.legacyUnverified !== false), timeZone: TIMEZONE }
+}
+
+function accountRunResult(row, date, events, tasks) {
+    const initial = observed(row.initialPoints, 'initial', row.initialObservedAt)
+    const last = observed(row.finalPoints, 'final', row.finalObservedAt)
+    const balanceDelta = initial && last && localDateInTimeZone(initial.observedAt) === date &&
+        localDateInTimeZone(last.observedAt) === date && Date.parse(last.observedAt) > Date.parse(initial.observedAt)
+        ? last.points - initial.points : null
     const pending = pendingSummary(tasks)
     return {
-        runGained: balanceDelta ?? (runEvents.length ? confirmedPoints : null),
-        confirmedPoints,
-        unattributedPoints: balanceDelta === null ? null : Math.max(0, balanceDelta - confirmedPoints),
-        pendingPoints: pending.points,
+        runGained: balanceDelta,
+        runBalanceDelta: balanceDelta,
+        date,
+        interrupted: row.status === 'interrupted',
+        pendingExpectedPoints: pending.points,
         pendingTaskCount: pending.count,
         balanceDelta,
+        ...creditSummary(events.filter(event => event.runKey === row.runKey), balanceDelta, initial, last),
+        legacyUnverified: row.legacyUnverified === true || events.some(event => event.runKey === row.runKey && event.legacyUnverified !== false),
         balanceReconciliation: {
             firstBalance: initial?.points ?? null,
             lastBalance: last?.points ?? null,
@@ -77,17 +107,18 @@ function accountRunResult(row, nextRows, date, events, tasks) {
     }
 }
 
-export function reconcileAccountDay({ date, accountKey, runs = [], pointEvents = [], tasks = [] } = {}) {
+export function reconcileAccountDay({ date, accountKey, runs = [], pointEvents = [], tasks = [], currentRunId = null } = {}) {
+    pointEvents = pointEvents.filter(event => event.accountKey === accountKey && localDateInTimeZone(event.confirmedAt) === date)
+    tasks = tasks.filter(task => task.accountKey === accountKey)
     const rows = runs
         .filter(row => !accountKey || row.accountKey === accountKey)
+        .filter(row => [row.startedAt, row.endedAt, row.initialObservedAt, row.finalObservedAt].some(at => localDateInTimeZone(at) === date))
         .toSorted((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)))
-    const runResults = rows.map((row, index) =>
-        accountRunResult(row, rows.slice(index + 1), date, pointEvents, tasks.filter(task => task.runKey === row.runKey))
+    const runResults = rows.map(row =>
+        accountRunResult(row, date, pointEvents, tasks.filter(task => task.runKey === row.runKey))
     )
-    const events = explicitEvents(pointEvents).filter(event => localDateInTimeZone(event.confirmedAt) === date)
-    const confirmedPoints = events.reduce((total, event) => total + event.points, 0)
     const first = rows
-        .map(row => observed(row.initialPoints, 'initial', row.startedAt))
+        .map(row => observed(row.initialPoints, 'initial', row.initialObservedAt))
         .filter(item => item && localDateInTimeZone(item.observedAt) === date)
         .sort((a, b) => a.observedAt.localeCompare(b.observedAt))[0] ?? null
     const last = runResults
@@ -103,25 +134,28 @@ export function reconcileAccountDay({ date, accountKey, runs = [], pointEvents =
         .filter(item => item && localDateInTimeZone(item.observedAt) === date)
         .sort((a, b) => a.observedAt.localeCompare(b.observedAt))
         .at(-1) ?? null
-    const balanceDelta = first && last ? Math.max(0, last.points - first.points) : null
+    const balanceDelta = first && last && Date.parse(last.observedAt) > Date.parse(first.observedAt) ? last.points - first.points : null
     const dayRunKeys = new Set(
         rows
             .filter(row => localDateInTimeZone(row.startedAt) === date || localDateInTimeZone(row.endedAt) === date)
             .map(row => row.runKey)
     )
     const pending = pendingSummary(tasks.filter(task => dayRunKeys.has(task.runKey)))
-    const todayGained = balanceDelta ?? (events.length ? confirmedPoints : null)
-    const runGains = runResults.map(result => result.runGained).filter(value => value !== null)
+    const todayGained = balanceDelta
+    const selected = rows.findIndex(row => row.runKey === currentRunId)
     return {
         date,
         accountKey: accountKey ?? null,
-        runGained: runGains.length ? runGains.reduce((total, value) => total + value, 0) : null,
+        interrupted: rows.some(row => row.status === 'interrupted' && localDateInTimeZone(row.startedAt) === date),
+        runGained: selected < 0 ? null : runResults[selected].runGained,
+        runBalanceDelta: selected < 0 ? null : runResults[selected].runGained,
+        dailyBalanceDelta: balanceDelta,
         todayGained,
-        confirmedPoints,
-        unattributedPoints: balanceDelta === null ? null : Math.max(0, balanceDelta - confirmedPoints),
-        pendingPoints: pending.points,
+        pendingExpectedPoints: pending.points,
         pendingTaskCount: pending.count,
         balanceDelta,
+        ...creditSummary(pointEvents.filter(event => localDateInTimeZone(event.confirmedAt) === date), balanceDelta, first, last),
+        legacyUnverified: rows.some(row => dayRunKeys.has(row.runKey) && row.legacyUnverified === true) || pointEvents.some(event => localDateInTimeZone(event.confirmedAt) === date && event.legacyUnverified !== false),
         balanceReconciliation: {
             firstBalance: first?.points ?? null,
             lastBalance: last?.points ?? null,
@@ -136,18 +170,28 @@ export function reconcileAccountDay({ date, accountKey, runs = [], pointEvents =
     }
 }
 
-export function reconcileDailyPoints({ date, runs = [], pointEvents = [], tasks = [] } = {}) {
-    const accountKeys = [...new Set(runs.map(row => row.accountKey).filter(Boolean))]
+export function reconcileDailyPoints({ date, runs = [], pointEvents = [], tasks = [], currentRunId = null } = {}) {
+    const accountKeys = [...new Set([...runs.filter(row =>
+        [row.startedAt, row.endedAt, row.initialObservedAt, row.finalObservedAt].some(at => localDateInTimeZone(at) === date)
+    ), ...pointEvents.filter(event => localDateInTimeZone(event.confirmedAt) === date)].map(row => row.accountKey).filter(Boolean))]
     const accounts = accountKeys.map(accountKey =>
-        reconcileAccountDay({ date, accountKey, runs, pointEvents, tasks })
+        reconcileAccountDay({ date, accountKey, runs, pointEvents, tasks, currentRunId })
     )
     const known = values => values.filter(value => value !== null)
     const total = values => {
         if (!values.length || values.some(value => value === null)) return null
         return known(values).reduce((sum, value) => sum + value, 0)
     }
+    const participating = currentRunId ? accounts.filter(account => account.runs.some(run => run.runKey === currentRunId)) : []
     return {
         date,
+        timeZone: TIMEZONE,
+        runGained: total(participating.map(account => account.runGained)),
+        runBalanceDelta: total(participating.map(account => account.runBalanceDelta)),
+        dailyBalanceDelta: total(accounts.map(account => account.dailyBalanceDelta)),
+        reportedTaskPoints: total(accounts.map(account => account.reportedTaskPoints)),
+        overreportedPoints: total(accounts.map(account => account.overreportedPoints)),
+        unattributedBalanceDelta: total(accounts.map(account => account.unattributedBalanceDelta)),
         todayGained: total(accounts.map(account => account.todayGained)),
         confirmedPoints: total(accounts.map(account => account.confirmedPoints)),
         unattributedPoints: total(accounts.map(account => account.unattributedPoints)),

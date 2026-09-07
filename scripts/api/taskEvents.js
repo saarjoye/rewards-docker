@@ -29,6 +29,7 @@ const terminal = new Set([
     'unavailable'
 ])
 const number = value => (typeof value === 'number' && Number.isFinite(value) ? value : null)
+const businessDate = value => Number.isFinite(Date.parse(value)) ? new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(value)) : null
 const text = (value, max = 180) =>
     [...String(value ?? '')]
         .map(c => (c.charCodeAt(0) < 32 ? ' ' : c))
@@ -67,12 +68,18 @@ export function applyTaskEvent(state, entry) {
     if (event.kind === 'balance') {
         const balance = number(event.balance)
         const observedBalance = balance !== null && balance >= 0 ? balance : null
-        if (event.phase === 'start') account.initialPoints = observedBalance
+        if (event.phase === 'start' && !account.initialObservedAt) {
+            account.initialPoints = observedBalance
+            account.initialObservedAt = event.at
+        }
         if (!account.balanceObservedAt || Date.parse(event.at) >= Date.parse(account.balanceObservedAt)) {
             account.live.balance = observedBalance
             account.balanceObservedAt = event.at
         }
-        if (event.phase === 'end') account.finalPoints = observedBalance
+        if (event.phase === 'end') {
+            account.finalPoints = observedBalance
+            account.finalObservedAt = event.at
+        }
     } else {
         const id = text(event.id)
         const previous = account.tasks[id]
@@ -80,12 +87,17 @@ export function applyTaskEvent(state, entry) {
         if (previous?.invocationId !== event.invocationId && Date.parse(previous?.updatedAt) > Date.parse(event.at))
             return false
         const progress = event.progress
-        const gained = number(event.earnedPoints)
-        const confirmed =
-            ['confirmed', 'confirmed-zero'].includes(event.verification) &&
+        const gained = number(event.reportedPoints ?? event.earnedPoints)
+        const reported =
+            (Object.hasOwn(event, 'reportedPoints') || ['confirmed', 'confirmed-zero'].includes(event.verification)) &&
             gained !== null &&
             gained >= 0 &&
-            Number.isFinite(Date.parse(event.confirmedAt))
+            Number.isFinite(Date.parse(event.confirmedAt ?? event.at))
+        const officialCredit = reported && event.evidenceSource === 'official-credit' && /^[a-f0-9]{64}$/.test(event.officialCreditKey ?? '')
+        const confirmed = officialCredit || (reported && event.evidenceSource === 'official-progress' &&
+            Number.isSafeInteger(event.progressBefore) && Number.isSafeInteger(event.progressAfter) &&
+            event.progressBefore >= 0 && event.progressAfter - event.progressBefore === gained &&
+            businessDate(event.startedAt) !== null && businessDate(event.startedAt) === businessDate(event.confirmedAt))
         account.tasks[id] = {
             id,
             title: text(event.title),
@@ -144,17 +156,38 @@ export function applyTaskEvent(state, entry) {
         const task = account.tasks[id]
         if (
             event.terminal &&
-            confirmed &&
+            reported &&
             !task.group &&
             !account.pointRecords.some(item => item.id === event.invocationId)
         ) {
-            account.pointRecords.push({
+            const baseRecord = {
                 id: event.invocationId,
                 taskId: id,
                 source: task.source,
                 points: gained,
-                confirmedAt: event.confirmedAt
-            })
+                confirmedAt: event.confirmedAt ?? event.at,
+                verificationStatus: 'unverified',
+                identityStable: false,
+                evidenceSource: null
+            }
+            const start = number(event.progressBefore), end = number(event.progressAfter)
+            const date = businessDate(event.confirmedAt ?? event.at)
+            const startDate = businessDate(event.startedAt)
+            if (officialCredit) {
+                if (!account.pointRecords.some(record => record.creditKey === event.officialCreditKey))
+                    account.pointRecords.push({ ...baseRecord, id: event.officialCreditKey, creditKey: event.officialCreditKey, identityStable: true, verificationStatus: gained === 0 ? 'confirmed-zero' : 'confirmed', evidenceSource: 'official-credit' })
+            } else if (event.evidenceSource === 'official-progress' && startDate === date && Number.isSafeInteger(start) && Number.isSafeInteger(end) && start >= 0 && end >= start && end - start === gained && gained <= 10000) {
+                for (let position = start + 1; position <= end; position++) {
+                    const creditKey = crypto.createHash('sha256').update(`${event.accountRef}|${date}|${id}|official-progress|${position}`).digest('hex')
+                    if (!account.pointRecords.some(record => record.creditKey === creditKey))
+                        account.pointRecords.push({ ...baseRecord, id: creditKey, creditKey, points: 1, identityStable: true, verificationStatus: 'confirmed', evidenceSource: 'official-progress' })
+                }
+                if (gained === 0) {
+                    const creditKey = crypto.createHash('sha256').update(`${event.accountRef}|${date}|${id}|official-progress-zero|${start}`).digest('hex')
+                    if (!account.pointRecords.some(record => record.creditKey === creditKey))
+                        account.pointRecords.push({ ...baseRecord, id: creditKey, creditKey, identityStable: true, verificationStatus: 'confirmed-zero', evidenceSource: 'official-progress' })
+                }
+            } else account.pointRecords.push(baseRecord)
         }
         if (
             Object.hasOwn(event, 'balance') &&
@@ -178,23 +211,17 @@ export function applyTaskEvent(state, entry) {
         number(account.initialPoints) !== null && number(account.live.balance) !== null
             ? account.live.balance - account.initialPoints
             : null
-    const confirmedTaskPoints = account.pointRecords.reduce((sum, item) => sum + item.points, 0)
-    const balanceGain = account.balanceChange !== null && account.balanceChange >= 0 ? account.balanceChange : 0
-    // Match the upstream runner: account balance gain is visible immediately,
-    // even when individual task evidence is still pending or not attributable.
-    const accountGain = Math.max(confirmedTaskPoints, balanceGain)
-    account.live.gained = accountGain > 0 || confirmedTaskPoints === 0 ? accountGain : null
+    const confirmedTaskPoints = account.pointRecords.filter(item => item.identityStable && item.verificationStatus === 'confirmed').reduce((sum, item) => sum + item.points, 0)
+    account.live.gained = confirmedTaskPoints
     account.collectedPoints = account.live.gained
     account.live.bySource = {}
-    for (const record of account.pointRecords)
+    for (const record of account.pointRecords.filter(item => item.identityStable && item.verificationStatus === 'confirmed'))
         account.live.bySource[record.source] = (account.live.bySource[record.source] ?? 0) + record.points
-    const unattributed = Math.max(0, accountGain - confirmedTaskPoints)
-    if (unattributed > 0) account.live.bySource.accountBalance = unattributed
     account.pendingVerification = Object.values(account.tasks).filter(
         task => task.telemetryVersion === 2 && !task.group && task.verification === 'pending'
     ).length
     account.unattributedBalanceChange =
-        account.balanceChange === null ? null : Math.max(0, account.balanceChange - accountGain)
+        null
     account.live.lastUpdateTs = event.at
     state.lastPointUpdateAt = event.at
     return true
@@ -247,6 +274,8 @@ export function historyRecord(entry) {
         accounts: (entry.run?.accounts ?? []).map(a => ({
             email: a.email,
             initialPoints: a.initialPoints ?? null,
+            initialObservedAt: a.initialObservedAt ?? null,
+            finalObservedAt: a.finalObservedAt ?? null,
             finalPoints:
                 a.telemetryVersion === 2 ? (a.finalPoints ?? null) : (a.finalPoints ?? a.live?.balance ?? null),
             collected: a.collectedPoints ?? a.live?.gained ?? null,

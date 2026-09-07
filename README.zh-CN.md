@@ -2,7 +2,7 @@
 
 本仓库由原版 v4.3.2 核心和独立中文 Web 组成。核心负责账号登录与 Rewards 任务，Web 提供加密账号管理、中文运行记录、任务与积分展示、企业微信通知以及受限的启动/停止控制。
 
-cn9 在 cn8 基础上修复 RSC 任务确认缺少余额/完成字段，以及活动缺少提交 hash 导致任务被错误跳过的问题。生产 Compose 使用 GHCR 的 `latest` 稳定标签，版本标签（当前为 `4.3.2-cn9`）仅用于回滚和审计；部署前阅读 [修复与升级说明](docs/config-task-fix.md)。发布镜像不会自动更新运行机，更新时只需执行 `docker compose pull && docker compose up -d`，不再修改 Compose 中的版本号。
+cn10 修复积分证据、单次运行范围和每日余额统计，任务上报不再直接视为确认到账。生产 Compose 使用 GHCR 的 `latest` 稳定标签，版本标签（当前为 `4.3.2-cn10`）用于审计和经验证的回退；部署前阅读 [修复与升级说明](docs/config-task-fix.md) 并完成一致性备份。发布镜像不会自动更新运行机，更新不需要修改 Compose 中的版本号。
 
 ## 数据边界
 
@@ -30,7 +30,7 @@ cn9 在 cn8 基础上修复 RSC 任务确认缺少余额/完成字段，以及�
 
 4. 如需迁移旧账号，暂时保留 `runtime/core.env` 中的 `ACCOUNT_N_*`；旧 `PROXY_AXIOS` 改为 `PROXY_HTTP`。
 5. 初次验证保持 `CRON_SCHEDULE=`、`RUN_ON_START=false`，不要让旧、新容器同时运行同一账号。
-6. 确认 cn9 工作流同时推送 `latest` 与 `4.3.2-cn9` 后，直接拉取并部署 Compose 中的两个 `latest` 镜像，无须自行构建。Portainer 中先设置 `REWARDS_API_TOKEN` 环境变量，并保留原有加密密钥和数据挂载；不能通过拉取旧 cn8 镜像获得此次修复。
+6. 确认 cn10 工作流同时推送 `latest` 与 `4.3.2-cn10` 后，完成一致性备份，再拉取并部署 Compose 中的两个 `latest` 镜像，无须自行构建。Portainer 中先设置 `REWARDS_API_TOKEN` 环境变量，并保留原有加密密钥和数据挂载；不要让旧版镜像直接写入升级后的数据库。
 7. 打开 `http://<NAS地址>:8787` 初始化管理员，在“账号管理”中执行一次性迁移或直接新增账号。确认迁移成功后可从环境文件删除 `ACCOUNT_N_*` 并重建核心容器。
 
 ## 配置原则

@@ -120,7 +120,8 @@ test('accepted check-in has bounded read-only confirmation; completion is not a 
     for (const creditedPoints of [0, 5]) {
         const direct = await runCheckIn({ code: 0, response: { creditedPoints } }, [evidence(false)])
         assert.equal(direct.last.earnedPoints, creditedPoints)
-        assert.equal(direct.last.verification, creditedPoints ? 'confirmed' : 'confirmed-zero')
+        assert.equal(direct.last.verification, 'pending')
+        assert.equal(direct.last.reportedPoints, creditedPoints)
         assert.equal(direct.submits, 1)
     }
 })
