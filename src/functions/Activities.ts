@@ -70,7 +70,12 @@ export default class Activities {
                     source,
                     platform,
                     dataStatus,
-                    planned: tasks.some((task: any) => task?.execution?.planned === true),
+                    planned: tasks.some(
+                        task =>
+                            Boolean(
+                                (task as { execution?: { planned?: boolean } } | null)?.execution?.planned
+                            )
+                    ),
                     tasks
                 })
             )

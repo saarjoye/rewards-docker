@@ -130,3 +130,59 @@ test('preserves Chinese login retry counts and outcomes in public steps', () => 
         assert.equal(log.displayMessage, message)
     }
 })
+
+test('translates React parsing and dashboard fallback logs into Chinese summaries', () => {
+    const cases = [
+        [
+            'REACT-PARSE',
+            'Concatenated flight chunks | pages=2 | chunks=14 | length=3821 | perSource=[7c/1900b, 7c/1921b]',
+            /已合并页面数据块：页面 2 个，数据块 14 个，长度 3821/
+        ],
+        ['REACT-PARSE', 'Parsed offers | total=9 | reportable=4', /已解析任务：共 9 项，可执行 4 项/],
+        ['REACT-PARSE', 'Parsed offer ids | offer-a, offer-b(skip)', /已解析任务标识：offer-a, offer-b（跳过）/],
+        ['REACT-PARSE', 'Parsed streaks | bing:2/7', /已解析连续任务：bing:2\/7/],
+        [
+            'REACT-PARSE',
+            'Parsed streak protection | enabled=false | remainingDays=null | streakCounter=3',
+            /已解析连续签到保护：已启用 否，剩余天数 未读取，连续签到 3 天/
+        ],
+        [
+            'REACT-PARSE',
+            'Parsed account | level=2 | available=null | toGo=80 | lifetime=1200',
+            /已解析账号数据：等级 2，可用积分 未读取，距离下一等级 80，累计积分 1200/
+        ],
+        [
+            'REACT-PARSE',
+            'Account state empty - membership/header objects not found in payload',
+            /账号状态为空：响应中未找到会员或页头对象/
+        ],
+        [
+            'GET-DASHBOARD-DATA',
+            'Using partial Bing flyout dashboard | suspectedLimited=false | botMarkers=true | activitiesCollapsed=false',
+            /使用不完整的 Bing 浮层任务数据：疑似受限 否，检测到机器人标记 是，任务列表折叠 否/
+        ],
+        ['GET-DASHBOARD-DATA', 'Primary dashboard and Bing flyout fallback failed | message=timeout', /主任务面板和 Bing 浮层备用数据均不可用/]
+    ]
+
+    for (const [title, message, expected] of cases) {
+        const log = publicLog({ title, message, level: 'debug', platform: 'DESKTOP' })
+        assert.match(log.displayMessage, expected)
+        assert.match(log.displayMessage, /[\u4e00-\u9fff]/)
+        assert.equal(log.message, message)
+    }
+})
+
+test('translates core flow and search progress without exposing English status text', () => {
+    const cases = [
+        ['FLOW', 'Starting session for person@example.com', /正在初始化当前账号任务流程/],
+        ['BROWSER', 'Mobile Browser started | person@example.com', /移动端浏览器已启动/],
+        ['SEARCH-MANAGER', 'Starting bonus search farming', /开始执行奖励搜索/],
+        ['SEARCH-MANAGER', 'Search summary | mobile=30 | desktop=20 | bonus=0 | total=50', /搜索任务结束：移动端 30 分/],
+        ['SEARCH-BING', 'Query queue exhausted, stopping', /搜索词已用尽，本轮搜索停止/]
+    ]
+    for (const [title, message, expected] of cases) {
+        const log = publicLog({ title, message, level: 'info', platform: 'MOBILE' })
+        assert.match(log.displayMessage, expected)
+        assert.match(log.displayMessage, /[\u4e00-\u9fff]/)
+    }
+})

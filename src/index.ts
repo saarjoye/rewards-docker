@@ -599,6 +599,18 @@ export class MicrosoftRewardsBot {
         let edgeBrowsingTask: Promise<void> | null = null
         let edgeBrowsingFinished = false
 
+        const runActivity = async (label: string, action: () => Promise<unknown>): Promise<void> => {
+            try {
+                await action()
+            } catch (error) {
+                this.logger.error(
+                    'main',
+                    'FLOW',
+                    `${label}执行失败，继续后续任务 | message=${error instanceof Error ? error.message : String(error)}`
+                )
+            }
+        }
+
         const closeMobileSession = async (): Promise<void> => {
             const session = mobileSession
             if (!session) return
@@ -785,10 +797,12 @@ export class MicrosoftRewardsBot {
 
                 if (fullApi) {
                     if (this.config.ensureStreakProtection) {
-                        await this.activities.doEnsureStreakProtection()
+                        await runActivity('连续签到保护', () => this.activities.doEnsureStreakProtection())
                     }
-                    if (this.config.workers.doPunchCards) await this.activities.doPunchCardsMobile(data)
-                    if (this.config.workers.doActivateSearchPerk) await this.activities.doActivateSearchPerk(data)
+                    if (this.config.workers.doPunchCards)
+                        await runActivity('移动打卡任务', () => this.activities.doPunchCardsMobile(data))
+                    if (this.config.workers.doActivateSearchPerk)
+                        await runActivity('搜索加成', () => this.activities.doActivateSearchPerk(data))
 
                     const plan = await this.searchManager.getSearchPoints()
                     const doMobileSearch = plan.doMobile
@@ -803,34 +817,45 @@ export class MicrosoftRewardsBot {
                     if (desktopBrowserNeeded) {
                         await executionContext.run({ isMobile: false, account }, async () => {
                             desktopSession = await this.createDesktopSession(account)
-                            if (this.config.workers.doPunchCards) await this.activities.doPunchCardsDesktop()
-                            if (doVisualSearch) await this.activities.doVisualSearch(data)
+                            if (this.config.workers.doPunchCards)
+                                await runActivity('桌面打卡任务', () => this.activities.doPunchCardsDesktop())
+                            if (doVisualSearch) await runActivity('视觉搜索', () => this.activities.doVisualSearch(data))
                         })
                         await closeDesktopSession()
                     }
 
-                    if (this.config.workers.doDailySet) await this.activities.doDailySet(data)
-                    if (this.config.workers.doMorePromotions) await this.activities.doMorePromotions(data)
-                    if (appAvailable && this.config.workers.doDailyCheckIn) await this.activities.doDailyCheckIn()
+                    if (this.config.workers.doDailySet)
+                        await runActivity('每日任务', () => this.activities.doDailySet(data))
+                    if (this.config.workers.doMorePromotions)
+                        await runActivity('更多推广', () => this.activities.doMorePromotions(data))
+                    if (appAvailable && this.config.workers.doDailyCheckIn)
+                        await runActivity('每日签到', () => this.activities.doDailyCheckIn())
                     if (appAvailable && this.config.workers.doAppPromotions && appData)
-                        await this.activities.doAppPromotions(appData)
-                    if (appAvailable && this.config.workers.doReadToEarn) await this.activities.doReadToEarn()
+                        await runActivity('应用推广', () => this.activities.doAppPromotions(appData))
+                    if (appAvailable && this.config.workers.doReadToEarn)
+                        await runActivity('阅读任务', () => this.activities.doReadToEarn())
 
                     if (doMobileSearch) mobilePoints = await this.searchManager.searchMobile(account)
                     if (doBonus) bonusPoints = await this.searchManager.bonusMobile(account)
                     if (doDesktopSearch) desktopPoints = await this.searchManager.searchDesktop(account)
                 } else {
                     if (this.config.ensureStreakProtection) {
-                        await this.activities.doEnsureStreakProtection()
+                        await runActivity('连续签到保护', () => this.activities.doEnsureStreakProtection())
                     }
-                    if (this.config.workers.doDailySet) await this.activities.doDailySet(data)
-                    if (this.config.workers.doActivateSearchPerk) await this.activities.doActivateSearchPerk(data)
-                    if (this.config.workers.doMorePromotions) await this.activities.doMorePromotions(data)
-                    if (appAvailable && this.config.workers.doDailyCheckIn) await this.activities.doDailyCheckIn()
+                    if (this.config.workers.doDailySet)
+                        await runActivity('每日任务', () => this.activities.doDailySet(data))
+                    if (this.config.workers.doActivateSearchPerk)
+                        await runActivity('搜索加成', () => this.activities.doActivateSearchPerk(data))
+                    if (this.config.workers.doMorePromotions)
+                        await runActivity('更多推广', () => this.activities.doMorePromotions(data))
+                    if (appAvailable && this.config.workers.doDailyCheckIn)
+                        await runActivity('每日签到', () => this.activities.doDailyCheckIn())
                     if (appAvailable && this.config.workers.doAppPromotions && appData)
-                        await this.activities.doAppPromotions(appData)
-                    if (appAvailable && this.config.workers.doReadToEarn) await this.activities.doReadToEarn()
-                    if (this.config.workers.doPunchCards) await this.activities.doPunchCardsMobile(data)
+                        await runActivity('应用推广', () => this.activities.doAppPromotions(appData))
+                    if (appAvailable && this.config.workers.doReadToEarn)
+                        await runActivity('阅读任务', () => this.activities.doReadToEarn())
+                    if (this.config.workers.doPunchCards)
+                        await runActivity('移动打卡任务', () => this.activities.doPunchCardsMobile(data))
 
                     const plan = await this.searchManager.getSearchPoints()
                     const doMobileSearch = plan.doMobile
@@ -847,8 +872,9 @@ export class MicrosoftRewardsBot {
                     if (parallel && !apiSearch && doMobileSearch && doDesktopSearch) {
                         await executionContext.run({ isMobile: false, account }, async () => {
                             desktopSession = await this.createDesktopSession(account)
-                            if (this.config.workers.doPunchCards) await this.activities.doPunchCardsDesktop()
-                            if (doVisualSearch) await this.activities.doVisualSearch(data)
+                            if (this.config.workers.doPunchCards)
+                                await runActivity('桌面打卡任务', () => this.activities.doPunchCardsDesktop())
+                            if (doVisualSearch) await runActivity('视觉搜索', () => this.activities.doVisualSearch(data))
                         })
 
                         const mobileWork = async (): Promise<[number, number]> => {
@@ -881,8 +907,10 @@ export class MicrosoftRewardsBot {
                             await executionContext.run({ isMobile: false, account }, async () => {
                                 desktopSession = await this.createDesktopSession(account)
 
-                                if (this.config.workers.doPunchCards) await this.activities.doPunchCardsDesktop()
-                                if (doVisualSearch) await this.activities.doVisualSearch(data)
+                                if (this.config.workers.doPunchCards)
+                                    await runActivity('桌面打卡任务', () => this.activities.doPunchCardsDesktop())
+                                if (doVisualSearch)
+                                    await runActivity('视觉搜索', () => this.activities.doVisualSearch(data))
                                 if (doDesktopSearch && !apiSearch) {
                                     desktopPoints = await this.searchManager.searchDesktop(account)
                                 }
@@ -904,7 +932,8 @@ export class MicrosoftRewardsBot {
                     }`
                 )
 
-                if (this.config.workers.doClaimBonusPoints) await this.activities.doClaimBonusPoints()
+                if (this.config.workers.doClaimBonusPoints)
+                    await runActivity('领取奖励积分', () => this.activities.doClaimBonusPoints())
 
                 if (edgeBrowsingTask) {
                     if (!edgeBrowsingFinished) {

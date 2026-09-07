@@ -18,9 +18,7 @@ export class MorePromotions extends BaseActivity {
         ]
 
         const pending = promotions.filter(
-            promotion =>
-                !promotion.complete &&
-                promotionEligibility(promotion, this.bot.config, 'more').eligibility === 'eligible'
+            promotion => promotionEligibility(promotion, this.bot.config, 'more').eligibility === 'eligible'
         )
         if (!pending.length) {
             markTaskStatus('skipped', '没有可自动执行的推广任务')

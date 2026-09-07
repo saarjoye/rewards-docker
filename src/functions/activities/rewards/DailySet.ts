@@ -14,7 +14,9 @@ export class DailySet extends BaseActivity {
             return
         }
         const pending = promotions.filter(
-            item => !item.complete && promotionEligibility(item, this.bot.config, 'daily').eligibility === 'eligible'
+            item =>
+                !item.complete &&
+                promotionEligibility(item, this.bot.config, 'daily').eligibility === 'eligible'
         )
 
         if (!pending.length) {

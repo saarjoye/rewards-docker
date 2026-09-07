@@ -59,6 +59,14 @@ function sum(values) {
     return values.reduce((total, value) => total + (numberOrNull(value) ?? 0), 0)
 }
 
+function accountGain(account) {
+    const taskGain = numberOrNull(account?.collectedPoints ?? account?.live?.gained)
+    const balanceChange = numberOrNull(account?.balanceChange)
+    const balanceGain = balanceChange !== null && balanceChange >= 0 ? balanceChange : null
+    if (taskGain === null) return balanceGain
+    return balanceGain === null ? taskGain : Math.max(taskGain, balanceGain)
+}
+
 function safeIdentifier(value) {
     const normalized = String(value ?? '').trim()
     return /^[A-Za-z0-9_-]{1,100}$/.test(normalized) ? normalized : null
@@ -158,12 +166,13 @@ export class HistoryStore {
         }
     }
 
-    ingestPoints(runKey, accounts) {
+    ingestPoints(runKey, accounts, fallbackAt = new Date().toISOString()) {
         if (!safeIdentifier(runKey)) return
         const insert = this.db.prepare('INSERT OR IGNORE INTO point_events VALUES (?, ?, ?, ?, ?, ?, ?)')
         for (const account of accounts ?? []) {
             if (account.telemetryVersion !== 2) continue
             const accountKey = this.identity.keyFor(account.email ?? 'unknown')
+            let confirmed = 0
             for (const record of account.pointRecords ?? []) {
                 if (
                     !safeIdentifier(record.id) ||
@@ -173,6 +182,7 @@ export class HistoryStore {
                     !Number.isFinite(Date.parse(record.confirmedAt))
                 )
                     continue
+                confirmed += record.points
                 const key = crypto.createHash('sha256').update(`${runKey}|${accountKey}|${record.id}`).digest('hex')
                 insert.run(
                     key,
@@ -183,6 +193,33 @@ export class HistoryStore {
                     localDate(record.confirmedAt),
                     sanitizeText(record.source, 40)
                 )
+            }
+            const balanceChange = numberOrNull(account.balanceChange)
+            const balanceGain = balanceChange !== null && balanceChange >= 0 ? balanceChange : 0
+            const remainder = Math.max(confirmed, balanceGain) - confirmed
+            if (remainder > 0) {
+                const observedAt = account.live?.lastUpdateTs ?? account.updatedAt ?? fallbackAt
+                const key = crypto.createHash('sha256').update(`${runKey}|${accountKey}|account-balance`).digest('hex')
+                this.db
+                    .prepare(
+                        `INSERT INTO point_events
+                         (event_key, run_key, account_key, points, confirmed_at, local_date, source)
+                         VALUES (?, ?, ?, ?, ?, ?, ?)
+                         ON CONFLICT(event_key) DO UPDATE SET
+                           points=excluded.points,
+                           confirmed_at=excluded.confirmed_at,
+                           local_date=excluded.local_date,
+                           source=excluded.source`
+                    )
+                    .run(
+                    key,
+                    runKey,
+                    accountKey,
+                    remainder,
+                    observedAt,
+                    localDate(observedAt),
+                    'account-balance'
+                    )
             }
         }
     }
@@ -220,13 +257,13 @@ export class HistoryStore {
 
         this.db.exec('BEGIN IMMEDIATE')
         try {
-            this.ingestPoints(status?.runId, status?.run?.accounts)
+            this.ingestPoints(status?.runId, status?.run?.accounts, status?.run?.startedAt ?? status?.startedAt)
             for (const run of history) {
                 if (!run?.startedAt || !run?.endedAt) continue
                 const accounts = Array.isArray(run.accounts) ? run.accounts : []
                 const accountKeys = accounts.map(account => this.identity.keyFor(account.email ?? 'unknown'))
                 const runKey = safeIdentifier(run.id) || this.runKey(run, accountKeys)
-                this.ingestPoints(runKey, accounts)
+                this.ingestPoints(runKey, accounts, run.endedAt)
                 const result = insertRun.run(
                     runKey,
                     run.startedAt,
@@ -255,7 +292,7 @@ export class HistoryStore {
                         numberOrNull(enhanced.finalPoints ?? enhanced.live?.balance),
                         Math.max(
                             0,
-                            numberOrNull(account.collected ?? enhanced.collectedPoints ?? enhanced.live?.gained) ?? 0
+                            accountGain(account) ?? accountGain(enhanced) ?? 0
                         ),
                         account.success === null || account.success === undefined ? null : account.success ? 1 : 0,
                         account.error ? sanitizeText(account.error, 800) : null,
@@ -270,11 +307,17 @@ export class HistoryStore {
                             .run(
                                 JSON.stringify({
                                     version: 2,
-                                    collected: numberOrNull(enhanced.collectedPoints ?? enhanced.live?.gained),
+                                    collected: accountGain(enhanced),
                                     pending: enhanced.pendingVerification ?? 0,
                                     status: enhanced.status ?? 'unknown',
                                     balanceChange: numberOrNull(enhanced.balanceChange),
-                                    unattributedBalanceChange: numberOrNull(enhanced.unattributedBalanceChange)
+                                    unattributedBalanceChange:
+                                        numberOrNull(enhanced.balanceChange) === null
+                                            ? null
+                                            : Math.max(
+                                                  0,
+                                                  numberOrNull(enhanced.balanceChange) - (accountGain(enhanced) ?? 0)
+                                              )
                                 }),
                                 runKey,
                                 this.identity.keyFor(email || 'unknown')

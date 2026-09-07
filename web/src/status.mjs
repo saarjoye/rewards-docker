@@ -63,6 +63,7 @@ const SOURCE_LABELS = {
     checkIn: '签到',
     claimBonus: '奖励领取',
     claimReward: '活动奖励',
+    accountBalance: '余额变化',
     urlReward: '每日活动',
     visualSearch: '视觉搜索',
     appReward: '应用任务',
@@ -135,7 +136,12 @@ function pointsView(account) {
         ),
         collected:
             account?.telemetryVersion === 2
-                ? finiteOrNull(account?.collectedPoints ?? account?.collected ?? account?.live?.gained)
+                ? finiteOrNull(
+                      account?.collectedPoints ??
+                          account?.collected ??
+                          account?.live?.gained ??
+                          account?.balanceChange
+                  )
                 : null,
         bySource
     }
@@ -352,6 +358,59 @@ export function translateLogMessage(entry, titleLabel = TITLE_LABELS[entry?.titl
         return `${stateMessage[1] === 'Processing state' ? '正在处理' : '检测到登录状态'}：${states[stateMessage[2]] ?? stateMessage[2]}`
     const iteration = message.match(/^State check iteration (\d+)\/(\d+)$/)
     if (iteration) return `第 ${iteration[1]}/${iteration[2]} 次检查登录页面`
+    const flightChunks = message.match(
+        /^Concatenated flight chunks \| pages=(\d+) \| chunks=(\d+) \| length=(\d+) \| perSource=\[(.*)\]$/
+    )
+    if (flightChunks)
+        return `已合并页面数据块：页面 ${flightChunks[1]} 个，数据块 ${flightChunks[2]} 个，长度 ${flightChunks[3]}，来源分布 ${flightChunks[4] || '无'}`
+    if (/^Skipped undecodable flight chunk \|/.test(message)) return '有页面数据块无法解码，已跳过该数据块'
+    if (/^No __next_f flight chunks found/.test(message)) return '未找到页面任务数据块，页面结构可能已变化'
+    if (/^Failed concatenating flight chunks \|/.test(message)) return '合并页面数据块失败，任务数据可能不完整'
+    const objectFailures = message.match(/^extractObjects\("[^"]+"\) had (\d+) unparseable matches$/)
+    if (objectFailures) return `解析页面对象时有 ${objectFailures[1]} 个匹配项无法读取`
+    const parsedOffers = message.match(/^Parsed offers \| total=(\d+) \| reportable=(\d+)$/)
+    if (parsedOffers) return `已解析任务：共 ${parsedOffers[1]} 项，可执行 ${parsedOffers[2]} 项`
+    const parsedOfferIds = message.match(/^Parsed offer ids \| (.*)$/)
+    if (parsedOfferIds) {
+        const ids = parsedOfferIds[1] === 'none' ? '无' : parsedOfferIds[1].replaceAll('(skip)', '（跳过）')
+        return `已解析任务标识：${ids}`
+    }
+    const parsedStreaks = message.match(/^Parsed streaks \| (.*)$/)
+    if (parsedStreaks) return `已解析连续任务：${parsedStreaks[1] === 'none' ? '无' : parsedStreaks[1]}`
+    const parsedProtection = message.match(
+        /^Parsed streak protection \| enabled=(true|false) \| remainingDays=([^|]+) \| streakCounter=([^|]+)$/
+    )
+    if (parsedProtection) {
+        const enabled = parsedProtection[1] === 'true' ? '是' : '否'
+        const remaining = parsedProtection[2].trim() === 'null' ? '未读取' : parsedProtection[2].trim()
+        const counter = parsedProtection[3].trim() === 'null' ? '未读取' : parsedProtection[3].trim()
+        return `已解析连续签到保护：已启用 ${enabled}，剩余天数 ${remaining}，连续签到 ${counter} 天`
+    }
+    if (/^Failed parsing (offers|streaks|streak protection|account) \|/.test(message)) {
+        const section = message.match(/^Failed parsing ([^| ]+)/)?.[1]
+        const labels = { offers: '任务', streaks: '连续任务', 'streak': '连续签到保护', 'streak protection': '连续签到保护', account: '账号' }
+        return `解析${labels[section] ?? '任务数据'}失败，数据可能不完整`
+    }
+    const parsedAccount = message.match(
+        /^Parsed account \| level=([^|]+) \| available=([^|]+) \| toGo=([^|]+) \| lifetime=([^|]+)$/
+    )
+    if (parsedAccount) {
+        const value = item => item.trim() === 'null' ? '未读取' : item.trim()
+        return `已解析账号数据：等级 ${value(parsedAccount[1])}，可用积分 ${value(parsedAccount[2])}，距离下一等级 ${value(parsedAccount[3])}，累计积分 ${value(parsedAccount[4])}`
+    }
+    if (message === 'Account state empty - membership/header objects not found in payload')
+        return '账号状态为空：响应中未找到会员或页头对象'
+    if (/^Primary dashboard unavailable after one retry; using Bing flyout fallback \|/.test(message))
+        return '主任务面板重试后仍不可用，正在使用 Bing 浮层任务数据'
+    const partialFlyout = message.match(
+        /^Using partial Bing flyout dashboard \| suspectedLimited=(true|false) \| botMarkers=(true|false) \| activitiesCollapsed=(true|false)$/
+    )
+    if (partialFlyout) {
+        const yesNo = value => value === 'true' ? '是' : '否'
+        return `使用不完整的 Bing 浮层任务数据：疑似受限 ${yesNo(partialFlyout[1])}，检测到机器人标记 ${yesNo(partialFlyout[2])}，任务列表折叠 ${yesNo(partialFlyout[3])}`
+    }
+    if (/^Primary dashboard and Bing flyout fallback failed \|/.test(message))
+        return '主任务面板和 Bing 浮层备用数据均不可用'
     if (entry?.title === 'LOGIN-RETRY' || entry?.title === 'TASK-EVENT') return message
     if (entry?.title === 'TASK-SNAPSHOT') {
         if (!message.startsWith('{')) return message
@@ -389,6 +448,36 @@ export function translateLogMessage(entry, titleLabel = TITLE_LABELS[entry?.titl
             ? `旧格式额度报告：移动 ${match[1]}、桌面 ${match[2]}、应用 ${match[3]} 分；以任务清单的确认状态为准`
             : message
     }
+    if (entry?.title === 'FLOW') {
+        if (/^Starting session for /i.test(message)) return '正在初始化当前账号任务流程'
+        if (/^Points collected \|/i.test(message)) {
+            const points = numeric(message, 'pointsGained')
+            return points === null ? '账号余额已读取，正在更新任务结果' : `账号流程结束，本轮余额增加 ${points} 分`
+        }
+        if (/^Foreground activities finished/i.test(message)) return '前台任务已完成，正在等待后台任务收尾'
+        if (/执行失败，继续后续任务 \| message=/i.test(message)) return '当前任务执行失败，已继续后续任务'
+    }
+    if (entry?.title === 'BROWSER') {
+        if (/^(Mobile|Desktop) Browser started/i.test(message))
+            return message.startsWith('Mobile') ? '移动端浏览器已启动' : '桌面端浏览器已启动'
+        if (/^Browser started/i.test(message)) return '浏览器已启动'
+    }
+    if (entry?.title === 'SEARCH-MANAGER') {
+        const searchStart = message.match(/^Starting Bing searches \| currentBalance=(\d+)$/i)
+        if (searchStart) return `开始 Bing 搜索，当前余额 ${searchStart[1]} 分`
+        const searchSummary = message.match(/^Search summary \| mobile=(-?\d+) \| desktop=(-?\d+) \| bonus=(-?\d+) \| total=(-?\d+)/i)
+        if (searchSummary)
+            return `搜索任务结束：移动端 ${searchSummary[1]} 分，桌面端 ${searchSummary[2]} 分，奖励搜索 ${searchSummary[3]} 分，共 ${searchSummary[4]} 分`
+        if (/^Starting bonus search farming/i.test(message)) return '开始执行奖励搜索'
+        const bonusSummary = message.match(/^Bonus search summary \| pointsGained=(-?\d+)/i)
+        if (bonusSummary) return `奖励搜索结束，本轮增加 ${bonusSummary[1]} 分`
+    }
+    if (entry?.title === 'SEARCH-BING' || entry?.title === 'SEARCH-BONUS') {
+        const queryReady = message.match(/^Query queue ready \| mainTopics=(\d+) \| clusterSearch=(true|false)$/i)
+        if (queryReady) return `搜索词准备完成：${queryReady[1]} 个主题，${queryReady[2] === 'true' ? '启用' : '未启用'}分组搜索`
+        if (/^No main search topics available/i.test(message)) return '没有可用的搜索主题，本轮搜索未执行'
+        if (/^Query queue exhausted/i.test(message)) return '搜索词已用尽，本轮搜索停止'
+    }
     if (entry?.title === 'CONTROLLER') {
         if (message.startsWith('Starting run:')) return '正在启动任务进程'
         if (message.startsWith('Run started')) return '任务进程已启动'
@@ -418,14 +507,18 @@ export function translateLogMessage(entry, titleLabel = TITLE_LABELS[entry?.titl
             message
         )
     ) {
-        return `${titleLabel}流程结束${suffix ? '，日志报告值仅供核对' : ''}：${message}`
+        return `${titleLabel}流程结束${suffix ? '，日志报告值仅供核对' : ''}`
     }
-    if (/^(Starting|Started)/i.test(message)) return `正在执行${titleLabel}：${message}`
-    if (/^(Skipping|Skip )/i.test(message)) return `${titleLabel}已跳过：${message}`
-    if (entry?.level === 'error' || /failed|failure/i.test(message)) return `${titleLabel}执行失败：${message}`
-    if (entry?.level === 'warn') return `${titleLabel}：${message}`
+    const knownTitle = Object.hasOwn(TITLE_LABELS, entry?.title)
+    if (knownTitle && /^(Starting|Started)/i.test(message)) return `正在执行${titleLabel}`
+    if (knownTitle && /^(Skipping|Skip )/i.test(message)) return `${titleLabel}已跳过`
+    if (entry?.level === 'error' || /failed|failure/i.test(message))
+        return Object.hasOwn(TITLE_LABELS, entry?.title) ? `${titleLabel}执行失败，已记录原因` : `${titleLabel}执行失败：${message}`
+    if (entry?.level === 'warn')
+        return Object.hasOwn(TITLE_LABELS, entry?.title) ? `${titleLabel}：请关注当前警告` : `${titleLabel}：${message}`
     if (points !== null) return `${titleLabel}进度已更新${suffix}`
-    return message || `${titleLabel}未提供具体消息`
+    if (message && Object.hasOwn(TITLE_LABELS, entry?.title)) return `${titleLabel}：任务信息已更新`
+    return message || `${titleLabel}：未提供具体消息`
 }
 
 export function publicErrorMessage(error) {

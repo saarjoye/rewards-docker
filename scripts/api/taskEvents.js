@@ -174,22 +174,27 @@ export function applyTaskEvent(state, entry) {
                   : 'unavailable'
         }
     }
-    account.live.gained = account.pointRecords.length
-        ? account.pointRecords.reduce((sum, item) => sum + item.points, 0)
-        : null
-    account.collectedPoints = account.live.gained
-    account.live.bySource = {}
-    for (const record of account.pointRecords)
-        account.live.bySource[record.source] = (account.live.bySource[record.source] ?? 0) + record.points
-    account.pendingVerification = Object.values(account.tasks).filter(
-        task => task.telemetryVersion === 2 && !task.group && task.verification === 'pending'
-    ).length
     account.balanceChange =
         number(account.initialPoints) !== null && number(account.live.balance) !== null
             ? account.live.balance - account.initialPoints
             : null
+    const confirmedTaskPoints = account.pointRecords.reduce((sum, item) => sum + item.points, 0)
+    const balanceGain = account.balanceChange !== null && account.balanceChange >= 0 ? account.balanceChange : 0
+    // Match the upstream runner: account balance gain is visible immediately,
+    // even when individual task evidence is still pending or not attributable.
+    const accountGain = Math.max(confirmedTaskPoints, balanceGain)
+    account.live.gained = accountGain > 0 || confirmedTaskPoints === 0 ? accountGain : null
+    account.collectedPoints = account.live.gained
+    account.live.bySource = {}
+    for (const record of account.pointRecords)
+        account.live.bySource[record.source] = (account.live.bySource[record.source] ?? 0) + record.points
+    const unattributed = Math.max(0, accountGain - confirmedTaskPoints)
+    if (unattributed > 0) account.live.bySource.accountBalance = unattributed
+    account.pendingVerification = Object.values(account.tasks).filter(
+        task => task.telemetryVersion === 2 && !task.group && task.verification === 'pending'
+    ).length
     account.unattributedBalanceChange =
-        account.balanceChange === null ? null : account.balanceChange - (account.live.gained ?? 0)
+        account.balanceChange === null ? null : Math.max(0, account.balanceChange - accountGain)
     account.live.lastUpdateTs = event.at
     state.lastPointUpdateAt = event.at
     return true

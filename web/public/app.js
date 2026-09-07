@@ -310,7 +310,7 @@ function accountRows(accounts = []) {
             account => `<tr>
                 <td>${esc(account.index)}</td><td>${esc(account.label)}</td>
                 <td>${statusPill(account.status)}<div class="subtle">${esc(account.status.message)}</div></td>
-                <td>${valueOrUnknown(account.points.balance, ' 分', '余额未读取')}</td><td>${valueOrUnknown(account.points.collected, ' 分', '尚无已确认记录')}</td>
+                <td>${valueOrUnknown(account.points.balance, ' 分', '余额未读取')}</td><td>${valueOrUnknown(account.points.collected, ' 分', '积分尚未读取')}</td>
                 <td>${esc(localeLabel(account.geoLocale, account.langCode))}</td>
             </tr>`
         )
@@ -327,9 +327,9 @@ function renderDashboard() {
     content.innerHTML = `
         <section class="metrics">
             ${metric('核心状态', core.label || '核心离线', core.version ? `版本 ${core.version}` : '等待连接')}
-            ${metric('本轮已确认小计', valueOrUnknown(run.collected, ' 分', '尚无已确认记录'), run.currentAccount || '当前无执行账号')}
+            ${metric('本轮增加', valueOrUnknown(run.collected, ' 分', '积分尚未读取'), run.currentAccount || '当前无执行账号')}
             ${metric('执行进度', run.accountsTotal === null || run.accountsTotal === undefined ? '待确认' : `${run.accountsSeen || 0}/${run.accountsTotal}`, run.running ? '任务正在运行' : '当前未运行')}
-            ${metric('今日累计已确认', valueOrUnknown(state?.history?.todayCollected, ' 分'), `${state?.history?.today || '今日'} · ${state?.history?.pendingVerification ?? 0} 项待复核`)}
+            ${metric('今日累计增加', valueOrUnknown(state?.history?.todayCollected, ' 分'), `${state?.history?.today || '今日'} · ${state?.history?.pendingVerification ?? 0} 项任务待复核`)}
         </section>
         <section class="section">
             <div class="section-head"><div><h2>运行控制</h2><p></p></div></div>
@@ -343,7 +343,7 @@ function renderDashboard() {
         </section>
         <section class="section">
             <div class="section-head"><div><h2>账号概览</h2></div></div>
-            <div class="panel table-wrap"><table><thead><tr><th>序号</th><th>账号</th><th>状态</th><th>账号余额</th><th>本轮已确认小计</th><th>地区 / 语言</th></tr></thead><tbody>${accountRows(accounts)}</tbody></table></div>
+            <div class="panel table-wrap"><table><thead><tr><th>序号</th><th>账号</th><th>状态</th><th>账号余额</th><th>本轮增加</th><th>地区 / 语言</th></tr></thead><tbody>${accountRows(accounts)}</tbody></table></div>
         </section>`
 }
 
@@ -394,7 +394,7 @@ function renderTasks() {
     const body = (state?.accounts || [])
         .map(
             account =>
-                `<article class="task-account"><h3>${esc(account.label)}</h3><p>${esc(account.status.label)} · ${esc(account.status.message)}</p><div class="task-summary"><span>本轮已确认小计 <strong>${valueOrUnknown(account.points.collected, ' 分', '尚无已确认记录')}</strong></span><span>账号余额 <strong>${valueOrUnknown(account.points.balance, ' 分', '余额未读取')}</strong></span><span>未归类余额变化 ${valueOrUnknown(account.points.unattributedBalanceChange, ' 分', '余额证据不足')}</span></div>${account.taskDataStatus === 'partial' ? '<p class="warn">部分任务来源不可用</p>' : ''}${taskTableMarkup(account.tasks, account.taskDataStatus)}${account.excludedTasks?.length ? `<details><summary>未列入执行的任务（${account.excludedTasks.length}）</summary>${taskTableMarkup(account.excludedTasks)}</details>` : ''}</article>`
+                `<article class="task-account"><h3>${esc(account.label)}</h3><p>${esc(account.status.label)} · ${esc(account.status.message)}</p><div class="task-summary"><span>本轮增加 <strong>${valueOrUnknown(account.points.collected, ' 分', '积分尚未读取')}</strong></span><span>账号余额 <strong>${valueOrUnknown(account.points.balance, ' 分', '余额未读取')}</strong></span><span>待归因余额变化 ${valueOrUnknown(account.points.unattributedBalanceChange, ' 分', '暂无额外变化')}</span></div>${account.taskDataStatus === 'partial' ? '<p class="warn">部分任务来源不可用</p>' : ''}${taskTableMarkup(account.tasks, account.taskDataStatus)}${account.excludedTasks?.length ? `<details><summary>未列入执行的任务（${account.excludedTasks.length}）</summary>${taskTableMarkup(account.excludedTasks)}</details>` : ''}</article>`
         )
         .join('')
     content.innerHTML = `<section class="section"><h2>当日任务与得分</h2><div class="task-grid">${body || '<div class="empty">尚未配置账号</div>'}</div></section>`

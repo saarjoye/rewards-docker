@@ -93,3 +93,40 @@ test('v3 snapshot never overwrites a terminal task event', () => {
     assert.equal(task.verification, 'confirmed')
     assert.equal(task.earnedPoints, 5)
 })
+
+test('account balance gain is visible before task-level evidence is confirmed', () => {
+    accountStart()
+    const at = new Date().toISOString()
+    const apply = event => applyTaskEvent(state, { title: 'TASK-EVENT', message: JSON.stringify(event) })
+    assert.equal(
+        apply({
+            version: 2,
+            eventId: 'balance:1',
+            sequence: 1,
+            accountRef: accountRef(email),
+            at,
+            kind: 'balance',
+            phase: 'start',
+            balance: 5000
+        }),
+        true
+    )
+    assert.equal(
+        apply({
+            version: 2,
+            eventId: 'balance:2',
+            sequence: 2,
+            accountRef: accountRef(email),
+            at,
+            kind: 'balance',
+            phase: 'end',
+            balance: 5135
+        }),
+        true
+    )
+    const account = summarizeRunState(state).accounts[0]
+    assert.equal(account.collectedPoints, 135)
+    assert.equal(account.live.gained, 135)
+    assert.equal(account.balanceChange, 135)
+    assert.equal(account.pendingVerification, 0)
+})
