@@ -154,18 +154,18 @@ function applyTaskSnapshot(state, entry) {
     } catch {
         return false
     }
-    const account =
-        payload?.version === 2
-            ? Object.values(state.accounts).find(item => accountRef(item.email) === payload.accountRef)
-            : ensureAccount(state, payload?.account || accountEmailForEntry(state, entry))
+    const structured = payload?.version === 2 || payload?.version === 3
+    const account = structured
+        ? Object.values(state.accounts).find(item => accountRef(item.email) === payload.accountRef)
+        : ensureAccount(state, payload?.account || accountEmailForEntry(state, entry))
     if (!account || !Array.isArray(payload?.tasks)) return false
-    const structured = payload.version === 2
     if (structured) {
         if (account.telemetryVersion !== 2) {
             account.live.gained = null
             account.collectedPoints = null
         }
         account.telemetryVersion = 2
+        account.snapshotVersion = Math.max(account.snapshotVersion ?? 0, payload.version)
         account.taskSources ??= {}
         account.taskSources[`${payload.source}:${payload.platform}`] = payload.dataStatus
         const statuses = Object.values(account.taskSources)
@@ -184,64 +184,122 @@ function applyTaskSnapshot(state, entry) {
         )
         if (!id) continue
         const previous = account.tasks[id]
-        if (previous?.invocationId) continue
-        // A dashboard execution plan has stronger routing evidence than a generic page snapshot.
-        const keepPlan = previous?.eligibilityPlanned && !payload.planned && item.eligibility !== 'excluded'
-        const eligibility = keepPlan ? previous.eligibility : item.eligibility
-        const eligibilityReason = keepPlan ? previous.eligibilityReason : safeTaskText(item.eligibilityReason)
-        const expected = typeof item?.points === 'number' ? item.points : null
+        const capability = payload.version === 3 && item?.capability ? item.capability : {}
+        const execution = payload.version === 3 && item?.execution ? item.execution : {}
+        const verification = payload.version === 3 && item?.verification ? item.verification : {}
+        const capabilityState = safeTaskText(capability.state, 30) || previous?.capability || null
+        const adapter = safeTaskText(capability.adapter, 80) || previous?.adapter || null
+        const rawEligibility = payload.version === 3 ? item?.eligibility?.state ?? item?.eligibility : item?.eligibility
+        const rawReason = payload.version === 3 ? item?.eligibility?.reason ?? item?.eligibilityReason : item?.eligibilityReason
+        let eligibility = safeTaskText(rawEligibility, 40) || previous?.eligibility || null
+        let eligibilityReason = safeTaskText(rawReason) || previous?.eligibilityReason || null
+        if (payload.version === 2 && previous?.eligibilityPlanned && !payload.planned && eligibility !== 'excluded') {
+            eligibility = previous.eligibility
+            eligibilityReason = previous.eligibilityReason
+        }
+        const planned = payload.version === 3 ? Boolean(execution.planned) : Boolean(previous?.planned || payload.planned)
+        const executionStatus = safeTaskText(execution.status, 30)
+        const expected =
+            typeof item?.points === 'number'
+                ? item.points
+                : typeof verification.expectedPoints === 'number'
+                  ? verification.expectedPoints
+                  : typeof item?.progress?.total === 'number'
+                    ? item.progress.total
+                    : null
+        const current =
+            typeof item?.current === 'number'
+                ? item.current
+                : typeof item?.progress?.current === 'number'
+                  ? item.progress.current
+                  : null
+        const completed =
+            item?.completed === true ||
+            eligibility === 'completed' ||
+            executionStatus === 'completed' ||
+            (executionStatus === 'not-planned' && eligibility === 'completed')
+        const status =
+            item?.unavailable || item?.dataStatus === 'unavailable' || eligibility === 'data-missing'
+                ? 'unavailable'
+                : completed
+                  ? 'skipped'
+                  : eligibility === 'locked'
+                    ? 'locked'
+                    : eligibility === 'manual-required'
+                      ? 'skipped'
+                      : capabilityState === 'unsupported' || eligibility === 'unsupported' || eligibility === 'excluded'
+                        ? 'unsupported'
+                        : executionStatus === 'planned' || planned || eligibility === 'eligible'
+                          ? previous?.status || 'eligible'
+                          : eligibility === 'unknown'
+                            ? 'unavailable'
+                            : previous?.status || 'eligible'
+        if (previous?.invocationId || previous?.terminal) {
+            account.tasks[id] = {
+                ...previous,
+                capability: capabilityState,
+                adapter,
+                taskType: safeTaskText(item?.taskType, 60) || previous.taskType || null,
+                eligibility,
+                eligibilityReason,
+                planned: previous.planned || planned,
+                executionOrder: Number.isInteger(execution.order) ? execution.order : previous.executionOrder ?? null,
+                dataStatus: safeTaskText(item?.dataStatus, 30) || previous.dataStatus || null,
+                evidenceSource: safeTaskText(verification.evidenceSource, 80) || previous.evidenceSource || null
+            }
+            continue
+        }
         account.tasks[id] = {
             id,
-            planned: Boolean(previous?.planned || payload.planned),
-            eligibility: ['eligible', 'excluded', 'unknown'].includes(eligibility) ? eligibility : null,
+            planned,
+            capability: capabilityState,
+            adapter,
+            taskType: safeTaskText(item?.taskType, 60) || null,
+            eligibility: ['eligible', 'excluded', 'unknown', 'completed', 'locked', 'disabled', 'manual-required', 'not-applicable', 'data-missing'].includes(eligibility)
+                ? eligibility
+                : null,
             eligibilityReason,
-            eligibilityPlanned: Boolean(previous?.eligibilityPlanned || payload.planned),
+            eligibilityPlanned: Boolean(previous?.eligibilityPlanned || planned),
+            executionOrder: Number.isInteger(execution.order) ? execution.order : null,
             ...(structured
                 ? {
                       telemetryVersion: 2,
                       source: payload.source,
                       platform: payload.platform,
-                      verification: 'not-applicable',
-                      previouslyCompleted: Boolean(item.completed),
+                      verification:
+                          ['confirmed', 'confirmed-zero', 'pending', 'not-applicable', 'unavailable'].includes(verification.state)
+                              ? verification.state
+                              : 'not-applicable',
+                      evidenceSource: safeTaskText(verification.evidenceSource, 80) || null,
+                      previouslyCompleted: Boolean(item.completed || eligibility === 'completed'),
                       action:
-                          eligibility === 'unknown' || eligibility === 'excluded'
-                              ? eligibilityReason
+                          capabilityState === 'unsupported' || eligibility === 'unknown' || eligibility === 'excluded'
+                              ? eligibilityReason || capability.reason || '当前版本不支持此任务类型'
                               : item.unavailable
-                                ? '任务来源不可用，执行情况待核对'
-                                : item.completed
-                                  ? '读取时已完成，本轮得分尚无记录'
-                                  : item.locked
-                                    ? '活动尚未解锁'
-                                    : '等待执行'
+                                ? '任务数据不可用，执行情况待核对'
+                                : completed
+                                  ? '读取时已完成，本轮未提交'
+                                  : eligibility === 'locked'
+                                    ? '任务尚未解锁'
+                                    : eligibility === 'manual-required'
+                                      ? '需要人工领取'
+                                      : planned
+                                        ? '等待执行'
+                                        : '未列入执行'
                   }
                 : {}),
             title: safeTaskText(item?.title) || previous?.title || 'Rewards 任务',
-            status: item.unavailable
-                ? 'unavailable'
-                : item?.completed
-                  ? 'skipped'
-                  : item?.locked
-                    ? 'locked'
-                    : eligibility === 'excluded'
-                      ? 'unsupported'
-                      : eligibility === 'unknown'
-                        ? 'unavailable'
-                        : previous?.status || 'eligible',
+            status,
             progress:
-                typeof item.current === 'number' &&
-                Number.isFinite(item.current) &&
-                typeof expected === 'number' &&
-                Number.isFinite(expected)
-                    ? { current: item.current, total: expected, unit: 'points' }
+                typeof current === 'number' && Number.isFinite(current) && typeof expected === 'number' && Number.isFinite(expected)
+                    ? { current, total: expected, unit: item?.progress?.unit === 'items' ? 'items' : 'points' }
                     : (previous?.progress ?? null),
             remainingPoints:
-                typeof item.current === 'number' &&
-                Number.isFinite(item.current) &&
-                typeof expected === 'number' &&
-                Number.isFinite(expected)
-                    ? Math.max(0, expected - item.current)
+                typeof current === 'number' && Number.isFinite(current) && typeof expected === 'number' && Number.isFinite(expected)
+                    ? Math.max(0, expected - current)
                     : null,
             expectedPoints: Number.isFinite(expected) && expected >= 0 ? expected : null,
+            dataStatus: safeTaskText(item?.dataStatus, 30) || (item?.unavailable ? 'unavailable' : 'available'),
             earnedPoints: previous?.earnedPoints ?? null,
             updatedAt: eventTime(entry)
         }

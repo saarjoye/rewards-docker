@@ -3,6 +3,7 @@ import type { HttpRequestConfig } from '../../../util/Http'
 import { randomUUID } from 'crypto'
 import { BaseActivity } from '../BaseActivity'
 import { finitePoints, markTaskStatus, reportTaskSubmission } from '../../../util/TaskTelemetry'
+import { CHECK_IN_CHANNEL, validateAppResult } from '../../../util/CheckIn'
 
 export class DailyCheckIn extends BaseActivity {
     private gainedPoints: number = 0
@@ -30,6 +31,10 @@ export class DailyCheckIn extends BaseActivity {
 
         try {
             const response = await this.submitDaily()
+            reportTaskSubmission()
+            validateAppResult(response.data)
+            if (!response.data.response || typeof response.data.response !== 'object')
+                throw new Error('签到响应缺少结果内容，无法确认签到结果')
 
             this.bot.logger.debug(
                 this.bot.isMobile,
@@ -65,7 +70,7 @@ export class DailyCheckIn extends BaseActivity {
                 this.bot.logger.warn(
                     this.bot.isMobile,
                     'DAILY-CHECK-IN',
-                    `Daily Check-In completed but no points gained | type=103 | balanceChange=0 | currentBalance=${newBalance}`
+                    `签到响应已接受，尚无正向余额变化，不能据此确认任务得分 | type=103 | balanceChange=${this.gainedPoints} | currentBalance=${newBalance}`
                 )
             }
         } catch (error) {
@@ -83,7 +88,7 @@ export class DailyCheckIn extends BaseActivity {
             const jsonData = {
                 risk_context: {},
                 type: 103,
-                channel: 'SAIOS',
+                channel: CHECK_IN_CHANNEL,
                 attributes: {},
                 id: randomUUID(),
                 amount: 1,
@@ -122,7 +127,9 @@ export class DailyCheckIn extends BaseActivity {
                 `Sending Daily Check-In request | type=${jsonData.type} | url=${request.url}`
             )
 
-            return this.bot.http.request<{ response?: { balance?: number; creditedPoints?: number } }>(request)
+            return this.bot.http.request<{ code?: number; response?: { balance?: number; creditedPoints?: number } }>(
+                request
+            )
         } catch (error) {
             this.bot.logger.error(
                 this.bot.isMobile,

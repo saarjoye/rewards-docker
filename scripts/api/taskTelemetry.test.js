@@ -44,6 +44,13 @@ function fixture(observations) {
 }
 const last = item => item.events.at(-1)
 
+test('explicit wait reasons reach task progress without changing delay semantics', async () => {
+    const Util = require('../../dist/util/Utils.js').default
+    const f = fixture([evidence(0)])
+    await f.reporter.run(spec, () => new Util().wait(0, '按搜索间隔配置暂停'))
+    assert.ok(f.events.some(event => event.action === '按搜索间隔配置暂停，等待 0 秒'))
+})
+
 test('finite evidence preserves legal zero but rejects missing and non-numeric values', () => {
     for (const value of [null, undefined, '', ' ', false, NaN, Infinity, -1, {}])
         assert.equal(finitePoints(value), null)
@@ -363,7 +370,7 @@ test('read-only confirmation selects the original source without browser navigat
         http: {
             request: async request => {
                 requests.push(request)
-                return { status: 200, data: {} }
+                return { status: 200, data: { code: 0 } }
             }
         },
         browser: {

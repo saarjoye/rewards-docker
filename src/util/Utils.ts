@@ -19,13 +19,18 @@ export function isBrowserClosedError(error: unknown): boolean {
 }
 
 export default class Util {
-    async wait(time: number | string): Promise<void> {
+    async wait(time: number | string, reason?: string): Promise<void> {
         if (typeof time === 'string') {
             time = this.stringToNumber(time)
         }
 
         if (!confirmationContext.getStore())
-            reportTaskProgress(`等待 ${Math.ceil(time / 1000)} 秒`, undefined, undefined, time)
+            reportTaskProgress(
+                `${reason ? reason + '，' : ''}等待 ${Math.ceil(time / 1000)} 秒`,
+                undefined,
+                undefined,
+                time
+            )
         return new Promise<void>(resolve => {
             setTimeout(resolve, time)
         })

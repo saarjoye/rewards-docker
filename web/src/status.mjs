@@ -11,6 +11,11 @@ const CORE_STATES = {
 export const LEVEL_LABELS = { debug: '调试', info: '信息', warn: '警告', error: '错误' }
 export const PLATFORM_LABELS = { MAIN: '主流程', MOBILE: '移动端', DESKTOP: '桌面端' }
 export const TITLE_LABELS = {
+    'COOKIE-SYNC': '同步登录会话',
+    'SEARCH-COOKIE-SEED': '准备搜索会话',
+    'SEARCH-COOKIE-CAPTURE': '更新搜索会话',
+    'SEARCH-CLOSE-TABS': '清理搜索标签页',
+    'GHOST-CLICK': '点击页面元素',
     CONTROLLER: '运行控制',
     'TASK-EVENT': '任务进展',
     'DETECT-STATE': '登录状态检测',
@@ -314,6 +319,19 @@ export function translateLogMessage(entry, titleLabel = TITLE_LABELS[entry?.titl
         'Detected chromewebdata error page': '浏览器显示页面加载错误'
     }
     if (common[message]) return common[message]
+    const cookies = message.match(/^Applied (\d+) response cookie\(s\) and persisted the updated session$/)
+    if (cookies) return `已同步 ${cookies[1]} 条会话更新，并保存登录状态`
+    const cache = message.match(/^Refreshed cookie cache \| previous=(\d+) \| current=(\d+)$/)
+    if (cache) return `已刷新会话缓存：更新前 ${cache[1]} 条，更新后 ${cache[2]} 条`
+    const tabs = message.match(/^Found (\d+) tab\(s\) open \(min: (\d+), max: (\d+)\)$/)
+    if (tabs) return `当前打开 ${tabs[1]} 个标签页，保留范围 ${tabs[2]}～${tabs[3]} 个`
+    const closed = message.match(/^Closed (\d+)\/(\d+) excess tab\(s\) to reach max of (\d+)$/)
+    if (closed) return `已关闭 ${closed[1]}/${closed[2]} 个多余标签页，最多保留 ${closed[3]} 个`
+    if (entry?.title === 'GHOST-CLICK' && message.startsWith('Trying to click selector:')) {
+        if (message.includes('#sb_form_q')) return '正在点击搜索输入框'
+        if (message.includes('#b_results .b_algo h2')) return '正在打开搜索结果页面'
+        return '正在点击页面目标元素'
+    }
     const states = {
         EMAIL: '填写邮箱',
         PASSWORD: '填写密码',

@@ -25,7 +25,7 @@ function fixture(response = {}) {
             request: async request => {
                 assert.equal(request.retries, 0)
                 submissions++
-                return { status: 200, data: { response } }
+                return { status: 200, data: { code: 0, response } }
             }
         },
         browser: {

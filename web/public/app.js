@@ -1,4 +1,4 @@
-import { taskTableMarkup, taskStatusLabel, filterAndGroupLogs } from './run-view.js'
+import { taskTableMarkup, taskStatusLabel, filterAndGroupLogs, localeLabel } from './run-view.js'
 import { calendarRange, calendarMarkup } from './calendar-view.js'
 const authShell = document.querySelector('#authShell')
 const appShell = document.querySelector('#app')
@@ -49,8 +49,8 @@ function formatTime(value) {
         : date.toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' })
 }
 
-function valueOrUnknown(value, suffix = '') {
-    return value === null || value === undefined ? '未识别/待确认' : `${Number(value)}${suffix}`
+function valueOrUnknown(value, suffix = '', unknown = '数据未确认') {
+    return value === null || value === undefined ? unknown : `${Number(value)}${suffix}`
 }
 
 function statusPill(status) {
@@ -310,8 +310,8 @@ function accountRows(accounts = []) {
             account => `<tr>
                 <td>${esc(account.index)}</td><td>${esc(account.label)}</td>
                 <td>${statusPill(account.status)}<div class="subtle">${esc(account.status.message)}</div></td>
-                <td>${valueOrUnknown(account.points.balance)}</td><td>${valueOrUnknown(account.points.collected, ' 分')}</td>
-                <td>${esc(account.geoLocale)} / ${esc(account.langCode)}</td>
+                <td>${valueOrUnknown(account.points.balance, ' 分', '余额未读取')}</td><td>${valueOrUnknown(account.points.collected, ' 分', '尚无已确认记录')}</td>
+                <td>${esc(localeLabel(account.geoLocale, account.langCode))}</td>
             </tr>`
         )
         .join('')
@@ -327,12 +327,12 @@ function renderDashboard() {
     content.innerHTML = `
         <section class="metrics">
             ${metric('核心状态', core.label || '核心离线', core.version ? `版本 ${core.version}` : '等待连接')}
-            ${metric('本轮已确认新增', valueOrUnknown(run.collected, ' 分'), run.currentAccount || '当前无执行账号')}
+            ${metric('本轮已确认小计', valueOrUnknown(run.collected, ' 分', '尚无已确认记录'), run.currentAccount || '当前无执行账号')}
             ${metric('执行进度', run.accountsTotal === null || run.accountsTotal === undefined ? '待确认' : `${run.accountsSeen || 0}/${run.accountsTotal}`, run.running ? '任务正在运行' : '当前未运行')}
-            ${metric('今日已确认新增', valueOrUnknown(state?.history?.todayCollected, ' 分'), `${state?.history?.today || '今日'} · ${state?.history?.pendingVerification ?? 0} 项待复核`)}
+            ${metric('今日累计已确认', valueOrUnknown(state?.history?.todayCollected, ' 分'), `${state?.history?.today || '今日'} · ${state?.history?.pendingVerification ?? 0} 项待复核`)}
         </section>
         <section class="section">
-            <div class="section-head"><div><h2>运行控制</h2><p>Control API 只接受全部账号或单个账号启动。</p></div></div>
+            <div class="section-head"><div><h2>运行控制</h2><p></p></div></div>
             <div class="panel run-bar">
                 <select id="runAccount" ${run.running || !core.available ? 'disabled' : ''}><option value="">全部账号</option>${options}</select>
                 <div class="run-actions">
@@ -343,7 +343,7 @@ function renderDashboard() {
         </section>
         <section class="section">
             <div class="section-head"><div><h2>账号概览</h2></div></div>
-            <div class="panel table-wrap"><table><thead><tr><th>序号</th><th>账号</th><th>状态</th><th>当前积分</th><th>本次增加</th><th>地区 / 语言</th></tr></thead><tbody>${accountRows(accounts)}</tbody></table></div>
+            <div class="panel table-wrap"><table><thead><tr><th>序号</th><th>账号</th><th>状态</th><th>账号余额</th><th>本轮已确认小计</th><th>地区 / 语言</th></tr></thead><tbody>${accountRows(accounts)}</tbody></table></div>
         </section>`
 }
 
@@ -355,7 +355,7 @@ async function renderAccounts() {
         const rows = accountManagement.accounts.length
             ? accountManagement.accounts
                   .map(
-                      account => `<tr><td>${account.index}</td><td>${esc(account.label)}</td><td>${esc(account.geoLocale)} / ${esc(account.langCode)}</td>
+                      account => `<tr><td>${account.index}</td><td>${esc(account.label)}</td><td>${esc(localeLabel(account.geoLocale, account.langCode))}</td>
                         <td>${account.hasPassword ? '密码' : '免密码'} · ${account.hasTotp ? 'TOTP 已配置' : '无 TOTP'} · ${account.proxy.enabled ? '代理已配置' : '直连'}</td>
                         <td><div class="row-actions"><button class="small-button" data-action="edit-account" data-id="${esc(account.id)}" ${!coreIdle || !accountManagement.store.encrypted || !accountManagement.store.writable ? 'disabled' : ''}>编辑</button><button class="small-button danger-outline" data-action="delete-account" data-id="${esc(account.id)}" ${!coreIdle || !accountManagement.store.encrypted || !accountManagement.store.writable ? 'disabled' : ''}>删除</button></div></td></tr>`
                   )
@@ -394,7 +394,7 @@ function renderTasks() {
     const body = (state?.accounts || [])
         .map(
             account =>
-                `<article class="task-account"><h3>${esc(account.label)}</h3><p>${esc(account.status.label)} · ${esc(account.status.message)}</p><div class="task-summary"><span>本轮已确认新增 <strong>${valueOrUnknown(account.points.collected, ' 分')}</strong></span><span>账号余额 <strong>${valueOrUnknown(account.points.balance)}</strong></span><span>未归类余额变化 ${valueOrUnknown(account.points.unattributedBalanceChange, ' 分')}</span></div>${account.taskDataStatus === 'partial' ? '<p class="warn">部分任务来源不可用</p>' : ''}${taskTableMarkup(account.tasks, account.taskDataStatus)}${account.excludedTasks?.length ? `<details><summary>未列入执行的任务（${account.excludedTasks.length}）</summary>${taskTableMarkup(account.excludedTasks)}</details>` : ''}</article>`
+                `<article class="task-account"><h3>${esc(account.label)}</h3><p>${esc(account.status.label)} · ${esc(account.status.message)}</p><div class="task-summary"><span>本轮已确认小计 <strong>${valueOrUnknown(account.points.collected, ' 分', '尚无已确认记录')}</strong></span><span>账号余额 <strong>${valueOrUnknown(account.points.balance, ' 分', '余额未读取')}</strong></span><span>未归类余额变化 ${valueOrUnknown(account.points.unattributedBalanceChange, ' 分', '余额证据不足')}</span></div>${account.taskDataStatus === 'partial' ? '<p class="warn">部分任务来源不可用</p>' : ''}${taskTableMarkup(account.tasks, account.taskDataStatus)}${account.excludedTasks?.length ? `<details><summary>未列入执行的任务（${account.excludedTasks.length}）</summary>${taskTableMarkup(account.excludedTasks)}</details>` : ''}</article>`
         )
         .join('')
     content.innerHTML = `<section class="section"><h2>当日任务与得分</h2><div class="task-grid">${body || '<div class="empty">尚未配置账号</div>'}</div></section>`

@@ -738,26 +738,24 @@ export class MicrosoftRewardsBot {
                 if (this.accessToken && needsAppActivities) {
                     try {
                         appEarnable = await this.browser.func.getAppEarnablePoints()
-                    } catch (error) {
+                    } catch {
                         this.logger.warn(
                             'main',
                             'LOGIN-APP',
-                            `App earnable-points lookup failed - app activities will be skipped this run | message=${error instanceof Error ? error.message : String(error)}`
+                            'App 预计额度读取失败，额度显示未知；各任务将独立检查登录与执行资格'
                         )
-                        this.accessToken = ''
-                        appData = null
                     }
                 }
 
                 const appAvailable = Boolean(this.accessToken && appData)
-                this.activities.publishPlan(data, appAvailable)
+                this.activities.publishPlan(data, appAvailable, appData)
 
                 this.logger.info(
                     'main',
                     'POINTS',
                     `Earnable today | Mobile: ${browserEarnable.mobileSearchPoints} | Browser: ${
                         browserEarnable.desktopSearchPoints
-                    } | App: ${appEarnable?.totalEarnablePoints ?? 0} | ${accountEmail} | locale: ${this.accountLocale.locale}`
+                    } | App: ${appEarnable?.totalEarnablePoints ?? '未知'} | ${accountEmail} | locale: ${this.accountLocale.locale}`
                 )
 
                 const parallel = this.config.searchSettings.parallelSearching

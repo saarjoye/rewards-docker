@@ -500,13 +500,17 @@ export class HistoryStore {
         const days = [...dayMap.values()].map(day => ({
             date: day.date,
             totalGained: pointRows.some(point => point.local_date === day.date) ? day.totalGained : null,
-            status: day.statuses.includes('failed')
-                ? day.totalGained > 0
+            status: day.statuses.includes('interrupted')
+                ? 'interrupted'
+                : day.statuses.includes('failed')
+                  ? day.totalGained > 0
+                      ? 'partial'
+                      : 'failed'
+                  : day.statuses.includes('partial')
                     ? 'partial'
-                    : 'failed'
-                : day.statuses.includes('partial')
-                  ? 'partial'
-                  : 'completed',
+                    : day.statuses.length && day.statuses.every(status => status === 'completed')
+                      ? 'completed'
+                      : 'partial',
             records: day.records,
             sources: day.sources
         }))
@@ -516,7 +520,7 @@ export class HistoryStore {
             summary: {
                 totalPoints: pointRows.length ? sum(days.map(day => day.totalGained)) : null,
                 completedDays: days.filter(day => day.totalGained !== null && day.status === 'completed').length,
-                failedDays: days.filter(day => ['failed', 'partial'].includes(day.status)).length,
+                failedDays: days.filter(day => ['failed', 'partial', 'interrupted'].includes(day.status)).length,
                 highestPointDay: days.reduce(
                     (best, day) =>
                         day.totalGained !== null && (best.points === null || day.totalGained > best.points)

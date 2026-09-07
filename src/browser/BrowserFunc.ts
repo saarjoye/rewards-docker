@@ -15,6 +15,7 @@ import type { AppDashboardData } from '../interface/AppDashBoardData'
 import { detectFlyoutBotWarning, mapFlyoutToDashboard, type RewardsFlyoutData } from './FlyoutDashboard'
 import { evidenceFromPayload } from '../util/TaskEvidence'
 import { finitePoints, type TaskSpec, type TaskEvidence } from '../util/TaskTelemetry'
+import { CHECK_IN_CHANNEL, CHECK_IN_OFFER, checkInState, validateAppResult } from '../util/CheckIn'
 
 export default class BrowserFunc {
     private bot: MicrosoftRewardsBot
@@ -58,6 +59,7 @@ export default class BrowserFunc {
             retries: 0,
             responseType: spec.source === 'rsc' ? 'text' : 'json'
         })
+        if (spec.source === 'app') validateAppResult(response.data)
         const payload =
             spec.source === 'rsc'
                 ? {
@@ -261,6 +263,13 @@ export default class BrowserFunc {
 
             const response = await this.bot.http.request<AppUserData>(request)
             const userData: AppUserData = response.data
+            validateAppResult(userData)
+            const checkInResponse = await this.bot.http.request<AppUserData>({
+                ...request,
+                url: URLs.platform.me(CHECK_IN_CHANNEL),
+                retries: 0
+            })
+            validateAppResult(checkInResponse.data)
             const eligibleActivities = userData.response.promotions.filter(x =>
                 eligibleOffers.includes(x.attributes.offerid ?? '')
             )
@@ -275,18 +284,20 @@ export default class BrowserFunc {
                     const pointMax = parseInt(attrs.pointmax ?? '0')
                     const pointProgress = parseInt(attrs.pointprogress ?? '0')
                     readToEarn = Math.max(0, pointMax - pointProgress)
-                } else if (attrs.type === 'checkin') {
-                    const progress = parseInt(attrs.progress ?? '0')
-                    const checkInDay = progress % 7
-                    const lastUpdated = new Date(attrs.last_updated ?? '')
-                    const today = new Date()
-
-                    if (checkInDay < 6 && today.getDate() !== lastUpdated.getDate()) {
-                        checkIn = parseInt(attrs[`day_${checkInDay + 1}_points`] ?? '0')
-                    }
                 }
             }
 
+            const checkInOffer = checkInResponse.data.response?.promotions?.find(
+                item => item.attributes.offerid === CHECK_IN_OFFER
+            )
+            if (checkInOffer) {
+                const state = checkInState(checkInOffer.attributes)
+                if (state.completed === null || state.expected === null)
+                    throw new Error('签到日期或奖励数据不可用，无法确认剩余额度')
+                checkIn = state.expected
+            } else {
+                throw new Error('签到渠道未返回活动，无法确认剩余额度')
+            }
             const totalEarnablePoints = readToEarn + checkIn
 
             return {

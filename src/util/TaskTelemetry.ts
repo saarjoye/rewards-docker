@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash, randomUUID } from 'node:crypto'
+import { CHECK_IN_OFFER } from './CheckIn'
 
 export type TaskStatus =
     | 'pending'
@@ -36,6 +37,10 @@ export interface TaskEvidence {
     completed: boolean | null
     unit: 'points' | 'items'
     observedAt: string
+    source?: string
+    reason?: string
+    attempt?: number
+    elapsedMs?: number
 }
 interface TaskContext {
     publish: (patch: Record<string, unknown>) => void
@@ -173,9 +178,9 @@ export class TaskTelemetry {
                 }
                 if (before)
                     publish({
-                        expectedPoints: before.total,
+                        expectedPoints: before.unit === 'points' ? before.total : null,
                         remainingPoints:
-                            before.total !== null && before.current !== null
+                            before.unit === 'points' && before.total !== null && before.current !== null
                                 ? Math.max(0, before.total - before.current)
                                 : null,
                         progress:
@@ -195,6 +200,18 @@ export class TaskTelemetry {
                     })
                     parent?.children.push('skipped')
                     return (spec.counter ? 0 : undefined) as T
+                }
+                if (spec.source === 'app' && spec.offerId === CHECK_IN_OFFER && before?.completed !== false) {
+                    publish({
+                        status: 'unavailable',
+                        action: '签到日期状态不可用，本轮未提交签到',
+                        terminal: true,
+                        verification: 'not-applicable',
+                        earnedPoints: null,
+                        dataStatus: 'unavailable'
+                    })
+                    parent?.children.push('unavailable')
+                    return undefined as T
                 }
             }
             let value!: T
@@ -235,6 +252,7 @@ export class TaskTelemetry {
                             balance: observed.balance ?? responseEvidence?.balance ?? null
                         }
                         if (
+                            (spec.offerId === CHECK_IN_OFFER && after.completed === true) ||
                             finitePoints(after.creditedPoints) !== null ||
                             (before?.current !== null &&
                                 before?.current !== undefined &&
@@ -311,9 +329,11 @@ export class TaskTelemetry {
             publish({
                 status,
                 action:
-                    context.explicitAction && status !== 'completed'
-                        ? `${spec.title}：${actions[status]}；${context.explicitAction}`
-                        : `${spec.title}：${actions[status]}`,
+                    status === 'submitted'
+                        ? `${spec.title}：已提交，本轮复核结束，未取得可确认的积分证据`
+                        : context.explicitAction && status !== 'completed' && context.explicitAction !== actions[status]
+                          ? `${spec.title}：${actions[status]}；${context.explicitAction}`
+                          : `${spec.title}：${actions[status]}`,
                 waitUntil: null,
                 verification: spec.group
                     ? 'not-applicable'
@@ -331,7 +351,7 @@ export class TaskTelemetry {
                         ? { current: after.current, total: after.total, unit: after.unit }
                         : latest.progress,
                 remainingPoints:
-                    after?.current !== null && after?.current !== undefined && after.total !== null
+                    after?.unit === 'points' && after.current !== null && after.total !== null
                         ? Math.max(0, after.total - after.current)
                         : latest.remainingPoints,
                 balance: after?.balance ?? null,

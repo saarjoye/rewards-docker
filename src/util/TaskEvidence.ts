@@ -1,4 +1,5 @@
 import { finitePoints, type TaskEvidence, type TaskSpec } from './TaskTelemetry'
+import { CHECK_IN_OFFER, checkInState } from './CheckIn'
 
 function object(value: unknown): Record<string, unknown> {
     return value !== null && typeof value === 'object' ? (value as Record<string, unknown>) : {}
@@ -30,7 +31,14 @@ export function evidenceFromPayload(spec: TaskSpec, payload: unknown): TaskEvide
         total: null,
         completed: null,
         unit: 'points',
-        observedAt: new Date().toISOString()
+        observedAt: new Date().toISOString(),
+        source: spec.counter
+            ? spec.source === 'flyout'
+                ? 'flyout-counter'
+                : spec.source === 'rsc'
+                  ? 'react-snapshot'
+                  : 'dashboard-counter'
+            : spec.source
     }
     if (spec.counter) {
         const counters = object(user.counters)
@@ -74,6 +82,14 @@ export function evidenceFromPayload(spec: TaskSpec, payload: unknown): TaskEvide
         .find(item => (spec.source === 'app' ? object(item.attributes).offerid : item.offerId) === spec.offerId)
     if (!offer) return evidence
     const attrs = spec.source === 'app' ? object(offer.attributes) : offer
+    if (spec.source === 'app' && spec.offerId === CHECK_IN_OFFER) {
+        const state = checkInState(attrs)
+        evidence.completed = state.completed
+        evidence.unit = 'items'
+        evidence.current = state.completed === null ? null : state.completed ? 1 : 0
+        evidence.total = state.completed === null ? null : 1
+        return evidence
+    }
     evidence.current = finitePoints(attrs.pointprogress ?? attrs.pointProgress)
     evidence.total = finitePoints(attrs.pointmax ?? attrs.pointProgressMax)
     if (evidence.current !== null && evidence.total !== null) evidence.completed = evidence.current >= evidence.total

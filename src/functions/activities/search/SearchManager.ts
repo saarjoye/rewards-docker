@@ -67,6 +67,8 @@ export class SearchManager {
     }
 
     private describeQuota(enabled: boolean, quota: SearchQuota): string {
+        if (enabled && !quota.known)
+            return `额度数据无法确认，未执行（来源=${quota.source}，原因=${quota.reason}，复核=${quota.attempt} 次，耗时=${quota.elapsedMs} 毫秒）`
         if (!enabled) return '开关已关闭'
         if (!quota.known) return '额度数据无法确认，未执行'
         if (quota.remaining <= 0) return `无需执行（${quota.earned}/${quota.max} 分）`

@@ -7,6 +7,23 @@ import test from 'node:test'
 import { AccountIdentity } from '../src/security.mjs'
 import { buildPublicState, publicLog } from '../src/status.mjs'
 
+test('browser maintenance logs have concrete Chinese summaries and retain redacted originals', () => {
+    for (const [title, message, expected] of [
+        ['COOKIE-SYNC', 'Applied 3 response cookie(s) and persisted the updated session', /已同步 3 条/],
+        ['SEARCH-COOKIE-SEED', 'Refreshed cookie cache | previous=253 | current=253', /已刷新会话缓存/],
+        ['SEARCH-CLOSE-TABS', 'Found 2 tab(s) open (min: 1, max: 1)', /当前打开 2 个标签页/],
+        ['SEARCH-CLOSE-TABS', 'Closed 1/1 excess tab(s) to reach max of 1', /已关闭 1\/1 个/],
+        ['GHOST-CLICK', 'Trying to click selector: #sb_form_q, options: undefined', /正在点击搜索输入框/],
+        ['GHOST-CLICK', 'Trying to click selector: #b_results .b_algo h2, options: undefined', /正在打开搜索结果页面/]
+    ]) {
+        const log = publicLog({ title, message, level: 'debug', platform: 'DESKTOP' })
+        assert.match(log.displayMessage, expected)
+        assert.match(log.titleLabel, /[\u4e00-\u9fff]/)
+        assert.equal(log.platformLabel, '桌面端')
+        assert.ok(log.message)
+    }
+})
+
 test('maps core and account states to Chinese without exposing email', () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'mrs-status-'))
     try {

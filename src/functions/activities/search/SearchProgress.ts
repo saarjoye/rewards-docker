@@ -8,6 +8,11 @@ export interface SearchQuota {
     max: number
     remaining: number
     known: boolean
+    source: 'dashboard-counter' | 'flyout-counter' | 'react-snapshot' | 'html' | 'network-response' | 'unknown'
+    reason: 'valid' | 'missing' | 'invalid'
+    observedAt: string
+    attempt: number
+    elapsedMs: number
 }
 
 export interface SearchQuotas {
@@ -48,21 +53,30 @@ export class SearchProgress {
     }
 
     public calculateQuotas(counters: Counters): SearchQuotas {
-        const pcCounters = Array.isArray(counters?.pcSearch) ? counters.pcSearch : []
+        const pcCounters = Array.isArray(counters?.pcSearch)
+            ? counters.pcSearch
+            : Array.isArray((counters as Counters & { PCSearch?: DashboardImpression[] })?.PCSearch)
+              ? (counters as Counters & { PCSearch?: DashboardImpression[] }).PCSearch!
+              : []
         const explicitEdgeCounters = pcCounters.filter(counter => this.isEdgeCounter(counter))
         const desktopCounters = explicitEdgeCounters.length
             ? pcCounters.filter(counter => !this.isEdgeCounter(counter))
             : pcCounters
 
         return {
-            mobile: this.summarize(counters?.mobileSearch),
+            mobile: this.summarize(
+                Array.isArray(counters?.mobileSearch)
+                    ? counters.mobileSearch
+                    : (counters as Counters & { MobileSearch?: DashboardImpression[] })?.MobileSearch,
+                'dashboard-counter'
+            ),
             desktop:
                 explicitEdgeCounters.length && !desktopCounters.length
-                    ? { earned: 0, max: 0, remaining: 0, known: true }
-                    : this.summarize(desktopCounters),
+                    ? this.empty(true, 'dashboard-counter')
+                    : this.summarize(desktopCounters, 'dashboard-counter'),
             edge: explicitEdgeCounters.length
-                ? this.summarize(explicitEdgeCounters)
-                : { earned: 0, max: 0, remaining: 0, known: true }
+                ? this.summarize(explicitEdgeCounters, 'dashboard-counter')
+                : this.empty(true, 'dashboard-counter')
         }
     }
 
@@ -71,19 +85,29 @@ export class SearchProgress {
             earned: quotas.desktop.earned + quotas.edge.earned,
             max: quotas.desktop.max + quotas.edge.max,
             remaining: quotas.desktop.remaining + quotas.edge.remaining,
-            known: quotas.desktop.known && quotas.edge.known
+            known: quotas.desktop.known && quotas.edge.known,
+            source: quotas.desktop.source === quotas.edge.source ? quotas.desktop.source : 'unknown',
+            reason: quotas.desktop.known && quotas.edge.known ? 'valid' : 'missing',
+            observedAt: quotas.desktop.observedAt > quotas.edge.observedAt ? quotas.desktop.observedAt : quotas.edge.observedAt,
+            attempt: Math.max(quotas.desktop.attempt, quotas.edge.attempt),
+            elapsedMs: Math.max(quotas.desktop.elapsedMs, quotas.edge.elapsedMs)
         }
     }
 
     // Only read the affected platform again; missing mobile data must not suppress desktop work.
     public async resolveQuotas(platforms: Array<'mobile' | 'desktop'>): Promise<SearchQuotas> {
         let quotas: SearchQuotas
+        const startedAt = Date.now()
         try {
             quotas = this.calculateQuotas(await this.getCounters())
         } catch (error) {
             quotas = this.calculateQuotas({} as Counters)
-            if (['authentication', 'rate-limit'].includes(errorCategory(error))) return quotas
+            if (['authentication', 'rate-limit'].includes(errorCategory(error))) {
+                for (const quota of [quotas.mobile, quotas.desktop, quotas.edge]) quota.elapsedMs = Date.now() - startedAt
+                return quotas
+            }
         }
+        for (const quota of [quotas.mobile, quotas.desktop, quotas.edge]) quota.elapsedMs = Date.now() - startedAt
         const stopped = new Set<string>()
         for (const delay of [2000, 10000]) {
             const pending = platforms.filter(
@@ -107,11 +131,12 @@ export class SearchProgress {
                                 : this.bot.browser.func.taskDashboardSource(),
                         counter: platform === 'mobile' ? 'mobileSearch' : 'pcSearch'
                     })
-                    const quota = this.fromEvidence(evidence)
+                    const quota = this.fromEvidence(evidence, delay === 2000 ? 1 : 2)
+                    quota.elapsedMs = Date.now() - startedAt
                     if (platform === 'mobile') quotas.mobile = quota
                     else {
                         quotas.desktop = quota
-                        quotas.edge = { earned: 0, max: 0, remaining: 0, known: true }
+                        quotas.edge = this.empty(true, quota.source)
                     }
                 } catch (error) {
                     if (['authentication', 'rate-limit'].includes(errorCategory(error))) stopped.add(platform)
@@ -121,14 +146,34 @@ export class SearchProgress {
         return quotas
     }
 
-    private fromEvidence(evidence: TaskEvidence): SearchQuota {
+    private fromEvidence(evidence: TaskEvidence, attempt: number): SearchQuota {
         return this.summarize([
             { pointProgress: evidence.current, pointProgressMax: evidence.total }
-        ] as DashboardImpression[])
+        ] as DashboardImpression[], (evidence.source as SearchQuota['source']) ?? 'unknown', attempt)
     }
 
-    private summarize(counters: DashboardImpression[] | undefined): SearchQuota {
-        if (!Array.isArray(counters) || !counters.length) return { earned: 0, max: 0, remaining: 0, known: false }
+    private empty(known: boolean, source: SearchQuota['source']): SearchQuota {
+        return {
+            earned: 0,
+            max: 0,
+            remaining: 0,
+            known,
+            source,
+            reason: known ? 'valid' : 'missing',
+            observedAt: new Date().toISOString(),
+            attempt: 0,
+            elapsedMs: 0
+        }
+    }
+
+    private summarize(
+        counters: DashboardImpression[] | undefined,
+        source: SearchQuota['source'] = 'unknown',
+        attempt = 0
+    ): SearchQuota {
+        const observedAt = new Date().toISOString()
+        if (!Array.isArray(counters) || !counters.length)
+            return { ...this.empty(false, source), observedAt, attempt, reason: 'missing' }
         if (
             counters.some(counter => {
                 const max = finitePoints(counter?.pointProgressMax)
@@ -136,7 +181,7 @@ export class SearchProgress {
                 return max === null || earned === null || earned > max
             })
         )
-            return { earned: 0, max: 0, remaining: 0, known: false }
+            return { ...this.empty(false, source), observedAt, attempt, reason: 'invalid' }
         return counters.reduce<SearchQuota>(
             (quota, counter) => {
                 const max = Number(counter.pointProgressMax)
@@ -146,7 +191,7 @@ export class SearchProgress {
                 quota.remaining += max - earned
                 return quota
             },
-            { earned: 0, max: 0, remaining: 0, known: true }
+            { ...this.empty(true, source), observedAt, attempt, elapsedMs: 0 }
         )
     }
 

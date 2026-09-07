@@ -37,13 +37,22 @@ export function normalizedTasks(tasks, now = Date.now()) {
         return {
             id: sanitizeText(task?.id ?? '', 180),
             title: sanitizeText(task?.title ?? 'Rewards 任务', 180),
+            taskType: sanitizeText(task?.taskType ?? '', 60),
             source: sanitizeText(task?.source ?? '', 30),
             platform: sanitizeText(task?.platform ?? '', 20),
+            capability: sanitizeText(task?.capability ?? '', 30),
+            adapter: sanitizeText(task?.adapter ?? '', 80),
+            eligibility: sanitizeText(task?.eligibility ?? '', 40),
+            eligibilityReason: sanitizeText(task?.eligibilityReason ?? '', 240),
+            planned: Boolean(task?.planned),
+            executionOrder: Number.isInteger(task?.executionOrder) ? task.executionOrder : null,
+            dataStatus: sanitizeText(task?.dataStatus ?? '', 30),
+            evidenceSource: sanitizeText(task?.evidenceSource ?? '', 80),
             group: Boolean(task?.group),
             status: TASK_STATUSES.includes(task?.status) ? task.status : 'pending',
             verification:
                 task?.telemetryVersion === 2
-                    ? ['confirmed', 'confirmed-zero', 'pending', 'not-applicable'].includes(task.verification)
+                    ? ['confirmed', 'confirmed-zero', 'pending', 'not-applicable', 'unavailable'].includes(task.verification)
                         ? task.verification
                         : 'pending'
                     : 'legacy',

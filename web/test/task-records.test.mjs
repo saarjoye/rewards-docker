@@ -8,7 +8,27 @@ import { HistoryStore } from '../src/history.mjs'
 import { AccountIdentity } from '../src/security.mjs'
 import { normalizedTasks } from '../src/task-view.mjs'
 import { publicLog } from '../src/status.mjs'
-import { filterAndGroupLogs, taskTableMarkup, taskStatusLabel } from '../public/run-view.js'
+import { filterAndGroupLogs, taskTableMarkup, taskStatusLabel, platformLabel, localeLabel } from '../public/run-view.js'
+
+test('task platform, locale and terminal confirmation are shown in Chinese', () => {
+    assert.equal(platformLabel('desktop'), '桌面端')
+    assert.equal(platformLabel('mobile'), '移动端')
+    assert.match(localeLabel('auto', 'zh-SG'), /自动识别.*中文/)
+    const html = taskTableMarkup([
+        {
+            title: '每日签到',
+            platform: 'mobile',
+            status: 'submitted',
+            terminal: true,
+            verification: 'pending',
+            elapsedSeconds: 22
+        }
+    ])
+    assert.match(html, /已提交，复核结束/)
+    assert.match(html, /本轮未确认得分/)
+    assert.match(html, /累计 22 秒/)
+    assert.doesNotMatch(html, /mobile|等待积分确认/)
+})
 
 test('new task states and zero confirmation have explicit Chinese labels', () => {
     for (const [status, label] of [
@@ -74,6 +94,18 @@ function fixture(id = 'run-one', points = 3, at = '2026-09-05T16:01:00.000Z') {
         ]
     }
 }
+
+test('calendar never treats an interrupted run with credited points as completed', () =>
+    withHistory(store => {
+        const run = fixture()
+        run.accounts[0].status = 'interrupted'
+        store.ingest({}, { runs: [run] })
+        const calendar = store.calendar({ start: '2026-09-06', end: '2026-09-06' })
+        assert.equal(calendar.summary.totalPoints, 3)
+        assert.equal(calendar.days[0].status, 'interrupted')
+        assert.equal(calendar.summary.completedDays, 0)
+        assert.equal(calendar.summary.failedDays, 1)
+    }))
 test('active points and completed import deduplicate by run/account/event across midnight', () =>
     withHistory(store => {
         const run = fixture()

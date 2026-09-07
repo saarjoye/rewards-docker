@@ -5,6 +5,7 @@ import { MorePromotions } from './activities/rewards/MorePromotions'
 import { PunchCards } from './activities/rewards/PunchCards'
 
 import { DailyCheckIn } from './activities/app/DailyCheckIn'
+import { CHECK_IN_CHANNEL, CHECK_IN_OFFER } from '../util/CheckIn'
 import { ReadToEarn } from './activities/app/ReadToEarn'
 import { AppReward } from './activities/app/AppReward'
 import { AppPromotions } from './activities/app/AppPromotions'
@@ -29,7 +30,7 @@ import type { AppDashboardData, Promotion } from '../interface/AppDashBoardData'
 import type { QuestChild } from '../browser/ReactFunc'
 import { TaskTelemetry, accountReference, type TaskSpec, type TaskSource } from '../util/TaskTelemetry'
 import { evidenceFromPayload } from '../util/TaskEvidence'
-import { promotionEligibility } from '../util/TaskEligibility'
+import { planPromotion } from '../util/TaskPlanner'
 
 export default class Activities {
     private bot: MicrosoftRewardsBot
@@ -58,18 +59,18 @@ export default class Activities {
         )
     }
 
-    publishPlan(data: DashboardData, appAvailable: boolean): void {
+    publishPlan(data: DashboardData, appAvailable: boolean, appData?: AppDashboardData | null): void {
         const emit = (source: TaskSource, platform: string, dataStatus: string, tasks: unknown[]) =>
             this.bot.logger.info(
                 'main',
                 'TASK-SNAPSHOT',
                 JSON.stringify({
-                    version: 2,
+                    version: 3,
                     accountRef: accountReference(this.bot.currentAccountEmail ?? ''),
                     source,
                     platform,
                     dataStatus,
-                    planned: true,
+                    planned: tasks.some((task: any) => task?.execution?.planned === true),
                     tasks
                 })
             )
@@ -83,19 +84,61 @@ export default class Activities {
             promotions.set(promotion.offerId, { promotion, group: 'more' })
         for (const promotion of data.dashboard.dailySetPromotions?.[today] ?? [])
             promotions.set(promotion.offerId, { promotion, group: 'daily' })
-        emit(
-            'rsc',
-            this.bot.isMobile ? 'mobile' : 'desktop',
-            'available',
-            [...promotions.values()].map(({ promotion, group }) => ({
-                id: promotion.offerId,
-                title: promotion.title,
-                points: promotion.pointProgressMax,
-                current: promotion.pointProgress,
-                completed: promotion.complete,
-                ...promotionEligibility(promotion, this.bot.config, group)
-            }))
+        const platform = this.bot.isMobile ? 'mobile' : 'desktop'
+        const plannedPromotions = [...promotions.values()].map(({ promotion }, index) =>
+            planPromotion(promotion as unknown as Record<string, unknown>, this.bot.config, {
+                source: 'rsc',
+                platform,
+                order: index
+            })
         )
+        const punchcardPlans = (data.dashboard.punchCards ?? []).flatMap((card, parentIndex) => {
+            const parent = planPromotion(card.parentPromotion as unknown as Record<string, unknown>, this.bot.config, {
+                source: 'rsc',
+                platform,
+                order: plannedPromotions.length + parentIndex
+            })
+            const children = (card.childPromotions ?? []).map((child, childIndex) =>
+                planPromotion(child as unknown as Record<string, unknown>, this.bot.config, {
+                    source: 'rsc',
+                    platform,
+                    order: plannedPromotions.length + parentIndex + childIndex + 1,
+                    parentOfferId: card.parentPromotion.offerId
+                })
+            )
+            return [parent, ...children]
+        })
+        const synthetic = (id: string, title: string, taskType: string, enabled: boolean) => ({
+            id,
+            taskType,
+            title,
+            source: 'rsc',
+            platform,
+            capability: { state: 'supported', adapter: taskType },
+            eligibility: enabled ? { state: 'eligible' } : { state: 'disabled', reason: '功能开关已关闭' },
+            execution: { planned: enabled, status: enabled ? 'planned' : 'not-planned' },
+            verification: {
+                state: enabled ? 'pending' : 'not-applicable',
+                earnedPoints: null,
+                expectedPoints: null,
+                balanceBefore: null,
+                balanceAfter: null,
+                balanceDelta: null
+            },
+            dataStatus: 'available'
+        })
+        const controlTasks = [
+            ...(this.bot.config.ensureStreakProtection
+                ? [synthetic('streak-protection', '连续签到保护', 'streak-protection', true)]
+                : []),
+            ...(workers.doActivateSearchPerk ? [synthetic('search-multiplier-perk', '搜索加成', 'search-perk', true)] : []),
+            ...(workers.doClaimBonusPoints ? [synthetic('claim-bonus-points', '领取奖励积分', 'claim', true)] : []),
+            ...(workers.doVisualSearch ? [synthetic('visual-search', '视觉搜索', 'visual-search', true)] : []),
+            ...(this.bot.config.experimental.edgeBrowsing
+                ? [synthetic('edge-browsing', 'Edge 浏览任务', 'edge-browsing', true)]
+                : [])
+        ]
+        emit('rsc', platform, 'available', [...plannedPromotions, ...punchcardPlans, ...controlTasks])
         for (const platform of ['mobile', 'desktop'] as const) {
             if (!(platform === 'mobile' ? workers.doMobileSearch : workers.doDesktopSearch)) continue
             const evidence = evidenceFromPayload(
@@ -115,10 +158,20 @@ export default class Activities {
                 [
                     {
                         id: 'search',
+                        taskType: platform === 'mobile' ? 'mobile-search' : 'desktop-search',
                         title: platform === 'mobile' ? '移动搜索' : '桌面搜索',
-                        points: evidence.total,
-                        current: evidence.current,
-                        completed: evidence.completed === true
+                        source: this.bot.browser.func.taskDashboardSource(),
+                        platform,
+                        capability: { state: 'supported', adapter: platform + '-search' },
+                        eligibility: evidence.total === null
+                            ? { state: 'data-missing', reason: '搜索额度未识别' }
+                            : evidence.completed === true
+                              ? { state: 'completed', reason: '搜索额度已完成' }
+                              : { state: 'eligible' },
+                        execution: { planned: evidence.total !== null && evidence.completed !== true, status: evidence.total !== null && evidence.completed !== true ? 'planned' : 'not-planned' },
+                        verification: { state: 'not-applicable', earnedPoints: null, expectedPoints: evidence.total, balanceBefore: null, balanceAfter: null, balanceDelta: null, evidenceSource: 'dashboard-counter' },
+                        progress: evidence.current !== null && evidence.total !== null ? { current: evidence.current, total: evidence.total, unit: 'points' } : undefined,
+                        dataStatus: evidence.total === null ? 'unavailable' : 'available'
                     }
                 ]
             )
@@ -132,7 +185,25 @@ export default class Activities {
                 'app',
                 'mobile',
                 appAvailable ? 'pending' : 'unavailable',
-                tasks.map(task => ({ ...task, unavailable: !appAvailable }))
+                (appData?.response?.promotions?.length
+                    ? appData.response.promotions.map((promotion, index) =>
+                          planPromotion(promotion as unknown as Record<string, unknown>, this.bot.config, {
+                              source: 'app',
+                              platform: 'app',
+                              order: index
+                          })
+                      )
+                    : tasks.map((task, index) => ({
+                          ...planPromotion(
+                              { offerId: task.id, title: task.title, type: task.id === CHECK_IN_OFFER ? 'sapphire' : 'unknown' },
+                              this.bot.config,
+                              { source: 'app', platform: 'app', order: index }
+                          ),
+                          dataStatus: appAvailable ? 'partial' : 'unavailable',
+                          eligibility: { state: 'data-missing', reason: appAvailable ? '应用任务数据为空' : 'App 登录数据不可用' },
+                          execution: { planned: false, status: 'not-planned' }
+                      }))
+                )
             )
     }
 
@@ -242,8 +313,8 @@ export default class Activities {
     doDailyCheckIn = async (): Promise<void> => {
         const dailyCheckIn = new DailyCheckIn(this.bot)
         await this.run('check-in', '每日签到', 'app', () => dailyCheckIn.doDailyCheckIn(), {
-            offerId: 'Gamification_Sapphire_DailyCheckIn',
-            channel: 'SAIOS'
+            offerId: CHECK_IN_OFFER,
+            channel: CHECK_IN_CHANNEL
         })
     }
 

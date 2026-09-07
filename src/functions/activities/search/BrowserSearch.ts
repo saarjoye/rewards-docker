@@ -195,7 +195,8 @@ export class Search extends BaseActivity {
                     this.bot.utils.randomDelay(
                         this.bot.config.searchSettings.searchDelay.min,
                         this.bot.config.searchSettings.searchDelay.max
-                    )
+                    ),
+                    '按搜索间隔配置暂停'
                 )
 
                 return
@@ -230,7 +231,7 @@ export class Search extends BaseActivity {
         try {
             const searchPageUrl = page.url()
             await this.bot.browser.utils.ghostClick(page, RESULT_LINK)
-            await this.bot.utils.wait(this.bot.config.searchSettings.searchResultVisitTime)
+            await this.bot.utils.wait(this.bot.config.searchSettings.searchResultVisitTime, '浏览搜索结果页面')
 
             if (isMobile) {
                 await page.goto(searchPageUrl)
