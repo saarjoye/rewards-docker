@@ -1,5 +1,6 @@
 import ms, { StringValue } from 'ms'
 import { reportTaskProgress, confirmationContext } from './TaskTelemetry'
+import { businessDate } from './BusinessDate'
 
 export function isBrowserClosedError(error: unknown): boolean {
     const msg = (error instanceof Error ? error.message : String(error ?? '')).toLowerCase()
@@ -31,11 +32,7 @@ export default class Util {
     }
 
     getFormattedDate(ms = Date.now()): string {
-        const today = new Date(ms)
-        const month = String(today.getMonth() + 1).padStart(2, '0') // January is 0
-        const day = String(today.getDate()).padStart(2, '0')
-        const year = today.getFullYear()
-
+        const [year, month, day] = businessDate(new Date(ms)).split('-')
         return `${month}/${day}/${year}`
     }
 

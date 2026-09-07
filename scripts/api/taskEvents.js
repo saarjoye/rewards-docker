@@ -2,6 +2,10 @@ import crypto from 'node:crypto'
 
 export const TASK_STATUSES = [
     'pending',
+    'eligible',
+    'submitted',
+    'unsupported',
+    'unavailable',
     'running',
     'verifying',
     'completed',
@@ -12,7 +16,18 @@ export const TASK_STATUSES = [
     'locked',
     'interrupted'
 ]
-const terminal = new Set(['completed', 'partial', 'stopped', 'failed', 'skipped', 'locked', 'interrupted'])
+const terminal = new Set([
+    'completed',
+    'partial',
+    'stopped',
+    'failed',
+    'skipped',
+    'locked',
+    'interrupted',
+    'submitted',
+    'unsupported',
+    'unavailable'
+])
 const number = value => (typeof value === 'number' && Number.isFinite(value) ? value : null)
 const text = (value, max = 180) =>
     [...String(value ?? '')]
@@ -53,7 +68,10 @@ export function applyTaskEvent(state, entry) {
         const balance = number(event.balance)
         const observedBalance = balance !== null && balance >= 0 ? balance : null
         if (event.phase === 'start') account.initialPoints = observedBalance
-        account.live.balance = observedBalance
+        if (!account.balanceObservedAt || Date.parse(event.at) >= Date.parse(account.balanceObservedAt)) {
+            account.live.balance = observedBalance
+            account.balanceObservedAt = event.at
+        }
         if (event.phase === 'end') account.finalPoints = observedBalance
     } else {
         const id = text(event.id)
@@ -64,7 +82,7 @@ export function applyTaskEvent(state, entry) {
         const progress = event.progress
         const gained = number(event.earnedPoints)
         const confirmed =
-            event.verification === 'confirmed' &&
+            ['confirmed', 'confirmed-zero'].includes(event.verification) &&
             gained !== null &&
             gained >= 0 &&
             Number.isFinite(Date.parse(event.confirmedAt))
@@ -79,11 +97,18 @@ export function applyTaskEvent(state, entry) {
             status: event.status,
             action: text(event.action, 500),
             verification: confirmed
-                ? 'confirmed'
+                ? gained === 0
+                    ? 'confirmed-zero'
+                    : 'confirmed'
                 : event.verification === 'not-applicable'
                   ? 'not-applicable'
                   : 'pending',
             earnedPoints: confirmed ? gained : null,
+            balance: number(event.balance),
+            balanceChange: number(event.balanceChange),
+            previouslyCompleted: Boolean(event.previouslyCompleted),
+            submitted: Boolean(event.submitted),
+            dataStatus: text(event.dataStatus, 30),
             expectedPoints: number(event.expectedPoints),
             remainingPoints: number(event.remainingPoints),
             progress:
@@ -123,7 +148,13 @@ export function applyTaskEvent(state, entry) {
                 confirmedAt: event.confirmedAt
             })
         }
-        if (Object.hasOwn(event, 'balance')) account.live.balance = number(event.balance)
+        if (
+            Object.hasOwn(event, 'balance') &&
+            (!account.balanceObservedAt || Date.parse(event.at) >= Date.parse(account.balanceObservedAt))
+        ) {
+            account.live.balance = number(event.balance)
+            account.balanceObservedAt = event.at
+        }
         if (event.dataStatus) {
             account.taskSources ??= {}
             account.taskSources[`${event.source}:${event.platform}`] = event.dataStatus
@@ -168,7 +199,7 @@ export function structuredAccountStatus(account, finished = false) {
         return tasks.some(task => task.status === 'completed') || account.collectedPoints > 0 ? 'partial' : 'failed'
     if (tasks.some(task => task.status === 'interrupted')) return 'interrupted'
     if (tasks.some(task => !terminal.has(task.status))) return finished ? 'partial' : 'running'
-    if (tasks.some(task => ['partial', 'stopped'].includes(task.status))) return 'partial'
+    if (tasks.some(task => ['partial', 'stopped', 'submitted', 'unavailable'].includes(task.status))) return 'partial'
     return 'completed'
 }
 
@@ -179,7 +210,7 @@ export function interruptTasks(run) {
             if (
                 task.telemetryVersion === 2 &&
                 !task.terminal &&
-                ['pending', 'running', 'verifying'].includes(task.status)
+                ['pending', 'eligible', 'running', 'submitted', 'verifying'].includes(task.status)
             ) {
                 task.status = 'interrupted'
                 task.action = '运行中断，未继续执行或重新领取'

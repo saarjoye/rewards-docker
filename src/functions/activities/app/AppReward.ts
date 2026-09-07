@@ -4,7 +4,7 @@ import type { HttpRequestConfig } from '../../../util/Http'
 import { randomUUID } from 'crypto'
 import type { Promotion } from '../../../interface/AppDashBoardData'
 import { BaseActivity } from '../BaseActivity'
-import { finitePoints, markTaskStatus } from '../../../util/TaskTelemetry'
+import { finitePoints, markTaskStatus, reportTaskSubmission } from '../../../util/TaskTelemetry'
 
 export class AppReward extends BaseActivity {
     private gainedPoints: number = 0
@@ -12,6 +12,7 @@ export class AppReward extends BaseActivity {
     private oldBalance: number = this.bot.userData.currentPoints
 
     public async doAppReward(promotion: Promotion) {
+        this.oldBalance = this.bot.userData.currentPoints
         if (!this.bot.accessToken) {
             markTaskStatus('skipped', '缺少 App 登录状态，跳过应用活动')
             this.bot.logger.warn(
@@ -68,7 +69,9 @@ export class AppReward extends BaseActivity {
                 `Sending activity request | offerId=${offerId} | url=${request.url}`
             )
 
-            const response = await this.bot.http.request<{ response?: { balance?: number } }>(request)
+            const response = await this.bot.http.request<{ response?: { balance?: number; creditedPoints?: number } }>(
+                request
+            )
 
             this.bot.logger.debug(
                 this.bot.isMobile,
@@ -77,33 +80,34 @@ export class AppReward extends BaseActivity {
             )
 
             const newBalance = finitePoints(response?.data?.response?.balance)
+            reportTaskSubmission(newBalance, response?.data?.response?.creditedPoints)
             if (newBalance === null) {
-                markTaskStatus('verifying', '应用活动响应缺少余额，等待复核')
+                markTaskStatus('submitted', '应用活动已提交，余额缺失，等待积分确认')
                 return
             }
             this.gainedPoints = newBalance - this.oldBalance
+            this.bot.userData.currentPoints = newBalance
 
             this.bot.logger.debug(
                 this.bot.isMobile,
                 'APP-REWARD',
-                `Balance delta after AppReward | offerId=${offerId} | previousBalance=${this.oldBalance} | currentBalance=${newBalance} | pointsGained=${this.gainedPoints}`
+                `Balance delta after AppReward | offerId=${offerId} | previousBalance=${this.oldBalance} | currentBalance=${newBalance} | balanceChange=${this.gainedPoints}`
             )
 
             if (this.gainedPoints > 0) {
                 this.bot.userData.currentPoints = newBalance
-                this.bot.userData.gainedPoints = (this.bot.userData.gainedPoints ?? 0) + this.gainedPoints
 
                 this.bot.logger.info(
                     this.bot.isMobile,
                     'APP-REWARD',
-                    `Completed AppReward | offerId=${offerId} | pointsGained=${this.gainedPoints} | currentBalance=${newBalance}`,
+                    `应用活动已提交，余额变化不等于任务得分 | offerId=${offerId} | balanceChange=${this.gainedPoints} | currentBalance=${newBalance}`,
                     'green'
                 )
             } else {
                 this.bot.logger.warn(
                     this.bot.isMobile,
                     'APP-REWARD',
-                    `Completed AppReward with no points | offerId=${offerId} | pointsGained=0 | currentBalance=${newBalance}`
+                    `应用活动已提交，余额变化不等于任务得分 with no points | offerId=${offerId} | balanceChange=0 | currentBalance=${newBalance}`
                 )
             }
 
@@ -118,6 +122,7 @@ export class AppReward extends BaseActivity {
                 'APP-REWARD',
                 `Error in doAppReward | offerId=${offerId} | message=${error instanceof Error ? error.message : String(error)}`
             )
+            throw error
         }
     }
 }

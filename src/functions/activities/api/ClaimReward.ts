@@ -1,7 +1,7 @@
 import type { QuestChild } from '../../../browser/ReactFunc'
 import { BaseActivity } from '../BaseActivity'
 import { URLs } from '../../../constants/urls'
-import { markTaskStatus, finitePoints } from '../../../util/TaskTelemetry'
+import { markTaskStatus, finitePoints, reportTaskSubmission } from '../../../util/TaskTelemetry'
 
 export class ClaimReward extends BaseActivity {
     public async claimReward(child: QuestChild, parentId: string) {
@@ -58,11 +58,13 @@ export class ClaimReward extends BaseActivity {
             )
 
             const newBalance = finitePoints(availablePoints)
+            reportTaskSubmission(newBalance)
             if (newBalance === null) {
-                markTaskStatus('verifying', '领取请求已结束，等待对应任务数据复核')
+                markTaskStatus('submitted', '领取已提交，等待积分确认')
                 return
             }
             const gained = newBalance - oldBalance
+            this.bot.userData.currentPoints = newBalance
 
             this.bot.logger.debug(
                 this.bot.isMobile,
@@ -73,7 +75,6 @@ export class ClaimReward extends BaseActivity {
             if (acknowledged) {
                 if (gained > 0) {
                     this.bot.userData.currentPoints = newBalance
-                    this.bot.userData.gainedPoints = (this.bot.userData.gainedPoints ?? 0) + gained
                 }
 
                 this.bot.logger.info(
@@ -95,6 +96,7 @@ export class ClaimReward extends BaseActivity {
                 'CLAIM-REWARD',
                 `Error in claimReward | offerId=${offerId} | message=${error instanceof Error ? error.message : String(error)}`
             )
+            throw error
         }
     }
 }

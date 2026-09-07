@@ -1,5 +1,6 @@
 import { URLs } from '../../../constants/urls'
 import { BaseActivity } from '../BaseActivity'
+import { markTaskStatus, reportTaskSubmission } from '../../../util/TaskTelemetry'
 
 const STREAK_PROTECTION_ACTION_NAMES = [
     'reportSetStreakProtection',
@@ -13,6 +14,7 @@ export class EnsureStreakProtection extends BaseActivity {
     public async ensureStreakProtection() {
         const resolved = this.resolveActionId()
         if (!resolved) {
+            markTaskStatus('unsupported', '当前没有签到保护执行入口')
             this.bot.logger.warn(
                 this.bot.isMobile,
                 'ENABLE-STREAK-PROTECTION',
@@ -24,6 +26,7 @@ export class EnsureStreakProtection extends BaseActivity {
         const before = this.bot.reactSnapshot?.streakProtection ?? null
 
         if (before?.isProtectionOn) {
+            markTaskStatus('skipped', '签到保护已启用，本轮不执行')
             this.bot.logger.info(
                 this.bot.isMobile,
                 'ENABLE-STREAK-PROTECTION',
@@ -33,7 +36,11 @@ export class EnsureStreakProtection extends BaseActivity {
             return
         }
 
-        if (before && before.remainingDays === 0) {
+        if (!before || before.remainingDays === null || before.remainingDays === 0) {
+            markTaskStatus(
+                before?.remainingDays === 0 ? 'skipped' : 'unavailable',
+                '没有可确认的保护天数，不执行保护切换'
+            )
             this.bot.logger.info(
                 this.bot.isMobile,
                 'ENABLE-STREAK-PROTECTION',
@@ -59,6 +66,8 @@ export class EnsureStreakProtection extends BaseActivity {
             })
 
             const after = await this.readStreakProtection()
+            reportTaskSubmission()
+            if (after?.isProtectionOn) markTaskStatus('skipped', '保护已启用，此操作不产生积分')
 
             if (after?.isProtectionOn) {
                 this.bot.logger.info(
@@ -88,6 +97,7 @@ export class EnsureStreakProtection extends BaseActivity {
                 'ENABLE-STREAK-PROTECTION',
                 `Error in ensureStreakProtection | message=${error instanceof Error ? error.message : String(error)}`
             )
+            throw error
         }
     }
 

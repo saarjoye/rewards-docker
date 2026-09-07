@@ -123,7 +123,11 @@ function pointsView(account) {
         balanceChange: finiteOrNull(account?.balanceChange),
         unattributedBalanceChange: finiteOrNull(account?.unattributedBalanceChange),
         initial: finiteOrNull(account?.initialPoints),
-        balance: finiteOrNull(account?.live?.balance ?? account?.balance ?? account?.finalPoints),
+        balance: finiteOrNull(
+            Object.hasOwn(account?.live || {}, 'balance')
+                ? account.live.balance
+                : (account?.balance ?? account?.finalPoints)
+        ),
         collected:
             account?.telemetryVersion === 2
                 ? finiteOrNull(account?.collectedPoints ?? account?.collected ?? account?.live?.gained)
@@ -182,6 +186,7 @@ export function buildPublicState({ status, points, configuredAccounts, identity,
             points: pointsView(runAccount),
             earnable: earnableView(runAccount?.earnable),
             tasks: tasksView(runAccount?.tasks),
+            excludedTasks: normalizedTasks((runAccount?.tasks || []).filter(task => !currentTasks([task]).length)),
             taskDataStatus: runAccount?.taskDataStatus ?? 'not-read',
             taskSources: runAccount?.taskSources ?? {},
             error: runAccount?.error ? sanitizeText(runAccount.error, 500) : null

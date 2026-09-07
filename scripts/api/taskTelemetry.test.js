@@ -11,6 +11,7 @@ const {
     markTaskStatus,
     recordTaskError,
     reportTaskEvidence,
+    reportTaskSubmission,
     confirmationContext
 } = require('../../dist/util/TaskTelemetry.js')
 const { evidenceFromPayload } = require('../../dist/util/TaskEvidence.js')
@@ -82,12 +83,13 @@ test('completion and task gain use official task counters, not balance deltas', 
 test('already completed task never submits another activity', async () => {
     const f = fixture([evidence(30)])
     await f.reporter.run(spec, async () => assert.fail('must not mutate'))
-    assert.equal(last(f).earnedPoints, 0)
-    assert.equal(last(f).status, 'completed')
+    assert.equal(last(f).earnedPoints, null)
+    assert.equal(last(f).status, 'skipped')
+    assert.equal(last(f).verification, 'not-applicable')
 })
 test('confirmed zero and partial progress are not complete', async () => {
     for (const [points, status] of [
-        [0, 'stopped'],
+        [0, 'partial'],
         [3, 'partial']
     ]) {
         const f = fixture([evidence(0), evidence(points)])
@@ -107,14 +109,14 @@ test('missing evidence retries only reads with bounded waits, delayed credit is 
     const unknown = fixture([evidence(null)])
     await unknown.reporter.run(spec, async () => {})
     assert.equal(last(unknown).earnedPoints, null)
-    assert.equal(last(unknown).status, 'verifying')
+    assert.equal(last(unknown).status, 'unavailable')
     assert.equal(unknown.reads(), 4)
 })
 test('authentication and throttling stop confirmation immediately without replay', async () => {
     for (const status of [401, 403, 429]) {
         const error = Object.assign(new Error('synthetic'), { status })
         const f = fixture([evidence(0), error])
-        await f.reporter.run(spec, async () => {})
+        await f.reporter.run(spec, async () => reportTaskSubmission())
         assert.equal(f.reads(), 2)
         assert.deepEqual(f.delays, [])
         assert.equal(last(f).verification, 'pending')
@@ -141,9 +143,12 @@ test('read-only parser errors do not mark the activity execution failed', async 
             throw new Error('synthetic unavailable evidence')
         }
     })
-    await reporter.run(spec, async () => submissions++)
+    await reporter.run(spec, async () => {
+        submissions++
+        reportTaskSubmission()
+    })
     assert.equal(submissions, 1)
-    assert.equal(events.at(-1).status, 'verifying')
+    assert.equal(events.at(-1).status, 'submitted')
     assert.equal(events.at(-1).earnedPoints, null)
 })
 test('swallowed errors stay failed and explicit skipped tasks do not confirm', async () => {

@@ -41,7 +41,7 @@ async function waitForHealth(url, child, stderr) {
 
 test('BFF authenticates users, redacts state and restricts control bodies', { timeout: 15000 }, async () => {
     const token = 'test-control-token-with-sufficient-length'
-    const requests = { starts: [], stops: [] }
+    const requests = { starts: [], stops: [], schedules: [] }
     const eventResponses = new Set()
     const mockCore = http.createServer(async (req, res) => {
         assert.equal(req.headers.authorization, `Bearer ${token}`)
@@ -87,6 +87,10 @@ test('BFF authenticates users, redacts state and restricts control bodies', { ti
         const chunks = []
         for await (const chunk of req) chunks.push(chunk)
         const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')
+        if (url.pathname === '/schedule') {
+            if (req.method === 'PATCH') requests.schedules.push(body)
+            return json({ enabled: true, cron: body.cron || '0 9 * * *', timezone: 'Asia/Shanghai', writable: true })
+        }
         if (url.pathname === '/start') {
             requests.starts.push(body)
             res.writeHead(202, { 'Content-Type': 'application/json' })
@@ -153,6 +157,16 @@ test('BFF authenticates users, redacts state and restricts control bodies', { ti
         assert.equal(stateResponse.status, 200)
         assert.doesNotMatch(stateText, /secret@example\.com|test-control-token/)
         assert.match(stateText, /s\*\*\*@e\*\*\*\.com/)
+        assert.equal((await fetch(`${baseUrl}/api/schedule`)).status, 401)
+        const scheduleRead = await fetch(`${baseUrl}/api/schedule`, { headers })
+        assert.equal((await scheduleRead.json()).timezone, 'Asia/Shanghai')
+        const scheduleWrite = await fetch(`${baseUrl}/api/schedule`, {
+            method: 'PATCH',
+            headers,
+            body: JSON.stringify({ cron: '30 8 * * *', timezone: 'Asia/Shanghai' })
+        })
+        assert.equal(scheduleWrite.status, 200)
+        assert.deepEqual(requests.schedules, [{ cron: '30 8 * * *', timezone: 'Asia/Shanghai' }])
 
         const invalidStart = await fetch(`${baseUrl}/api/run`, {
             method: 'POST',

@@ -5,14 +5,16 @@ import path from 'node:path'
 const ALGORITHM = 'aes-256-gcm'
 
 function readKey(keyFile) {
+    if (!keyFile) throw Object.assign(new Error('Encryption key file is unavailable.'), { code: 'KEY_MISSING' })
+    fs.accessSync(keyFile, fs.constants.R_OK)
     const raw = fs.readFileSync(keyFile)
     if (raw.length === 32) return raw
 
     const text = raw.toString('utf8').trim()
     if (/^[a-f0-9]{64}$/i.test(text)) return Buffer.from(text, 'hex')
-    const decoded = Buffer.from(text, 'base64')
+    const decoded = /^[A-Za-z0-9+/]{43}=$/.test(text) ? Buffer.from(text, 'base64') : Buffer.alloc(0)
     if (decoded.length === 32) return decoded
-    throw new Error('Encryption key must contain exactly 32 random bytes.')
+    throw Object.assign(new Error('Encryption key must contain exactly 32 random bytes.'), { code: 'KEY_INVALID' })
 }
 
 export class CryptoVault {
@@ -22,7 +24,24 @@ export class CryptoVault {
     }
 
     available() {
-        return Boolean(this.keyFile && fs.existsSync(this.keyFile))
+        return this.status().available
+    }
+
+    status() {
+        try {
+            readKey(this.keyFile).fill(0)
+            return { available: true, code: null }
+        } catch (error) {
+            return {
+                available: false,
+                code:
+                    error.code === 'EACCES' || error.code === 'EPERM'
+                        ? 'KEY_PERMISSION'
+                        : error.code === 'KEY_INVALID'
+                          ? 'KEY_INVALID'
+                          : 'KEY_MISSING'
+            }
+        }
     }
 
     exists() {

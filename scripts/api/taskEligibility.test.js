@@ -114,6 +114,38 @@ function fixture(counters = {}, observations = {}) {
     return { bot, logs, waits, reads, events, actions }
 }
 
+test('earn counters and API-known quest children retain real metadata and date gates', () => {
+    const f = fixture()
+    const react = new ReactFunc(f.bot)
+    const payload = {
+        userStatus: { counters: { mobileSearch: [counter(3, 60)] } },
+        children: [
+            { offerId: 'known-child', hash: 'synthetic', points: 3 },
+            { offerId: 'future_pcchild', hash: 'synthetic', date: '2999-01-01', points: 3 },
+            { offerId: 'unrelated-offer', hash: 'synthetic', points: 3 }
+        ]
+    }
+    const html = 'self.__next_f.push([1,' + JSON.stringify(JSON.stringify(payload)) + '])'
+    assert.equal(react.snapshotSearchCounters(html).counters.mobileSearch[0].pointProgressMax, 60)
+    const children = react.snapshotQuestPage(html, ['known-child'])
+    assert.equal(children.length, 2)
+    assert.equal(children[0].reportable, true)
+    assert.equal(children[1].reportable, false)
+})
+
+test('missing mobile quota reads earn then flyout once and retains confirmed desktop quota', async () => {
+    const f = fixture({ pcSearch: [counter(0, 90)] })
+    const sources = []
+    f.bot.browser.func.observeTask = async spec => {
+        sources.push(spec.source)
+        return spec.source === 'flyout' ? observation(0, 60) : observation(null, null)
+    }
+    const plan = await new SearchManager(f.bot).getSearchPoints()
+    assert.deepEqual(sources, ['rsc', 'flyout'])
+    assert.equal(plan.doMobile, true)
+    assert.equal(plan.doDesktop, true)
+})
+
 test('promotion support matrix excludes known unsupported, disabled and locked tasks, not missing data', () => {
     const cfg = config()
     for (const type of ['quiz', 'findclippy', 'poll', 'search', 'purchase'])
@@ -168,7 +200,7 @@ test('App and quest support matrices preserve missing metadata as unknown', () =
         appEligibility({ attributes: { offerid: 'x', type: 'sapphire', complete: 'false' } }, cfg).eligibility,
         'eligible'
     )
-    const child = { offerId: 'synthetic_pcchild_url', hash: 'synthetic-placeholder' }
+    const child = { offerId: 'synthetic_pcchild_url', hash: 'synthetic-placeholder', reportable: true }
     assert.equal(questEligibility(child, cfg).eligibility, 'eligible')
     assert.equal(questEligibility({ ...child, hash: null }, cfg).eligibility, 'unknown')
     for (const patch of [{ isLocked: true }, { isDisabled: true }, { offerId: 'synthetic_pcchild_claim' }])
@@ -288,7 +320,7 @@ test('unrecoverable mobile counters leave visible pending evidence and do not bl
     })
     applyLogToRunState(state, { parsed: true, title: 'TASK-EVENT', message: JSON.stringify(f.events[0]) })
     const task = summarizeRunState(state).accounts[0].tasks[0]
-    assert.equal(task.status, 'verifying')
+    assert.equal(task.status, 'unavailable')
     assert.match(task.action, /未提交搜索/)
 })
 
@@ -401,9 +433,11 @@ test('quest children are filtered before submitting and only executed children p
     )
     assert.equal(submissions, 1)
     const terminal = f.events.filter(event => event.terminal)
-    assert.equal(terminal.length, 2)
+    assert.equal(terminal.length, 3)
     assert.equal(terminal[0].earnedPoints, 3)
     assert.equal(terminal[1].earnedPoints, null)
+    assert.equal(terminal[2].earnedPoints, null)
+    assert.equal(terminal[1].status, 'partial')
     const snapshot = JSON.parse(f.logs.find(entry => entry[2] === 'TASK-SNAPSHOT')[3])
     assert.deepEqual(
         snapshot.tasks.map(task => task.eligibility),

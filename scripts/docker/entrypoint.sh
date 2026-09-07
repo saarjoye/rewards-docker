@@ -7,7 +7,7 @@ export PLAYWRIGHT_BROWSERS_PATH=0
 SCRIPT_DIR="/usr/src/microsoft-rewards-script"
 
 # 1. Timezone: default to UTC if not provided
-: "${TZ:=UTC}"
+export TZ=Asia/Shanghai
 ln -snf "/usr/share/zoneinfo/$TZ" /etc/localtime
 echo "$TZ" > /etc/timezone
 dpkg-reconfigure -f noninteractive tzdata
@@ -86,7 +86,7 @@ ln -sf "$CONFIG_FILE" "$SCRIPT_DIR/config.json"
 export -p > /etc/container_env
 chmod 600 /etc/container_env
 
-if [ "${RUN_ON_START:-false}" = "true" ]; then
+if [ "${RUN_ON_START:-false}" = "true" ] && [ "${API_MODE:-false}" != "true" ]; then
   echo "[entrypoint] Starting initial run in background at $(date)"
   (
     cd "$SCRIPT_DIR" || {
@@ -105,30 +105,8 @@ export API_HOST
 if [ "${API_MODE:-false}" = "true" ]; then
   export TZ
 
-  SCHEDULE_OVERRIDE="${SCHEDULE_FILE:-$SCRIPT_DIR/config/schedule.json}"
-
-  if [ -f "$SCHEDULE_OVERRIDE" ]; then
-    echo "[entrypoint] Found $SCHEDULE_OVERRIDE - applying it (overrides CRON_SCHEDULE)."
-    if node scripts/api/apply-schedule.js; then
-      cron -f &
-      echo "[entrypoint] Cron started in background (schedule: from schedule.json, TZ: $TZ)"
-    else
-      echo "ERROR: Could not apply $SCHEDULE_OVERRIDE." >&2
-      exit 1
-    fi
-  elif [ -n "${CRON_SCHEDULE:-}" ]; then
-    if [ ! -f /etc/cron.d/microsoft-rewards-cron.template ]; then
-      echo "ERROR: Cron template /etc/cron.d/microsoft-rewards-cron.template not found." >&2
-      exit 1
-    fi
-    envsubst < /etc/cron.d/microsoft-rewards-cron.template > /etc/cron.d/microsoft-rewards-cron
-    chmod 0644 /etc/cron.d/microsoft-rewards-cron
-    crontab /etc/cron.d/microsoft-rewards-cron
-    cron -f &
-    echo "[entrypoint] Cron started in background (schedule: $CRON_SCHEDULE, TZ: $TZ)"
-  else
-    echo "[entrypoint] No CRON_SCHEDULE set and no schedule.json override - runs must be triggered manually via POST /start, or scheduled from the dashboard."
-  fi
+  node scripts/api/apply-schedule.js
+  cron -f &
   echo "[entrypoint] Starting control API on ${API_HOST}:${API_PORT:-3010} at $(date)"
   exec node scripts/api/server.js
 fi
@@ -142,7 +120,6 @@ fi
 export TZ
 envsubst < /etc/cron.d/microsoft-rewards-cron.template > /etc/cron.d/microsoft-rewards-cron
 chmod 0644 /etc/cron.d/microsoft-rewards-cron
-crontab /etc/cron.d/microsoft-rewards-cron
 
 echo "[entrypoint] Cron configured with schedule: $CRON_SCHEDULE and timezone: $TZ; starting cron at $(date)"
 

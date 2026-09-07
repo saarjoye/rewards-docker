@@ -1,5 +1,5 @@
 import { BaseActivity } from '../BaseActivity'
-import { markTaskStatus, finitePoints } from '../../../util/TaskTelemetry'
+import { markTaskStatus, finitePoints, reportTaskSubmission } from '../../../util/TaskTelemetry'
 
 export class ClaimBonusPoints extends BaseActivity {
     public async claimBonusPoints() {
@@ -29,35 +29,36 @@ export class ClaimBonusPoints extends BaseActivity {
             )
 
             const newBalance = finitePoints(availablePoints)
+            reportTaskSubmission(newBalance)
             if (newBalance === null) {
-                markTaskStatus('verifying', '领取请求已结束，等待对应任务数据复核')
+                markTaskStatus('submitted', '奖励已提交领取，等待积分确认')
                 return
             }
             const gainedPoints = newBalance - oldBalance
+            this.bot.userData.currentPoints = newBalance
 
             this.bot.logger.debug(
                 this.bot.isMobile,
                 'CLAIM-BONUS-POINTS',
-                `Response | status=${status} | acknowledged=${acknowledged} | previousBalance=${oldBalance} | currentBalance=${newBalance} | pointsGained=${gainedPoints}`
+                `Response | status=${status} | acknowledged=${acknowledged} | previousBalance=${oldBalance} | currentBalance=${newBalance} | balanceChange=${gainedPoints}`
             )
 
             if (acknowledged) {
                 if (gainedPoints > 0) {
                     this.bot.userData.currentPoints = newBalance
-                    this.bot.userData.gainedPoints = (this.bot.userData.gainedPoints ?? 0) + gainedPoints
                 }
 
                 this.bot.logger.info(
                     this.bot.isMobile,
                     'CLAIM-BONUS-POINTS',
-                    `Completed ClaimBonusPoints | acknowledged=true | pointsGained=${gainedPoints} | currentBalance=${newBalance}`,
+                    `奖励已提交，余额变化不等于任务得分 | acknowledged=true | balanceChange=${gainedPoints} | currentBalance=${newBalance}`,
                     'green'
                 )
             } else {
                 this.bot.logger.info(
                     this.bot.isMobile,
                     'CLAIM-BONUS-POINTS',
-                    `Nothing claimed | status=${status} | pointsGained=0 | currentBalance=${newBalance}`
+                    `Nothing claimed | status=${status} | balanceChange=0 | currentBalance=${newBalance}`
                 )
             }
 
@@ -68,6 +69,7 @@ export class ClaimBonusPoints extends BaseActivity {
                 'CLAIM-BONUS-POINTS',
                 `Error in claimBonusPoints | message=${error instanceof Error ? error.message : String(error)}`
             )
+            throw error
         }
     }
 }

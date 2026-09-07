@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { currentTasks, normalizedTasks } from '../src/task-view.mjs'
 
-test('only explicitly excluded unexecuted tasks disappear from current tasks; history remains intact', () => {
+test('only eligible or executed tasks appear by default; excluded and unknown records remain intact', () => {
     const tasks = [
         { id: 'unsupported', status: 'pending', eligibility: 'excluded' },
         { id: 'locked', status: 'locked', eligibility: 'excluded' },
@@ -17,7 +17,7 @@ test('only explicitly excluded unexecuted tasks disappear from current tasks; hi
     const original = structuredClone(tasks)
     assert.deepEqual(
         currentTasks(tasks).map(task => task.id),
-        ['unknown', 'failed', 'pending-credit', 'executed', 'zero', 'legacy']
+        ['failed', 'pending-credit', 'executed']
     )
     assert.equal(normalizedTasks(tasks).length, tasks.length)
     assert.deepEqual(tasks, original)
@@ -26,6 +26,6 @@ test('only explicitly excluded unexecuted tasks disappear from current tasks; hi
 test('missing or unread task lists are not manufactured into hidden tasks', () => {
     assert.deepEqual(currentTasks(undefined), [])
     const unknown = { title: '任务数据缺失', expectedPoints: null, status: 'pending' }
-    assert.equal(currentTasks([unknown]).length, 1)
-    assert.equal(normalizedTasks(currentTasks([unknown]))[0].expectedPoints, null)
+    assert.equal(currentTasks([unknown]).length, 0)
+    assert.equal(normalizedTasks([unknown])[0].expectedPoints, null)
 })

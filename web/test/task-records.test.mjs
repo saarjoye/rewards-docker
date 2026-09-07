@@ -10,6 +10,24 @@ import { normalizedTasks } from '../src/task-view.mjs'
 import { publicLog } from '../src/status.mjs'
 import { filterAndGroupLogs, taskTableMarkup, taskStatusLabel } from '../public/run-view.js'
 
+test('new task states and zero confirmation have explicit Chinese labels', () => {
+    for (const [status, label] of [
+        ['submitted', '已提交，等待积分确认'],
+        ['unsupported', '当前版本不支持'],
+        ['unavailable', '任务数据不可用'],
+        ['locked', '未解锁'],
+        ['skipped', '已跳过']
+    ]) {
+        assert.equal(taskStatusLabel(status), label)
+        assert.match(taskTableMarkup([{ status, verification: 'not-applicable' }]), new RegExp(label))
+    }
+    const markup = taskTableMarkup(
+        normalizedTasks([{ status: 'completed', earnedPoints: 0, verification: 'confirmed-zero', telemetryVersion: 2 }])
+    )
+    assert.match(markup, /本次无新增积分/)
+    assert.doesNotMatch(markup, /0 分.*待复核/)
+})
+
 function withHistory(action) {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'mrs-verified-'))
     const identity = new AccountIdentity(directory)

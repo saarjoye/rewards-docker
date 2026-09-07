@@ -2,12 +2,13 @@ name: microsoft-rewards
 
 services:
     rewards-core:
-        image: ghcr.io/saarjoye/mrs-core:4.3.2-cn4
+        image: ghcr.io/saarjoye/mrs-core:4.3.2-cn5
         container_name: microsoft-rewards-core
         restart: unless-stopped
-        env_file:
-            - /home/docker/rewards/runtime/core.env
         environment:
+            NODE_ENV: 'production'
+            FORCE_HEADLESS: '1'
+            API_TOKEN: '${REWARDS_API_TOKEN:?Set a shared control API token}'
             API_MODE: 'true'
             API_HOST: '0.0.0.0'
             API_PORT: '3010'
@@ -15,7 +16,9 @@ services:
             API_ALLOW_ENV_OVERRIDES: 'false'
             API_ALLOW_CONFIG_REVEAL: 'false'
             API_ALLOW_CONFIG_WRITE: 'false'
-            API_ALLOW_SCHEDULE_WRITE: 'false'
+            API_ALLOW_SCHEDULE_WRITE: 'true'
+            TZ: 'Asia/Shanghai'
+            SCHEDULE_FILE: '/usr/src/microsoft-rewards-script/dist/config/schedule.json'
             CONFIG_FILE: '/usr/src/microsoft-rewards-script/dist/config/config.json'
             CONFIG_SESSION_PATH: 'dist/browser/sessions'
             ACCOUNT_KEY_FILE: '/run/secrets/core_accounts.key'
@@ -47,13 +50,12 @@ services:
             - rewards-control
 
     rewards-web:
-        image: ghcr.io/saarjoye/mrs-web:4.3.2-cn4
+        image: ghcr.io/saarjoye/mrs-web:4.3.2-cn5
         container_name: microsoft-rewards-web
         restart: unless-stopped
-        env_file:
-            - /home/docker/rewards/runtime/web.env
         environment:
-            TZ: ${TZ:-Asia/Shanghai}
+            CONTROL_API_TOKEN: '${REWARDS_API_TOKEN:?Set a shared control API token}'
+            TZ: 'Asia/Shanghai'
             WEB_HOST: '0.0.0.0'
             WEB_PORT: '3000'
             WEB_DATA_DIR: '/app/data'

@@ -3,7 +3,7 @@ import { BaseActivity } from '../BaseActivity'
 import type { ParentQuest, QuestChild } from '../../../browser/ReactFunc'
 import type { DashboardData, PunchCard } from '../../../interface/DashboardData'
 import { questEligibility, isClaimQuestChild } from '../../../util/TaskEligibility'
-import { accountReference, markTaskStatus } from '../../../util/TaskTelemetry'
+import { accountReference, markTaskStatus, reportTaskSubmission, finitePoints } from '../../../util/TaskTelemetry'
 
 export class PunchCards extends BaseActivity {
     public async runMobile(data: DashboardData): Promise<void> {
@@ -47,7 +47,7 @@ export class PunchCards extends BaseActivity {
     private async run(data: DashboardData): Promise<void> {
         const parents = await this.getParentQuests()
         if (!parents) {
-            markTaskStatus('verifying', '打卡列表读取失败，不能判定为没有任务')
+            markTaskStatus('unavailable', '打卡列表读取失败，不能判定为没有任务')
             return
         }
 
@@ -64,6 +64,7 @@ export class PunchCards extends BaseActivity {
         })
 
         if (!pending.length) {
+            markTaskStatus('skipped', 'no-reportable-child：没有可执行打卡子任务')
             this.bot.logger.info(this.bot.isMobile, 'PUNCHCARD', 'No actionable quests')
             return
         }
@@ -76,7 +77,17 @@ export class PunchCards extends BaseActivity {
 
         for (const parent of pending) {
             try {
-                await this.solvePunchCard(parent, apiById.get(parent.offerId))
+                await this.bot.activities.telemetry.run(
+                    {
+                        key: 'punchcard',
+                        title: parent.title || '打卡任务',
+                        source: 'group',
+                        platform: this.bot.isMobile ? 'mobile' : 'desktop',
+                        offerId: parent.offerId,
+                        group: true
+                    },
+                    () => this.solvePunchCard(parent, apiById.get(parent.offerId))
+                )
             } catch (error) {
                 this.bot.logger.error(
                     this.bot.isMobile,
@@ -139,9 +150,13 @@ export class PunchCards extends BaseActivity {
     private async solvePunchCard(parent: ParentQuest, apiCard: PunchCard | undefined): Promise<void> {
         const parentId = parent.offerId
         const title = parent.title || apiCard?.parentPromotion?.title || parentId
-        const children = await this.getQuestChildren(parentId, title)
+        const children = await this.getQuestChildren(
+            parentId,
+            title,
+            (apiCard?.childPromotions ?? []).map(child => child.offerId)
+        )
         if (!children) {
-            markTaskStatus('verifying', '打卡子任务读取失败，不能判定为已完成')
+            markTaskStatus('unavailable', '打卡子任务读取失败，不能判定为已完成')
             return
         }
 
@@ -155,6 +170,10 @@ export class PunchCards extends BaseActivity {
                 (apiChildById.get(left.offerId)?.priority ?? Number.MAX_SAFE_INTEGER) -
                 (apiChildById.get(right.offerId)?.priority ?? Number.MAX_SAFE_INTEGER)
         )
+        if (!ordered.length) {
+            markTaskStatus('skipped', 'no-reportable-child：没有可执行子任务')
+            return
+        }
         this.bot.logger.info(
             this.bot.isMobile,
             'TASK-SNAPSHOT',
@@ -191,9 +210,10 @@ export class PunchCards extends BaseActivity {
             if (child.isCompleted) continue
             const eligibility = questEligibility(child, this.bot.config, apiChild)
             if (eligibility.eligibility !== 'eligible') {
+                if (child.isLocked) markTaskStatus('locked', 'child-locked：打卡子任务尚未解锁')
                 if (eligibility.eligibility === 'unknown') {
                     remaining += 1
-                    markTaskStatus('verifying', eligibility.eligibilityReason)
+                    markTaskStatus('unavailable', eligibility.eligibilityReason)
                 }
                 this.bot.logger.info(this.bot.isMobile, 'PUNCHCARD', eligibility.eligibilityReason)
                 continue
@@ -231,7 +251,7 @@ export class PunchCards extends BaseActivity {
         )
     }
 
-    private async getQuestChildren(parentId: string, title: string): Promise<QuestChild[] | null> {
+    private async getQuestChildren(parentId: string, title: string, knownIds: string[]): Promise<QuestChild[] | null> {
         try {
             const questUrl = URLs.rewards.quest(parentId)
             const html = await this.bot.browser.func.getRewardsPageHtml(questUrl, `/earn/quest/${parentId}`)
@@ -240,10 +260,10 @@ export class PunchCards extends BaseActivity {
                 return null
             }
 
-            const children = this.bot.browser.react.snapshotQuestPage(html)
+            const children = this.bot.browser.react.snapshotQuestPage(html, knownIds)
             if (!children.length) {
                 this.bot.logger.info(this.bot.isMobile, 'PUNCHCARD', `No actionable children for "${title}"`)
-                return null
+                return []
             }
             return children
         } catch (error) {
@@ -259,7 +279,7 @@ export class PunchCards extends BaseActivity {
     private async reportQuestChild(child: QuestChild, parentId: string): Promise<void> {
         const actionId = this.bot.nextActions.reportActivity
         if (!actionId) {
-            markTaskStatus('verifying', '未读取到打卡提交入口，未提交活动')
+            markTaskStatus('unsupported', '未读取到打卡提交入口，未提交活动')
             this.bot.logger.warn(
                 this.bot.isMobile,
                 'PUNCHCARD',
@@ -268,15 +288,14 @@ export class PunchCards extends BaseActivity {
             return
         }
         if (!child.hash) {
-            markTaskStatus('verifying', '打卡提交数据缺失，未提交活动')
+            markTaskStatus('unavailable', '打卡提交数据缺失，未提交活动')
             this.bot.logger.warn(this.bot.isMobile, 'PUNCHCARD', `Skip ${child.offerId}: no live hash`)
             return
         }
 
-        const oldBalance = this.bot.userData.currentPoints
         try {
             const questUrl = URLs.rewards.quest(parentId)
-            const { status, acknowledged } = await this.bot.browser.func.reportServerAction(
+            const { status, acknowledged, availablePoints } = await this.bot.browser.func.reportServerAction(
                 actionId,
                 [
                     child.hash,
@@ -294,19 +313,15 @@ export class PunchCards extends BaseActivity {
                 }
             )
 
-            const newBalance = await this.bot.browser.func.getCurrentPoints()
-            const gained = newBalance - oldBalance
-            if (gained > 0) {
-                this.bot.userData.currentPoints = newBalance
-                this.bot.userData.gainedPoints = (this.bot.userData.gainedPoints ?? 0) + gained
-            }
+            const newBalance = finitePoints(availablePoints)
+            reportTaskSubmission(newBalance)
+            if (newBalance !== null) this.bot.userData.currentPoints = newBalance
 
             this.bot.logger.info(
                 this.bot.isMobile,
                 'PUNCHCARD',
                 `Reported child | offerId=${child.offerId} | status=${status} | acknowledged=${acknowledged}` +
-                    ` | pointsGained=${gained} | currentBalance=${newBalance}`,
-                gained > 0 || acknowledged ? 'green' : undefined
+                    ' | submitted：已提交，积分以活动证据为准'
             )
         } catch (error) {
             markTaskStatus('failed', '打卡子任务上报失败')

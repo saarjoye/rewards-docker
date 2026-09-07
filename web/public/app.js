@@ -16,6 +16,7 @@ const titles = {
     calendar: '积分日历',
     history: '运行记录',
     wecom: '企业微信',
+    schedule: '定时任务',
     system: '系统状态'
 }
 
@@ -43,7 +44,9 @@ function esc(value) {
 function formatTime(value) {
     if (!value) return '-'
     const date = new Date(value)
-    return Number.isNaN(date.getTime()) ? esc(value) : date.toLocaleString('zh-CN', { hour12: false })
+    return Number.isNaN(date.getTime())
+        ? esc(value)
+        : date.toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' })
 }
 
 function valueOrUnknown(value, suffix = '') {
@@ -170,6 +173,10 @@ content.addEventListener('click', async event => {
             accountManagement = null
             await loadState()
             await renderAccounts()
+        } else if (action === 'wecom-migrate') {
+            await api('/api/wecom/migrate-env', { method: 'POST', body: '{}' })
+            showNotice('旧环境通知配置已迁入 Web 加密配置库')
+            await renderWeCom()
         } else if (action === 'wecom-test') {
             await api('/api/wecom/test', { method: 'POST', body: '{}' })
             showNotice('企业微信接口已接受测试通知；客户端收件仍需确认')
@@ -221,6 +228,25 @@ content.addEventListener('submit', async event => {
             accountManagement = null
             await loadState()
             await renderAccounts()
+        } catch (error) {
+            showNotice(error.message)
+        }
+    } else if (form.id === 'scheduleForm') {
+        event.preventDefault()
+        const data = new FormData(form)
+        const [hour, minute] = String(data.get('time')).split(':').map(Number)
+        try {
+            await api('/api/schedule', {
+                method: 'PATCH',
+                body: JSON.stringify({
+                    enabled: data.get('enabled') === 'on',
+                    skipIfRunning: data.get('skipIfRunning') === 'on',
+                    timezone: 'Asia/Shanghai',
+                    cron: data.get('mode') === 'cron' ? data.get('cron') : `${minute} ${hour} * * *`
+                })
+            })
+            showNotice('调度配置已保存并生效')
+            await renderSchedule()
         } catch (error) {
             showNotice(error.message)
         }
@@ -368,7 +394,7 @@ function renderTasks() {
     const body = (state?.accounts || [])
         .map(
             account =>
-                `<article class="task-account"><h3>${esc(account.label)}</h3><p>${esc(account.status.label)} · ${esc(account.status.message)}</p><div class="task-summary"><span>本轮已确认新增 <strong>${valueOrUnknown(account.points.collected, ' 分')}</strong></span><span>账号余额 <strong>${valueOrUnknown(account.points.balance)}</strong></span><span>未归类余额变化 ${valueOrUnknown(account.points.unattributedBalanceChange, ' 分')}</span></div>${account.taskDataStatus === 'partial' ? '<p class="warn">部分任务来源不可用</p>' : ''}${taskTableMarkup(account.tasks, account.taskDataStatus)}</article>`
+                `<article class="task-account"><h3>${esc(account.label)}</h3><p>${esc(account.status.label)} · ${esc(account.status.message)}</p><div class="task-summary"><span>本轮已确认新增 <strong>${valueOrUnknown(account.points.collected, ' 分')}</strong></span><span>账号余额 <strong>${valueOrUnknown(account.points.balance)}</strong></span><span>未归类余额变化 ${valueOrUnknown(account.points.unattributedBalanceChange, ' 分')}</span></div>${account.taskDataStatus === 'partial' ? '<p class="warn">部分任务来源不可用</p>' : ''}${taskTableMarkup(account.tasks, account.taskDataStatus)}${account.excludedTasks?.length ? `<details><summary>未列入执行的任务（${account.excludedTasks.length}）</summary>${taskTableMarkup(account.excludedTasks)}</details>` : ''}</article>`
         )
         .join('')
     content.innerHTML = `<section class="section"><h2>当日任务与得分</h2><div class="task-grid">${body || '<div class="empty">尚未配置账号</div>'}</div></section>`
@@ -383,7 +409,14 @@ async function renderCalendar(load = false) {
                 start: document.querySelector('#calendarStart')?.value || '',
                 end: document.querySelector('#calendarEnd')?.value || ''
             }
-        const today = state?.history?.today || new Date().toISOString().slice(0, 10)
+        const today =
+            state?.history?.today ||
+            new Intl.DateTimeFormat('en-CA', {
+                timeZone: 'Asia/Shanghai',
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit'
+            }).format(new Date())
         const range = calendarRange(calendarFilters.preset, today, calendarFilters)
         const { accountId } = calendarFilters
         const params = new URLSearchParams(range)
@@ -521,13 +554,41 @@ async function renderRunDetail(id) {
     }
 }
 
+async function renderSchedule() {
+    try {
+        const item = await api('/api/schedule')
+        const daily = /^(\d+) (\d+) \* \* \*$/.exec(item.cron || '')
+        const time = daily ? `${daily[2].padStart(2, '0')}:${daily[1].padStart(2, '0')}` : '09:00'
+        const results = {
+            started: '已启动',
+            skipped: '运行中，已跳过',
+            queued: '已合并排队',
+            failed: '触发失败',
+            disabled: '已停用'
+        }
+        content.innerHTML = `<section class="section"><h2>定时任务</h2><form id="scheduleForm" class="form-grid panel-body">
+        <label class="check"><input name="enabled" type="checkbox" ${item.enabled ? 'checked' : ''}>启用定时任务</label>
+        <label class="check"><input name="skipIfRunning" type="checkbox" ${item.skipIfRunning ? 'checked' : ''}>运行中跳过</label>
+        <label>执行方式<select name="mode"><option value="daily" ${daily ? 'selected' : ''}>每日执行</option><option value="cron" ${!daily ? 'selected' : ''}>Cron 表达式</option></select></label>
+        <label>每日执行时间<input type="time" name="time" value="${time}" required></label>
+        <label>Cron 表达式<input name="cron" value="${esc(item.cron || '')}"></label><label>时区<input value="Asia/Shanghai" readonly></label>
+        <button type="submit" class="primary" ${!item.writable ? 'disabled' : ''}>保存调度</button></form>
+        <dl class="details-list"><dt>配置来源</dt><dd>${item.source === 'override' ? 'Core 调度配置库' : '启动环境默认值'}</dd>
+        <dt>实际生效</dt><dd>${item.enabled ? esc(item.cron) : '已停用'}（上海时间）</dd><dt>最近保存</dt><dd>${formatTime(item.updatedAt)}</dd>
+        <dt>最近触发</dt><dd>${esc(results[item.lastTrigger?.result] || '暂无')} ${formatTime(item.lastTrigger?.at)}</dd><dt>调度错误</dt><dd>${esc(item.lastTrigger?.code || '-')}</dd>
+        <dt>最近调度运行结果</dt><dd>${esc(item.lastRun ? taskStatusLabel(item.lastRun.result) : '暂无')} ${formatTime(item.lastRun?.at)}</dd><dt>排队状态</dt><dd>${item.queued ? '等待当前运行结束，补执行一次' : '无排队'}</dd></dl></section>`
+    } catch (error) {
+        content.textContent = error.message
+    }
+}
+
 async function renderWeCom() {
     content.innerHTML = '<div class="panel empty">正在读取企业微信配置...</div>'
     try {
         const item = await api('/api/wecom')
-        content.innerHTML = `<section class="section"><div class="section-head"><div><h2>企业微信通知</h2><p>凭证加密保存且永不回显；自定义反代会接触 Secret 和访问令牌，只应填写可信地址。</p></div><button class="ghost" data-action="wecom-test" ${!item.configured ? 'disabled' : ''}>发送测试通知</button></div>
+        content.innerHTML = `<section class="section"><div class="section-head"><div><h2>企业微信通知</h2><p>凭证加密保存且永不回显；自定义反代会接触 Secret 和访问令牌，只应填写可信地址。</p></div>${item.migrationAvailable ? `<button class="ghost" data-action="wecom-migrate" ${!item.writable ? 'disabled' : ''}>迁移旧环境通知配置</button>` : ''}<button class="ghost" data-action="wecom-test" ${!item.configured ? 'disabled' : ''}>发送测试通知</button></div>
             <form id="wecomForm" class="panel form-grid panel-body"><label class="check full"><input name="enabled" type="checkbox" ${item.enabled ? 'checked' : ''}>启用企业微信通知</label><label>连接方式<select name="mode"><option value="direct" ${item.mode !== 'custom' ? 'selected' : ''}>直连</option><option value="custom" ${item.mode === 'custom' ? 'selected' : ''}>自定义反代</option></select></label><label>反代基础地址<input name="baseUrl" type="url" placeholder="${item.customBaseConfigured ? '已保存，留空保留' : 'https://proxy.example.com'}"></label><label>企业 ID<input name="corpId" placeholder="${item.hasCorpId ? '已保存，留空保留' : '未配置'}"></label><label>应用 AgentId<input name="agentId" placeholder="${item.hasAgentId ? '已保存，留空保留' : '未配置'}"></label><label>应用 Secret<input name="corpSecret" type="password" autocomplete="new-password" placeholder="${item.hasSecret ? '已保存，留空保留' : '未配置'}"></label><label>接收成员<input name="toUser" placeholder="留空保留，默认 @all"></label><label class="check full danger-zone"><input name="clearSecret" type="checkbox">明确清除已保存的 Secret</label><div class="form-actions full"><button class="primary" type="submit" ${!item.writable ? 'disabled' : ''}>保存配置</button></div></form>
-            <div class="panel"><dl class="details-list"><dt>配置来源</dt><dd>${item.source === 'encrypted' ? 'Web 加密配置库' : '环境变量（保存后转入加密配置库）'}</dd><dt>连接模式</dt><dd>${item.mode === 'custom' ? '自定义反代' : '直连'}</dd><dt>配置状态</dt><dd>${esc(item.configurationMessage || '待确认')}</dd><dt>通知开关</dt><dd>${item.enabled ? '已启用' : '未启用，不发送通知'}</dd><dt>最近保存</dt><dd>${formatTime(item.savedAt)}</dd><dt>运行通知</dt><dd>${Number(item.delivery?.pending || 0)} 条待发送，${Number(item.delivery?.failed || 0)} 条失败${item.delivery?.sending ? '，正在发送' : ''}</dd><dt>发送状态</dt><dd>${esc(item.delivery?.lastError || '-')}</dd><dt>接收范围</dt><dd>${esc(item.recipient || '-')}</dd><dt>接口最近接受</dt><dd>${formatTime(item.lastSuccessAt)}</dd><dt>最近错误</dt><dd>${esc(item.lastError || '-')}</dd></dl></div></section>`
+            <div class="panel"><dl class="details-list"><dt>配置来源</dt><dd>${item.source === 'encrypted' ? 'Web 加密配置库' : '尚未建立 Web 加密配置'}</dd><dt>存储状态</dt><dd>${esc(item.storageMessage || '可读写')}</dd><dt>连接模式</dt><dd>${item.mode === 'custom' ? '自定义反代' : '直连'}</dd><dt>配置状态</dt><dd>${esc(item.configurationMessage || '待确认')}</dd><dt>通知开关</dt><dd>${item.enabled ? '已启用' : '未启用，不发送通知'}</dd><dt>最近保存</dt><dd>${formatTime(item.savedAt)}</dd><dt>运行通知</dt><dd>${Number(item.delivery?.pending || 0)} 条待发送，${Number(item.delivery?.failed || 0)} 条失败${item.delivery?.sending ? '，正在发送' : ''}</dd><dt>发送状态</dt><dd>${esc(item.delivery?.lastError || '-')}</dd><dt>接收范围</dt><dd>${esc(item.recipient || '-')}</dd><dt>接口最近接受</dt><dd>${formatTime(item.lastSuccessAt)}</dd><dt>最近错误</dt><dd>${esc(item.lastError || '-')}</dd></dl></div></section>`
     } catch (error) {
         content.innerHTML = `<div class="panel empty">${esc(error.message)}</div>`
     }
@@ -546,6 +607,7 @@ function renderCurrent() {
     else if (currentView === 'calendar') void renderCalendar()
     else if (currentView === 'history') void renderHistory()
     else if (currentView === 'wecom') void renderWeCom()
+    else if (currentView === 'schedule') void renderSchedule()
     else renderSystem()
 }
 
@@ -572,7 +634,7 @@ function connectEvents() {
             previousRunId !== state?.core?.runId
         )
             void renderHistory()
-        if (!['calendar', 'history', 'accounts', 'wecom'].includes(currentView)) renderCurrent()
+        if (!['calendar', 'history', 'accounts', 'wecom', 'schedule'].includes(currentView)) renderCurrent()
     })
     events.addEventListener('log', event => {
         const log = JSON.parse(event.data)

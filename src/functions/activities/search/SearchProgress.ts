@@ -99,7 +99,12 @@ export class SearchProgress {
                         key: 'search',
                         title: '搜索',
                         platform,
-                        source: this.bot.browser.func.taskDashboardSource(),
+                        source:
+                            platform === 'mobile'
+                                ? delay === 2000
+                                    ? 'rsc'
+                                    : 'flyout'
+                                : this.bot.browser.func.taskDashboardSource(),
                         counter: platform === 'mobile' ? 'mobileSearch' : 'pcSearch'
                     })
                     const quota = this.fromEvidence(evidence)

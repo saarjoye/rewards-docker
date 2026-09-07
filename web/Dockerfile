@@ -15,6 +15,6 @@ COPY scripts ./scripts
 
 RUN mkdir -p /app/data && chown -R node:node /app/data
 
-USER node
+USER root
 EXPOSE 3000
-CMD ["node", "src/server.mjs"]
+CMD ["node", "scripts/entrypoint.mjs"]

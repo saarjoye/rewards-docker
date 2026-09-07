@@ -9,8 +9,8 @@ const projectRoot = getProjectRoot(__dirname)
 
 try {
     const schedule = readSchedule(projectRoot)
+    applyCrontab(schedule)
     if (schedule.enabled && schedule.cron) {
-        applyCrontab(schedule)
         console.log(`[apply-schedule] Applied schedule.json override: "${schedule.cron}" (TZ=${schedule.timezone})`)
     } else {
         console.log('[apply-schedule] schedule.json override present but disabled - no crontab installed.')

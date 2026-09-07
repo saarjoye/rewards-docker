@@ -2,6 +2,10 @@ import { sanitizeText } from './security.mjs'
 
 export const TASK_STATUSES = [
     'pending',
+    'eligible',
+    'submitted',
+    'unsupported',
+    'unavailable',
     'running',
     'verifying',
     'completed',
@@ -39,7 +43,7 @@ export function normalizedTasks(tasks, now = Date.now()) {
             status: TASK_STATUSES.includes(task?.status) ? task.status : 'pending',
             verification:
                 task?.telemetryVersion === 2
-                    ? ['confirmed', 'pending', 'not-applicable'].includes(task.verification)
+                    ? ['confirmed', 'confirmed-zero', 'pending', 'not-applicable'].includes(task.verification)
                         ? task.verification
                         : 'pending'
                     : 'legacy',
@@ -64,6 +68,9 @@ export function normalizedTasks(tasks, now = Date.now()) {
             expectedPoints: nullableNumber(task?.expectedPoints),
             remainingPoints: nullableNumber(task?.remainingPoints),
             earnedPoints: nullableNumber(task?.earnedPoints),
+            balance: nullableNumber(task?.balance),
+            balanceChange: nullableNumber(task?.balanceChange),
+            previouslyCompleted: Boolean(task?.previouslyCompleted),
             confirmedAt: date(task?.confirmedAt),
             startedAt,
             lastProgressAt,
@@ -87,8 +94,10 @@ export function currentTasks(tasks) {
     if (!Array.isArray(tasks)) return []
     return tasks.filter(
         task =>
-            task?.eligibility !== 'excluded' ||
-            task?.invocationId ||
+            (task?.eligibility === 'eligible' && task?.planned && !task?.previouslyCompleted) ||
+            (task?.invocationId &&
+                !task?.previouslyCompleted &&
+                (!['skipped', 'locked', 'unsupported', 'unavailable'].includes(task?.status) || task?.submitted)) ||
             ['running', 'verifying', 'partial', 'stopped', 'failed', 'interrupted'].includes(task?.status)
     )
 }

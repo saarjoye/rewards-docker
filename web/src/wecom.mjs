@@ -1,5 +1,12 @@
 import { sanitizeText } from './security.mjs'
 
+function displayTime(value) {
+    const date = new Date(value)
+    return Number.isFinite(date.getTime())
+        ? date.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })
+        : '未知时间'
+}
+
 function boolEnv(name, fallback = false) {
     const value = process.env[name]
     if (value === undefined) return fallback
@@ -57,8 +64,14 @@ export class WeComNotifier {
     }
 
     reload() {
-        const stored = this.settings?.getWeCom()
-        const config = stored || environmentConfig()
+        let stored = null
+        this.storageError = null
+        try {
+            stored = this.settings?.getWeCom()
+        } catch (error) {
+            this.storageError = { code: error.code, message: error.message }
+        }
+        const config = stored || { enabled: false, mode: 'direct' }
         this.enabled = Boolean(config.enabled)
         this.mode = config.mode === 'custom' ? 'custom' : 'direct'
         this.baseUrl = normalizeWeComBaseUrl(this.mode, config.baseUrl)
@@ -66,14 +79,18 @@ export class WeComNotifier {
         this.agentId = String(config.agentId || '').trim()
         this.corpSecret = String(config.corpSecret || '').trim()
         this.toUser = String(config.toUser || '').trim() || '@all'
-        this.source = stored ? 'encrypted' : 'environment'
+        this.source = stored ? 'encrypted' : 'unconfigured'
         this.savedAt = stored?.updatedAt ?? null
         this.token = null
         this.tokenExpiresAt = 0
     }
 
-    update(input) {
+    update(input, { migrateEnvironment = false } = {}) {
         if (!this.settings) throw new Error('Web 加密配置存储不可用')
+        for (const field of ['mode', 'baseUrl', 'corpId', 'agentId', 'corpSecret', 'toUser']) {
+            if (input[field] !== undefined && typeof input[field] !== 'string')
+                throw Object.assign(new Error('企业微信配置字段必须为文本'), { code: 'WECOM_CONFIG_INVALID' })
+        }
         for (const field of ['enabled', 'clearSecret']) {
             if (input[field] !== undefined && typeof input[field] !== 'boolean')
                 throw Object.assign(new Error('企业微信开关必须是布尔值'), { code: 'WECOM_CONFIG_INVALID' })
@@ -82,11 +99,19 @@ export class WeComNotifier {
             throw Object.assign(new Error('不能同时填写新 Secret 和清除已保存的 Secret，配置未修改'), {
                 code: 'WECOM_CONFIG_INVALID'
             })
-        const current = this.settings.getWeCom() || environmentConfig()
-        const mode = input.mode === 'custom' ? 'custom' : 'direct'
+        const stored = this.settings.getWeCom()
+        if (migrateEnvironment && stored)
+            throw Object.assign(new Error('加密配置已存在，不能覆盖迁移'), { code: 'WECOM_CONFIG_INVALID' })
+        const current =
+            stored ||
+            (migrateEnvironment
+                ? environmentConfig()
+                : { enabled: false, mode: 'direct', corpId: '', agentId: '', corpSecret: '', toUser: '@all' })
+        if (input.mode !== undefined && !['custom', 'direct'].includes(input.mode)) throw new Error('连接模式无效')
+        const mode = input.mode ?? current.mode
         const baseUrl = String(input.baseUrl || '').trim() || (current.mode === 'custom' ? current.baseUrl : '')
         const next = {
-            enabled: Boolean(input.enabled),
+            enabled: input.enabled ?? current.enabled,
             mode,
             baseUrl: normalizeWeComBaseUrl(mode, baseUrl),
             corpId: String(input.corpId || '').trim() || current.corpId,
@@ -112,6 +137,11 @@ export class WeComNotifier {
     }
 
     status() {
+        const storage = this.settings?.status() ?? {
+            writable: false,
+            code: 'STORE_UNAVAILABLE',
+            message: 'Web 加密配置库不可用'
+        }
         const missingFields = [
             ...(!this.corpId ? ['企业 ID'] : []),
             ...(!this.agentId ? ['应用 AgentId'] : []),
@@ -127,7 +157,12 @@ export class WeComNotifier {
             savedAt: this.savedAt,
             mode: this.mode,
             source: this.source,
-            writable: this.settings?.status().writable ?? false,
+            migrationAvailable:
+                this.source === 'unconfigured' &&
+                Boolean(process.env.WEB_WECOM_CORP_ID || process.env.WEB_WECOM_CORP_SECRET),
+            writable: storage.writable && !this.storageError,
+            storageCode: this.storageError?.code ?? storage.code,
+            storageMessage: this.storageError?.message ?? storage.message,
             hasCorpId: Boolean(this.corpId),
             hasAgentId: Boolean(this.agentId),
             hasSecret: Boolean(this.corpSecret),
@@ -202,7 +237,7 @@ export class WeComNotifier {
             { completed: '完成', partial: '部分完成', interrupted: '中断', failed: '失败' }[run.status] ?? '待确认'
         const lines = [
             `Microsoft Rewards 任务${status}`,
-            `时间：${run.endedAt}`,
+            `时间：${displayTime(run.endedAt)}`,
             `本次已确认积分：${run.verification === 'legacy' ? '旧记录未核验' : run.collected == null ? '待确认' : `+${run.collected}`}`,
             `待复核任务：${run.pendingVerification ?? '未知'}`,
             `账号数：${run.accounts.length}`
@@ -219,10 +254,12 @@ export class WeComNotifier {
     }
 
     sendCoreOffline(since) {
-        return this.sendText(`Microsoft Rewards 核心接口连续不可用\n开始时间：${since}\n请检查核心容器健康状态。`)
+        return this.sendText(
+            `Microsoft Rewards 核心接口连续不可用\n开始时间：${displayTime(since)}\n请检查核心容器健康状态。`
+        )
     }
 
     sendTest() {
-        return this.sendText(`Microsoft Rewards 企业微信通知测试\n时间：${new Date().toISOString()}\n配置连接正常。`)
+        return this.sendText(`Microsoft Rewards 企业微信通知测试\n时间：${displayTime(new Date())}\n配置连接正常。`)
     }
 }

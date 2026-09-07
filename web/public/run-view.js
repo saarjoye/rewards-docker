@@ -10,6 +10,10 @@ export function taskStatusLabel(status) {
     return (
         {
             pending: '待执行',
+            eligible: '可执行',
+            submitted: '已提交，等待积分确认',
+            unsupported: '当前版本不支持',
+            unavailable: '任务数据不可用',
             running: '执行中',
             verifying: '待复核',
             completed: '已完成',
@@ -47,9 +51,16 @@ export function taskTableMarkup(tasks, dataStatus = 'not-read') {
                           ? '（旧记录未核验）'
                           : task.verification === 'pending'
                             ? '（待复核）'
-                            : ''
+                            : task.verification === 'confirmed-zero'
+                              ? '已执行，本次无新增积分'
+                              : task.verification === 'confirmed'
+                                ? '得分已确认'
+                                : '不适用'
                   const time = task.updatedAt
-                      ? new Date(task.updatedAt).toLocaleTimeString('zh-CN', { hour12: false })
+                      ? new Date(task.updatedAt).toLocaleTimeString('zh-CN', {
+                            hour12: false,
+                            timeZone: 'Asia/Shanghai'
+                        })
                       : '-'
                   return `<tr><td>${esc(task.title)}<small>${esc(task.platform || '')}</small></td><td>${esc(state)}</td><td class="task-action">${esc(task.action || state)}${task.stale ? '<strong class="warn">长时间无有效进展</strong>' : ''}<small>${task.elapsedSeconds === null || task.elapsedSeconds === undefined ? '' : `${Number(task.elapsedSeconds)} 秒`} ${esc(time)}</small></td><td>${esc(progress)}<small>${esc(attempt)}</small></td><td>${amount(task.expectedPoints)}</td><td>${amount(task.remainingPoints)}</td><td>${task.group ? '-' : amount(task.earnedPoints)}<small>${esc(legacy)}</small></td></tr>`
               })

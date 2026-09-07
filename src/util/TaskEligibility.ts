@@ -97,6 +97,7 @@ export function questEligibility(child: QuestChild, config: Config, promotion?: 
     if (isClaimQuestChild(child.offerId, promotion) && !config.autoClaimPunchcardRewards)
         return excluded('此奖励仅允许手动领取')
     if (!child.isCompleted && !child.hash) return unknown('缺少当前活动提交数据，等待核对')
+    if (!child.isCompleted && !child.reportable) return excluded('子任务日期或提交条件尚未满足')
     return allowed
 }
 

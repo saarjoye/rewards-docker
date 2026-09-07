@@ -5,8 +5,12 @@ import { markTaskStatus } from '../../../util/TaskTelemetry'
 
 export class AppPromotions extends BaseActivity {
     public async run(data: AppDashboardData): Promise<void> {
+        if (!Array.isArray(data.response?.promotions)) {
+            markTaskStatus('unavailable', '应用任务数据不可用，不能判定为没有任务')
+            return
+        }
         const pending = (data.response?.promotions ?? []).filter(promotion => {
-            const attributes = promotion.attributes
+            const attributes = promotion.attributes ?? {}
             return (
                 attributes['complete']?.toLowerCase() === 'false' &&
                 appEligibility(promotion, this.bot.config).eligibility === 'eligible'

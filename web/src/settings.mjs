@@ -11,7 +11,7 @@ export class SettingsStore {
     }
 
     status() {
-        return { encrypted: this.vault.exists(), writable: this.vault.available() }
+        return { encrypted: this.vault.exists(), ...this.vault.status() }
     }
 
     read() {

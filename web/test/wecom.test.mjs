@@ -13,6 +13,17 @@ test('sends a redacted Chinese run summary', async () => {
     const calls = []
     try {
         const notifier = new WeComNotifier({
+            settings: {
+                getWeCom: () => ({
+                    enabled: true,
+                    mode: 'direct',
+                    corpId: 'corp',
+                    agentId: '100001',
+                    corpSecret: 'secret',
+                    toUser: '@all'
+                }),
+                status: () => ({ writable: true })
+            },
             fetchImpl: async (url, options = {}) => {
                 calls.push({ url: String(url), body: options.body })
                 if (String(url).includes('gettoken')) {

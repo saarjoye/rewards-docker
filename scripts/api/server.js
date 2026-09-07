@@ -18,6 +18,8 @@ import {
     syncMissingDefaults
 } from './configEditor.js'
 import { readSchedule, writeSchedule } from './scheduleStore.js'
+import { ScheduleController } from './scheduleController.js'
+import { handleSchedule } from './scheduleRoutes.js'
 import { deleteStoredSessions, listStoredSessions } from './sessionStore.js'
 import { resolveRunCommand } from './runCommand.js'
 import {
@@ -164,6 +166,21 @@ pm.on('log', entry => {
 function toHistoryRecord(entry) {
     return historyRecord(entry)
 }
+
+const scheduleController = new ScheduleController({
+    read: () => readSchedule(projectRoot),
+    busy: () => pm.state !== 'idle',
+    start: schedule => {
+        if (!accountStore.sourceAccounts().length) throw new Error('未配置账号')
+        const env = accountStore.runEnvironment() || {}
+        const selection = buildExcludedAccountsEnv(schedule.excludedAccountIndexes, accountEnvironment())
+        return pm.start({ env: { ...env, ...selection.env } })
+    }
+})
+pm.on('exit', () => {
+    scheduleController.finished(pm.getHistory()[0])
+    queueMicrotask(() => scheduleController.drain())
+})
 
 function accountEnvironment() {
     const stored = accountStore.runEnvironment()
@@ -615,38 +632,20 @@ const requestHandler = async (req, res) => {
             }
         }
 
-        // sched read
-        if (method === 'GET' && pathname === '/schedule') {
-            try {
-                return sendJson(res, 200, { ...readSchedule(projectRoot), writable: ALLOW_SCHEDULE_WRITE })
-            } catch (err) {
-                return sendJson(res, 500, { error: err.message, code: err.code })
-            }
-        }
-
-        // sched write
-        if ((method === 'PUT' || method === 'PATCH') && pathname === '/schedule') {
-            if (!ALLOW_SCHEDULE_WRITE) {
-                return sendJson(res, 403, {
-                    error: 'Schedule writes are disabled. Set API_ALLOW_SCHEDULE_WRITE=true to enable.'
-                })
-            }
-            const body = await readJsonBody(req)
-            if (typeof body !== 'object' || body === null || Array.isArray(body)) {
-                return sendJson(res, 400, { error: 'Body must be a JSON object.' })
-            }
-            try {
-                const updated = writeSchedule(projectRoot, body)
-                pm.note(
-                    'info',
-                    `Schedule updated via API (${method}): ${updated.enabled ? `${updated.cron} (TZ ${updated.timezone})` : 'disabled'}.`
-                )
-                return sendJson(res, 200, { ...updated, writable: true })
-            } catch (err) {
-                const status = err.code === 'BAD_REQUEST' ? 400 : 500
-                return sendJson(res, status, { error: err.message, code: err.code })
-            }
-        }
+        if (
+            await handleSchedule({
+                method,
+                pathname,
+                authorized: Boolean(TOKEN && isAuthorized(req, url)),
+                writable: ALLOW_SCHEDULE_WRITE,
+                read: () => readSchedule(projectRoot),
+                write: patch => writeSchedule(projectRoot, patch),
+                controller: scheduleController,
+                body: () => readJsonBody(req),
+                send: (code, data) => sendJson(res, code, data)
+            })
+        )
+            return
 
         // sse
         if (method === 'GET' && pathname === '/events') {
@@ -700,6 +699,7 @@ const requestHandler = async (req, res) => {
 
         // kill proc
         if (method === 'POST' && pathname === '/stop') {
+            scheduleController.cancel()
             const body = await readJsonObject(req)
             const force = readForce(body)
             try {
@@ -926,12 +926,20 @@ server.listen(PORT, HOST, () => {
         auth: Boolean(TOKEN)
     }
     process.stdout.write(`__API_READY__ ${JSON.stringify(ready)}\n`)
+    if (TOKEN && envBool('RUN_ON_START', false)) {
+        try {
+            scheduleController.execute(readSchedule(projectRoot))
+        } catch {
+            log('ERROR', '启动任务未执行：调度配置不可读')
+        }
+    }
 })
 
 let shuttingDown = false
 async function shutdown(signal, { force = false } = {}) {
     if (shuttingDown) return
     shuttingDown = true
+    scheduleController.cancel()
     log('INFO', `${signal} received - shutting down.`)
     server.close()
     try {

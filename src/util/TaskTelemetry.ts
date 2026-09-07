@@ -3,6 +3,10 @@ import { createHash, randomUUID } from 'node:crypto'
 
 export type TaskStatus =
     | 'pending'
+    | 'eligible'
+    | 'submitted'
+    | 'unsupported'
+    | 'unavailable'
     | 'running'
     | 'verifying'
     | 'completed'
@@ -56,7 +60,7 @@ export function accountReference(email: string): string {
     return createHash('sha256').update(email.trim().toLowerCase()).digest('hex')
 }
 export function taskId(spec: TaskSpec): string {
-    return `${spec.source}:${spec.platform}:${spec.offerId || spec.key}`
+    return `${spec.source}:${spec.source === 'rsc' && spec.offerId ? 'main' : spec.platform}:${spec.offerId || spec.key}`
 }
 export function reportTaskProgress(action: string, current?: number, total?: number, waitMs?: number): void {
     taskContext.getStore()?.publish({
@@ -83,6 +87,18 @@ export function reportTaskEvidence(evidence: Omit<TaskEvidence, 'observedAt'>): 
     const context = taskContext.getStore()
     if (context) context.evidence = { ...evidence, observedAt: new Date().toISOString() }
 }
+export function reportTaskSubmission(balance?: unknown, creditedPoints?: unknown): void {
+    markTaskStatus('submitted', '已提交，等待积分确认')
+    taskContext.getStore()?.publish({ submitted: true })
+    reportTaskEvidence({
+        creditedPoints: finitePoints(creditedPoints),
+        balance: finitePoints(balance),
+        current: null,
+        total: null,
+        completed: null,
+        unit: 'points'
+    })
+}
 export function errorCategory(error: unknown): string {
     const status =
         (error as { status?: number; response?: { status?: number } })?.status ??
@@ -93,6 +109,7 @@ export function errorCategory(error: unknown): string {
 }
 
 export class TaskTelemetry {
+    private attemptedOffers = new Set<string>()
     private sequence = 0
     private session = randomUUID()
     constructor(
@@ -119,6 +136,15 @@ export class TaskTelemetry {
     async run<T>(spec: TaskSpec, action: () => Promise<T>): Promise<T> {
         const parent = taskContext.getStore()
         const id = taskId(spec)
+        const attemptKey = `${accountReference(this.options.account())}:${id}`
+        if (spec.offerId && !spec.group) {
+            if (this.attemptedOffers.has(attemptKey)) {
+                parent?.children.push('skipped')
+                return (spec.counter ? 0 : undefined) as T
+            }
+            // Reserve before observing: parallel platforms must not both pass the guard.
+            this.attemptedOffers.add(attemptKey)
+        }
         const invocationId = randomUUID()
         const startedAt = new Date().toISOString()
         const base = { kind: 'task', id, invocationId, parentId: parent?.id ?? null, ...spec, startedAt }
@@ -159,14 +185,15 @@ export class TaskTelemetry {
                     })
                 if (before?.completed === true) {
                     publish({
-                        status: 'completed',
+                        status: 'skipped',
                         action: '运行前已完成，本轮未提交活动',
                         terminal: true,
-                        verification: 'confirmed',
-                        earnedPoints: 0,
-                        confirmedAt: before.observedAt
+                        verification: 'not-applicable',
+                        earnedPoints: null,
+                        confirmedAt: null,
+                        previouslyCompleted: true
                     })
-                    parent?.children.push('completed')
+                    parent?.children.push('skipped')
                     return (spec.counter ? 0 : undefined) as T
                 }
             }
@@ -185,7 +212,14 @@ export class TaskTelemetry {
             }
             let after: TaskEvidence | null = context.evidence ?? null
             let category: string | null = null
-            if (!after && !spec.group && !['skipped', 'locked', 'interrupted'].includes(context.explicitStatus ?? '')) {
+            const excluded = ['skipped', 'locked', 'unsupported', 'unavailable', 'interrupted']
+            if (
+                finitePoints(after?.creditedPoints) === null &&
+                after?.current == null &&
+                !spec.group &&
+                !excluded.includes(context.explicitStatus ?? '')
+            ) {
+                const responseEvidence = after
                 for (const [index, delay] of [0, 2000, 10000].entries()) {
                     publish({
                         status: 'verifying',
@@ -194,9 +228,13 @@ export class TaskTelemetry {
                     })
                     if (delay) await confirmationContext.run(true, () => this.options.wait(delay))
                     try {
-                        after = await confirmationContext.run(true, () => this.options.observe(spec))
+                        const observed = await confirmationContext.run(true, () => this.options.observe(spec))
+                        after = {
+                            ...observed,
+                            completed: observed.completed ?? responseEvidence?.completed ?? null,
+                            balance: observed.balance ?? responseEvidence?.balance ?? null
+                        }
                         if (
-                            after.completed === true ||
                             finitePoints(after.creditedPoints) !== null ||
                             (before?.current !== null &&
                                 before?.current !== undefined &&
@@ -210,43 +248,56 @@ export class TaskTelemetry {
                     }
                 }
             }
-            const earned =
-                finitePoints(after?.creditedPoints) ??
-                (before?.unit === 'points' &&
-                after?.unit === 'points' &&
-                before.current !== null &&
-                after.current !== null &&
-                after.current >= before.current
-                    ? after.current - before.current
-                    : null)
+            const earned = excluded.includes(context.explicitStatus ?? '')
+                ? null
+                : (finitePoints(after?.creditedPoints) ??
+                  (before?.unit === 'points' &&
+                  after?.unit === 'points' &&
+                  before.current !== null &&
+                  after.current !== null &&
+                  after.current >= before.current
+                      ? after.current - before.current
+                      : null))
             const verified = earned !== null
-            let status: TaskStatus = context.failed ? 'failed' : (context.explicitStatus ?? 'verifying')
+            let status: TaskStatus = context.failed ? 'failed' : (context.explicitStatus ?? 'running')
             if (spec.group) {
                 status =
                     context.failed || context.children.includes('failed')
                         ? 'partial'
                         : context.explicitStatus
-                          ? context.explicitStatus
+                          ? context.children.length
+                              ? 'partial'
+                              : context.explicitStatus
                           : context.children.length === 0
                             ? 'skipped'
                             : context.children.every(item => ['completed', 'skipped', 'locked'].includes(item))
-                              ? 'completed'
+                              ? context.children.some(item => item === 'completed')
+                                  ? 'completed'
+                                  : 'skipped'
                               : 'partial'
-            } else if (!context.failed && !['skipped', 'locked', 'interrupted'].includes(status)) {
+            } else if (!context.failed && !excluded.includes(status)) {
                 status =
                     after?.completed === true
                         ? 'completed'
                         : earned !== null && earned > 0
                           ? 'partial'
                           : earned === 0
-                            ? 'stopped'
+                            ? after?.completed === false
+                                ? 'partial'
+                                : 'completed'
                             : context.explicitStatus &&
                                 ['partial', 'stopped', 'interrupted'].includes(context.explicitStatus)
                               ? context.explicitStatus
-                              : 'verifying'
+                              : context.explicitStatus === 'submitted'
+                                ? 'submitted'
+                                : 'unavailable'
             }
             const actions: Record<TaskStatus, string> = {
                 pending: '等待执行',
+                eligible: '可执行',
+                submitted: '已提交，等待积分确认',
+                unsupported: '当前版本不支持',
+                unavailable: '任务数据不可用',
                 running: '正在执行',
                 verifying: '得分待复核',
                 completed: '任务已完成',
@@ -267,8 +318,10 @@ export class TaskTelemetry {
                 verification: spec.group
                     ? 'not-applicable'
                     : verified
-                      ? 'confirmed'
-                      : ['skipped', 'locked'].includes(status)
+                      ? earned === 0
+                          ? 'confirmed-zero'
+                          : 'confirmed'
+                      : excluded.includes(status)
                         ? 'not-applicable'
                         : 'pending',
                 earnedPoints: earned,
@@ -297,6 +350,11 @@ export class TaskTelemetry {
                 errorCategory: category,
                 terminal: true
             })
+            if (
+                !latest.submitted &&
+                ['skipped', 'locked', 'unsupported', 'unavailable'].includes(context.explicitStatus ?? '')
+            )
+                this.attemptedOffers.delete(attemptKey)
             parent?.children.push(status)
             if (failure) throw failure
             return value

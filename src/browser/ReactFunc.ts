@@ -1,6 +1,7 @@
 import type { MicrosoftRewardsBot } from '../index'
 import { accountReference, finitePoints } from '../util/TaskTelemetry'
 import { offerEligibility } from '../util/TaskEligibility'
+import { businessDate } from '../util/BusinessDate'
 
 export interface ParsedOffer {
     offerId: string
@@ -689,10 +690,18 @@ export default class ReactFunc {
     }
 
     // Quest pages (punchcards)
-    public snapshotQuestPage(html: string): QuestChild[] {
+    public snapshotSearchCounters(html: string): Record<string, unknown> {
+        const combined = this.concatFlightChunks(html)
+        const carrier = this.extractObjects(combined, '"counters"').find(
+            item => item.counters && typeof item.counters === 'object'
+        )
+        return { counters: carrier?.counters ?? {} }
+    }
+
+    public snapshotQuestPage(html: string, knownIds: string[] = []): QuestChild[] {
         try {
             const combined = this.concatFlightChunks(html)
-            const children = this.parseQuestOffers(combined)
+            const children = this.parseQuestOffers(combined, knownIds)
 
             this.bot.logger.info(
                 this.bot.isMobile,
@@ -711,13 +720,13 @@ export default class ReactFunc {
         }
     }
 
-    private parseQuestOffers(combined: string): QuestChild[] {
+    private parseQuestOffers(combined: string, knownIds: string[] = []): QuestChild[] {
         const out: QuestChild[] = []
         const seen = new Set<string>()
 
         for (const obj of this.extractObjects(combined, '"offerId"')) {
             const offerId = obj.offerId as string | undefined
-            if (!offerId || !offerId.includes('pcchild') || seen.has(offerId)) continue
+            if (!offerId || (!offerId.includes('pcchild') && !knownIds.includes(offerId)) || seen.has(offerId)) continue
             seen.add(offerId)
 
             const hash = (obj.hash as string | null) ?? null
@@ -726,7 +735,8 @@ export default class ReactFunc {
             const isLocked = (obj.isLocked as boolean | undefined) === true
             const isDisabled = (obj.isDisabled as boolean | undefined) === true
 
-            const reportable = !!hash && !isCompleted && !isLocked && !isDisabled
+            const date = this.normaliseDate(typeof obj.date === 'string' ? obj.date : undefined)
+            const reportable = !!hash && !isCompleted && !isLocked && !isDisabled && (!date || date <= businessDate())
 
             out.push({
                 offerId,
@@ -830,8 +840,7 @@ export default class ReactFunc {
 
     // Utils
     private todayStamp(): string {
-        const d = new Date()
-        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+        return businessDate()
     }
 
     private normaliseDate(rawDate: string | undefined): string | null {

@@ -59,7 +59,14 @@ export default class BrowserFunc {
             responseType: spec.source === 'rsc' ? 'text' : 'json'
         })
         const payload =
-            spec.source === 'rsc' ? this.bot.browser.react.snapshotPage(String(response.data), false) : response.data
+            spec.source === 'rsc'
+                ? {
+                      ...this.bot.browser.react.snapshotPage(String(response.data), false),
+                      ...(spec.counter
+                          ? { userStatus: this.bot.browser.react.snapshotSearchCounters(String(response.data)) }
+                          : {})
+                  }
+                : response.data
         return evidenceFromPayload(spec, payload)
     }
 

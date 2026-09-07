@@ -176,7 +176,12 @@ function applyTaskSnapshot(state, entry) {
               : 'unavailable'
     }
     for (const item of payload.tasks.slice(0, 500)) {
-        const id = safeTaskText(structured ? `${payload.source}:${payload.platform}:${item?.id}` : item?.id, 180)
+        const id = safeTaskText(
+            structured
+                ? `${payload.source}:${payload.source === 'rsc' ? 'main' : payload.platform}:${item?.id}`
+                : item?.id,
+            180
+        )
         if (!id) continue
         const previous = account.tasks[id]
         if (previous?.invocationId) continue
@@ -196,7 +201,8 @@ function applyTaskSnapshot(state, entry) {
                       telemetryVersion: 2,
                       source: payload.source,
                       platform: payload.platform,
-                      verification: item.unavailable || eligibility === 'unknown' ? 'pending' : 'not-applicable',
+                      verification: 'not-applicable',
+                      previouslyCompleted: Boolean(item.completed),
                       action:
                           eligibility === 'unknown' || eligibility === 'excluded'
                               ? eligibilityReason
@@ -211,12 +217,16 @@ function applyTaskSnapshot(state, entry) {
                 : {}),
             title: safeTaskText(item?.title) || previous?.title || 'Rewards 任务',
             status: item.unavailable
-                ? 'verifying'
+                ? 'unavailable'
                 : item?.completed
-                  ? 'completed'
+                  ? 'skipped'
                   : item?.locked
                     ? 'locked'
-                    : previous?.status || 'pending',
+                    : eligibility === 'excluded'
+                      ? 'unsupported'
+                      : eligibility === 'unknown'
+                        ? 'unavailable'
+                        : previous?.status || 'eligible',
             progress:
                 typeof item.current === 'number' &&
                 Number.isFinite(item.current) &&

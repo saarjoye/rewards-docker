@@ -2,7 +2,7 @@ import { URLs } from '../../../constants/urls'
 import type { HttpRequestConfig } from '../../../util/Http'
 import { randomUUID } from 'crypto'
 import { BaseActivity } from '../BaseActivity'
-import { finitePoints, markTaskStatus } from '../../../util/TaskTelemetry'
+import { finitePoints, markTaskStatus, reportTaskSubmission } from '../../../util/TaskTelemetry'
 
 export class DailyCheckIn extends BaseActivity {
     private gainedPoints: number = 0
@@ -20,7 +20,7 @@ export class DailyCheckIn extends BaseActivity {
             return
         }
 
-        this.oldBalance = Number(this.bot.userData.currentPoints ?? 0)
+        this.oldBalance = this.bot.userData.currentPoints
 
         this.bot.logger.info(
             this.bot.isMobile,
@@ -38,33 +38,34 @@ export class DailyCheckIn extends BaseActivity {
             )
 
             const newBalance = finitePoints(response?.data?.response?.balance)
+            reportTaskSubmission(newBalance, response?.data?.response?.creditedPoints)
             if (newBalance === null) {
-                markTaskStatus('verifying', '签到请求已结束，余额缺失，等待复核')
+                markTaskStatus('submitted', '签到已提交，余额缺失，等待积分确认')
                 return
             }
             this.gainedPoints = newBalance - this.oldBalance
+            this.bot.userData.currentPoints = newBalance
 
             this.bot.logger.debug(
                 this.bot.isMobile,
                 'DAILY-CHECK-IN',
-                `Balance delta after Daily Check-In | type=103 | previousBalance=${this.oldBalance} | currentBalance=${newBalance} | pointsGained=${this.gainedPoints}`
+                `Balance delta after Daily Check-In | type=103 | previousBalance=${this.oldBalance} | currentBalance=${newBalance} | balanceChange=${this.gainedPoints}`
             )
 
             if (this.gainedPoints > 0) {
                 this.bot.userData.currentPoints = newBalance
-                this.bot.userData.gainedPoints = (this.bot.userData.gainedPoints ?? 0) + this.gainedPoints
 
                 this.bot.logger.info(
                     this.bot.isMobile,
                     'DAILY-CHECK-IN',
-                    `Completed Daily Check-In | type=103 | pointsGained=${this.gainedPoints} | currentBalance=${newBalance}`,
+                    `签到已提交，余额变化不等于任务得分 | type=103 | balanceChange=${this.gainedPoints} | currentBalance=${newBalance}`,
                     'green'
                 )
             } else {
                 this.bot.logger.warn(
                     this.bot.isMobile,
                     'DAILY-CHECK-IN',
-                    `Daily Check-In completed but no points gained | type=103 | pointsGained=0 | currentBalance=${newBalance}`
+                    `Daily Check-In completed but no points gained | type=103 | balanceChange=0 | currentBalance=${newBalance}`
                 )
             }
         } catch (error) {
@@ -73,6 +74,7 @@ export class DailyCheckIn extends BaseActivity {
                 'DAILY-CHECK-IN',
                 `Error during Daily Check-In | message=${error instanceof Error ? error.message : String(error)}`
             )
+            throw error
         }
     }
 
@@ -120,7 +122,7 @@ export class DailyCheckIn extends BaseActivity {
                 `Sending Daily Check-In request | type=${jsonData.type} | url=${request.url}`
             )
 
-            return this.bot.http.request<{ response?: { balance?: number } }>(request)
+            return this.bot.http.request<{ response?: { balance?: number; creditedPoints?: number } }>(request)
         } catch (error) {
             this.bot.logger.error(
                 this.bot.isMobile,

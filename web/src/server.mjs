@@ -347,7 +347,7 @@ async function handleApi(req, res, url) {
             authenticated: Boolean(session),
             username: session?.username ?? null,
             csrfToken: session?.csrfToken ?? null,
-            version: '4.3.2-cn4'
+            version: '4.3.2-cn5'
         })
     }
 
@@ -521,6 +521,14 @@ async function handleApi(req, res, url) {
         return sendJson(res, 200, { ...wecom.status(), delivery: runNotifications.status() })
     }
 
+    if (url.pathname === '/api/schedule' && ['GET', 'PATCH'].includes(req.method)) {
+        const result =
+            req.method === 'GET'
+                ? await control.get('/schedule')
+                : await control.patch('/schedule', await readJson(req))
+        return sendJson(res, 200, result)
+    }
+
     if (req.method === 'POST' && url.pathname === '/api/wecom') {
         const body = await readJson(req)
         const allowed = new Set([
@@ -544,6 +552,13 @@ async function handleApi(req, res, url) {
         if (Object.keys(body).length) return sendError(res, 400, '测试通知不接受附加参数')
         const result = await wecom.sendTest()
         return sendJson(res, result.sent ? 200 : 409, result.sent ? { sent: true } : { error: '企业微信配置未完整' })
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/wecom/migrate-env') {
+        const body = await readJson(req)
+        if (Object.keys(body).length) return sendError(res, 400, '迁移不接受附加参数')
+        const updated = wecom.update({}, { migrateEnvironment: true })
+        return sendJson(res, 200, updated)
     }
 
     if (req.method === 'POST' && url.pathname === '/api/stop') {

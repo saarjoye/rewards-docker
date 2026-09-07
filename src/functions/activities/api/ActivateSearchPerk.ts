@@ -1,5 +1,6 @@
 import type { Dashboard, DashboardData } from '../../../interface/DashboardData'
 import { BaseActivity } from '../BaseActivity'
+import { markTaskStatus, reportTaskSubmission } from '../../../util/TaskTelemetry'
 
 export interface SearchMultiplierPerk {
     offerId: string
@@ -49,6 +50,7 @@ export class ActivateSearchPerk extends BaseActivity {
     public async activate(data: DashboardData) {
         const perk = detectSearchMultiplierPerk(data.dashboard)
         if (!perk) {
+            markTaskStatus('skipped', '没有搜索加成，不适用')
             this.bot.logger.debug(
                 this.bot.isMobile,
                 'ACTIVATE-SEARCH-PERK',
@@ -59,6 +61,7 @@ export class ActivateSearchPerk extends BaseActivity {
 
         const live = await this.bot.browser.func.ensureOffer(perk.offerId)
         if (!live) {
+            markTaskStatus('unavailable', '搜索加成数据不可用，未提交')
             this.bot.logger.warn(
                 this.bot.isMobile,
                 'ACTIVATE-SEARCH-PERK',
@@ -68,6 +71,7 @@ export class ActivateSearchPerk extends BaseActivity {
         }
 
         if (!live.reportable) {
+            markTaskStatus(live.isLocked ? 'locked' : 'skipped', '搜索加成已启用或尚不可执行')
             this.bot.logger.info(
                 this.bot.isMobile,
                 'ACTIVATE-SEARCH-PERK',
@@ -79,6 +83,7 @@ export class ActivateSearchPerk extends BaseActivity {
 
         const actionId = this.bot.nextActions.reportActivity
         if (!actionId) {
+            markTaskStatus('unsupported', '未发现搜索加成提交入口')
             this.bot.logger.warn(
                 this.bot.isMobile,
                 'ACTIVATE-SEARCH-PERK',
@@ -106,6 +111,7 @@ export class ActivateSearchPerk extends BaseActivity {
                 }
             ])
 
+            reportTaskSubmission()
             this.bot.logger.debug(
                 this.bot.isMobile,
                 'ACTIVATE-SEARCH-PERK',
@@ -116,7 +122,7 @@ export class ActivateSearchPerk extends BaseActivity {
                 this.bot.logger.info(
                     this.bot.isMobile,
                     'ACTIVATE-SEARCH-PERK',
-                    `Activated ${perk.multiplier}x search perk | offerId=${perk.offerId} | daily search cap is now boosted`,
+                    '搜索加成已提交，实际启用情况仍需复核',
                     'green'
                 )
             } else {
@@ -134,6 +140,7 @@ export class ActivateSearchPerk extends BaseActivity {
                 'ACTIVATE-SEARCH-PERK',
                 `Error activating search perk | offerId=${perk.offerId} | message=${error instanceof Error ? error.message : String(error)}`
             )
+            throw error
         }
     }
 }

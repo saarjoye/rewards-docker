@@ -18,6 +18,11 @@ export TZ="${TZ:-UTC}"
 
 cd /usr/src/microsoft-rewards-script
 
+# API mode owns concurrency and trigger accounting; no shell lock or random sleep.
+if [ "${API_MODE:-false}" = "true" ]; then
+    exec node scripts/api/trigger.js
+fi
+
 LOCKFILE=/tmp/run_daily.lock
 
 is_positive_integer() {

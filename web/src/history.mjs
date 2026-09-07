@@ -6,7 +6,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { sanitizeText } from './security.mjs'
 import { normalizedTasks } from './task-view.mjs'
 
-const TIMEZONE = process.env.TZ || 'Asia/Shanghai'
+const TIMEZONE = 'Asia/Shanghai'
 
 function numberOrNull(value) {
     if (value === null || value === undefined || value === '') return null
@@ -16,7 +16,7 @@ function numberOrNull(value) {
 
 function localDate(iso) {
     const date = new Date(iso)
-    if (Number.isNaN(date.getTime())) return new Date().toISOString().slice(0, 10)
+    if (Number.isNaN(date.getTime())) return localDate(new Date().toISOString())
     const parts = new Intl.DateTimeFormat('en-CA', {
         timeZone: TIMEZONE,
         year: 'numeric',
@@ -440,7 +440,7 @@ export class HistoryStore {
         const today = localDate(new Date().toISOString())
         const defaultStart = new Date(`${today}T00:00:00Z`)
         defaultStart.setUTCDate(defaultStart.getUTCDate() - 30)
-        const safeStart = /^\d{4}-\d{2}-\d{2}$/.test(start || '') ? start : defaultStart.toISOString().slice(0, 10)
+        const safeStart = /^\d{4}-\d{2}-\d{2}$/.test(start || '') ? start : localDate(defaultStart.toISOString())
         const safeEnd = /^\d{4}-\d{2}-\d{2}$/.test(end || '') ? end : today
         if (safeStart > safeEnd) throw new Error('开始日期不能晚于结束日期')
 

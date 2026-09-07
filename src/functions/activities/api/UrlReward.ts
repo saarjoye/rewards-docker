@@ -1,7 +1,7 @@
 import { URLs } from '../../../constants/urls'
 import type { BasePromotion } from '../../../interface/DashboardData'
 import { BaseActivity } from '../BaseActivity'
-import { markTaskStatus, finitePoints } from '../../../util/TaskTelemetry'
+import { markTaskStatus, finitePoints, reportTaskSubmission } from '../../../util/TaskTelemetry'
 
 export class UrlReward extends BaseActivity {
     public async doUrlReward(promotion: BasePromotion) {
@@ -13,7 +13,7 @@ export class UrlReward extends BaseActivity {
 
         const actionId = this.bot.nextActions.reportActivity
         if (!actionId) {
-            markTaskStatus('skipped', '未找到活动提交入口')
+            markTaskStatus('unsupported', '未找到活动提交入口，未执行')
             this.bot.logger.warn(
                 this.bot.isMobile,
                 'URL-REWARD',
@@ -24,7 +24,7 @@ export class UrlReward extends BaseActivity {
 
         const live = await this.bot.browser.func.ensureOffer(offerId)
         if (!live) {
-            markTaskStatus('skipped', '任务数据源中未找到此活动')
+            markTaskStatus('unavailable', '任务数据源中未找到此活动，未执行')
             this.bot.logger.warn(
                 this.bot.isMobile,
                 'URL-REWARD',
@@ -34,7 +34,7 @@ export class UrlReward extends BaseActivity {
         }
         if (!live.reportable) {
             markTaskStatus(
-                live.isCompleted ? 'completed' : live.isLocked ? 'locked' : 'skipped',
+                live.isCompleted ? 'skipped' : live.isLocked ? 'locked' : 'unavailable',
                 '活动已完成、锁定或不可提交'
             )
             this.bot.logger.warn(
@@ -88,52 +88,53 @@ export class UrlReward extends BaseActivity {
                 }
             )
 
+            reportTaskSubmission(availablePoints)
             if (!acknowledged) {
                 this.bot.logger.warn(
                     this.bot.isMobile,
                     'URL-REWARD',
                     `UrlReward request was not acknowledged | offerId=${offerId} | status=${status}`
                 )
-                markTaskStatus('verifying', '提交未得到确认，仅复核，不重复领取')
+                markTaskStatus('submitted', '提交未得到确认，仅复核，不重复领取')
                 return
             }
 
             const newBalance = finitePoints(availablePoints)
             if (newBalance === null) {
-                markTaskStatus('verifying', '活动请求已结束，等待对应任务数据复核')
+                markTaskStatus('submitted', '已提交，等待积分确认')
                 return
             }
             const gainedPoints = newBalance - oldBalance
+            this.bot.userData.currentPoints = newBalance
 
             this.bot.logger.debug(
                 this.bot.isMobile,
                 'URL-REWARD',
-                `Response | offerId=${offerId} | status=${status} | acknowledged=${acknowledged} | pointsGained=${gainedPoints} | currentBalance=${newBalance}`
+                `Response | offerId=${offerId} | status=${status} | acknowledged=${acknowledged} | balanceChange=${gainedPoints} | currentBalance=${newBalance}`
             )
 
             if (gainedPoints > 0) {
                 this.bot.userData.currentPoints = newBalance
-                this.bot.userData.gainedPoints = (this.bot.userData.gainedPoints ?? 0) + gainedPoints
 
                 const shortfall = expectedPoints > 0 && gainedPoints < expectedPoints
                 this.bot.logger.info(
                     this.bot.isMobile,
                     'URL-REWARD',
-                    `Completed UrlReward | offerId=${offerId} | pointsGained=${gainedPoints} | currentBalance=${newBalance}${shortfall ? ' | WARNING: credited less than advertised' : ''}`,
+                    `UrlReward 已提交，余额变化不等于任务得分 | offerId=${offerId} | balanceChange=${gainedPoints} | currentBalance=${newBalance}${shortfall ? ' | WARNING: credited less than advertised' : ''}`,
                     'green'
                 )
             } else if (acknowledged && expectedPoints === 0) {
                 this.bot.logger.info(
                     this.bot.isMobile,
                     'URL-REWARD',
-                    `Completed UrlReward (no points by design) | offerId=${offerId} | acknowledged=true | pointsGained=0 | currentBalance=${newBalance}`,
+                    `UrlReward 已提交，余额变化不等于任务得分 (no points by design) | offerId=${offerId} | acknowledged=true | balanceChange=0 | currentBalance=${newBalance}`,
                     'green'
                 )
             } else {
                 this.bot.logger.warn(
                     this.bot.isMobile,
                     'URL-REWARD',
-                    `UrlReward credited no points | offerId=${offerId} | acknowledged=${acknowledged} | expected=${expectedPoints} | pointsGained=0 | currentBalance=${newBalance}`
+                    `UrlReward credited no points | offerId=${offerId} | acknowledged=${acknowledged} | expected=${expectedPoints} | balanceChange=0 | currentBalance=${newBalance}`
                 )
             }
         } catch (error) {
