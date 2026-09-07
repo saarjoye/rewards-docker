@@ -1,6 +1,6 @@
 {
     "name": "mrs-cn-control-web",
-    "version": "4.3.2-cn7",
+    "version": "4.3.2-cn8",
     "private": true,
     "type": "module",
     "engines": {

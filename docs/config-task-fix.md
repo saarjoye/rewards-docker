@@ -59,7 +59,7 @@
 
 ## 交付状态
 
-本次为 cn6 基线上的 cn7 源码修复。完整更新配置见 [compose.yaml](../compose.yaml)，使用 `ghcr.io/saarjoye/mrs-core:4.3.2-cn7` 和 `ghcr.io/saarjoye/mrs-web:4.3.2-cn7`。确认发布工作流成功后即可拉取，无须自行构建；发布不会自动部署运行机。
+本次为 cn7 基线上的 cn8 源码修复。完整更新配置见 [compose.yaml](../compose.yaml)，生产使用 `ghcr.io/saarjoye/mrs-core:latest` 和 `ghcr.io/saarjoye/mrs-web:latest`；工作流同时保留 `4.3.2-cn8` 版本标签用于回滚。确认发布工作流成功后即可拉取，无须自行构建；发布不会自动部署运行机。
 
 ## 配置与权限
 
@@ -102,4 +102,4 @@ Linux 非 root 权限测试需要在 Linux 非 root 环境执行 Web 测试；Wi
 
 两份镜像均需重新构建。之后才可经授权更新 Core/Web 容器；本次没有执行这一步。升级保留现有账号库、配置、日志、会话、Web 数据及两份原密钥。若旧环境账号尚未迁移，先保留原环境注入配置；当前 Compose 不会自动读取旧 env 文件。
 
-升级使用明确的 cn7 标签，不要把旧 cn6 标签当作本次修复。回退时恢复旧镜像及其 Compose；不要恢复或更换与现有加密数据不匹配的密钥。
+升级使用 Compose 中的 `latest` 标签；版本号只在回滚或审计时使用，不需要每次修改 Compose。回退时恢复旧镜像及其 Compose；不要恢复或更换与现有加密数据不匹配的密钥。

@@ -611,6 +611,53 @@ export class MicrosoftRewardsBot {
             }
         }
 
+        const runDesktopSession = async (label: string, action: () => Promise<void>): Promise<boolean> => {
+            try {
+                await executionContext.run({ isMobile: false, account }, async () => {
+                    desktopSession = await this.createDesktopSession(account)
+                    await action()
+                })
+                return true
+            } catch (error) {
+                this.logger.error(
+                    'main',
+                    'FLOW',
+                    `${label}失败，跳过桌面端相关任务并继续后续流程 | message=${
+                        error instanceof Error ? error.message : String(error)
+                    }`
+                )
+                return false
+            } finally {
+                try {
+                    await closeDesktopSession()
+                } catch (error) {
+                    this.logger.warn(
+                        'main',
+                        'CLEANUP',
+                        `桌面端会话关闭失败，继续后续流程 | message=${
+                            error instanceof Error ? error.message : String(error)
+                        }`
+                    )
+                }
+            }
+        }
+
+        const getSearchPlan = async (): Promise<{ doMobile: boolean; doDesktop: boolean }> => {
+            try {
+                const plan = await this.searchManager.getSearchPoints()
+                return { doMobile: plan.doMobile, doDesktop: plan.doDesktop }
+            } catch (error) {
+                this.logger.error(
+                    'main',
+                    'SEARCH-MANAGER',
+                    `读取搜索额度失败，本轮不提交搜索但继续其他任务 | message=${
+                        error instanceof Error ? error.message : String(error)
+                    }`
+                )
+                return { doMobile: false, doDesktop: false }
+            }
+        }
+
         const closeMobileSession = async (): Promise<void> => {
             const session = mobileSession
             if (!session) return
@@ -804,7 +851,7 @@ export class MicrosoftRewardsBot {
                     if (this.config.workers.doActivateSearchPerk)
                         await runActivity('搜索加成', () => this.activities.doActivateSearchPerk(data))
 
-                    const plan = await this.searchManager.getSearchPoints()
+                    const plan = await getSearchPlan()
                     const doMobileSearch = plan.doMobile
                     const doDesktopSearch = plan.doDesktop
                     const desktopBrowserNeeded = this.config.workers.doPunchCards || doVisualSearch
@@ -815,13 +862,12 @@ export class MicrosoftRewardsBot {
                     }
 
                     if (desktopBrowserNeeded) {
-                        await executionContext.run({ isMobile: false, account }, async () => {
-                            desktopSession = await this.createDesktopSession(account)
+                        await runDesktopSession('桌面端任务准备', async () => {
                             if (this.config.workers.doPunchCards)
                                 await runActivity('桌面打卡任务', () => this.activities.doPunchCardsDesktop())
-                            if (doVisualSearch) await runActivity('视觉搜索', () => this.activities.doVisualSearch(data))
+                            if (doVisualSearch)
+                                await runActivity('视觉搜索', () => this.activities.doVisualSearch(data))
                         })
-                        await closeDesktopSession()
                     }
 
                     if (this.config.workers.doDailySet)
@@ -857,7 +903,7 @@ export class MicrosoftRewardsBot {
                     if (this.config.workers.doPunchCards)
                         await runActivity('移动打卡任务', () => this.activities.doPunchCardsMobile(data))
 
-                    const plan = await this.searchManager.getSearchPoints()
+                    const plan = await getSearchPlan()
                     const doMobileSearch = plan.doMobile
                     const doDesktopSearch = plan.doDesktop
 
@@ -870,13 +916,6 @@ export class MicrosoftRewardsBot {
                     }
 
                     if (parallel && !apiSearch && doMobileSearch && doDesktopSearch) {
-                        await executionContext.run({ isMobile: false, account }, async () => {
-                            desktopSession = await this.createDesktopSession(account)
-                            if (this.config.workers.doPunchCards)
-                                await runActivity('桌面打卡任务', () => this.activities.doPunchCardsDesktop())
-                            if (doVisualSearch) await runActivity('视觉搜索', () => this.activities.doVisualSearch(data))
-                        })
-
                         const mobileWork = async (): Promise<[number, number]> => {
                             try {
                                 const searchPoints = await this.searchManager.searchMobile(account)
@@ -887,11 +926,15 @@ export class MicrosoftRewardsBot {
                             }
                         }
                         const desktopWork = async (): Promise<number> => {
-                            try {
-                                return await this.searchManager.searchDesktop(account)
-                            } finally {
-                                await closeDesktopSession()
-                            }
+                            let searchPoints = 0
+                            await runDesktopSession('桌面端任务准备', async () => {
+                                if (this.config.workers.doPunchCards)
+                                    await runActivity('桌面打卡任务', () => this.activities.doPunchCardsDesktop())
+                                if (doVisualSearch)
+                                    await runActivity('视觉搜索', () => this.activities.doVisualSearch(data))
+                                searchPoints = await this.searchManager.searchDesktop(account)
+                            })
+                            return searchPoints
                         }
 
                         ;[[mobilePoints, bonusPoints], desktopPoints] = await Promise.all([mobileWork(), desktopWork()])
@@ -904,9 +947,7 @@ export class MicrosoftRewardsBot {
                         if (!apiSearch) await closeMobileSession()
 
                         if (desktopBrowserNeeded) {
-                            await executionContext.run({ isMobile: false, account }, async () => {
-                                desktopSession = await this.createDesktopSession(account)
-
+                            await runDesktopSession('桌面端任务准备', async () => {
                                 if (this.config.workers.doPunchCards)
                                     await runActivity('桌面打卡任务', () => this.activities.doPunchCardsDesktop())
                                 if (doVisualSearch)
@@ -915,7 +956,6 @@ export class MicrosoftRewardsBot {
                                     desktopPoints = await this.searchManager.searchDesktop(account)
                                 }
                             })
-                            await closeDesktopSession()
                         }
 
                         if (doDesktopSearch && apiSearch) {
@@ -947,7 +987,18 @@ export class MicrosoftRewardsBot {
                     edgeBrowsingTask = null
                 }
 
-                const finalPoints = await this.browser.func.getCurrentPoints()
+                let finalPoints = this.userData.currentPoints ?? initialPoints
+                try {
+                    finalPoints = await this.browser.func.getCurrentPoints()
+                } catch (error) {
+                    this.logger.warn(
+                        'main',
+                        'POINTS',
+                        `最终余额读取失败，沿用最近一次有效余额并保留已记录任务结果 | message=${
+                            error instanceof Error ? error.message : String(error)
+                        }`
+                    )
+                }
                 const collectedPoints = finalPoints - initialPoints
                 this.activities.telemetry.publish({ kind: 'balance', phase: 'end', balance: finalPoints })
 
