@@ -210,6 +210,13 @@ export function buildPublicState({ status, points, configuredAccounts, identity,
             hasTotp: Boolean(configured.hasTotp),
             hasProxy: Boolean(configured.proxy?.url),
             status: accountState({ coreState: status.state, account: runAccount, currentEmail, hasRun }),
+            timing: {
+                startedAt: runAccount?.startedAt ?? null,
+                endedAt: runAccount?.endedAt ?? null,
+                running: ['starting', 'running', 'stopping'].includes(status.state) &&
+                    key === currentEmail && runAccount?.success == null && !runAccount?.error && !runAccount?.endedAt &&
+                    !['completed', 'failed', 'interrupted'].includes(runAccount?.status)
+            },
             points: pointsView(runAccount, historical),
             earnable: earnableView(runAccount?.earnable),
             tasks: tasksView(runAccount?.tasks),

@@ -1,5 +1,6 @@
 import { taskTableMarkup, taskStatusLabel, filterAndGroupLogs, localeLabel } from './run-view.js'
 import { calendarRange, calendarMarkup } from './calendar-view.js'
+import { accountTimingMarkup } from './account-timing.js'
 const authShell = document.querySelector('#authShell')
 const appShell = document.querySelector('#app')
 const content = document.querySelector('#content')
@@ -467,7 +468,7 @@ async function renderCalendar(load = false, background = false) {
             <label>结束日期<input id="calendarEnd" type="date" value="${esc(data.range.end)}"></label>
             <button class="ghost" data-action="load-calendar">应用筛选</button></div></section>
             <section class="metrics">${metric('范围已确认新增', valueOrUnknown(data.summary.totalPoints, ' 分'), `${data.range.start} 至 ${data.range.end}`)}${metric('平均每日', valueOrUnknown(average, ' 分'), '按已确认日期计算')}${metric('完成天数', data.summary.completedDays, `异常 ${data.summary.failedDays} 天`)}${metric('最高积分日', valueOrUnknown(data.summary.highestPointDay.points, ' 分'), data.summary.highestPointDay.date || '-')}</section>
-            ${calendarMarkup(data)}`
+            ${calendarMarkup(data, state?.accounts ?? [])}`
         if (background) {
             for (const [id, value] of filterValues) { const element = document.getElementById(id); if (element) element.value = value }
             document.querySelectorAll('.calendar-runs details').forEach(element => { element.open = expanded.has(element.dataset.key) })
@@ -708,7 +709,7 @@ renderDashboard = function reconciledDashboard() {
 
 renderTasks = function reconciledTasks() {
     const body = (state?.accounts || [])
-        .map(account => `<article class="task-account"><h3>${esc(account.label)}</h3><p>${esc(account.status.label)} · ${esc(account.status.message)}</p>${pointSummaryMarkup(account.points)}${account.taskDataStatus === 'partial' ? '<p class="warn">部分任务来源不可用</p>' : ''}${taskTableMarkup(account.tasks, account.taskDataStatus)}${account.excludedTasks?.length ? `<details><summary>未列入执行的任务（${account.excludedTasks.length}）</summary>${taskTableMarkup(account.excludedTasks)}</details>` : ''}</article>`)
+        .map(account => `<article class="task-account"><h3>${esc(account.label)}</h3><p>${esc(account.status.label)} · ${esc(account.status.message)}</p>${accountTimingMarkup({ ...account.timing, running: account.timing?.running && state?.dataFreshness !== 'stale' })}${pointSummaryMarkup(account.points)}${account.taskDataStatus === 'partial' ? '<p class="warn">部分任务来源不可用</p>' : ''}${taskTableMarkup(account.tasks, account.taskDataStatus)}${account.excludedTasks?.length ? `<details><summary>未列入执行的任务（${account.excludedTasks.length}）</summary>${taskTableMarkup(account.excludedTasks)}</details>` : ''}</article>`)
         .join('')
     content.innerHTML = `<section class="section"><h2>当日任务与得分</h2><div class="task-grid">${body || '<div class="empty">尚未配置账号</div>'}</div></section>`
 }

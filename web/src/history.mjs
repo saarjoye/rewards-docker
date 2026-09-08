@@ -319,6 +319,9 @@ export class HistoryStore {
                         JSON.stringify(this.normalizedTasks(enhanced.tasks))
                     )
                     if (enhanced.telemetryVersion === 2) {
+                        const previous = this.db.prepare('SELECT verification_json FROM account_runs WHERE run_key = ? AND account_key = ?')
+                            .get(runKey, this.identity.keyFor(email || 'unknown'))
+                        const previousTiming = previous?.verification_json ? JSON.parse(previous.verification_json).timing : null
                         this.db
                             .prepare(
                                 'UPDATE account_runs SET verification_json = ? WHERE run_key = ? AND account_key = ?'
@@ -329,6 +332,11 @@ export class HistoryStore {
                                     collected: null,
                                     confirmedPoints: null,
                                     pending: enhanced.pendingVerification ?? 0,
+                                    timing: {
+                                        startedAt: enhanced.startedAt ?? previousTiming?.startedAt ?? null,
+                                        endedAt: enhanced.endedAt ?? previousTiming?.endedAt ?? null,
+                                        running: false
+                                    },
                                     status: enhanced.status ?? 'unknown',
                                     balanceChange: numberOrNull(enhanced.balanceChange),
                                     unattributedBalanceChange: null

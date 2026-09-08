@@ -70,28 +70,66 @@ function categoryMarkup(values) {
         : '未归类'
 }
 
-export function calendarMarkup(data) {
-    const days = calendarDays(data.range, data.days ?? [])
+export function calendarMarkup(data, accountCatalog = []) {
+    // Keep account numbers stable when the date range or account filter changes.
+    const accounts = new Map(accountCatalog.map(account => [account.id, account]))
+    const discovered = new Map((data.accounts ?? []).map(account => [account.id, account]))
+    for (const record of data.records ?? []) {
+        if (!discovered.has(record.accountId)) discovered.set(record.accountId, { id: record.accountId, label: record.accountLabel })
+    }
+    for (const day of data.days ?? []) {
+        for (const account of day.balanceReconciliation ?? []) {
+            if (!discovered.has(account.accountKey)) discovered.set(account.accountKey, { id: account.accountKey })
+        }
+    }
+    for (const [id, account] of [...discovered].sort(([a], [b]) => String(a).localeCompare(String(b)))) {
+        if (!accounts.has(id)) accounts.set(id, account)
+    }
+    const accountNumbers = new Map()
+    for (const account of accounts.values()) {
+        if (Number.isInteger(account.index) && account.index > 0) accountNumbers.set(account.id, account.index)
+    }
+    let nextNumber = Math.max(0, ...accountNumbers.values()) + 1
+    for (const id of accounts.keys()) {
+        if (!accountNumbers.has(id)) accountNumbers.set(id, nextNumber++)
+    }
+    const days = calendarDays(data.range, data.days ?? []).map(day => {
+        const records = (data.records ?? []).filter(record => record.date === day.date)
+        const daily = new Map((day.balanceReconciliation ?? []).map(account => [account.accountKey, account]))
+        for (const record of records) {
+            if (!daily.has(record.accountId)) daily.set(record.accountId, { accountKey: record.accountId, dailyBalanceDelta: null })
+        }
+        const count = Math.max(Number(day.records) || 0, new Set(records.map(record => JSON.stringify([record.accountId, record.runId]))).size,
+            [...daily.values()].reduce((total, account) => total + Math.max(1, account.runs?.length ?? 0), 0))
+        return { ...day, records: count, status: count && day.status === 'not-run' ? 'pending' : day.status,
+            accountBalances: [...daily.values()].sort((a, b) => accountNumbers.get(a.accountKey) - accountNumbers.get(b.accountKey)) }
+    })
     const max = Math.max(1, ...days.map(day => number(day.totalGained) ?? 0))
     const grid = days
         .map(day => {
             const known = number(day.totalGained) !== null
-            const breakdown = ` · 已确认 ${points(day.confirmedPoints)} · 未归属 ${points(day.unattributedPoints)}（余额增加但暂未关联到唯一任务来源） · 待确认 ${points(day.pendingPoints)} · ${day.balanceVerification === 'provisional' ? '余额暂时值' : day.balanceVerification === 'confirmed' ? '余额已确认' : '余额待确认'}`
+            const empty = !day.records && !known
+            const accountRows = day.accountBalances.map(account => {
+                const value = number(account.dailyBalanceDelta)
+                const provisional = value !== null && account.balanceVerification === 'provisional'
+                return '<li class="calendar-account" title="' + esc(accounts.get(account.accountKey)?.label || '历史账号') + '">' +
+                    '<span class="calendar-account-name">账号' + accountNumbers.get(account.accountKey) + '：</span>' +
+                    '<strong class="calendar-account-points">' + (value === null ? '待确认' : esc(value) + ' 分') + '</strong>' +
+                    (provisional ? '<small class="calendar-live">暂时</small>' : '') + '</li>'
+            }).join('')
+            const status = day.status === 'pending' ? '待确认' : esc(taskStatusLabel(day.status))
             const heat =
                 known && day.totalGained > 0 ? Math.min(4, Math.max(1, Math.ceil((day.totalGained / max) * 4))) : 0
             return (
                 '<article class="calendar-cell heat-' +
                 heat +
-                '"><strong>' +
+                '"><time datetime="' + esc(day.date) + '">' +
                 esc(day.date) +
-                '</strong><b>' +
-                (day.status === 'not-run' ? '无记录' : points(day.totalGained)) +
-                '</b><span>' +
-                (day.status === 'not-run' ? '未运行或无记录' : day.status === 'pending' ? '待确认' : esc(taskStatusLabel(day.status))) +
-                ' · ' +
-                Number(day.records || 0) +
-                breakdown +
-                ' 条记录</span></article>'
+                '</time>' +
+                (empty ? '<p class="calendar-empty">无记录</p>' : accountRows ? '<ul class="calendar-accounts">' + accountRows + '</ul>' :
+                    '<p class="calendar-empty">' + points(day.totalGained) + (known ? ' 分' : '') + '</p>') +
+                '<footer class="calendar-cell-footer">' + (empty ? '暂无历史数据' :
+                    day.records + ' 条记录 · ' + status + (!known ? '<span>余额证据不足</span>' : '')) + '</footer></article>'
             )
         })
         .join('')
@@ -149,7 +187,7 @@ export function calendarMarkup(data) {
                 '<tr><td>' +
                 esc(record.date) +
                 '</td><td>' +
-                esc(record.accountLabel) +
+                '账号' + accountNumbers.get(record.accountId) + ' · ' + esc(record.accountLabel) +
                 '</td><td>' +
                 (number(ordered[0].beforePoints) ?? '待确认') +
                 '</td><td>' +
@@ -172,12 +210,12 @@ export function calendarMarkup(data) {
         })
         .join('')
     return (
-        '<section class="section"><div class="section-head"><h2>日历视图</h2></div><div class="calendar-grid">' +
+        '<section class="section"><div class="section-head calendar-heading"><h2>日历视图</h2><span class="muted">账户余额变化 · Asia/Shanghai</span></div><div class="calendar-grid">' +
         grid +
         '</div></section><section class="section"><div class="section-head"><h2>账号与日期明细</h2></div>' +
         (rows
             ? '<div class="table-wrap"><table class="calendar-records"><thead><tr><th>日期</th><th>账号</th>' +
-              '<th>任务前</th><th>任务后</th><th>运行已确认小计</th><th>状态</th><th>执行次数</th></tr></thead><tbody>' +
+              '<th>任务前</th><th>任务后</th><th>当日账户余额变化</th><th>状态</th><th>执行次数</th></tr></thead><tbody>' +
               rows +
               '</tbody></table></div>'
             : '<div class="empty">当前筛选范围没有执行记录</div>') +

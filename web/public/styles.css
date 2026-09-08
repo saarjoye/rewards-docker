@@ -19,6 +19,22 @@
 .task-account {
     min-width: 0;
 }
+.account-timing {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 6px 10px;
+    margin: 12px 0;
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--muted);
+}
+.account-timing strong {
+    color: var(--ink);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere;
+}
 .log-message {
     min-width: 0;
     overflow-wrap: anywhere;
@@ -474,33 +490,67 @@ tr:last-child td {
     grid-template-columns: repeat(7, minmax(90px, 1fr));
     gap: 8px;
 }
+.calendar-heading {
+    flex-wrap: wrap;
+}
+.calendar-heading h2 {
+    flex-shrink: 0;
+}
 .calendar-cell {
-    min-height: 92px;
+    min-height: 148px;
     min-width: 0;
     padding: 10px;
     border: 1px solid var(--line);
     border-radius: 8px;
     background: #f7fbfa;
-    display: grid;
-    align-content: space-between;
-    gap: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
     overflow-wrap: anywhere;
 }
-.calendar-cell strong,
-.calendar-cell span {
-    display: block;
-}
-.calendar-cell strong {
+.calendar-cell time {
     font-size: 13px;
+    font-weight: 700;
 }
-.calendar-cell b {
-    display: block;
-    font-size: 18px;
-    color: var(--green);
+.calendar-accounts {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: grid;
+    gap: 8px;
 }
-.calendar-cell span {
+.calendar-account {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 2px 4px;
+    font-size: 13px;
+    line-height: 1.5;
+    min-width: 0;
+}
+.calendar-account-name {
+    color: var(--ink);
+}
+.calendar-account-points {
+    font-size: 14px;
+    font-variant-numeric: tabular-nums;
+}
+.calendar-live {
+    font-size: 11px;
+}
+.calendar-empty {
+    margin: 0;
     color: var(--muted);
+    font-size: 14px;
+}
+.calendar-cell-footer {
+    margin-top: auto;
+    color: #465d56;
     font-size: 12px;
+    line-height: 1.5;
+}
+.calendar-cell-footer span {
+    display: block;
 }
 .calendar-cell.heat-1 {
     background: #e2f1ed;

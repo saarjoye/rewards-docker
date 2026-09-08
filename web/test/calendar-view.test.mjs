@@ -49,3 +49,31 @@ test('calendar groups daily account runs, preserves legacy amounts and escapes l
     assert.match(html, /heat-4/)
     assert.doesNotMatch(html, /<script>|\+43/)
 })
+
+test('calendar cells list individual reconciled accounts without residual prose or summing runs', () => {
+    const html = calendarMarkup({
+        range: { start: '2026-09-08', end: '2026-09-08' },
+        accounts: [{ id: 'b' }, { id: 'a' }],
+        days: [{ date: '2026-09-08', totalGained: 205, records: 3, status: 'running', balanceReconciliation: [
+            { accountKey: 'a', dailyBalanceDelta: 0 },
+            { accountKey: 'b', dailyBalanceDelta: 205, balanceVerification: 'provisional' }
+        ] }], records: []
+    }, [{ id: 'b', index: 2 }, { id: 'a', index: 1 }])
+    assert.match(html, /账号1：.*?0 分/s)
+    assert.match(html, /账号2：.*?205 分/s)
+    assert.match(html, /暂时/)
+    assert.doesNotMatch(html, /未归属|余额增加但|NaN|undefined/)
+})
+
+test('calendar distinguishes empty days from legacy evidence and keeps account number after filtering', () => {
+    const html = calendarMarkup({
+        range: { start: '2026-09-01', end: '2026-09-02' }, days: [],
+        records: [{ date: '2026-09-02', accountId: 'b', runId: 'legacy', legacyCollected: 111, runGained: 999, status: 'interrupted' }]
+    }, [{ id: 'a', index: 1 }, { id: 'b', index: 2 }])
+    const cells = html.split('</article>')
+    assert.match(cells[0], /无记录/)
+    assert.doesNotMatch(cells[0], /待确认/)
+    assert.match(cells[1], /账号2：.*?待确认/s)
+    assert.match(cells[1], /1 条记录.*余额证据不足/s)
+    assert.doesNotMatch(cells[1], /无记录|111|999/)
+})

@@ -285,6 +285,9 @@ test('BFF authenticates users, redacts state and restricts control bodies', { ti
         assert.equal(saved.delivery.pending, 0)
         const calendarScript = await fetch(`${baseUrl}/calendar-view.js`)
         assert.equal(calendarScript.status, 200)
+        const timingScript = await fetch(`${baseUrl}/account-timing.js`)
+        assert.equal(timingScript.status, 200)
+        assert.match(await timingScript.text(), /export function accountTimingMarkup/)
     } finally {
         child.kill('SIGTERM')
         await Promise.race([

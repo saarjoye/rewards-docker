@@ -432,7 +432,7 @@ export class MicrosoftRewardsBot {
                     'ACCOUNT-START',
                     `Starting account: ${accountEmail} | geoLocale: ${account.geoLocale} | locale: ${this.accountLocale.locale}${
                         cachedRegion ? ` | cachedRegion: ${cachedRegion}` : ''
-                    }`
+                    } | startedAt=${new Date(accountStartTime).toISOString()}`
                 )
 
                 this.http = new HttpClient(account.proxy, {
@@ -484,7 +484,7 @@ export class MicrosoftRewardsBot {
                         this.logger.info(
                             'main',
                             'ACCOUNT-END',
-                            `Completed account: ${accountEmail} | pointsGained=${collectedPoints} | previousBalance=${accountInitialPoints} | currentBalance=${accountFinalPoints} | durationSeconds=${durationSeconds}`,
+                            `Completed account: ${accountEmail} | pointsGained=${collectedPoints} | previousBalance=${accountInitialPoints} | currentBalance=${accountFinalPoints} | durationSeconds=${durationSeconds} | startedAt=${new Date(accountStartTime).toISOString()} | endedAt=${new Date().toISOString()}`,
                             'green'
                         )
                     }

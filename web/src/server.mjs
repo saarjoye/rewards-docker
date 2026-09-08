@@ -333,6 +333,7 @@ function serveStatic(res, pathname) {
         '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
         '/run-view.js': ['run-view.js', 'text/javascript; charset=utf-8'],
         '/calendar-view.js': ['calendar-view.js', 'text/javascript; charset=utf-8'],
+        '/account-timing.js': ['account-timing.js', 'text/javascript; charset=utf-8'],
         '/styles.css': ['styles.css', 'text/css; charset=utf-8']
     }
     const target = files[pathname]
@@ -356,7 +357,7 @@ async function handleApi(req, res, url) {
             authenticated: Boolean(session),
             username: session?.username ?? null,
             csrfToken: session?.csrfToken ?? null,
-            version: '4.3.2-cn11'
+            version: '4.3.2-cn12'
         })
     }
 

@@ -274,6 +274,9 @@ export function historyRecord(entry) {
         collected: entry.run?.collected ?? null,
         accounts: (entry.run?.accounts ?? []).map(a => ({
             email: a.email,
+            startedAt: a.startedAt ?? null,
+            endedAt: a.endedAt ?? null,
+            durationSeconds: a.durationSeconds ?? null,
             initialPoints: a.initialPoints ?? null,
             initialObservedAt: a.initialObservedAt ?? null,
             finalObservedAt: a.finalObservedAt ?? null,

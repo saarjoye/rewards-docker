@@ -340,13 +340,13 @@ function applyActivityTask(state, entry) {
 const RE = {
     runStart: /^Starting Microsoft Rewards Script \| v(\S+) \| Accounts: (\d+) \| Clusters: (\d+)/,
     accountStart:
-        /^Starting account: (\S+) \| geoLocale: ([^|]+?)(?: \| locale: (\S+))?(?: \| cachedRegion: (\S+))?\s*$/,
+        /^Starting account: (\S+) \| geoLocale: ([^|]+?)(?: \| locale: (\S+))?(?: \| cachedRegion: (\S+))?(?: \| startedAt=(\S+))?\s*$/,
     earnable: /^Earnable today \| Mobile: (\d+) \| Browser: (\d+) \| App: (\d+) \| (\S+) \| locale: (\S+)\s*$/,
     searchSummary: /^Search summary \| mobile=(-?\d+) \| desktop=(-?\d+) \| bonus=(-?\d+) \| total=(-?\d+)/,
     streakProtection:
         /^Snapshot complete \| offers=(\d+) \| reportable=(\d+) \| streaks=(\d+) \| streakProtectionEnabled=(true|false|null) \| streakProtectionRemainingDays=(\d+|null) \| streakCounter=(\d+|null) \| level=([^|]+) \| account=(\S+@\S+)$/,
     accountEnd:
-        /^Completed account: (\S+) \| pointsGained=(-?\d+) \| previousBalance=(\d+) \| currentBalance=(\d+) \| durationSeconds=([\d.]+)/,
+        /^Completed account: (\S+) \| pointsGained=(-?\d+|null) \| previousBalance=(\d+|null) \| currentBalance=(\d+|null) \| durationSeconds=([\d.]+)/,
     runEnd: /^Completed all accounts \| accountsProcessed=(\d+) \| pointsGained=(-?\d+) \| previousBalance=(\d+) \| currentBalance=(\d+) \| runtimeMinutes=([\d.]+)/,
     accountError: /^(\S+@\S+): ([\s\S]+)$/,
     flowFailed: /flow failed for (\S+@\S+):/i,
@@ -368,6 +368,11 @@ function fractionField(message, name) {
 
 function eventTime(entry) {
     return entry.receivedAt ?? entry.ts ?? null
+}
+
+function accountTimestamp(message, field) {
+    const value = message.match(new RegExp(`(?:^| \\| )${field}=(\\S+)`))?.[1]
+    return value && /(?:Z|[+-]\d{2}:\d{2})$/.test(value) && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null
 }
 
 function accountEmailForEntry(state, entry) {
@@ -636,6 +641,7 @@ export function applyLogToRunState(state, entry) {
                 const acc = ensureAccount(state, m[1])
                 if (acc) {
                     acc.geoLocale = m[2].trim()
+                    acc.startedAt ||= accountTimestamp(msg, 'startedAt')
                     acc.locale = m[3] || null
                     acc.cachedRegion = m[4] || null
                 }
@@ -719,19 +725,21 @@ export function applyLogToRunState(state, entry) {
             if ((m = msg.match(RE.accountEnd))) {
                 const acc = ensureAccount(state, m[1])
                 if (acc) {
+                    acc.startedAt ||= accountTimestamp(msg, 'startedAt')
+                    acc.endedAt ||= accountTimestamp(msg, 'endedAt')
                     if (acc.telemetryVersion === 2) {
                         acc.durationSeconds = Number(m[5])
                         acc.status = structuredAccountStatus(acc, true)
                         acc.success = acc.status === 'completed'
                         return 'account-end'
                     }
-                    acc.collectedPoints = Number(m[2])
-                    acc.initialPoints = Number(m[3])
-                    acc.finalPoints = Number(m[4])
+                    acc.collectedPoints = m[2] === 'null' ? null : Number(m[2])
+                    acc.initialPoints = m[3] === 'null' ? null : Number(m[3])
+                    acc.finalPoints = m[4] === 'null' ? null : Number(m[4])
                     acc.durationSeconds = Number(m[5])
                     acc.success = true
-                    acc.live.gained = Number(m[2])
-                    acc.live.balance = Number(m[4])
+                    acc.live.gained = acc.collectedPoints
+                    acc.live.balance = acc.finalPoints
                     const at = eventTime(entry)
                     acc.live.lastUpdateTs = at
                     state.lastPointUpdateAt = at
