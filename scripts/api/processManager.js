@@ -213,6 +213,7 @@ export class ProcessManager extends EventEmitter {
             state: this.state,
             running: this.state !== 'idle',
             live: this.state === 'running' || this.state === 'starting',
+            runId: this.runId,
             startedAt: this.state === 'idle' ? null : this.startedAt,
             currentAccount: run.live.currentAccount,
             balance: run.live.currentBalance,

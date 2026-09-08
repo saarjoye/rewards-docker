@@ -303,7 +303,7 @@ test('snapshots merge progress with execution and cannot restore a stale balance
         balance: null
     })
     result = summarizeRunState(state).accounts[0]
-    assert.equal(result.live.balance, null)
+    assert.equal(result.live.balance, 130)
     assert.equal(result.finalPoints, null)
     assert.equal(result.collectedPoints, 30)
 })

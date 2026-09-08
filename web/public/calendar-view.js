@@ -76,7 +76,7 @@ export function calendarMarkup(data) {
     const grid = days
         .map(day => {
             const known = number(day.totalGained) !== null
-            const breakdown = ` · 已确认 ${points(day.confirmedPoints)} · 未归属 ${points(day.unattributedPoints)} · 待确认 ${points(day.pendingPoints)}`
+            const breakdown = ` · 已确认 ${points(day.confirmedPoints)} · 未归属 ${points(day.unattributedPoints)}（余额增加但暂未关联到唯一任务来源） · 待确认 ${points(day.pendingPoints)} · ${day.balanceVerification === 'provisional' ? '余额暂时值' : day.balanceVerification === 'confirmed' ? '余额已确认' : '余额待确认'}`
             const heat =
                 known && day.totalGained > 0 ? Math.min(4, Math.max(1, Math.ceil((day.totalGained / max) * 4))) : 0
             return (
@@ -87,7 +87,7 @@ export function calendarMarkup(data) {
                 '</strong><b>' +
                 (day.status === 'not-run' ? '无记录' : points(day.totalGained)) +
                 '</b><span>' +
-                (day.status === 'not-run' ? '未运行或无记录' : esc(taskStatusLabel(day.status))) +
+                (day.status === 'not-run' ? '未运行或无记录' : day.status === 'pending' ? '待确认' : esc(taskStatusLabel(day.status))) +
                 ' · ' +
                 Number(day.records || 0) +
                 breakdown +
@@ -113,7 +113,9 @@ export function calendarMarkup(data) {
             const daily = data.days?.find(day => day.date === record.date)?.balanceReconciliation?.find(account => account.accountKey === record.accountId)
             const subtotal = daily?.dailyBalanceDelta ?? null
             const unknown = records.length - verified.length
-            const status = records.every(item => item.status === 'completed')
+            const status = records.some(item => ['running', 'starting', 'stopping'].includes(item.status)) ? 'running'
+                : records.some(item => item.status === 'completed-pending-persist') ? 'completed-pending-persist'
+                : records.every(item => item.status === 'completed')
                 ? 'completed'
                 : records.some(item => item.status === 'interrupted')
                   ? 'interrupted'
@@ -140,7 +142,7 @@ export function calendarMarkup(data) {
                         categoryMarkup(run.sources) +
                         '</td><td><button class="small-button" data-action="history-detail" data-id="' +
                         esc(run.runId) +
-                        '">运行详情</button></td></tr>'
+                        '" ' + (run.persistence === 'provisional' ? 'disabled title="临时余额证据已在本行展示，正式历史待收口"' : '') + '>运行详情</button></td></tr>'
                 )
                 .join('')
             return (
@@ -160,7 +162,7 @@ export function calendarMarkup(data) {
                 '</td><td>' +
                 records.length +
                 ' 次</td></tr>' +
-                '<tr class="calendar-runs"><td colspan="7"><details><summary>查看 ' +
+                '<tr class="calendar-runs"><td colspan="7"><details data-key="' + esc(JSON.stringify([record.date, record.accountId])) + '"><summary>查看 ' +
                 records.length +
                 ' 次执行记录</summary><div class="table-wrap"><table><thead><tr><th>开始</th><th>结束</th><th>任务前</th>' +
                 '<th>任务后</th><th>本次积分</th><th>状态</th><th>分类来源</th><th>明细</th></tr></thead><tbody>' +

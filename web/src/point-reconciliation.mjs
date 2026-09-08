@@ -79,14 +79,22 @@ function creditSummary(events, delta, first, last) {
 
 function accountRunResult(row, date, events, tasks) {
     const initial = observed(row.initialPoints, 'initial', row.initialObservedAt)
-    const last = observed(row.finalPoints, 'final', row.finalObservedAt)
-    const balanceDelta = initial && last && localDateInTimeZone(initial.observedAt) === date &&
+    const final = observed(row.finalPoints, 'final', row.finalObservedAt)
+    const live = observed(row.liveBalance, 'live', row.liveObservedAt)
+    const last = final ?? live
+    const active = ['starting', 'running', 'stopping'].includes(row.status)
+    const balanceDelta = (final || active) && initial && last && localDateInTimeZone(initial.observedAt) === date &&
         localDateInTimeZone(last.observedAt) === date && Date.parse(last.observedAt) > Date.parse(initial.observedAt)
         ? last.points - initial.points : null
     const pending = pendingSummary(tasks)
     return {
         runGained: balanceDelta,
         runBalanceDelta: balanceDelta,
+        liveRunBalanceDelta: !final && active ? balanceDelta : null,
+        balanceVerification: balanceDelta === null ? 'pending' : final ? 'confirmed' : 'provisional',
+        persistence: row.durable ? 'durable' : 'provisional',
+        status: row.status ?? (final ? 'completed-pending-persist' : 'pending'),
+        observedAt: last?.observedAt ?? initial?.observedAt ?? null,
         date,
         interrupted: row.status === 'interrupted',
         pendingExpectedPoints: pending.points,
@@ -102,7 +110,7 @@ function accountRunResult(row, date, events, tasks) {
             firstSource: initial?.source ?? null,
             lastSource: last?.source ?? null,
             provisional: Boolean(last && last.source !== 'final'),
-            status: balanceDelta !== null ? 'confirmed' : initial ? 'pending' : 'unavailable'
+            status: balanceDelta !== null ? final ? 'confirmed' : 'provisional' : initial ? 'pending' : 'unavailable'
         }
     }
 }
@@ -112,7 +120,7 @@ export function reconcileAccountDay({ date, accountKey, runs = [], pointEvents =
     tasks = tasks.filter(task => task.accountKey === accountKey)
     const rows = runs
         .filter(row => !accountKey || row.accountKey === accountKey)
-        .filter(row => [row.startedAt, row.endedAt, row.initialObservedAt, row.finalObservedAt].some(at => localDateInTimeZone(at) === date))
+        .filter(row => [row.startedAt, row.endedAt, row.initialObservedAt, row.finalObservedAt, row.liveObservedAt].some(at => localDateInTimeZone(at) === date))
         .toSorted((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)))
     const runResults = rows.map(row =>
         accountRunResult(row, date, pointEvents, tasks.filter(task => task.runKey === row.runKey))
@@ -121,18 +129,9 @@ export function reconcileAccountDay({ date, accountKey, runs = [], pointEvents =
         .map(row => observed(row.initialPoints, 'initial', row.initialObservedAt))
         .filter(item => item && localDateInTimeZone(item.observedAt) === date)
         .sort((a, b) => a.observedAt.localeCompare(b.observedAt))[0] ?? null
-    const last = runResults
-        .map(result =>
-            result.balanceReconciliation.lastBalance === null
-                ? null
-                : {
-                      points: result.balanceReconciliation.lastBalance,
-                      source: result.balanceReconciliation.lastSource,
-                      observedAt: result.balanceReconciliation.lastObservedAt
-                  }
-        )
+    const last = rows.flatMap(row => [observed(row.finalPoints, 'final', row.finalObservedAt), observed(row.liveBalance, 'live', row.liveObservedAt)])
         .filter(item => item && localDateInTimeZone(item.observedAt) === date)
-        .sort((a, b) => a.observedAt.localeCompare(b.observedAt))
+        .sort((a, b) => Date.parse(a.observedAt) - Date.parse(b.observedAt) || Number(a.source === 'final') - Number(b.source === 'final'))
         .at(-1) ?? null
     const balanceDelta = first && last && Date.parse(last.observedAt) > Date.parse(first.observedAt) ? last.points - first.points : null
     const dayRunKeys = new Set(
@@ -150,6 +149,12 @@ export function reconcileAccountDay({ date, accountKey, runs = [], pointEvents =
         runGained: selected < 0 ? null : runResults[selected].runGained,
         runBalanceDelta: selected < 0 ? null : runResults[selected].runGained,
         dailyBalanceDelta: balanceDelta,
+        liveDailyBalanceDelta: last?.source === 'live' ? balanceDelta : null,
+        liveRunBalanceDelta: selected < 0 ? null : runResults[selected].liveRunBalanceDelta,
+        runBalanceVerification: selected < 0 ? 'pending' : runResults[selected].balanceVerification,
+        balanceVerification: balanceDelta === null ? 'pending' : last?.source === 'final' ? 'confirmed' : 'provisional',
+        businessDate: date,
+        observedAt: last?.observedAt ?? first?.observedAt ?? null,
         todayGained,
         pendingExpectedPoints: pending.points,
         pendingTaskCount: pending.count,
@@ -164,7 +169,7 @@ export function reconcileAccountDay({ date, accountKey, runs = [], pointEvents =
             firstSource: first?.source ?? null,
             lastSource: last?.source ?? null,
             provisional: Boolean(last && last.source !== 'final'),
-            status: balanceDelta !== null ? 'confirmed' : first || pending.count ? 'pending' : 'unavailable'
+            status: balanceDelta !== null ? last?.source === 'final' ? 'confirmed' : 'provisional' : first || pending.count ? 'pending' : 'unavailable'
         },
         runs: rows.map((row, index) => ({ runKey: row.runKey, ...runResults[index] }))
     }
@@ -172,7 +177,7 @@ export function reconcileAccountDay({ date, accountKey, runs = [], pointEvents =
 
 export function reconcileDailyPoints({ date, runs = [], pointEvents = [], tasks = [], currentRunId = null } = {}) {
     const accountKeys = [...new Set([...runs.filter(row =>
-        [row.startedAt, row.endedAt, row.initialObservedAt, row.finalObservedAt].some(at => localDateInTimeZone(at) === date)
+        [row.startedAt, row.endedAt, row.initialObservedAt, row.finalObservedAt, row.liveObservedAt].some(at => localDateInTimeZone(at) === date)
     ), ...pointEvents.filter(event => localDateInTimeZone(event.confirmedAt) === date)].map(row => row.accountKey).filter(Boolean))]
     const accounts = accountKeys.map(accountKey =>
         reconcileAccountDay({ date, accountKey, runs, pointEvents, tasks, currentRunId })
@@ -186,6 +191,10 @@ export function reconcileDailyPoints({ date, runs = [], pointEvents = [], tasks 
     return {
         date,
         timeZone: TIMEZONE,
+        businessDate: date,
+        balanceVerification: accounts.some(account => account.dailyBalanceDelta === null) || !accounts.length ? 'pending' : accounts.some(account => account.balanceVerification === 'provisional') ? 'provisional' : 'confirmed',
+        runBalanceVerification: !participating.length || participating.some(account => account.runBalanceVerification === 'pending') ? 'pending' : participating.some(account => account.runBalanceVerification === 'provisional') ? 'provisional' : 'confirmed',
+        observedAt: accounts.map(account => account.observedAt).filter(Boolean).sort().at(-1) ?? null,
         runGained: total(participating.map(account => account.runGained)),
         runBalanceDelta: total(participating.map(account => account.runBalanceDelta)),
         dailyBalanceDelta: total(accounts.map(account => account.dailyBalanceDelta)),

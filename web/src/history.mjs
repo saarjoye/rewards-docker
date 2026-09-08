@@ -190,9 +190,9 @@ export class HistoryStore {
         for (const account of accounts ?? []) {
             if (account.telemetryVersion !== 2) continue
             const accountKey = this.identity.keyFor(account.email ?? 'unknown')
-            for (const phase of ['start', 'end']) {
-                const balance = numberOrNull(phase === 'start' ? account.initialPoints : account.finalPoints)
-                const observedAt = phase === 'start' ? account.initialObservedAt : account.finalObservedAt
+            for (const phase of ['start', 'end', 'live']) {
+                const balance = numberOrNull(phase === 'start' ? account.initialPoints : phase === 'end' ? account.finalPoints : account.live?.balance)
+                const observedAt = phase === 'start' ? account.initialObservedAt : phase === 'end' ? account.finalObservedAt : account.balanceObservedAt
                 if (balance === null || balance < 0 || !observedAt || !Number.isFinite(Date.parse(observedAt))) continue
                 const snapshotId = crypto.createHash('sha256').update(`${accountKey}|${runKey}|${phase}|${observedAt}`).digest('hex')
                 this.db.prepare('INSERT OR IGNORE INTO balance_snapshots VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
@@ -245,6 +245,7 @@ export class HistoryStore {
     }
 
     ingest(status, historyPayload) {
+        if (status) this.liveStatus = status
         const inserted = []
         const history = Array.isArray(historyPayload?.runs) ? historyPayload.runs : []
         const liveAccounts = new Map(
@@ -376,6 +377,7 @@ export class HistoryStore {
             } catch {}
             return {
                 runKey: row.run_key,
+                durable: true,
                 status: row.status,
                 accountKey: row.account_key,
                 accountLabel: row.account_label,
@@ -392,6 +394,15 @@ export class HistoryStore {
 
     reconciliation(date, accountId = null, currentRunId = null) {
         const rows = this.reconciliationRows(accountId)
+        const live = this.liveStatus
+        for (const account of live?.runId ? live.run?.accounts ?? [] : []) {
+            const key = this.identity.keyFor(account.email ?? 'unknown')
+            if (accountId && key !== accountId) continue
+            if (rows.some(row => row.runKey === live.runId && row.accountKey === key)) continue
+            rows.push({ runKey: live.runId, accountKey: key, accountLabel: this.identity.labelFor(account.email ?? ''),
+                startedAt: live.startedAt, endedAt: null, tasks: account.tasks ?? [],
+                status: account.status === 'interrupted' ? 'interrupted' : account.finalObservedAt ? 'completed-pending-persist' : ['starting', 'running', 'stopping'].includes(live.state) ? live.state : 'pending' })
+        }
         const snapshots = this.db.prepare('SELECT * FROM balance_snapshots WHERE business_date = ? ORDER BY observed_at').all(date)
         for (const snapshot of snapshots) {
             if (accountId && snapshot.account_key !== accountId) continue
@@ -409,6 +420,10 @@ export class HistoryStore {
                 row.finalPoints = snapshot.balance
                 row.finalObservedAt = snapshot.observed_at
             }
+            if (snapshot.phase === 'live') {
+                row.liveBalance = snapshot.balance
+                row.liveObservedAt = snapshot.observed_at
+            }
         }
         const events = this.db.prepare('SELECT * FROM point_events').all().map(event => ({
             ...(event.evidence_json ? JSON.parse(event.evidence_json) : { legacyUnverified: true }),
@@ -425,16 +440,16 @@ export class HistoryStore {
         )
         const relevantKeys = new Set(
             rows
-                .filter(row => localDate(row.startedAt) === date || localDate(row.endedAt) === date)
+                .filter(row => [row.startedAt, row.endedAt, row.initialObservedAt, row.finalObservedAt, row.liveObservedAt].some(at => at && localDate(at) === date))
                 .map(row => row.accountKey)
         )
         for (const event of events) {
             if (localDate(event.confirmedAt) === date) relevantKeys.add(event.accountKey)
         }
         const dailyRows = rows.filter(row => relevantKeys.has(row.accountKey))
-        const rowAccounts = new Set(dailyRows.map(row => row.accountKey))
+        const rowAccounts = new Set(dailyRows.map(row => `${row.accountKey}:${row.runKey}`))
         for (const event of events) {
-            if (localDate(event.confirmedAt) !== date || rowAccounts.has(event.accountKey)) continue
+            if (localDate(event.confirmedAt) !== date || rowAccounts.has(`${event.accountKey}:${event.runKey}`)) continue
             dailyRows.push({
                 runKey: event.runKey,
                 accountKey: event.accountKey,
@@ -445,7 +460,7 @@ export class HistoryStore {
                 finalPoints: null,
                 tasks: []
             })
-            rowAccounts.add(event.accountKey)
+            rowAccounts.add(`${event.accountKey}:${event.runKey}`)
         }
         if (accountId) return reconcileAccountDay({ date, accountKey: accountId, runs: dailyRows, pointEvents: events, tasks, currentRunId })
         return reconcileDailyPoints({ date, runs: dailyRows, pointEvents: events, tasks, currentRunId })
@@ -632,7 +647,7 @@ export class HistoryStore {
             balanceReconciliation: todayReconciliation.accounts,
             today,
             lastRunAt: row?.last_run ?? null,
-            durable: true
+            durable: !todayReconciliation.accounts.some(account => account.runs.some(run => run.persistence === 'provisional'))
         }
     }
 
@@ -664,13 +679,17 @@ export class HistoryStore {
 
         const accountMap = new Map()
         const dayMap = new Map()
+        for (const account of this.liveStatus?.run?.accounts ?? []) {
+            const key = this.identity.keyFor(account.email ?? 'unknown')
+            if (!accountId || key === accountId) accountMap.set(key, { id: key, label: this.identity.labelFor(account.email ?? '') })
+        }
         const pointRows = this.db.prepare('SELECT * FROM point_events').all()
         for (const row of rows) accountMap.set(row.account_key, { id: row.account_key, label: row.account_label })
         for (const date of dateRange(safeStart, safeEnd)) {
             const dayRows = rows.filter(row => localDate(row.started_at) === date || localDate(row.ended_at) === date)
             const reconciliation = this.reconciliation(date, accountId)
             const reconciledAccounts = reconciliation.accounts ?? [reconciliation]
-            if (!dayRows.length && !reconciledAccounts.some(account => account.reportedTaskPoints !== null || account.balanceReconciliation?.firstBalance != null)) continue
+            if (!dayRows.length && !reconciledAccounts.some(account => account.reportedTaskPoints !== null || account.runs?.length)) continue
             const statuses = dayRows.map(row => row.status)
             const sources = {}
             for (const point of pointRows) {
@@ -700,11 +719,28 @@ export class HistoryStore {
                         : statuses.length && statuses.every(status => status === 'completed')
                           ? 'completed'
                           : 'partial',
-                records: dayRows.length,
+                records: reconciledAccounts.reduce((count, account) => count + (account.runs?.length ?? 0), 0),
                 sources
             })
         }
         const days = [...dayMap.values()]
+        const transientRecords = []
+        for (const day of days) {
+            for (const account of day.balanceReconciliation) {
+                if (!accountMap.has(account.accountKey)) accountMap.set(account.accountKey, { id: account.accountKey, label: '历史账号' })
+                for (const run of account.runs ?? []) {
+                    if (rows.some(row => row.run_key === run.runKey && row.account_key === account.accountKey)) continue
+                    transientRecords.push({ ...run, date: day.date, runId: run.runKey, accountId: account.accountKey,
+                        accountLabel: accountMap.get(account.accountKey).label, persistence: 'provisional',
+                        beforePoints: run.balanceReconciliation.firstBalance, afterPoints: run.balanceReconciliation.lastBalance,
+                        startedAt: run.balanceReconciliation.firstObservedAt, endedAt: run.status === 'completed-pending-persist' ? run.observedAt : null, tasks: [], sources: {} })
+                }
+            }
+            const statuses = day.balanceReconciliation.flatMap(account => account.runs ?? []).map(run => run.status)
+            if (statuses.some(status => ['starting', 'running', 'stopping'].includes(status))) day.status = 'running'
+            else if (statuses.includes('completed-pending-persist')) day.status = 'completed-pending-persist'
+            else if (statuses.includes('pending')) day.status = 'pending'
+        }
         return {
             accounts: [...accountMap.values()],
             range: { start: safeStart, end: safeEnd },
@@ -726,7 +762,7 @@ export class HistoryStore {
                 )
             },
             days,
-            records: rows.map(row => {
+            records: [...transientRecords, ...rows.map(row => {
                 let verification = {}
                 try {
                     verification = row.verification_json ? JSON.parse(row.verification_json) : {}
@@ -760,7 +796,7 @@ export class HistoryStore {
                     tasks: this.normalizedTasks(JSON.parse(row.tasks_json || '[]')),
                     legacyCollected: numberOrNull(row.collected)
                 }
-            })
+            })]
         }
     }
 

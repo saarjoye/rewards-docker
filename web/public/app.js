@@ -300,8 +300,14 @@ function renderConnection() {
 }
 
 function metric(label, value, detail) {
+    if (label === '本次运行增加' || label === '今日账户余额变化') {
+        const verification = label === '本次运行增加' ? state?.run?.runBalanceVerification : state?.history?.balanceVerification
+        detail = `${detail || ''} · ${balanceLabel(verification)} · ${state?.dataFreshness === 'stale' ? '数据已过期' : '最近观测'} ${formatTime(state?.history?.observedAt)}`
+        if (label === '本次运行增加' && !state?.run?.running) label = '最近一次运行增加'
+    }
     return `<div class="metric"><span>${esc(label)}</span><strong>${esc(value)}</strong><small>${esc(detail)}</small></div>`
 }
+function balanceLabel(value) { return ({ confirmed: '已确认', provisional: '实时/暂时' })[value] || '待确认' }
 
 function accountRows(accounts = []) {
     if (!accounts.length) return '<tr><td colspan="6" class="empty">没有可显示的账号</td></tr>'
@@ -400,7 +406,11 @@ function renderTasks() {
     content.innerHTML = `<section class="section"><h2>当日任务与得分</h2><div class="task-grid">${body || '<div class="empty">尚未配置账号</div>'}</div></section>`
 }
 
-async function renderCalendar(load = false) {
+let calendarBusy = false, calendarQueued = false, calendarReload = false
+async function renderCalendar(load = false, background = false) {
+    if (calendarBusy) { calendarQueued = true; calendarReload ||= load; return }
+    calendarBusy = true
+    let focus, filterValues, expanded
     try {
         if (load)
             calendarFilters = {
@@ -421,8 +431,12 @@ async function renderCalendar(load = false) {
         const { accountId } = calendarFilters
         const params = new URLSearchParams(range)
         if (accountId) params.set('accountId', accountId)
-        content.innerHTML = '<div class="panel empty">正在读取积分日历...</div>'
+        if (!background) content.innerHTML = '<div class="panel empty">正在读取积分日历...</div>'
         const data = await api(`/api/points-calendar?${params}`)
+        if (currentView !== 'calendar' || calendarReload) return
+        focus = document.activeElement?.id
+        filterValues = [...document.querySelectorAll('.filter-row input, .filter-row select')].map(element => [element.id, element.value])
+        expanded = new Set([...document.querySelectorAll('.calendar-runs details[open]')].map(element => element.dataset.key))
         calendarFilters = { ...calendarFilters, ...data.range }
         const options = data.accounts
             .map(
@@ -454,10 +468,18 @@ async function renderCalendar(load = false) {
             <button class="ghost" data-action="load-calendar">应用筛选</button></div></section>
             <section class="metrics">${metric('范围已确认新增', valueOrUnknown(data.summary.totalPoints, ' 分'), `${data.range.start} 至 ${data.range.end}`)}${metric('平均每日', valueOrUnknown(average, ' 分'), '按已确认日期计算')}${metric('完成天数', data.summary.completedDays, `异常 ${data.summary.failedDays} 天`)}${metric('最高积分日', valueOrUnknown(data.summary.highestPointDay.points, ' 分'), data.summary.highestPointDay.date || '-')}</section>
             ${calendarMarkup(data)}`
+        if (background) {
+            for (const [id, value] of filterValues) { const element = document.getElementById(id); if (element) element.value = value }
+            document.querySelectorAll('.calendar-runs details').forEach(element => { element.open = expanded.has(element.dataset.key) })
+            if (focus) document.getElementById(focus)?.focus()
+        }
     } catch (error) {
         showNotice(error.message)
         if (!document.querySelector('#calendarStart'))
             content.innerHTML = `<div class="panel empty">积分日历加载失败：${esc(error.message)}<button class="ghost" data-action="load-calendar">重试</button></div>`
+    } finally {
+        calendarBusy = false
+        if (calendarQueued) { calendarQueued = false; const reload = calendarReload; calendarReload = false; if (currentView === 'calendar') void renderCalendar(reload, true) }
     }
 }
 
@@ -626,6 +648,7 @@ function connectEvents() {
     events.addEventListener('state', event => {
         const previousRunId = state?.core?.runId
         state = JSON.parse(event.data)
+        if (currentView === 'calendar') void renderCalendar(false, true)
         renderConnection()
         if (
             currentView === 'history' &&
@@ -662,7 +685,7 @@ function connectEvents() {
 // Keep the existing navigation and event wiring while exposing the reconciled point dimensions.
 function pointSummaryMarkup(points) {
     const fields = [['本次运行增加', 'runBalanceDelta'], ['今日账户余额变化', 'dailyBalanceDelta'], ['任务上报积分', 'reportedTaskPoints'], ['已确认到账积分', 'confirmedPoints'], ['待确认积分', 'pendingPoints'], ['未归属余额变化', 'unattributedBalanceDelta'], ['超出余额证据的上报积分', 'overreportedPoints']]
-    return `<p>${state?.run?.running ? '当前运行' : '当前未运行，以下为历史统计'} · ${esc(points.statisticsDate || points.date || '日期待确认')} · Asia/Shanghai · ${points.balanceReconciliation?.status === 'confirmed' ? '余额快照已核对' : '余额快照待确认'}${points.legacyUnverified ? ' · 存在旧数据或未核验记录' : ''}${points.interrupted ? ' · 存在中断运行' : ''}</p><div class="task-summary">${fields.map(([label, key]) => `<span>${label} <strong>${valueOrUnknown(points[key], ' 分', '待确认')}</strong></span>`).join('')}</div>`
+    return `<p>${state?.run?.running ? '当前运行' : '当前未运行，以下为历史统计'} · ${esc(points.statisticsDate || points.date || '日期待确认')} · Asia/Shanghai · ${balanceLabel(points.balanceVerification || points.balanceReconciliation?.status)} · ${formatTime(points.observedAt)}${points.legacyUnverified ? ' · 存在旧数据或未核验记录' : ''}${points.interrupted ? ' · 存在中断运行' : ''}</p><div class="task-summary">${fields.map(([label, key]) => `<span>${label} <strong>${valueOrUnknown(points[key], ' 分', '待确认')}</strong></span>`).join('')}</div><p class="subtle">未归属余额变化：余额增加但暂未关联到唯一任务来源</p>`
 }
 /* eslint-disable no-func-assign */
 accountRows = function reconciledAccountRows(accounts = []) {

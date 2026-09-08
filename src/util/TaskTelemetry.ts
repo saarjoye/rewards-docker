@@ -91,7 +91,11 @@ export function recordTaskError(): void {
 }
 export function reportTaskEvidence(evidence: Omit<TaskEvidence, 'observedAt'>): void {
     const context = taskContext.getStore()
-    if (context) context.evidence = { ...evidence, observedAt: new Date().toISOString() }
+    if (context) {
+        const observedAt = new Date().toISOString()
+        context.evidence = { ...evidence, observedAt }
+        if (finitePoints(evidence.balance) !== null) context.publish({ balance: evidence.balance, balanceObservedAt: observedAt })
+    }
 }
 export function reportTaskSubmission(balance?: unknown, creditedPoints?: unknown): void {
     markTaskStatus('submitted', '已提交，等待积分确认')
@@ -364,6 +368,7 @@ export class TaskTelemetry {
                         ? Math.max(0, after.total - after.current)
                         : latest.remainingPoints,
                 balance: after?.balance ?? null,
+                balanceObservedAt: after?.observedAt ?? null,
                 balanceChange:
                     before?.balance !== null &&
                     before?.balance !== undefined &&

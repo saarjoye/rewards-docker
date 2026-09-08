@@ -28,6 +28,7 @@ export function taskStatusLabel(status) {
             unsupported: '当前版本不支持',
             unavailable: '任务数据不可用',
             running: '执行中',
+            'completed-pending-persist': '已完成待收口',
             verifying: '待复核',
             completed: '已完成',
             partial: '部分完成',

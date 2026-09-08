@@ -43,6 +43,7 @@ test('BFF authenticates users, redacts state and restricts control bodies', { ti
     const token = 'test-control-token-with-sufficient-length'
     const requests = { starts: [], stops: [], schedules: [] }
     const eventResponses = new Set()
+    let liveStatus = null
     const mockCore = http.createServer(async (req, res) => {
         assert.equal(req.headers.authorization, `Bearer ${token}`)
         const url = new URL(req.url, 'http://core')
@@ -51,6 +52,7 @@ test('BFF authenticates users, redacts state and restricts control bodies', { ti
             res.end(JSON.stringify(value))
         }
         if (url.pathname === '/status') {
+            if (liveStatus) return json(liveStatus)
             return json({
                 state: 'idle',
                 version: '4.3.2',
@@ -60,7 +62,7 @@ test('BFF authenticates users, redacts state and restricts control bodies', { ti
                 run: { version: null, accountsTotal: null, accountsSeen: 0, accounts: [], live: {} }
             })
         }
-        if (url.pathname === '/points') return json({ state: 'idle', accounts: [], collected: 0 })
+        if (url.pathname === '/points') return json({ state: liveStatus?.state ?? 'idle', runId: liveStatus?.runId, accounts: [], collected: 0 })
         if (req.method === 'GET' && url.pathname === '/accounts') {
             return json({ accounts: [{ index: 1, email: 'secret@example.com', geoLocale: 'CN', langCode: 'zh-CN' }] })
         }
@@ -157,6 +159,47 @@ test('BFF authenticates users, redacts state and restricts control bodies', { ti
         assert.equal(stateResponse.status, 200)
         assert.doesNotMatch(stateText, /secret@example\.com|test-control-token/)
         assert.match(stateText, /s\*\*\*@e\*\*\*\.com/)
+        const businessDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
+        liveStatus = { state: 'running', runId: 'live-fixture', startedAt: `${businessDate}T01:00:00Z`, run: { accounts: [{
+            email: 'secret@example.com', telemetryVersion: 2, initialPoints: 5000, initialObservedAt: `${businessDate}T01:00:00Z`,
+            live: { balance: 5030 }, balanceObservedAt: `${businessDate}T02:00:00Z`, tasks: []
+        }] } }
+        for (const response of eventResponses) response.write(`event: log\ndata: ${JSON.stringify({ title: 'TASK-EVENT', message: '{}', level: 'info' })}\n\n`)
+        let liveCalendar
+        for (let attempt = 0; attempt < 25; attempt++) {
+            await new Promise(resolve => setTimeout(resolve, 50))
+            liveCalendar = await fetch(`${baseUrl}/api/points-calendar?start=${businessDate}&end=${businessDate}`, { headers }).then(response => response.json())
+            if (liveCalendar.days?.[0]?.totalGained === 30) break
+        }
+        assert.equal(liveCalendar.days[0].totalGained, 30)
+        assert.equal(liveCalendar.days[0].status, 'running')
+        assert.equal(liveCalendar.records.length, 1)
+        const refreshedState = await fetch(`${baseUrl}/api/state`, { headers }).then(response => response.json())
+        assert.equal(refreshedState.run.runBalanceDelta, 30)
+        assert.equal(refreshedState.run.runBalanceVerification, 'provisional')
+        assert.equal(refreshedState.history.dailyBalanceDelta, liveCalendar.days[0].dailyBalanceDelta)
+        liveStatus.run.accounts[0].live.balance = 5040
+        liveStatus.run.accounts[0].balanceObservedAt = `${businessDate}T03:00:00Z`
+        for (const response of eventResponses) response.end()
+        for (let attempt = 0; attempt < 45; attempt++) {
+            await new Promise(resolve => setTimeout(resolve, 50))
+            liveCalendar = await fetch(`${baseUrl}/api/points-calendar?start=${businessDate}&end=${businessDate}`, { headers }).then(response => response.json())
+            if (liveCalendar.days?.[0]?.totalGained === 40) break
+        }
+        assert.equal(liveCalendar.days[0].totalGained, 40)
+        assert.equal(liveCalendar.days[0].records, 1)
+        liveStatus.state = 'idle'
+        liveStatus.run.accounts[0].finalPoints = 5040
+        liveStatus.run.accounts[0].finalObservedAt = `${businessDate}T03:01:00Z`
+        for (const response of eventResponses) response.write(`event: log\ndata: ${JSON.stringify({ title: 'RUN-END', message: '{}', level: 'info' })}\n\n`)
+        for (let attempt = 0; attempt < 25; attempt++) {
+            await new Promise(resolve => setTimeout(resolve, 50))
+            liveCalendar = await fetch(`${baseUrl}/api/points-calendar?start=${businessDate}&end=${businessDate}`, { headers }).then(response => response.json())
+            if (liveCalendar.days?.[0]?.balanceVerification === 'confirmed') break
+        }
+        assert.equal(liveCalendar.days[0].balanceVerification, 'confirmed')
+        assert.equal(liveCalendar.days[0].status, 'completed-pending-persist')
+        assert.equal(liveCalendar.days[0].records, 1)
         assert.equal((await fetch(`${baseUrl}/api/schedule`)).status, 401)
         const scheduleRead = await fetch(`${baseUrl}/api/schedule`, { headers })
         assert.equal((await scheduleRead.json()).timezone, 'Asia/Shanghai')

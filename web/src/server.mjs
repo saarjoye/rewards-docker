@@ -11,6 +11,7 @@ import { SettingsStore } from './settings.mjs'
 import { buildPublicState, publicErrorMessage, publicLog } from './status.mjs'
 import { WeComNotifier } from './wecom.mjs'
 import { RunNotifications } from './run-notifications.mjs'
+import { createRefreshScheduler, isProgressEvent } from './refresh-scheduler.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const publicDir = path.resolve(__dirname, '..', 'public')
@@ -231,20 +232,24 @@ async function refreshCore() {
                 control.get('/status'),
                 control.get('/points'),
                 control.get('/accounts'),
-                control.get('/history?limit=20')
+                control.get('/history?limit=20').catch(() => ({ runs: [] }))
             ])
-            const newRuns = history.ingest(status, historyPayload)
-            cache = { status, points, accounts, fetchedAt: new Date().toISOString(), error: null }
+            if (points.runId !== undefined && points.runId !== status.runId) {
+                cache = { ...cache, error: '核心运行已切换，等待重新读取一致状态' }
+                scheduleRefresh()
+                return cache
+            }
+            const lastRunId = status.runId ?? (status.startedAt && status.startedAt === cache.status?.startedAt ? cache.lastRunId : null) ?? historyPayload.runs?.[0]?.id ?? null
+            const liveStatus = status.runId || (status.state === 'idle' && status.startedAt === cache.status?.startedAt)
+                ? { ...status, runId: status.runId ?? lastRunId } : status
+            const newRuns = history.ingest(liveStatus, historyPayload)
+            cache = { status, points, accounts, lastRunId, fetchedAt: new Date().toISOString(), error: null }
             offline = { failures: 0, since: null }
             void notifyRuns(newRuns)
             return cache
         } catch (error) {
             cache = {
                 ...cache,
-                status: null,
-                points: null,
-                accounts: null,
-                fetchedAt: new Date().toISOString(),
                 error: publicErrorMessage(error)
             }
             void noteCoreFailure()
@@ -262,10 +267,18 @@ function publicState() {
         points: cache.points,
         configuredAccounts: cache.accounts,
         identity,
-        historySummary: history.summary(cache.status?.state === 'idle' ? null : cache.status?.runId),
+        historySummary: history.summary(cache.status?.state === 'idle' ? cache.lastRunId : cache.status?.runId),
         notificationStatus: wecom.status()
     })
-    if (cache.error) state.core.error = cache.error
+    if (cache.error) {
+        state.core.error = cache.error
+        state.core.available = false
+        state.core.label = '核心连接异常'
+    }
+    state.dataFreshness = cache.error ? 'stale' : 'fresh'
+    state.observedAt = state.history?.observedAt ?? null
+    state.fetchedAt = cache.fetchedAt
+    for (const account of state.accounts) account.points.dataFreshness = state.dataFreshness
     return state
 }
 
@@ -280,16 +293,8 @@ function broadcast(event, data, id) {
     for (const res of eventClients) writeSse(res, event, data, id)
 }
 
-let refreshTimer = null
-function scheduleRefresh() {
-    if (refreshTimer) return
-    refreshTimer = setTimeout(async () => {
-        refreshTimer = null
-        await refreshCore()
-        broadcast('state', publicState())
-    }, 150)
-    refreshTimer.unref?.()
-}
+const refreshScheduler = createRefreshScheduler({ refresh: refreshCore, publish: () => broadcast('state', publicState()) })
+function scheduleRefresh() { refreshScheduler.schedule() }
 
 async function coreEventLoop() {
     let retryMs = 1000
@@ -304,8 +309,12 @@ async function coreEventLoop() {
                         const log = publicLog(sanitizeLog(frame.data))
                         history.recordLog(log)
                         broadcast('log', log, log.id)
+                        if (isProgressEvent(frame.data?.title)) {
+                            if (['ACCOUNT-END', 'RUN-END'].includes(frame.data.title)) refreshScheduler.finish(`${cache.status?.runId}:${frame.data.title}`)
+                            else scheduleRefresh()
+                        }
                     } else if (frame.event === 'hello' || frame.event === 'status') {
-                        scheduleRefresh()
+                        refreshScheduler.schedule(0)
                     }
                 }
             })
@@ -347,7 +356,7 @@ async function handleApi(req, res, url) {
             authenticated: Boolean(session),
             username: session?.username ?? null,
             csrfToken: session?.csrfToken ?? null,
-            version: '4.3.2-cn10'
+            version: '4.3.2-cn11'
         })
     }
 
@@ -596,13 +605,7 @@ const server = http.createServer(async (req, res) => {
     }
 })
 
-const pollTimer = setInterval(async () => {
-    await refreshCore()
-    broadcast('state', publicState())
-}, 10000)
-pollTimer.unref()
-
-await refreshCore()
+await refreshScheduler.execute()
 void coreEventLoop()
 
 server.listen(port, host, () => {
@@ -612,7 +615,7 @@ server.listen(port, host, () => {
 function shutdown() {
     if (shuttingDown) return
     shuttingDown = true
-    clearInterval(pollTimer)
+    refreshScheduler.stop()
     for (const response of eventClients) response.end()
     server.close(() => {
         history.close()

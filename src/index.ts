@@ -16,6 +16,7 @@ import Utils, { isBrowserClosedError } from './util/Utils'
 import { loadAccounts, loadConfig } from './util/Load'
 import { closeSessionStore, loadResolvedRegion, saveResolvedRegion } from './util/SessionStore'
 import { checkNodeVersion } from './util/Validator'
+import { readFinalBalance } from './util/FinalBalance'
 import { normalizeCountry, resolveAccountLocale } from './util/Locale'
 import type { AccountLocale } from './util/Locale'
 
@@ -45,8 +46,8 @@ interface BrowserSession {
 interface AccountStats {
     email: string
     initialPoints: number
-    finalPoints: number
-    collectedPoints: number
+    finalPoints: number | null
+    collectedPoints: number | null
     duration: number
     success: boolean
     error?: string
@@ -54,7 +55,7 @@ interface AccountStats {
 
 interface AccountRunResult {
     initialPoints: number
-    collectedPoints: number
+    collectedPoints: number | null
     skippedForBotWarning?: boolean
 }
 
@@ -346,9 +347,9 @@ export class MicrosoftRewardsBot {
             )
 
             if (this.activeWorkers <= 0) {
-                const totalCollectedPoints = allAccountStats.reduce((sum, s) => sum + s.collectedPoints, 0)
+                const totalCollectedPoints = allAccountStats.some(s => s.collectedPoints === null) ? null : allAccountStats.reduce((sum, s) => sum + (s.collectedPoints ?? 0), 0)
                 const totalInitialPoints = allAccountStats.reduce((sum, s) => sum + s.initialPoints, 0)
-                const totalFinalPoints = allAccountStats.reduce((sum, s) => sum + s.finalPoints, 0)
+                const totalFinalPoints = allAccountStats.some(s => s.finalPoints === null) ? null : allAccountStats.reduce((sum, s) => sum + (s.finalPoints ?? 0), 0)
                 const totalDurationMinutes = ((Date.now() - runStartTime) / 1000 / 60).toFixed(1)
 
                 this.logger.info(
@@ -450,9 +451,9 @@ export class MicrosoftRewardsBot {
                 const durationSeconds = ((Date.now() - accountStartTime) / 1000).toFixed(1)
 
                 if (result) {
-                    const collectedPoints = result.collectedPoints ?? 0
+                    const collectedPoints = result.collectedPoints
                     const accountInitialPoints = result.initialPoints ?? 0
-                    const accountFinalPoints = accountInitialPoints + collectedPoints
+                    const accountFinalPoints = collectedPoints === null ? null : accountInitialPoints + collectedPoints
 
                     if (result.skippedForBotWarning) {
                         accountStats.push({
@@ -519,9 +520,9 @@ export class MicrosoftRewardsBot {
         }
 
         if (this.config.clusters <= 1 && cluster.isPrimary) {
-            const totalCollectedPoints = accountStats.reduce((sum, s) => sum + s.collectedPoints, 0)
+            const totalCollectedPoints = accountStats.some(s => s.collectedPoints === null) ? null : accountStats.reduce((sum, s) => sum + (s.collectedPoints ?? 0), 0)
             const totalInitialPoints = accountStats.reduce((sum, s) => sum + s.initialPoints, 0)
-            const totalFinalPoints = accountStats.reduce((sum, s) => sum + s.finalPoints, 0)
+            const totalFinalPoints = accountStats.some(s => s.finalPoints === null) ? null : accountStats.reduce((sum, s) => sum + (s.finalPoints ?? 0), 0)
             const totalDurationMinutes = ((Date.now() - runStartTime) / 1000 / 60).toFixed(1)
 
             this.logger.info(
@@ -987,20 +988,17 @@ export class MicrosoftRewardsBot {
                     edgeBrowsingTask = null
                 }
 
-                let finalPoints = this.userData.currentPoints ?? initialPoints
-                try {
-                    finalPoints = await this.browser.func.getCurrentPoints()
-                } catch (error) {
+                const finalPoints = await readFinalBalance(() => this.browser.func.getCurrentPoints(), error => {
                     this.logger.warn(
                         'main',
                         'POINTS',
-                        `最终余额读取失败，沿用最近一次有效余额并保留已记录任务结果 | message=${
+                        `最终余额读取失败，最终积分待确认，保留已记录任务结果 | message=${
                             error instanceof Error ? error.message : String(error)
                         }`
                     )
-                }
-                const collectedPoints = finalPoints - initialPoints
-                this.activities.telemetry.publish({ kind: 'balance', phase: 'end', balance: finalPoints })
+                })
+                const collectedPoints = finalPoints === null ? null : finalPoints - initialPoints
+                if (finalPoints !== null) this.activities.telemetry.publish({ kind: 'balance', phase: 'end', balance: finalPoints })
 
                 this.logger.info(
                     'main',
@@ -1010,7 +1008,7 @@ export class MicrosoftRewardsBot {
 
                 return {
                     initialPoints,
-                    collectedPoints: collectedPoints || 0
+                    collectedPoints
                 }
             })
         } finally {

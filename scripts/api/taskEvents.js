@@ -68,15 +68,15 @@ export function applyTaskEvent(state, entry) {
     if (event.kind === 'balance') {
         const balance = number(event.balance)
         const observedBalance = balance !== null && balance >= 0 ? balance : null
-        if (event.phase === 'start' && !account.initialObservedAt) {
+        if (observedBalance !== null && event.phase === 'start' && !account.initialObservedAt) {
             account.initialPoints = observedBalance
             account.initialObservedAt = event.at
         }
-        if (!account.balanceObservedAt || Date.parse(event.at) >= Date.parse(account.balanceObservedAt)) {
+        if (observedBalance !== null && (!account.balanceObservedAt || Date.parse(event.at) >= Date.parse(account.balanceObservedAt))) {
             account.live.balance = observedBalance
             account.balanceObservedAt = event.at
         }
-        if (event.phase === 'end') {
+        if (observedBalance !== null && event.phase === 'end' && (!account.finalObservedAt || Date.parse(event.at) >= Date.parse(account.finalObservedAt))) {
             account.finalPoints = observedBalance
             account.finalObservedAt = event.at
         }
@@ -191,10 +191,11 @@ export function applyTaskEvent(state, entry) {
         }
         if (
             Object.hasOwn(event, 'balance') &&
-            (!account.balanceObservedAt || Date.parse(event.at) >= Date.parse(account.balanceObservedAt))
+            number(event.balance) !== null && number(event.balance) >= 0 &&
+            (!account.balanceObservedAt || Date.parse(event.balanceObservedAt ?? event.at) >= Date.parse(account.balanceObservedAt))
         ) {
             account.live.balance = number(event.balance)
-            account.balanceObservedAt = event.at
+            account.balanceObservedAt = event.balanceObservedAt ?? event.at
         }
         if (event.dataStatus) {
             account.taskSources ??= {}
