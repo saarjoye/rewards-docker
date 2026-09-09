@@ -242,6 +242,8 @@ export class RewardsDiscoveryService {
       })
       const task: TaskRecord = {
         ...classified,
+        ...(offer.identityStable === undefined ? {} : { identityStable: offer.identityStable }),
+        ...(offer.expectedPoints === undefined ? {} : { expectedPoints: offer.expectedPoints }),
         executable:
           classified.executable &&
           offer.executable &&

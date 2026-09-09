@@ -18,7 +18,10 @@ import { DEFAULT_CONFIG } from '../src/infra/Config.js'
 import { SqliteStore } from '../src/infra/SqliteStore.js'
 import type { StructuredLogger } from '../src/infra/StructuredLogger.js'
 import { ApplicationRunCoordinator } from '../src/orchestration/RunCoordinator.js'
-import { MutationNotStartedError } from '../src/orchestration/MutationExecutor.js'
+import {
+  MutationNotStartedError,
+  OfferUnavailableError
+} from '../src/orchestration/MutationExecutor.js'
 import { SearchExecutor } from '../src/orchestration/SearchExecutor.js'
 import {
   RewardsDiscoveryService,
@@ -1142,89 +1145,110 @@ describe('claim mutation idempotency', () => {
     }
   })
 
-  it('stops after a required offer was not started', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'rewards-next-required-not-started-'))
-    roots.push(root)
-    const store = new SqliteStore(join(root, 'state.sqlite'))
-    try {
-      const requiredOffer: RewardOffer = {
-        ...offer('daily-set', 'required-first'),
-        source: 'bing-flyout',
-        destinationUrl: 'https://example.test/required'
-      }
-      const optionalOffer: RewardOffer = {
-        ...offer('more-promotion', 'optional-second'),
-        source: 'bing-flyout',
-        destinationUrl: 'https://example.test/optional'
-      }
-      const makeTask = (reward: RewardOffer, required: boolean): TaskRecord => ({
-        taskId: `account:2026-09-04:${reward.sourceTaskId}`,
-        accountId: 'account',
-        localDate: '2026-09-04',
-        sourceTaskId: reward.sourceTaskId,
-        type: reward.type,
-        source: reward.source,
-        displayName: reward.displayName,
-        executable: true,
-        required,
-        status: 'discovered',
-        progress: { completed: 0, total: 1 },
-        updatedAt: '2026-09-04T00:00:00.000Z'
-      })
-      const requiredTask = makeTask(requiredOffer, true)
-      const optionalTask = makeTask(optionalOffer, false)
-      const discovery: DiscoveryOutput = {
-        snapshot: {
-          rewardsUser: evidence(true),
-          market: evidence('CN'),
-          availablePoints: evidence(100),
-          pcSearch: evidence({ completed: 60, total: 60, remaining: 0 }),
-          mobileSearch: evidence({ completed: 0, total: 30, remaining: 30 }),
-          offers: [requiredOffer, optionalOffer],
-          actionIds: {}
-        },
-        tasks: [requiredTask, optionalTask],
-        descriptors: new Map([
-          [requiredTask.taskId, { task: requiredTask, offer: requiredOffer }],
-          [optionalTask.taskId, { task: optionalTask, offer: optionalOffer }]
-        ]),
-        dataSources: {
-          rsc: false,
-          dom: false,
-          dashboard: false,
-          flyout: true,
-          'app-dashboard': false
+  it.each([false, true])(
+    'classifies a required preflight error (unavailable=%s)',
+    async (unavailable) => {
+      const root = await mkdtemp(join(tmpdir(), 'rewards-next-required-not-started-'))
+      roots.push(root)
+      const store = new SqliteStore(join(root, 'state.sqlite'))
+      try {
+        const requiredOffer: RewardOffer = {
+          ...offer('daily-set', 'required-first'),
+          source: 'bing-flyout',
+          destinationUrl: 'https://example.test/required'
         }
-      }
-      const navigateOffer = vi
-        .fn()
-        .mockRejectedValueOnce(new MutationNotStartedError('Synthetic link missing'))
-      const executor = new RewardsTaskExecutor(
-        {} as BrowserContext,
-        { navigateOffer } as unknown as DashboardClient,
-        store,
-        { write: vi.fn().mockResolvedValue(undefined) } as unknown as StructuredLogger,
-        DEFAULT_CONFIG,
-        'run',
-        'account-1'
-      )
-
-      await expect(
-        executor.executeTypes({
-          discovery,
-          types: ['daily-set', 'more-promotion'],
-          mode: 'mutating',
-          signal: new AbortController().signal
+        const optionalOffer: RewardOffer = {
+          ...offer('more-promotion', 'optional-second'),
+          source: 'bing-flyout',
+          destinationUrl: 'https://example.test/optional'
+        }
+        const makeTask = (reward: RewardOffer, required: boolean): TaskRecord => ({
+          taskId: `account:2026-09-04:${reward.sourceTaskId}`,
+          accountId: 'account',
+          localDate: '2026-09-04',
+          sourceTaskId: reward.sourceTaskId,
+          type: reward.type,
+          source: reward.source,
+          displayName: reward.displayName,
+          executable: true,
+          required,
+          status: 'discovered',
+          progress: { completed: 0, total: 1 },
+          updatedAt: '2026-09-04T00:00:00.000Z'
         })
-      ).resolves.toMatchObject({ status: 'failed' })
-      expect(navigateOffer).toHaveBeenCalledTimes(1)
-      expect(store.getMutationState(requiredTask.taskId)).toBeUndefined()
-      expect(store.getTask(requiredTask.taskId)).toMatchObject({ status: 'failed' })
-      expect(store.getTask(optionalTask.taskId)).toBeUndefined()
-    } finally {
-      store.close()
+        const requiredTask = makeTask(requiredOffer, true)
+        const optionalTask = makeTask(optionalOffer, false)
+        const discovery: DiscoveryOutput = {
+          snapshot: {
+            rewardsUser: evidence(true),
+            market: evidence('CN'),
+            availablePoints: evidence(100),
+            pcSearch: evidence({ completed: 60, total: 60, remaining: 0 }),
+            mobileSearch: evidence({ completed: 0, total: 30, remaining: 30 }),
+            offers: [requiredOffer, optionalOffer],
+            actionIds: {}
+          },
+          tasks: [requiredTask, optionalTask],
+          descriptors: new Map([
+            [requiredTask.taskId, { task: requiredTask, offer: requiredOffer }],
+            [optionalTask.taskId, { task: optionalTask, offer: optionalOffer }]
+          ]),
+          dataSources: {
+            rsc: false,
+            dom: false,
+            dashboard: false,
+            flyout: true,
+            'app-dashboard': false
+          }
+        }
+        const navigateOffer = vi
+          .fn()
+          .mockRejectedValueOnce(
+            unavailable
+              ? new OfferUnavailableError('Synthetic offer unavailable')
+              : new MutationNotStartedError('Synthetic browser error')
+          )
+        const executor = new RewardsTaskExecutor(
+          {} as BrowserContext,
+          {
+            navigateOffer,
+            fetchFlyout: vi
+              .fn()
+              .mockResolvedValue(observation([{ ...optionalOffer, complete: true, completed: 1 }]))
+          } as unknown as DashboardClient,
+          store,
+          { write: vi.fn().mockResolvedValue(undefined) } as unknown as StructuredLogger,
+          DEFAULT_CONFIG,
+          'run',
+          'account-1'
+        )
+
+        await expect(
+          executor.executeTypes({
+            discovery,
+            types: ['daily-set', 'more-promotion'],
+            mode: 'mutating',
+            signal: new AbortController().signal
+          })
+        ).resolves.toMatchObject({ status: unavailable ? 'partial' : 'failed' })
+        expect(navigateOffer).toHaveBeenCalledTimes(unavailable ? 2 : 1)
+        expect(store.getMutationState(requiredTask.taskId)).toBeUndefined()
+        expect(store.getTask(requiredTask.taskId)).toMatchObject({
+          status: unavailable ? 'verification-pending' : 'failed'
+        })
+        if (unavailable) {
+          expect(store.getTask(optionalTask.taskId)?.status).toBe('completed')
+          expect(
+            store.ledger.credits
+              .rowsForRun('run')
+              .some((row) => row.taskId === requiredTask.taskId && row.submitted)
+          ).toBe(false)
+        } else expect(store.getTask(optionalTask.taskId)).toBeUndefined()
+      } finally {
+        store.close()
+      }
     }
-  })
+  )
 
   it('reconciles known web mutations from one discovery snapshot without resubmitting or refetching', async () => {
     const root = await mkdtemp(join(tmpdir(), 'rewards-next-batch-reconcile-'))

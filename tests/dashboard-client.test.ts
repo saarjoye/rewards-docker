@@ -279,7 +279,11 @@ describe('offer link inspection', () => {
       url: vi.fn().mockReturnValue('https://rewards.bing.com/earn'),
       goto: vi.fn().mockResolvedValue(null),
       waitForTimeout: vi.fn().mockResolvedValue(undefined),
-      locator: vi.fn().mockReturnValue({ evaluateAll: vi.fn().mockResolvedValue(0) }),
+      locator: vi.fn().mockReturnValue({
+        evaluateAll: vi
+          .fn()
+          .mockResolvedValue([{ href: 'https://destination.example.test/private?token=canary' }])
+      }),
       evaluate
     } as unknown as Page
     const client = new DashboardClient(
@@ -315,7 +319,9 @@ describe('offer link inspection', () => {
       close: vi.fn().mockResolvedValue(undefined)
     }
     const links = {
-      evaluateAll: vi.fn().mockResolvedValue(2),
+      evaluateAll: vi
+        .fn()
+        .mockResolvedValue([{ href: 'https://rewards.bing.com/earn/task?opaque=canary' }]),
       nth: vi.fn().mockReturnValue({
         getAttribute: vi.fn().mockResolvedValue('_blank'),
         click
@@ -350,7 +356,9 @@ describe('offer link inspection', () => {
       close: vi.fn().mockResolvedValue(undefined)
     }
     const links = {
-      evaluateAll: vi.fn().mockResolvedValue(0),
+      evaluateAll: vi
+        .fn()
+        .mockResolvedValue([{ href: 'https://www.bing.com/search?q=synthetic&filters=quiz' }]),
       nth: vi.fn().mockReturnValue({
         getAttribute: vi.fn().mockResolvedValue('_blank'),
         click: vi.fn().mockResolvedValue(undefined)
@@ -390,7 +398,7 @@ describe('offer link inspection', () => {
       return Promise.resolve(null)
     })
     const pageLinks = {
-      evaluateAll: vi.fn().mockResolvedValue(-1)
+      evaluateAll: vi.fn().mockResolvedValue([])
     }
     const triggerClick = vi.fn().mockResolvedValue(undefined)
     const trigger = {
@@ -401,7 +409,9 @@ describe('offer link inspection', () => {
     }
     const anchorClick = vi.fn().mockResolvedValue(undefined)
     const frameLinks = {
-      evaluateAll: vi.fn().mockResolvedValue(0),
+      evaluateAll: vi
+        .fn()
+        .mockResolvedValue([{ href: 'https://www.bing.com/search?q=synthetic&form=new' }]),
       nth: vi.fn().mockReturnValue({
         getAttribute: vi.fn().mockResolvedValue('_blank'),
         click: anchorClick
@@ -549,7 +559,7 @@ describe('offer link inspection', () => {
       currentUrl = url
       return Promise.resolve(null)
     })
-    const pageLinks = { evaluateAll: vi.fn().mockResolvedValue(-1) }
+    const pageLinks = { evaluateAll: vi.fn().mockResolvedValue([]) }
     const missingTrigger = {
       first: vi.fn().mockReturnThis(),
       count: vi.fn().mockResolvedValue(0),
@@ -573,8 +583,9 @@ describe('offer link inspection', () => {
 
     await expect(
       client.navigateOffer('https://destination.example.test/private?token=canary')
-    ).rejects.toThrow('Offer link was not found on Rewards or Bing Rewards surfaces')
-    expect(goto).toHaveBeenCalledTimes(2)
+    ).rejects.toThrow('Offer currently unavailable after two surface discoveries')
+    expect(goto).toHaveBeenCalledTimes(5)
+    expect(missingTrigger.click).not.toHaveBeenCalled()
     expect(goto).not.toHaveBeenCalledWith(
       'https://destination.example.test/private?token=canary',
       expect.anything()

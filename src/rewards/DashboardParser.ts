@@ -261,6 +261,7 @@ function normalizeOffer(
     item.activityType ?? item.activity_type ?? attributes?.activityType
   )
   const promotional = item.isPromotional ?? attributes?.promotional
+  const expectedPoints = safeNonNegativeInteger(item.pointProgressMax ?? attributes?.pointmax)
   const hasReportMetadata =
     hash !== undefined &&
     (activityType !== undefined ||
@@ -276,6 +277,7 @@ function normalizeOffer(
       stringValue(item.title) ?? stringValue(item.name) ?? attributes?.title ?? sourceTaskId,
     completed,
     total: total ?? null,
+    ...(expectedPoints === undefined ? {} : { expectedPoints }),
     complete,
     executable:
       !locked && Boolean(destinationUrl || hasReportMetadata || source === 'app-dashboard'),

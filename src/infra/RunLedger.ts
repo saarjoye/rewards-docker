@@ -141,10 +141,25 @@ export class RunLedger {
       total: numeric(input.total) ? input.total : null,
       executionState: input.executionState ? redactText(input.executionState) : null,
       confirmedPoints: null,
-      creditKey: null
+      creditKey: null as string | null
     }
     const payload = JSON.stringify(row)
-    const id = createHash('sha256').update(payload).digest('hex')
+    const hash = createHash('sha256').update(payload)
+    if (
+      input.credit?.officialCreditId ||
+      input.credit?.beforeSnapshotId ||
+      input.credit?.evidenceSource
+    )
+      hash.update(
+        JSON.stringify([
+          input.credit.officialCreditId ?? null,
+          input.credit.beforeSnapshotId ?? null,
+          input.credit.afterSnapshotId ?? null,
+          input.credit.evidenceSource ?? null,
+          input.credit.earnedPoints ?? null
+        ])
+      )
+    const id = hash.digest('hex')
     this.database.exec('SAVEPOINT task_evidence_write')
     try {
       this.database
@@ -168,23 +183,39 @@ export class RunLedger {
       if (row.kind === 'execution' && row.executionState === 'running')
         this.captureTaskBalance(row.runId, row.accountId, 'task-before')
       const task = this.tasks(input.runId).find((item) => item.taskId === input.taskId)
-      this.credits.record({
-        taskInstanceId: task?.sourceTaskId,
-        businessDate: task?.localDate,
-        creditType: task?.type ?? 'task',
-        reportedPoints: task?.reportedPoints ?? null,
-        expectedPoints: task?.expectedPoints ?? null,
-        submitted:
-          (row.kind === 'response' && row.accepted === true) ||
-          row.executionState === 'submitted' ||
-          row.executionState === 'verification-pending',
-        ...input.credit,
-        runId: row.runId,
-        accountId: row.accountId,
-        taskId: row.taskId,
-        source: task?.source ?? row.source,
-        observedAt: row.observedAt
-      })
+      if (task && task.accountId !== input.accountId)
+        throw new TypeError('Task evidence account does not match the run task')
+      if (task && input.credit?.businessDate && input.credit.businessDate !== task.localDate)
+        throw new TypeError('Credit business date does not match the run task')
+      const hasCreditObservation =
+        row.accepted === true ||
+        input.credit?.submitted === true ||
+        input.credit?.evidenceSource !== undefined ||
+        task?.reportedPoints !== undefined
+      const credit = hasCreditObservation
+        ? this.credits.record({
+            ...(task?.identityStable === false ? {} : { taskInstanceId: task?.sourceTaskId }),
+            businessDate: task?.localDate,
+            creditType: task?.type ?? 'task',
+            reportedPoints: task?.reportedPoints ?? null,
+            expectedPoints: task?.expectedPoints ?? null,
+            submitted:
+              (row.kind === 'response' && row.accepted === true) ||
+              row.executionState === 'submitted',
+            ...input.credit,
+            runId: row.runId,
+            accountId: row.accountId,
+            taskId: row.taskId,
+            source: task?.source ?? row.source,
+            observedAt: row.observedAt
+          })
+        : undefined
+      if (credit) {
+        row.creditKey = credit.creditKey
+        this.database
+          .prepare('UPDATE task_evidence SET payload_json=? WHERE evidence_id=?')
+          .run(JSON.stringify(row), id)
+      }
       this.database.exec('RELEASE task_evidence_write')
     } catch (error) {
       this.database.exec('ROLLBACK TO task_evidence_write; RELEASE task_evidence_write')
@@ -192,15 +223,28 @@ export class RunLedger {
     }
   }
 
-  taskEvidence(runId: string): Array<TaskEvidence & { confirmedPoints: null }> {
+  taskEvidence(
+    runId: string
+  ): Array<TaskEvidence & { confirmedPoints: number | null; creditKey: string | null }> {
     const rows = this.database
       .prepare(
         'SELECT payload_json FROM task_evidence WHERE run_id = ? ORDER BY observed_at, evidence_id'
       )
       .all(runId) as Array<{ payload_json: string }>
-    return rows.map(
-      (row) => JSON.parse(row.payload_json) as TaskEvidence & { confirmedPoints: null }
-    )
+    const credits = this.credits.rowsForRun(runId)
+    return rows.map((row) => {
+      const evidence = JSON.parse(row.payload_json) as TaskEvidence & {
+        confirmedPoints: number | null
+        creditKey: string | null
+      }
+      const credit = credits.find(
+        (item) =>
+          item.creditKey === evidence.creditKey &&
+          item.accountId === evidence.accountId &&
+          item.taskId === evidence.taskId
+      )
+      return { ...evidence, confirmedPoints: credit ? this.credits.confirmed(credit) : null }
+    })
   }
 
   captureTaskBalance(runId: string, accountId: string, phase: 'task-before' | 'task-after'): void {
@@ -230,6 +274,7 @@ export class RunLedger {
       status: task.status,
       progress: { ...task.progress },
       updatedAt: task.updatedAt,
+      ...(task.identityStable === undefined ? {} : { identityStable: task.identityStable }),
       ...(task.reason === undefined ? {} : { reason: redactText(task.reason) }),
       ...(task.reportedPoints === undefined ? {} : { reportedPoints: task.reportedPoints }),
       ...(task.expectedPoints === undefined ? {} : { expectedPoints: task.expectedPoints })
@@ -288,6 +333,12 @@ export class RunLedger {
         const observations = this.balances(input.runId, input.accountId)
         const interval = balanceInterval(observations, true)
         const delta = interval.verificationStatus === 'confirmed' ? interval.delta : null
+        const tasks = this.tasks(input.runId).filter((task) => task.accountId === input.accountId)
+        const diagnostic = this.database
+          .prepare('SELECT stage, message FROM account_runs WHERE run_id=? AND account_id=?')
+          .get(input.runId, input.accountId) as
+          | { stage: string | null; message: string | null }
+          | undefined
         const event = {
           ...current,
           eventType: 'ACCOUNT-END',
@@ -296,6 +347,12 @@ export class RunLedger {
           initialPoints: interval.openingBalance,
           finalPoints: delta === null ? null : interval.closingBalance,
           collectedPoints: delta,
+          balanceConfirmed: delta !== null,
+          failureStage: diagnostic?.stage ? redactText(diagnostic.stage) : null,
+          failureReason: diagnostic?.message ? redactText(diagnostic.message) : null,
+          completedTasks: tasks.filter((task) => task.status === 'completed').length,
+          unconfirmedTasks: tasks.filter((task) => !['completed', 'skipped'].includes(task.status))
+            .length,
           duration: current.startedAt
             ? Math.max(0, Date.parse(current.endedAt) - Date.parse(current.startedAt))
             : null,

@@ -105,7 +105,7 @@ describe('cross-midnight coordinator', () => {
         'discovered',
         'discovered'
       ])
-      expect(store.ledger.accounts(result.runId)[0]?.executionState).toBe('completed')
+      expect(store.ledger.accounts(result.runId)[0]?.executionState).toBe('partial')
     } finally {
       store.close()
     }

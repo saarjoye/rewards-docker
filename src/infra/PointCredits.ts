@@ -48,7 +48,7 @@ export type Credit = z.output<typeof creditInput> & {
 export class PointCredits {
   constructor(private readonly db: DatabaseSync) {}
 
-  record(input: CreditInput): void {
+  record(input: CreditInput): Credit {
     const value = creditInput.parse(input)
     value.observedAt = new Date(value.observedAt).toISOString()
     const businessDate = value.businessDate ?? localDateKey(new Date(value.observedAt))
@@ -83,17 +83,28 @@ export class PointCredits {
     next.submitted ||= previous?.submitted === true
     next.reportedPoints ??= previous?.reportedPoints ?? null
     next.expectedPoints ??= previous?.expectedPoints ?? null
+    if (next.evidenceSource === 'official-credit') {
+      const report = this.rows(next.accountId, next.businessDate, next.runId).find(
+        (row) => row.taskId === next.taskId && row.evidenceSource !== 'official-credit'
+      )
+      next.reportedPoints ??= report?.reportedPoints ?? null
+      next.expectedPoints ??= report?.expectedPoints ?? null
+    }
     if (!stable) next.verificationStatus = 'pending'
+    if (this.confirmed(next) === null) next.verificationStatus = 'pending'
     // A retry report cannot demote an existing confirmed credit or move its owning run.
-    if (previous?.verificationStatus === 'confirmed' && !conflict) return
+    if (previous && this.confirmed(previous) !== null && !conflict) return previous
     if (previous && Date.parse(previous.observedAt) > Date.parse(next.observedAt) && !conflict)
-      return
+      return previous
+    if (previous?.evidenceSource === 'official-progress' && next.evidenceSource === 'task-report')
+      next.evidenceSource = 'official-progress'
     this.db
       .prepare(
         `INSERT INTO point_credits(credit_key, account_id, run_id, business_date, payload_json)
       VALUES(?,?,?,?,?) ON CONFLICT(credit_key) DO UPDATE SET business_date=excluded.business_date, payload_json=excluded.payload_json`
       )
       .run(creditKey, next.accountId, next.runId, next.businessDate, JSON.stringify(next))
+    return next
   }
 
   rows(accountId: string, date?: string, runId?: string): Credit[] {
@@ -187,8 +198,21 @@ export class PointCredits {
   }
 
   reconcile(accountId: string, delta: number | null, date?: string, runId?: string) {
-    const rows = this.rows(accountId, date, runId).filter(
-      (row) => row.evidenceSource !== 'account-balance'
+    const allRows = this.rows(accountId, date, runId)
+    const rows = allRows.filter(
+      (row) =>
+        row.evidenceSource !== 'account-balance' &&
+        !(
+          row.evidenceSource !== 'official-credit' &&
+          allRows.some(
+            (other) =>
+              other.evidenceSource === 'official-credit' &&
+              this.confirmed(other) !== null &&
+              other.runId === row.runId &&
+              other.taskId === row.taskId &&
+              other.businessDate === row.businessDate
+          )
+        )
     )
     const total = (values: (number | null)[]) =>
       values.length && values.every((value) => value !== null)

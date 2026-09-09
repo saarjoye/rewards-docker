@@ -46,6 +46,7 @@ export interface TaskRecord {
   updatedAt: string
   reportedPoints?: number
   expectedPoints?: number
+  identityStable?: boolean
 }
 
 export interface TaskCountSummary {

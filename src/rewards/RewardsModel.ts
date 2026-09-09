@@ -16,6 +16,8 @@ export interface RewardOffer {
   total: number | null
   complete: boolean
   executable: boolean
+  expectedPoints?: number
+  identityStable?: boolean
   destinationUrl?: string
   hash?: string
   parentOfferId?: string

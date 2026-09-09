@@ -64,6 +64,79 @@ async function fixture(runCoordinator?: RunCoordinator, withNotifications = fals
 }
 
 describe('web API', () => {
+  it('keeps partial and failed accounts distinct from zero and missing final balances in detail and report', async () => {
+    const { app, store, cookie } = await fixture()
+    try {
+      const runId = randomUUID()
+      const date = localDateKey()
+      const start = `${date}T00:00:00Z`
+      const end = `${date}T02:00:00Z`
+      store.createRun({
+        runId,
+        localDate: date,
+        executionMode: 'mutating',
+        selectedAccountIndexes: [1, 2, 3],
+        startedAt: start
+      })
+      for (const index of [1, 2, 3]) {
+        const accountId = `synthetic-${String(index)}`
+        store.ledger.balance(runId, accountId, 'start', {
+          value: 5804,
+          source: 'rsc',
+          confidence: 1,
+          availability: 'valid',
+          observedAt: start
+        })
+        if (index === 1)
+          store.ledger.balance(runId, accountId, 'end', {
+            value: 5804,
+            source: 'rsc',
+            confidence: 1,
+            availability: 'valid',
+            observedAt: end
+          })
+        store.ledger.lifecycle({
+          runId,
+          accountId,
+          accountIndex: index,
+          accountLabel: 'Synthetic',
+          executionState: index === 1 ? 'partial' : 'failed',
+          startedAt: start,
+          endedAt: end,
+          updatedAt: end
+        })
+      }
+      store.updateRun(runId, 'partial', end)
+      for (const url of [`/api/runs/${runId}`, `/api/runs/${runId}/report`]) {
+        const response = await app.inject({ method: 'GET', url, headers: { cookie } })
+        expect(response.statusCode).toBe(200)
+        const body = response.json<{
+          status?: string
+          run?: { status: string }
+          accounts: Array<{
+            executionState?: string
+            status?: string
+            runBalanceDelta: number | null
+            accountSuccess?: boolean
+            confirmedTaskPoints: number | null
+          }>
+        }>()
+        expect(body.run?.status ?? body.status).toBe('partial')
+        expect(body.accounts.map((row) => row.executionState ?? row.status)).toEqual([
+          'partial',
+          'failed',
+          'failed'
+        ])
+        expect(body.accounts.map((row) => row.runBalanceDelta)).toEqual([0, null, null])
+        expect(body.accounts.every((row) => row.confirmedTaskPoints === null)).toBe(true)
+        if (!url.endsWith('/report'))
+          expect(body.accounts.every((row) => row.accountSuccess === false)).toBe(true)
+      }
+    } finally {
+      await app.close()
+      store.close()
+    }
+  })
   it('returns identical account reconciliation in state, detail, report and calendar', async () => {
     const { app, store, cookie } = await fixture()
     try {

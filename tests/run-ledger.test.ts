@@ -174,15 +174,12 @@ describe('run evidence ledger', () => {
   it('migrates repeatedly without rewriting legacy point values', () => {
     const store = setup()
     try {
-      store.recordPoints({
-        accountId: 'synthetic',
-        localDate: '2026-09-08',
-        initialPoints: 100,
-        finalPoints: 83,
-        status: 'partial',
-        balanceConfirmed: false,
-        recordedAt: '2026-09-08T01:00:00Z'
-      })
+      // Reproduce a pre-fix row, independently of today's stricter writer.
+      store.database
+        .prepare(
+          `INSERT INTO points_history(account_id, local_date, initial_points, final_points, gained_points, status, balance_confirmed, recorded_at) VALUES(?,?,?,?,?,?,?,?)`
+        )
+        .run('synthetic', '2026-09-08', 100, 83, -17, 'partial', 0, '2026-09-08T01:00:00Z')
       migrateRunLedger(store.database)
       migrateRunLedger(store.database)
       expect(store.getLatestPointsHistory('synthetic', '2026-09-08')?.gainedPoints).toBe(-17)

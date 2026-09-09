@@ -13,7 +13,12 @@ import type { RewardsObservation } from '../rewards/RewardsModel.js'
 import type { RewardOffer } from '../rewards/RewardsModel.js'
 import { inspectCreditStructure, type CreditStructure } from '../rewards/CreditStructure.js'
 import { shouldRetry } from '../orchestration/RetryPolicy.js'
-import { MutationNotStartedError } from '../orchestration/MutationExecutor.js'
+import {
+  MutationNotStartedError,
+  OfferUnavailableError
+} from '../orchestration/MutationExecutor.js'
+import { matchOfferAnchor, type OfferIdentity } from './OfferMatching.js'
+import { officialCredit, type TaskCreditEvidence } from '../rewards/OfficialCredit.js'
 import { BING_ORIGIN, REWARDS_ORIGIN, REWARDS_URLS } from './Urls.js'
 
 const DASHBOARD_ATTEMPTS = 3
@@ -440,7 +445,8 @@ export class DashboardClient {
     referer?: string
     deploymentId?: string
     routerStateTree: string
-  }): Promise<{ status: number; acknowledged: boolean }> {
+    offerId?: string
+  }): Promise<{ status: number; acknowledged: boolean; credit?: TaskCreditEvidence }> {
     const url = input.url ?? REWARDS_URLS.earn
     const referer = input.referer ?? url
     const refererUrl = new URL(referer)
@@ -485,16 +491,40 @@ export class DashboardClient {
         timeoutMs: 20_000
       }
     )
+    let credit: TaskCreditEvidence | undefined
+    if (response.ok && input.offerId) {
+      for (const line of response.text.split('\n')) {
+        try {
+          const parsed: unknown = JSON.parse(line.replace(/^[0-9a-f]+:/i, ''))
+          const candidate = officialCredit(parsed, input.offerId)
+          if (candidate) {
+            if (
+              credit &&
+              (credit.officialCreditId !== candidate.officialCreditId ||
+                credit.earnedPoints !== candidate.earnedPoints)
+            ) {
+              credit = undefined
+              break
+            }
+            credit = candidate
+          }
+        } catch {
+          /* Non-JSON RSC chunks are not credit evidence. */
+        }
+      }
+    }
     return {
       status: response.status,
-      acknowledged: serverActionAcknowledged(response.ok, response.text)
+      acknowledged: serverActionAcknowledged(response.ok, response.text),
+      ...(credit ? { credit } : {})
     }
   }
 
   async submitAppActivity(
     accessToken: string,
     payload: Readonly<Record<string, unknown>>,
-    onStructure?: (structure: CreditStructure) => void
+    onStructure?: (structure: CreditStructure) => void,
+    onCredit?: (credit: TaskCreditEvidence) => void
   ): Promise<number | undefined> {
     const response = await this.context.request.post(REWARDS_URLS.appActivities, {
       timeout: 20_000,
@@ -507,7 +537,14 @@ export class DashboardClient {
     try {
       if (!response.ok()) throw new Error(`App activity HTTP ${String(response.status())}`)
       const body = await responseJson(response)
-      if (onStructure) onStructure(inspectCreditStructure(body, 'allowlisted-app-activity-structure'))
+      const offerId =
+        isRecord(payload.attributes) && typeof payload.attributes.offerid === 'string'
+          ? payload.attributes.offerid
+          : undefined
+      const credit = officialCredit(body, offerId)
+      if (credit) onCredit?.(credit)
+      if (onStructure)
+        onStructure(inspectCreditStructure(body, 'allowlisted-app-activity-structure'))
       const balance = isRecord(body) && isRecord(body.response) ? body.response.balance : undefined
       return typeof balance === 'number' && Number.isSafeInteger(balance) && balance >= 0
         ? balance
@@ -517,8 +554,8 @@ export class DashboardClient {
     }
   }
 
-  async navigateOffer(url: string): Promise<void> {
-    const activated = await this.openOfferForInteraction(url)
+  async navigateOffer(url: string, identity: OfferIdentity = {}): Promise<void> {
+    const activated = await this.openOfferForInteraction(url, identity)
     try {
       await activated.page.waitForTimeout(3_000)
     } finally {
@@ -526,59 +563,103 @@ export class DashboardClient {
     }
   }
 
-  async openOfferForInteraction(url: string): Promise<ActivatedOfferPage> {
+  async openOfferForInteraction(
+    url: string,
+    identity: OfferIdentity = {}
+  ): Promise<ActivatedOfferPage> {
     let activationStarted = false
     try {
       const destination = new URL(url, REWARDS_ORIGIN)
-      if (destination.protocol !== 'https:') throw new TypeError('Offer destination must use HTTPS')
-      const surfaces = [REWARDS_URLS.earn, REWARDS_URLS.dashboard]
-      for (const surface of surfaces) {
-        const current = new URL(this.page.url())
-        const expected = new URL(surface)
-        if (current.origin !== expected.origin || current.pathname !== expected.pathname) {
-          await this.page.goto(surface, { waitUntil: 'domcontentloaded', timeout: 30_000 })
-        }
-        await this.page.waitForTimeout(1_000)
-        const anchorIndex = await this.offerAnchorIndex(destination.href)
-        if (anchorIndex < 0) continue
-        const anchor = this.page.locator('a[href]').nth(anchorIndex)
-        activationStarted = true
-        return await this.activateOfferAnchor(anchor)
-      }
-
-      await this.page.goto(BING_ORIGIN, { waitUntil: 'domcontentloaded', timeout: 30_000 })
-      await this.page.waitForTimeout(1_000)
-      const triggerSelectors = [
-        '#id_rh',
-        '[aria-label*="Microsoft Rewards" i]',
-        '[title*="Microsoft Rewards" i]',
-        'a[href*="rewards" i]'
-      ]
-      let flyoutOpened = false
-      for (const selector of triggerSelectors) {
-        const trigger = this.page.locator(selector).first()
-        if ((await trigger.count()) === 0 || !(await trigger.isVisible().catch(() => false)))
-          continue
-        await trigger.click({ timeout: 10_000 })
-        flyoutOpened = true
-        break
-      }
-      if (flyoutOpened) {
-        await this.page.waitForTimeout(2_000)
-        for (const frame of this.page.frames()) {
-          if (!new URL(frame.url()).pathname.includes('/rewards/panelflyout')) continue
-          const links = frame.locator('a[href]')
-          const anchorIndex = await this.offerAnchorIndex(destination.href, links)
+      if (destination.protocol !== 'https:' || destination.username || destination.password)
+        throw new TypeError('Offer destination must use credential-free HTTPS')
+      // Retry discovery only before activation. A click with an unknown result is never repeated.
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        const surfaces = [REWARDS_URLS.earn, REWARDS_URLS.dashboard]
+        for (const surface of surfaces) {
+          const current = new URL(this.page.url())
+          const expected = new URL(surface)
+          if (current.origin !== expected.origin || current.pathname !== expected.pathname) {
+            await this.page.goto(surface, { waitUntil: 'domcontentloaded', timeout: 30_000 })
+          }
+          await this.page.waitForTimeout(1_000)
+          if (new URL(this.page.url()).origin !== expected.origin)
+            throw new MutationNotStartedError('Offer surface redirected before activation')
+          const anchorIndex = await this.offerAnchorIndex(
+            destination.href,
+            undefined,
+            identity,
+            expected.pathname,
+            attempt
+          )
           if (anchorIndex < 0) continue
+          const anchor = this.page.locator('a[href]').nth(anchorIndex)
           activationStarted = true
-          return await this.activateOfferAnchor(links.nth(anchorIndex))
+          return await this.activateOfferAnchor(anchor)
         }
+
+        await this.page.goto(BING_ORIGIN, { waitUntil: 'domcontentloaded', timeout: 30_000 })
+        await this.page.waitForTimeout(1_000)
+        const triggerSelectors = [
+          '#id_rh',
+          '[aria-label*="Microsoft Rewards" i]',
+          '[title*="Microsoft Rewards" i]',
+          'a[href*="rewards" i]'
+        ]
+        let flyoutOpened = false
+        let flyoutInspected = false
+        for (const selector of triggerSelectors) {
+          const trigger = this.page.locator(selector).first()
+          if ((await trigger.count()) === 0 || !(await trigger.isVisible().catch(() => false)))
+            continue
+          await trigger.click({ timeout: 10_000 })
+          flyoutOpened = true
+          break
+        }
+        if (flyoutOpened) {
+          await this.page.waitForTimeout(2_000)
+          for (const frame of this.page.frames()) {
+            const frameUrl = new URL(frame.url())
+            if (
+              frameUrl.protocol !== 'https:' ||
+              !['bing.com', 'www.bing.com', 'cn.bing.com'].includes(frameUrl.hostname) ||
+              !frameUrl.pathname.includes('/rewards/panelflyout')
+            )
+              continue
+            const links = frame.locator('a[href]')
+            flyoutInspected = true
+            const anchorIndex = await this.offerAnchorIndex(
+              destination.href,
+              links,
+              identity,
+              'bing-flyout',
+              attempt
+            )
+            if (anchorIndex < 0) continue
+            activationStarted = true
+            return await this.activateOfferAnchor(links.nth(anchorIndex))
+          }
+        }
+        if (!flyoutInspected)
+          await this.logger.write({
+            level: 'info',
+            event: 'offer-link-lookup',
+            stage: 'bing-flyout',
+            attempt,
+            status: 'unavailable',
+            message: 'candidates=0; matched=false'
+          })
       }
-      throw new MutationNotStartedError(
-        'Offer link was not found on Rewards or Bing Rewards surfaces'
+      throw new OfferUnavailableError(
+        'Offer currently unavailable after two surface discoveries; no task was submitted'
       )
     } catch (error) {
       if (activationStarted || error instanceof MutationNotStartedError) throw error
+      await this.logger.write({
+        level: 'warn',
+        event: 'offer-link-lookup',
+        stage: 'pre-activation',
+        status: networkError(error) ? 'network-error' : 'browser-or-authentication-error'
+      })
       throw new MutationNotStartedError('Offer lookup failed before activation')
     }
   }
@@ -685,6 +766,10 @@ export class DashboardClient {
             return [
               {
                 sourceTaskId,
+                identityStable: Boolean(
+                  anchor.href.match(/\/quest\/([^/?#]+)/i)?.[1] ||
+                  anchor.getAttribute('data-offer-id')
+                ),
                 type,
                 source: 'rsc' as const,
                 displayName: text.slice(0, 160),
@@ -701,53 +786,44 @@ export class DashboardClient {
     })
   }
 
-  private offerAnchorIndex(destinationUrl: string, links?: Locator): Promise<number> {
-    return (links ?? this.page.locator('a[href]')).evaluateAll((anchors, targetUrl) => {
-      const expected = new URL(targetUrl, window.location.href)
-      return anchors.findIndex((candidate) => {
-        try {
-          const actual = new URL((candidate as HTMLAnchorElement).href, window.location.href)
-          if (actual.href === expected.href) return true
-          const actualHost = actual.hostname.toLowerCase()
-          const expectedHost = expected.hostname.toLowerCase()
-          const actualIsBing =
-            actualHost === 'bing.com' ||
-            actualHost === 'www.bing.com' ||
-            actualHost === 'cn.bing.com'
-          const expectedIsBing =
-            expectedHost === 'bing.com' ||
-            expectedHost === 'www.bing.com' ||
-            expectedHost === 'cn.bing.com'
-          if (actualIsBing && expectedIsBing && actual.pathname === expected.pathname) {
-            if (actual.pathname === '/search') {
-              const expectedQuery = expected.searchParams.get('q')
-              const expectedFilters = expected.searchParams.get('filters')
-              return (
-                expectedQuery !== null &&
-                actual.searchParams.get('q') === expectedQuery &&
-                (expectedFilters === null || actual.searchParams.get('filters') === expectedFilters)
-              )
-            }
-            const actualQuery = [...actual.searchParams.entries()]
-              .sort(([leftKey, leftValue], [rightKey, rightValue]) =>
-                `${leftKey}\0${leftValue}`.localeCompare(`${rightKey}\0${rightValue}`)
-              )
-              .map(([key, value]) => `${key}=${value}`)
-              .join('&')
-            const expectedQuery = [...expected.searchParams.entries()]
-              .sort(([leftKey, leftValue], [rightKey, rightValue]) =>
-                `${leftKey}\0${leftValue}`.localeCompare(`${rightKey}\0${rightValue}`)
-              )
-              .map(([key, value]) => `${key}=${value}`)
-              .join('&')
-            return actualQuery === expectedQuery
-          }
-          return false
-        } catch {
-          return false
+  private async offerAnchorIndex(
+    destinationUrl: string,
+    links?: Locator,
+    identity: OfferIdentity = {},
+    surface = 'inspection',
+    attempt = 1
+  ): Promise<number> {
+    const candidates = await (links ?? this.page.locator('a[href]')).evaluateAll((anchors) =>
+      anchors.map((candidate) => {
+        const anchor = candidate as HTMLAnchorElement
+        const owner = anchor.closest('[data-offer-id], [data-task-id]')
+        return {
+          href: anchor.href,
+          visible:
+            anchor.getClientRects().length > 0 &&
+            window.getComputedStyle(anchor).visibility !== 'hidden',
+          offerId:
+            anchor.getAttribute('data-offer-id') ?? owner?.getAttribute('data-offer-id') ?? '',
+          taskId: anchor.getAttribute('data-task-id') ?? owner?.getAttribute('data-task-id') ?? '',
+          destinationUrl:
+            anchor.getAttribute('data-destination-url') ??
+            owner?.getAttribute('data-destination-url') ??
+            '',
+          ariaLabel: anchor.getAttribute('aria-label') ?? '',
+          title: anchor.getAttribute('title') ?? ''
         }
       })
-    }, destinationUrl)
+    )
+    const match = matchOfferAnchor(candidates, destinationUrl, identity)
+    await this.logger.write({
+      level: 'info',
+      event: 'offer-link-lookup',
+      stage: surface,
+      attempt,
+      status: match.method,
+      message: `candidates=${String(candidates.length)}; matched=${String(match.index >= 0)}`
+    })
+    return match.index
   }
 
   private async activateOfferAnchor(anchor: Locator): Promise<ActivatedOfferPage> {

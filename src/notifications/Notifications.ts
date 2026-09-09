@@ -482,6 +482,10 @@ export class Notifications {
       startedAt: string | null
       endedAt: string
       collectedPoints: number | null
+      failureStage?: string | null
+      failureReason?: string | null
+      completedTasks?: number
+      unconfirmedTasks?: number
     }
     const stats = this.store.ledger.credits.reconcile(
       event.accountId,
@@ -490,12 +494,21 @@ export class Notifications {
       event.runId
     )
     return [
-      'Microsoft Rewards 账号任务完成',
+      `Microsoft Rewards ${completionTitle(event.executionState)}`,
       `账号：${redactText(event.accountLabel)}`,
       `账号状态：${states[event.executionState] ?? '待确认'}`,
       `开始时间：${time(event.startedAt)}`,
       `完成时间：${time(event.endedAt)}`,
       `本次余额变化：${points(event.collectedPoints)}`,
+      `余额确认：${event.collectedPoints === null ? '待确认' : '已确认'}`,
+      `已完成任务：${String(event.completedTasks ?? '待确认')}`,
+      `未确认任务：${String(event.unconfirmedTasks ?? '待确认')}`,
+      ...(['failed', 'partial', 'action-required', 'interrupted'].includes(event.executionState)
+        ? [
+            `结束阶段：${redactText(event.failureStage ?? '未取得')}`,
+            `原因：${redactText(event.failureReason ?? '详情请查看任务账本')}`
+          ]
+        : []),
       `已确认任务积分：${points(stats.confirmedTaskPoints)}`,
       `任务上报积分：${points(stats.reportedTaskPoints)}`,
       `待确认积分：${points(stats.pendingTaskPoints)}`,
@@ -506,6 +519,18 @@ export class Notifications {
       `运行：${event.runId.slice(0, 8)}`
     ].join('\n')
   }
+}
+
+export function completionTitle(state: string): string {
+  const titles: Record<string, string> = {
+    completed: '账号任务完成',
+    partial: '账号任务部分完成',
+    failed: '账号任务失败',
+    'action-required': '账号需要人工处理',
+    cancelled: '账号任务已取消',
+    interrupted: '账号任务中断'
+  }
+  return titles[state] ?? '账号状态待确认'
 }
 
 function safeFailure(error: unknown): string {

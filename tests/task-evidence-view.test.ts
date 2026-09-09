@@ -18,6 +18,18 @@ const row: EvidenceRow = {
   creditKey: null
 }
 
+it('renders proven zero credit without hiding it behind a hard-coded missing-evidence label', () => {
+  const html = renderToStaticMarkup(
+    createElement(TaskEvidencePanel, {
+      tasks: [task],
+      evidence: [{ ...row, confirmedPoints: 0, creditKey: 'synthetic-credit' }]
+    })
+  )
+  expect(html).toContain('已确认到账 0 分')
+  expect(html).not.toContain('未取得到账证据')
+  expect(html).toContain('synthetic-credit')
+})
+
 it('separates accepted responses and observed balances from confirmed credits', () => {
   const html = renderToStaticMarkup(
     createElement(TaskEvidencePanel, { tasks: [task], evidence: [row] })

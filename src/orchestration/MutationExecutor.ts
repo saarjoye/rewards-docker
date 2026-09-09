@@ -36,6 +36,9 @@ export class MutationNotStartedError extends Error {
   }
 }
 
+// A missing current offer is not an execution failure; no submission has happened.
+export class OfferUnavailableError extends MutationNotStartedError {}
+
 export class MutationExecutor {
   constructor(private readonly ledger: MutationLedger) {}
 
@@ -66,7 +69,10 @@ export class MutationExecutor {
     } catch (error) {
       if (error instanceof MutationNotStartedError) {
         this.ledger.cancelMutation(task.taskId)
-        return { status: 'failed', message: redactText(error.message) }
+        return {
+          status: error instanceof OfferUnavailableError ? 'verification-pending' : 'failed',
+          message: redactText(error.message)
+        }
       }
       this.ledger.updateMutation(task.taskId, 'verification-pending')
       return {

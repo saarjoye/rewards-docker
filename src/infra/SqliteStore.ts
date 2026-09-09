@@ -112,7 +112,7 @@ export class SqliteStore {
           message = excluded.message,
           updated_at = excluded.updated_at
         WHERE NOT EXISTS (SELECT 1 FROM account_lifecycle a WHERE a.run_id=excluded.run_id
-          AND a.account_id=excluded.account_id AND a.execution_state='completed')
+          AND a.account_id=excluded.account_id AND a.ended_at IS NOT NULL)
       `
       )
       .run(
@@ -324,16 +324,16 @@ export class SqliteStore {
     balanceConfirmed: boolean
     recordedAt: string
   }): void {
-    const gained =
-      input.initialPoints === undefined || input.finalPoints === undefined
-        ? null
-        : input.finalPoints - input.initialPoints
     const balanceConfirmed =
       input.balanceConfirmed &&
       Number.isSafeInteger(input.initialPoints) &&
       (input.initialPoints ?? -1) >= 0 &&
       Number.isSafeInteger(input.finalPoints) &&
       (input.finalPoints ?? -1) >= 0
+    const gained =
+      balanceConfirmed && input.finalPoints !== undefined && input.initialPoints !== undefined
+        ? input.finalPoints - input.initialPoints
+        : null
     this.database
       .prepare(
         `INSERT INTO points_history(

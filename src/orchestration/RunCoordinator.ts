@@ -27,6 +27,7 @@ import type { ReadableMutationLedger } from './MutationExecutor.js'
 import { assertBusinessDate, BusinessDateChanged } from './BusinessDate.js'
 import type { FieldEvidence } from '../domain/Evidence.js'
 import type { RunLedger } from '../infra/RunLedger.js'
+import { balanceInterval } from '../infra/BalanceInterval.js'
 import {
   AccountPipeline,
   accountPipelineDiagnostic,
@@ -39,6 +40,20 @@ import {
 export interface RunStartResult {
   runId: string
   selectedAccountIndexes: readonly number[]
+}
+
+export function accountExecutionState(status: AccountRunStatus | 'cancelled' | 'interrupted') {
+  const states = {
+    success: 'completed',
+    partial: 'partial',
+    failed: 'failed',
+    'action-required': 'action-required',
+    cancelled: 'cancelled',
+    interrupted: 'interrupted',
+    queued: 'queued',
+    running: 'running'
+  } as const
+  return states[status]
 }
 
 export class RunAlreadyActiveError extends Error {
@@ -220,6 +235,7 @@ export class ApplicationRunCoordinator {
     const startedAt = new Date().toISOString()
     const lifecycle = (
       executionState:
+        | 'queued'
         | 'running'
         | 'completed'
         | 'partial'
@@ -298,14 +314,43 @@ export class ApplicationRunCoordinator {
           delete resources.finalEvidence
         }
       }
-      const tasks = this.store
-        .listTaskState(context.localDate)
+      if (
+        result.status === 'failed' &&
+        resources.discovery &&
+        resources.desktopClient &&
+        !signal.aborted
+      ) {
+        delete resources.finalEvidence
+        delete resources.finalPoints
+        // One read-only closeout attempt. Authentication failures and cancelled runs never enter here.
+        try {
+          const observation = await resources.desktopClient.fetchDashboard(signal)
+          if (observation.availablePoints.availability === 'valid') {
+            resources.finalEvidence = observation.availablePoints
+          }
+        } catch {
+          await this.logger.write({
+            level: 'warn',
+            event: 'final-balance-unavailable',
+            runId,
+            accountAlias: `account-${String(account.runAccountIndex)}`,
+            status: 'pending'
+          })
+        }
+      }
+      const tasks = this.store.ledger
+        .tasks(runId)
         .filter((task) => task.accountId === account.accountId)
       const finalEvidence = resources.finalEvidence
       if (finalEvidence) this.runLedger?.balance(runId, account.accountId, 'end', finalEvidence)
       const status =
         result.status === 'success' ? aggregateAccountStatus(tasks, finalEvidence) : result.status
       const diagnostic = accountPipelineDiagnostic(result)
+      const interval = balanceInterval(
+        this.store.ledger.balances(runId, account.accountId, context.localDate),
+        true
+      )
+      const balanceConfirmed = interval.verificationStatus === 'confirmed'
       this.store.upsertAccountRun({
         ...context,
         status,
@@ -316,25 +361,17 @@ export class ApplicationRunCoordinator {
       this.store.recordPoints({
         accountId: account.accountId,
         localDate: context.localDate,
-        ...(resources.initialPoints === undefined
+        ...(interval.openingBalance === null ? {} : { initialPoints: interval.openingBalance }),
+        ...(!balanceConfirmed || interval.closingBalance === null
           ? {}
-          : { initialPoints: resources.initialPoints }),
-        ...(resources.finalPoints === undefined ? {} : { finalPoints: resources.finalPoints }),
+          : { finalPoints: interval.closingBalance }),
         status,
-        balanceConfirmed:
-          resources.initialPoints !== undefined && resources.finalPoints !== undefined,
+        balanceConfirmed,
         recordedAt: new Date().toISOString()
       })
-      lifecycle(
-        result.status === 'failed'
-          ? 'failed'
-          : result.status === 'action-required'
-            ? 'action-required'
-            : 'completed'
-      )
+      lifecycle(accountExecutionState(status))
       return status
     } catch (error) {
-      lifecycle(signal.aborted ? (this.interrupted ? 'interrupted' : 'cancelled') : 'failed')
       this.store.upsertAccountRun({
         ...context,
         status: signal.aborted ? 'partial' : 'failed',
@@ -344,6 +381,7 @@ export class ApplicationRunCoordinator {
           : 'Execution failed',
         updatedAt: new Date().toISOString()
       })
+      lifecycle(signal.aborted ? (this.interrupted ? 'interrupted' : 'cancelled') : 'failed')
       throw error
     } finally {
       await resources.mobile?.close().catch(() => undefined)

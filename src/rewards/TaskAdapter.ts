@@ -1,5 +1,6 @@
 import type { FieldEvidence } from '../domain/Evidence.js'
 import type { TaskRecord } from '../domain/Task.js'
+import type { TaskCreditEvidence } from './OfficialCredit.js'
 
 export interface TaskActionContext {
   accountId: string
@@ -11,6 +12,7 @@ export interface MutationReceipt {
   accepted: boolean
   observedAt: string
   safeReference?: string
+  credit?: TaskCreditEvidence
 }
 
 export interface VerificationResult {
@@ -18,6 +20,7 @@ export interface VerificationResult {
   progress: { completed: number; total: number | null }
   points?: FieldEvidence<number>
   reason?: string
+  credit?: TaskCreditEvidence
 }
 
 export interface TaskAdapter {

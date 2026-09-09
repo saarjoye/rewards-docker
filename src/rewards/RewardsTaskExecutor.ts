@@ -15,6 +15,7 @@ import {
 } from '../orchestration/MutationExecutor.js'
 import { SearchExecutionError, SearchExecutor } from '../orchestration/SearchExecutor.js'
 import { BusinessDateChanged } from '../orchestration/BusinessDate.js'
+import type { TaskCreditEvidence } from './OfficialCredit.js'
 import type { TaskAdapter, VerificationResult } from './TaskAdapter.js'
 import type { DiscoveryOutput, TaskExecutionDescriptor } from './RewardsDiscoveryService.js'
 import type { RewardOffer, RewardsDiscoverySnapshot } from './RewardsModel.js'
@@ -262,6 +263,7 @@ export class RewardsTaskExecutor {
           const response = await this.client.reportServerAction({
             actionId,
             body: buildReportActivityBody(offer),
+            offerId: offer.sourceTaskId,
             ...(offer.parentOfferId
               ? {
                   url: REWARDS_URLS.quest(offer.parentOfferId),
@@ -276,10 +278,17 @@ export class RewardsTaskExecutor {
                 }),
             ...(snapshot.deploymentId ? { deploymentId: snapshot.deploymentId } : {})
           })
-          return { accepted: response.acknowledged, observedAt: new Date().toISOString() }
+          return {
+            accepted: response.acknowledged,
+            observedAt: new Date().toISOString(),
+            ...(response.credit ? { credit: response.credit } : {})
+          }
         }
         if (executionPath === 'navigate-only' && offer.destinationUrl) {
-          await this.client.navigateOffer(offer.destinationUrl)
+          await this.client.navigateOffer(offer.destinationUrl, {
+            sourceTaskId: offer.sourceTaskId,
+            displayName: offer.displayName
+          })
           return { accepted: true, observedAt: new Date().toISOString() }
         }
         return { accepted: false, observedAt: new Date().toISOString() }
@@ -297,7 +306,8 @@ export class RewardsTaskExecutor {
           source: descriptor.task.source,
           kind: 'response',
           observedAt: receipt.observedAt,
-          accepted: receipt.accepted
+          accepted: receipt.accepted,
+          ...(receipt.credit ? { credit: receipt.credit } : {})
         })
         return receipt
       },
@@ -311,7 +321,8 @@ export class RewardsTaskExecutor {
           kind: 'verification',
           observedAt: new Date().toISOString(),
           completed: result.progress.completed,
-          total: result.progress.total
+          total: result.progress.total,
+          ...(result.credit ? { credit: result.credit } : {})
         })
         return result
       }
@@ -324,7 +335,15 @@ export class RewardsTaskExecutor {
   ): Promise<void> {
     if (!this.appToken) throw new Error('App authentication unavailable')
     this.store.ledger.captureTaskBalance(this.runId, task.accountId, 'task-before')
-    const balance = await this.client.submitAppActivity(this.appToken, payload)
+    let credit: TaskCreditEvidence | undefined
+    const balance = await this.client.submitAppActivity(
+      this.appToken,
+      payload,
+      undefined,
+      (value) => {
+        credit = value
+      }
+    )
     this.store.ledger.recordTaskEvidence({
       runId: this.runId,
       accountId: task.accountId,
@@ -333,6 +352,7 @@ export class RewardsTaskExecutor {
       kind: 'response',
       observedAt: new Date().toISOString(),
       accepted: true,
+      ...(credit ? { credit } : {}),
       ...(balance === undefined ? {} : { balance })
     })
   }
@@ -430,6 +450,11 @@ export class RewardsTaskExecutor {
     return {
       confirmed: offer.complete,
       progress: { completed: offer.completed, total: offer.total },
+      credit: {
+        evidenceSource: 'official-progress',
+        verificationStatus: 'pending',
+        ...(offer.expectedPoints === undefined ? {} : { expectedPoints: offer.expectedPoints })
+      },
       ...(offer.complete ? {} : { reason: '任务仍未完成' })
     }
   }
@@ -545,7 +570,26 @@ export class RewardsTaskExecutor {
     } catch {
       return undefined
     }
-    return observation.offers.find((offer) => offer.sourceTaskId === descriptor.task.sourceTaskId)
+    const offer = observation.offers.find(
+      (offer) => offer.sourceTaskId === descriptor.task.sourceTaskId
+    )
+    if (offer)
+      this.store.ledger.recordTaskEvidence({
+        runId: this.runId,
+        accountId: descriptor.task.accountId,
+        taskId: descriptor.task.taskId,
+        source: 'app-dashboard',
+        kind: 'verification',
+        observedAt: new Date().toISOString(),
+        completed: offer.completed,
+        total: offer.total,
+        credit: {
+          evidenceSource: 'official-progress',
+          verificationStatus: 'pending',
+          ...(offer.expectedPoints === undefined ? {} : { expectedPoints: offer.expectedPoints })
+        }
+      })
+    return offer
   }
 
   private appPayload(
@@ -583,7 +627,12 @@ export class RewardsTaskExecutor {
       observedAt: updated.updatedAt,
       completed: task.progress.completed,
       total: task.progress.total,
-      executionState: task.status
+      executionState: task.status,
+      credit: {
+        submitted: ['submitted', 'verification-pending', 'verified'].includes(
+          this.mutationLedger.getMutationState(task.taskId) ?? ''
+        )
+      }
     })
     return updated
   }

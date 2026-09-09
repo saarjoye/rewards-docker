@@ -163,7 +163,9 @@ export function TaskEvidencePanel({
                         </dl>
                       </td>
                       <td data-label="到账证据">
-                        未取得到账证据
+                        {row.confirmedPoints == null
+                          ? '未取得到账证据'
+                          : `已确认到账 ${numeric(row.confirmedPoints)} 分`}
                         <small>到账标识：{row.creditKey ?? '未取得'}</small>
                       </td>
                     </tr>
