@@ -26,6 +26,7 @@ for (const index of [1, 2, 3]) {
   })
 }
 const accountId = accounts.list()[2].accountId
+const thirdAccountLabel = accounts.list()[2].displayAlias
 const runId = randomUUID()
 const now = new Date()
 const localDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(now)
@@ -77,10 +78,19 @@ store.upsertTask(
   },
   runId
 )
+const startRequests = []
+const cancelRequests = []
+const providerOrigins = []
 const runCoordinator = {
   activeRunId: runId,
-  start: async () => {
-    throw new Error('Disabled in UI acceptance')
+  start: async (request) => {
+    startRequests.push(request)
+    await new Promise((done) => setTimeout(done, 250))
+    return { runId: randomUUID() }
+  },
+  cancel: (id) => {
+    cancelRequests.push(id)
+    return true
   }
 }
 for (const row of [
@@ -108,7 +118,12 @@ const app = await createServer({
   webRoot: resolve('.codex-output/next-build/web'),
   runCoordinator,
   notifications: new Notifications(store, Buffer.alloc(32, 7), async (url) => {
-    assert.ok(String(url).startsWith('https://qyapi.weixin.qq.com/cgi-bin/'))
+    const target = new URL(String(url))
+    assert.ok(
+      ['https://qyapi.weixin.qq.com', 'https://notify.example.test'].includes(target.origin)
+    )
+    assert.ok(target.pathname.startsWith('/cgi-bin/'))
+    providerOrigins.push(target.origin)
     return new globalThis.Response(
       JSON.stringify(
         String(url).includes('gettoken')
@@ -128,6 +143,7 @@ app.addHook('onSend', async (_request, reply, payload) => {
 const output = resolve('.codex-output/ui-acceptance')
 await mkdir(output, { recursive: true })
 let browser
+let page
 try {
   const origin = await app.listen({ port: 0, host: '127.0.0.1' })
   browser = await chromium.launch({
@@ -162,19 +178,78 @@ try {
     }
     return route.continue()
   })
-  const page = await context.newPage()
+  page = await context.newPage()
   page.setDefaultTimeout(15000)
   const pageErrors = []
   page.on('pageerror', (error) => {
     pageErrors.push(error.message)
   })
   await page.goto(origin)
+  let screenshots = 0
+  for (const width of [1440, 768, 390, 320]) {
+    await page.setViewportSize({ width, height: 900 })
+    await page.getByLabel('管理员账号').waitFor()
+    await capture('login-' + String(width))
+  }
+  await page.getByRole('button', { name: '登录', exact: true }).click()
+  assert.equal(
+    await page.getByLabel('管理员账号').evaluate((node) => node.validity.valueMissing),
+    true
+  )
+  await page.getByLabel('管理员账号').fill('synthetic-admin')
+  await page.getByLabel('管理员密码').fill('synthetic-wrong')
+  await page.getByRole('button', { name: '登录', exact: true }).click()
+  await page.getByRole('alert').filter({ hasText: '登录失败' }).waitFor()
   await page.locator('input[autocomplete=username]').fill('synthetic-admin')
   await page.locator('input[autocomplete=current-password]').fill('synthetic-password')
   await page.getByRole('button', { name: '登录', exact: true }).click()
-  await page.locator('nav').waitFor()
-  let screenshots = 0
+  await page.locator('.workspace-toolbar').waitFor()
   async function capture(name) {
+    await page.evaluate(async () => {
+      await Promise.all(
+        globalThis.document
+          .getAnimations()
+          .filter((a) => a.effect?.getTiming().iterations !== Infinity)
+          .map((a) => a.finished.catch(() => undefined))
+      )
+      globalThis.scrollTo(0, 0)
+    })
+    if (await page.locator('.topbar').count()) {
+      assert.equal(
+        await page
+          .locator('.topbar')
+          .evaluate((node) => Math.round(node.getBoundingClientRect().top)),
+        0,
+        'Topbar must stay at viewport top'
+      )
+      assert.equal(
+        await page.locator('.t-drawer__mask:visible').count(),
+        0,
+        'Drawer overlay must be gone'
+      )
+    }
+    await page.screenshot({ path: join(output, name + '-viewport.png') })
+    await page.screenshot({ path: join(output, name + '.png'), fullPage: true })
+    if (
+      await page.evaluate(
+        () => globalThis.document.documentElement.scrollWidth > globalThis.innerWidth
+      )
+    ) {
+      console.log(
+        JSON.stringify(
+          await page.locator('*').evaluateAll((nodes) =>
+            nodes
+              .filter((n) => n.getBoundingClientRect().right > globalThis.innerWidth + 1)
+              .slice(0, 15)
+              .map((n) => ({
+                tag: n.tagName,
+                class: n.className,
+                width: n.getBoundingClientRect().width
+              }))
+          )
+        )
+      )
+    }
     assert.equal(
       await page.evaluate(
         () => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth
@@ -197,13 +272,77 @@ try {
     await page.screenshot({ path: join(output, name + '.png'), fullPage: true })
     screenshots += 1
   }
+  async function navigate(name) {
+    if (await page.getByRole('button', { name: '打开导航', exact: true }).isVisible())
+      await page.getByRole('button', { name: '打开导航', exact: true }).click()
+    const link = page.getByRole('link', { name, exact: true })
+    await link.focus()
+    await link.press('Enter')
+    await page.getByRole('navigation', { name: '移动管理视图' }).waitFor({ state: 'hidden' })
+  }
   async function openHistory() {
-    await page.getByRole('button', { name: '运行记录', exact: true }).click()
+    await navigate('运行记录')
     await page.getByRole('heading', { name: '运行记录', exact: true }).waitFor()
+  }
+  async function captureDrawer(name) {
+    await page.locator('.t-drawer--open').waitFor()
+    await page.evaluate(async () => {
+      await Promise.all(
+        globalThis.document
+          .getAnimations()
+          .filter((a) => a.effect?.getTiming().iterations !== Infinity)
+          .map((a) => a.finished.catch(() => undefined))
+      )
+    })
+    const bounds = await page.locator('.t-drawer--open .t-drawer__content-wrapper').boundingBox()
+    assert.ok(bounds && bounds.x >= -1 && bounds.x + bounds.width <= page.viewportSize().width + 1)
+    await page.screenshot({ path: join(output, name + '-viewport.png') })
+    screenshots += 1
   }
   for (const width of [1440, 768, 390, 320]) {
     await page.setViewportSize({ width, height: 900 })
+    await navigate('概览')
+    await page.getByRole('heading', { name: '概览', exact: true }).waitFor()
+    await capture('overview-' + String(width))
+    await navigate('账号管理')
+    await page.getByLabel('搜索账号').fill('no-fixture-match')
+    await page.getByText('没有匹配的账号', { exact: true }).filter({ visible: true }).waitFor()
+    await page.getByLabel('搜索账号').fill('')
+    assert.equal(await page.getByRole('switch', { name: '启用账号 3' }).isDisabled(), true)
+    await capture('accounts-' + String(width))
+    await page.getByRole('button', { name: '添加账号', exact: true }).click()
+    await page.getByLabel('Microsoft 账号', { exact: true }).waitFor()
+    await captureDrawer('account-drawer-' + String(width))
+    await page.locator('.t-drawer--open .t-drawer__close-btn').click()
+    await page.getByLabel('Microsoft 账号', { exact: true }).waitFor({ state: 'hidden' })
+    await page.getByRole('button', { name: '运行控制', exact: true }).click()
+    await captureDrawer('run-drawer-' + String(width))
+    await page.locator('.t-drawer--open .t-drawer__close-btn').click()
+    await page.locator('.t-drawer__mask:visible').waitFor({ state: 'hidden' })
+    assert.equal(
+      await page
+        .getByRole('button', { name: '运行控制', exact: true })
+        .evaluate((node) => node === globalThis.document.activeElement),
+      true
+    )
+    if (width === 1440) {
+      await page.getByRole('button', { name: '编辑名称', exact: true }).first().click()
+      await page.getByLabel('名称', { exact: true }).fill('合成别名')
+      await page.getByRole('button', { name: '保存名称', exact: true }).click()
+      await page.getByText('合成别名', { exact: true }).first().waitFor()
+      await page.getByRole('button', { name: '运行控制', exact: true }).click()
+      await page.getByRole('button', { name: '停止运行', exact: true }).click()
+      await page.getByRole('button', { name: '取消', exact: true }).click()
+      assert.equal(cancelRequests.length, 0)
+      await page.getByRole('button', { name: '停止运行', exact: true }).click()
+      await page.getByRole('button', { name: '确认停止', exact: true }).click()
+      await page.getByRole('button', { name: '确认停止', exact: true }).waitFor({ state: 'hidden' })
+      assert.deepEqual(cancelRequests, [runId])
+      await page.locator('.t-drawer--open .t-drawer__close-btn').click()
+      await page.locator('.t-drawer__mask:visible').waitFor({ state: 'hidden' })
+    }
     await openHistory()
+    await capture('history-' + String(width))
     await page.getByRole('button', { name: '查看详情', exact: true }).click()
     await page.locator('.account-detail').waitFor()
     assert.match(await page.locator('.balance-fields').first().innerText(), /\+88 分/)
@@ -223,7 +362,7 @@ try {
     await page.reload()
     await page.locator('.account-detail').waitFor()
     assert.equal(new URL(page.url()).hash, '#run/' + runId)
-    await page.getByRole('button', { name: '积分日历', exact: true }).click()
+    await navigate('积分日历')
     await page.locator('.calendar-account').first().waitFor()
     assert.match(
       await page.locator('.calendar-account').first().innerText(),
@@ -236,33 +375,79 @@ try {
       /未归属余额变化\s*\+88 分/
     )
     await capture('calendar-' + String(width))
+    await page
+      .getByRole('button', { name: /无记录$/ })
+      .first()
+      .click()
+    await page.getByText('当天无本地记录', { exact: true }).waitFor()
+    await page.getByLabel('月份', { exact: true }).fill(localDate.slice(0, 7))
+    await page.getByLabel('月份', { exact: true }).press('Enter')
+    await page.getByRole('button', { name: localDate + ' 有记录', exact: true }).click()
     await page.getByRole('button', { name: '进行中 · 查看', exact: true }).click()
     await page.locator('.account-detail').waitFor()
-    await page.getByRole('button', { name: '任务', exact: true }).click()
+    await navigate('任务')
     await page
       .locator('.task-section')
       .filter({ has: page.getByRole('heading', { name: '任务状态', exact: true }) })
-      .locator('.task-table-wrap')
+      .locator('.responsive-data')
       .waitFor()
     await capture('tasks-' + String(width))
-    await page.getByRole('button', { name: '消息推送', exact: true }).click()
+    await page.getByLabel('搜索任务', { exact: true }).fill('not-present')
+    await page
+      .getByText('没有符合筛选条件的任务', { exact: true })
+      .filter({ visible: true })
+      .waitFor()
+    await page.getByRole('button', { name: '重置筛选', exact: true }).click()
+    await navigate('消息推送')
     await page.getByLabel('企业 ID', { exact: true }).waitFor()
     if (width === 1440) {
-      await page.getByLabel('启用企业微信推送').check()
+      await page.getByRole('switch', { name: '启用企业微信推送' }).click()
       await page.getByLabel('企业 ID', { exact: true }).fill('synthetic-corp')
       await page.getByLabel('应用 AgentId', { exact: true }).fill('1')
       await page.getByLabel('应用 Secret', { exact: true }).fill('synthetic-secret')
+      await page.getByLabel('企业微信反代地址', { exact: true }).fill('https://notify.example.test')
+      assert.equal(
+        await page.getByRole('button', { name: '发送测试消息', exact: true }).isDisabled(),
+        true
+      )
+      await page.getByRole('link', { name: '概览', exact: true }).click()
+      await page.getByRole('button', { name: '继续编辑', exact: true }).click()
+      assert.equal(await page.getByLabel('企业 ID', { exact: true }).inputValue(), 'synthetic-corp')
       await page.getByRole('button', { name: '保存配置', exact: true }).click()
       await page.getByRole('status').filter({ hasText: '配置已加密保存' }).waitFor()
       assert.equal(await page.getByLabel('应用 Secret', { exact: true }).inputValue(), '')
       await page.getByRole('button', { name: '发送测试消息', exact: true }).click()
       await page.getByRole('status').filter({ hasText: '接口已接受测试消息' }).waitFor()
+      assert.deepEqual(providerOrigins, [
+        'https://notify.example.test',
+        'https://notify.example.test'
+      ])
     }
     await capture('notifications-' + String(width))
     await page.reload()
     await page.getByLabel('企业 ID', { exact: true }).waitFor()
     assert.equal(await page.getByLabel('企业 ID', { exact: true }).inputValue(), 'synthetic-corp')
+    assert.equal(
+      await page.getByLabel('企业微信反代地址', { exact: true }).inputValue(),
+      'https://notify.example.test'
+    )
     assert.equal(await page.getByLabel('应用 Secret', { exact: true }).inputValue(), '')
+    if (width === 1440) {
+      await page.getByLabel('企业 ID', { exact: true }).fill('unsaved-fixture')
+      const dialogPromise = page.waitForEvent('dialog')
+      const reload = page.reload().catch(() => undefined)
+      const dialog = await dialogPromise
+      assert.equal(dialog.type(), 'beforeunload')
+      await dialog.dismiss()
+      await reload
+      assert.equal(
+        await page.getByLabel('企业 ID', { exact: true }).inputValue(),
+        'unsaved-fixture'
+      )
+      await page.getByRole('link', { name: '概览', exact: true }).click()
+      await page.getByRole('button', { name: '放弃并离开', exact: true }).click()
+      await page.getByRole('heading', { name: '概览', exact: true }).waitFor()
+    }
     await openHistory()
     await page.getByRole('button', { name: '查看详情', exact: true }).click()
     await page.locator('.account-detail').waitFor()
@@ -283,7 +468,7 @@ try {
   // An old response must not replace the next selected page.
   delayDetail = true
   await page.waitForRequest((request) => new URL(request.url()).pathname === '/api/runs/' + runId)
-  await page.getByRole('button', { name: '积分日历', exact: true }).click()
+  await navigate('积分日历')
   await page.locator('.calendar-account').first().waitFor()
   await page.waitForTimeout(1500)
   assert.equal(await page.getByRole('heading', { name: '积分日历', exact: true }).count(), 1)
@@ -307,22 +492,51 @@ try {
     executionState: 'completed',
     updatedAt: endedAt
   })
-  await page.getByText('执行已结束 · 余额已确认', { exact: true }).waitFor()
+  await page.locator('.account-detail').getByText('已确认', { exact: true }).first().waitFor()
   assert.equal(await evidence.evaluate((node) => node.open), true)
   await capture('detail-finalized-320')
-  await page.getByRole('button', { name: '积分日历', exact: true }).click()
+  await navigate('积分日历')
   await page.getByRole('button', { name: '执行已结束 · 查看', exact: true }).waitFor()
-  assert.match(await page.locator('.calendar-account').first().innerText(), /\+88 分 · 已确认/)
+  assert.match(await page.locator('.calendar-account').first().innerText(), /已确认[\s\S]*\+88 分/)
   await page.goto(origin + '/#run/' + randomUUID())
   await page.reload()
   await page.getByRole('alert').filter({ hasText: '未找到该运行的本地记录' }).waitFor()
   assert.equal(await page.locator('.account-detail').count(), 0)
   await page.getByRole('button', { name: '返回记录', exact: true }).click()
   await page.getByRole('button', { name: '查看详情', exact: true }).waitFor()
+  await navigate('账号管理')
+  await page.getByRole('button', { name: '添加账号', exact: true }).click()
+  await page.getByLabel('Microsoft 账号', { exact: true }).fill('fixture4@example.test')
+  await page.getByLabel('密码', { exact: true }).fill('synthetic-only')
+  await page.getByLabel('显示名称', { exact: true }).fill('新增合成账号')
+  await page.getByRole('button', { name: '保存账号', exact: true }).click()
+  await page.getByText('新增合成账号', { exact: true }).filter({ visible: true }).waitFor()
+  await page.getByRole('switch', { name: '启用账号 4' }).click()
+  await page.waitForFunction(() =>
+    [...globalThis.document.querySelectorAll('[aria-label="启用账号 4"]')].every(
+      (node) => node.getAttribute('aria-checked') === 'false'
+    )
+  )
+  await page.getByRole('button', { name: '新建运行', exact: true }).click()
+  await page.getByText('指定账号', { exact: true }).click()
+  await page.getByLabel('运行账号', { exact: true }).click()
+  await page.getByText('账号 3 · ' + thirdAccountLabel, { exact: true }).click()
+  assert.equal(await page.getByText('账号 4 · 新增合成账号', { exact: true }).count(), 0)
+  await page.getByText('执行任务', { exact: true }).click()
+  await page.getByText('只读检查', { exact: true }).click()
+  await page.getByRole('button', { name: '开始检查', exact: true }).dblclick()
+  await page.locator('.t-drawer__mask:visible').waitFor({ state: 'hidden' })
+  assert.deepEqual(startRequests, [
+    { accountMode: 'account', runAccountIndex: 3, executionMode: 'read-only' }
+  ])
   assert.deepEqual(pageErrors, [])
   const result = {
     passed: true,
     notificationSettings: true,
+    allPages: true,
+    accountOperations: true,
+    runControls: true,
+    unsavedProtection: true,
     widths: [1440, 768, 390, 320],
     screenshots,
     reload: true,
@@ -334,6 +548,11 @@ try {
   }
   await writeFile(join(output, 'result.json'), JSON.stringify(result, null, 2))
   console.log(JSON.stringify(result))
+} catch (error) {
+  await page
+    ?.screenshot({ path: join(output, 'failure.png'), fullPage: true })
+    .catch(() => undefined)
+  throw error
 } finally {
   await browser?.close()
   await app.close()

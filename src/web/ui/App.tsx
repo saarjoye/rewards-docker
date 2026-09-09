@@ -1,11 +1,41 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import type { FormEvent, ReactElement } from 'react'
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactElement
+} from 'react'
+import { Card } from 'tdesign-react/es/card/index.js'
+import { Dialog } from 'tdesign-react/es/dialog/index.js'
+import { Drawer } from 'tdesign-react/es/drawer/index.js'
+import { Loading } from 'tdesign-react/es/loading/index.js'
+import { Menu } from 'tdesign-react/es/menu/index.js'
+import { Radio } from 'tdesign-react/es/radio/index.js'
+import {
+  DashboardIcon,
+  TaskIcon,
+  HistoryIcon,
+  CalendarIcon,
+  UserIcon,
+  NotificationIcon,
+  RefreshIcon,
+  LogoutIcon,
+  MenuIcon,
+  PlayCircleIcon
+} from 'tdesign-icons-react'
 import { createRequestQueue } from './requestQueue'
-import { RunPages, stateLabel, points, clockTime, duration } from './RunPages'
-import { NotificationSettings } from './NotificationSettings'
-import { PointSummary, type PointStatistics } from './PointSummary'
+const RunPages = lazy(async () => ({ default: (await import('./RunPages')).RunPages }))
+const NotificationSettings = lazy(async () => ({
+  default: (await import('./NotificationSettings')).NotificationSettings
+}))
+import { type PointStatistics } from './PointSummary'
+import { AccountsPage, Overview, TasksPage } from './ConsolePages'
+import { Button, Feedback, Field, SelectField } from './UiKit'
 
-interface AccountSummary {
+export interface AccountSummary {
   accountId: string
   runAccountIndex: number
   displayAlias: string
@@ -28,7 +58,7 @@ interface TaskState {
   updatedAt: string
 }
 
-interface StatePayload {
+export interface StatePayload {
   localDate: string
   accounts: AccountSummary[]
   tasks: TaskState[]
@@ -73,33 +103,6 @@ interface ApiErrorPayload {
   message?: string
 }
 
-const taskNames: Record<string, string> = {
-  'claim-bonus-points': '领取奖励积分',
-  'app-activity': 'App 活动',
-  'daily-set': '每日任务',
-  'special-promotion': '特殊活动',
-  'more-promotion': '更多推广',
-  'app-check-in': '每日签到',
-  'read-to-earn': '阅读赚取',
-  'punch-card': '打卡活动',
-  'mobile-search': '移动搜索',
-  'pc-search': 'PC 搜索',
-  unknown: '未知任务'
-}
-
-const statusNames: Record<string, string> = {
-  discovered: '待执行',
-  selected: '已选择',
-  running: '进行中',
-  submitted: '已提交',
-  'verification-pending': '待复核',
-  completed: '已完成',
-  skipped: '已跳过',
-  failed: '失败',
-  'action-required': '需要操作',
-  unknown: '未知'
-}
-
 async function requestJson<T>(path: string, init?: RequestInit, csrfToken?: string): Promise<T> {
   const headers = new Headers(init?.headers)
   if (init?.body) headers.set('content-type', 'application/json')
@@ -115,67 +118,55 @@ function LoginView({ onLogin }: { onLogin: (token: string) => void }): ReactElem
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
-  const [submitting, setSubmitting] = useState(false)
-
+  const [busy, setBusy] = useState(false)
   async function submit(event: FormEvent): Promise<void> {
     event.preventDefault()
-    setSubmitting(true)
+    if (busy) return
+    setBusy(true)
     setError('')
     try {
       const result = await requestJson<{ csrfToken: string }>('/api/login', {
         method: 'POST',
         body: JSON.stringify({ username, password })
       })
+      setPassword('')
       onLogin(result.csrfToken)
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : '登录失败')
+    } catch {
+      setError('登录失败，请检查账号密码或稍后重试。')
     } finally {
-      setSubmitting(false)
+      setBusy(false)
     }
   }
-
   return (
     <main className="login-shell">
-      <section className="login-panel" aria-labelledby="login-title">
-        <div className="brand-mark" aria-hidden="true">
-          R
-        </div>
-        <h1 id="login-title">Rewards Next</h1>
-        <p className="muted">管理控制台</p>
-        <form onSubmit={(event) => void submit(event)}>
-          <label>
-            管理员账号
-            <input
-              value={username}
-              onChange={(event) => {
-                setUsername(event.target.value)
-              }}
-              autoComplete="username"
-              required
-            />
-          </label>
-          <label>
-            管理员密码
-            <input
-              type="password"
-              value={password}
-              onChange={(event) => {
-                setPassword(event.target.value)
-              }}
-              autoComplete="current-password"
-              required
-            />
-          </label>
-          {error && (
-            <p className="inline-error" role="alert">
-              {error}
-            </p>
-          )}
-          <button className="primary wide" disabled={submitting} type="submit">
-            {submitting ? '登录中' : '登录'}
-          </button>
+      <Card className="login-panel" bordered={false}>
+        <div className="brand-mark">R</div>
+        <h1>Rewards Next</h1>
+        <p className="muted">登录管理控制台</p>
+        <form className="stack-form" onSubmit={(event) => void submit(event)}>
+          <Field
+            label="管理员账号"
+            value={username}
+            onChange={setUsername}
+            autoComplete="username"
+            required
+            disabled={busy}
+          />
+          <Field
+            label="管理员密码"
+            type="password"
+            value={password}
+            onChange={setPassword}
+            autoComplete="current-password"
+            required
+            disabled={busy}
+          />
+          <Feedback error={error} />
+          <Button type="submit" block loading={busy}>
+            登录
+          </Button>
         </form>
-      </section>
+      </Card>
     </main>
   )
 }
@@ -195,8 +186,6 @@ export function App(): ReactElement {
       ? hash
       : 'overview'
   })
-  const [taskAccount, setTaskAccount] = useState('')
-  const [taskStatus, setTaskStatus] = useState('')
   const [taskDate, setTaskDate] = useState('')
   const taskDateRef = useRef(taskDate)
   taskDateRef.current = taskDate
@@ -211,6 +200,20 @@ export function App(): ReactElement {
   const [executionMode, setExecutionMode] = useState<'read-only' | 'mutating'>('read-only')
   const [runAccountIndex, setRunAccountIndex] = useState(1)
   const [showAccountForm, setShowAccountForm] = useState(false)
+  const [accountSaving, setAccountSaving] = useState(false)
+  const [unsaved, setUnsaved] = useState(false)
+  const unsavedRef = useRef(false)
+  unsavedRef.current = unsaved
+  const [leaveTarget, setLeaveTarget] = useState('')
+  const lastHash = useRef(window.location.hash)
+  const main = useRef<HTMLElement>(null)
+  const overlayTrigger = useRef<HTMLElement | null>(null)
+  const rememberTrigger = () => {
+    overlayTrigger.current = document.activeElement as HTMLElement | null
+  }
+  const restoreTrigger = () => {
+    overlayTrigger.current?.focus({ preventScroll: true })
+  }
 
   const loadState = useMemo(
     () =>
@@ -289,7 +292,13 @@ export function App(): ReactElement {
   )
 
   async function startRun(): Promise<void> {
-    if (!state?.runnerReady || submitting) return
+    if (
+      !state?.runnerReady ||
+      submitting ||
+      state.activeRunId ||
+      (accountMode === 'account' && !selectedAccount?.enabled)
+    )
+      return
     setSubmitting(true)
     setError('')
     const body =
@@ -298,6 +307,7 @@ export function App(): ReactElement {
         : { accountMode, runAccountIndex, executionMode }
     try {
       await requestJson('/api/runs', { method: 'POST', body: JSON.stringify(body) }, csrfToken)
+      setShowRun(false)
       await loadState()
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '启动失败')
@@ -346,6 +356,7 @@ export function App(): ReactElement {
   }
 
   async function saveAlias(): Promise<void> {
+    if (submitting || !editingAccount || !alias.trim()) return
     setSubmitting(true)
     try {
       await requestJson(
@@ -361,561 +372,452 @@ export function App(): ReactElement {
       setSubmitting(false)
     }
   }
-  if (restoring) return <main className="login-shell">正在恢复管理会话</main>
-  if (!csrfToken) return <LoginView onLogin={setCsrfToken} />
 
+  const [showRun, setShowRun] = useState(false)
+  const [showNavigation, setShowNavigation] = useState(false)
+  const [confirmStop, setConfirmStop] = useState(false)
+  const views = [
+    { id: 'overview' as const, label: '概览', icon: <DashboardIcon /> },
+    { id: 'tasks' as const, label: '任务', icon: <TaskIcon /> },
+    { id: 'history' as const, label: '运行记录', icon: <HistoryIcon /> },
+    { id: 'calendar' as const, label: '积分日历', icon: <CalendarIcon /> },
+    { id: 'accounts' as const, label: '账号管理', icon: <UserIcon /> },
+    { id: 'notifications' as const, label: '消息推送', icon: <NotificationIcon /> }
+  ]
+  useEffect(() => {
+    const change = () => {
+      if (unsavedRef.current && window.location.hash !== lastHash.current) {
+        setLeaveTarget(window.location.hash)
+        window.history.replaceState(null, '', lastHash.current || '#overview')
+        return
+      }
+      lastHash.current = window.location.hash
+      setShowNavigation(false)
+      window.scrollTo({ top: 0, behavior: 'instant' })
+      main.current?.focus({ preventScroll: true })
+      const hash = window.location.hash.slice(1)
+      if (hash.startsWith('run/'))
+        setPage((previous) => (previous === 'calendar' ? previous : 'history'))
+      else if (
+        hash === 'overview' ||
+        hash === 'tasks' ||
+        hash === 'history' ||
+        hash === 'calendar' ||
+        hash === 'accounts' ||
+        hash === 'notifications'
+      )
+        setPage(hash)
+    }
+    window.addEventListener('hashchange', change)
+    return () => {
+      window.removeEventListener('hashchange', change)
+    }
+  }, [])
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: 'instant' })
+    main.current?.focus({ preventScroll: true })
+  }, [page])
+  const navigate = (target: string) => {
+    if (unsavedRef.current) {
+      setLeaveTarget(target)
+      return
+    }
+    if (target === 'logout') {
+      void logout()
+      return
+    }
+    window.location.hash = target
+    setShowNavigation(false)
+  }
+  const openRun = (id: string) => {
+    navigate('#run/' + id)
+  }
+  const navigation = (
+    <Menu value={page} width="100%">
+      {views.map((view) => (
+        <Menu.MenuItem
+          key={view.id}
+          value={view.id}
+          icon={view.icon}
+          href={'#' + view.id}
+          onClick={() => {
+            setShowNavigation(false)
+          }}
+        >
+          {view.label}
+        </Menu.MenuItem>
+      ))}
+    </Menu>
+  )
+  if (restoring)
+    return (
+      <main className="login-shell">
+        <Loading text="正在恢复管理会话" />
+      </main>
+    )
+  if (!csrfToken) return <LoginView onLogin={setCsrfToken} />
   return (
-    <div className={`app-shell page-${page}`}>
+    <div
+      className={'app-shell page-' + page}
+      onClickCapture={(event) => {
+        const anchor = (event.target as HTMLElement).closest<HTMLAnchorElement>('a[href^="#"]')
+        if (anchor && unsavedRef.current && anchor.hash !== window.location.hash) {
+          event.preventDefault()
+          event.stopPropagation()
+          setShowNavigation(false)
+          setLeaveTarget(anchor.hash)
+        }
+      }}
+    >
       <header className="topbar">
         <div className="brand-row">
-          <div className="brand-mark small" aria-hidden="true">
-            R
-          </div>
-          <div>
-            <h1>Rewards Next</h1>
-            <span>{state?.localDate ?? '---- -- --'}</span>
-          </div>
+          <Button
+            className="mobile-menu"
+            variant="text"
+            shape="square"
+            icon={<MenuIcon />}
+            aria-label="打开导航"
+            onClick={() => {
+              rememberTrigger()
+              setShowNavigation(true)
+            }}
+          />
+          <div className="brand-mark small">R</div>
+          <h1>Rewards Next</h1>
         </div>
         <div className="header-actions">
-          <button type="button" onClick={() => void loadState()} disabled={loading}>
+          <span className="header-date">{state?.localDate} · 上海时间</span>
+          <Button
+            variant="text"
+            icon={<RefreshIcon />}
+            loading={loading}
+            onClick={() => void loadState()}
+          >
             刷新
-          </button>
-          <button type="button" onClick={() => void logout()}>
+          </Button>
+          <Button
+            variant="text"
+            icon={<LogoutIcon />}
+            onClick={() => {
+              navigate('logout')
+            }}
+          >
             退出
-          </button>
+          </Button>
         </div>
       </header>
-
-      <main className="workspace">
-        <aside className="account-rail">
-          <div className="section-heading">
-            <h2>账号</h2>
-            <button
-              className="primary compact"
-              type="button"
-              onClick={() => {
-                setShowAccountForm((value) => !value)
+      <aside className="navigation-rail">
+        <nav aria-label="管理视图">{navigation}</nav>
+        <div className="rail-footer">
+          Rewards 管理控制台
+          <br />
+          Asia/Shanghai
+        </div>
+      </aside>
+      <main className="content-area" ref={main} tabIndex={-1}>
+        <div className="workspace-toolbar">
+          <span className="muted">
+            {state?.activeRunId ? '有任务正在运行，状态自动更新' : '当前空闲'}
+          </span>
+          <Button
+            icon={<PlayCircleIcon />}
+            onClick={() => {
+              rememberTrigger()
+              if (!selectedAccount?.enabled)
+                setRunAccountIndex(state?.accounts.find((a) => a.enabled)?.runAccountIndex ?? 1)
+              setShowRun(true)
+            }}
+          >
+            {state?.activeRunId ? '运行控制' : '新建运行'}
+          </Button>
+        </div>
+        <Feedback error={error} />
+        {page === 'overview' && <Overview state={state} openRun={openRun} />}
+        {page === 'tasks' && <TasksPage state={state} date={taskDate} onDate={setTaskDate} />}
+        <Suspense fallback={<Loading text="页面加载中" />}>
+          {(page === 'history' || page === 'calendar') && (
+            <RunPages key={page} page={page} activeRunId={state?.activeRunId ?? null} />
+          )}
+          {page === 'accounts' && (
+            <AccountsPage
+              accounts={state?.accounts ?? []}
+              busy={submitting}
+              running={Boolean(state?.activeRunId)}
+              add={() => {
+                rememberTrigger()
+                setShowAccountForm(true)
               }}
-            >
-              {showAccountForm ? '取消' : '添加'}
-            </button>
-          </div>
-          {showAccountForm && (
-            <AccountForm
-              csrfToken={csrfToken}
-              onCreated={async () => {
-                setShowAccountForm(false)
-                await loadState()
+              edit={(account) => {
+                setEditingAccount(account.accountId)
+                setAlias(account.displayAlias)
               }}
+              toggle={(account) => void toggleAccount(account)}
             />
           )}
-          <div className="account-list">
-            {state?.accounts.map((account) => (
-              <article
-                className={`account-item ${account.enabled ? '' : 'disabled'}`}
-                key={account.accountId}
-              >
-                <div className="account-index">{account.runAccountIndex}</div>
-                <div className="account-copy">
-                  <strong>{account.displayAlias}</strong>
-                  <span>{account.maskedEmail}</span>
-                </div>
-                <button
-                  className="text-button"
-                  type="button"
-                  disabled={submitting || Boolean(state.activeRunId)}
-                  onClick={() => void toggleAccount(account)}
-                >
-                  {account.enabled ? '停用' : '启用'}
-                </button>
-                <button
-                  className="text-button"
-                  disabled={submitting}
-                  onClick={() => {
-                    setEditingAccount(account.accountId)
-                    setAlias(account.displayAlias)
-                  }}
-                >
-                  改名
-                </button>
-                {editingAccount === account.accountId && (
-                  <form
-                    className="alias-form"
-                    onSubmit={(event) => {
-                      event.preventDefault()
-                      void saveAlias()
-                    }}
-                  >
-                    <label>
-                      名称
-                      <input
-                        value={alias}
-                        onChange={(event) => {
-                          setAlias(event.target.value)
-                        }}
-                        maxLength={80}
-                        required
-                      />
-                    </label>
-                    <button disabled={submitting || !alias.trim()}>保存</button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEditingAccount('')
-                      }}
-                    >
-                      取消
-                    </button>
-                  </form>
-                )}
-              </article>
-            ))}
-            {state?.accounts.length === 0 && <p className="empty">暂无账号</p>}
+          {page === 'notifications' && (
+            <NotificationSettings csrfToken={csrfToken} onUnsavedChange={setUnsaved} />
+          )}
+        </Suspense>
+      </main>
+      <Drawer
+        header="导航"
+        placement="left"
+        visible={showNavigation}
+        onBeforeClose={restoreTrigger}
+        onClose={() => {
+          setShowNavigation(false)
+        }}
+        footer={false}
+        size="280px"
+        destroyOnClose
+      >
+        <nav aria-label="移动管理视图">{navigation}</nav>
+      </Drawer>
+      <Drawer
+        header="添加账号"
+        visible={showAccountForm}
+        onBeforeClose={restoreTrigger}
+        onClose={() => {
+          if (!accountSaving) setShowAccountForm(false)
+        }}
+        footer={false}
+        size="480px"
+        destroyOnClose
+      >
+        <AccountForm
+          csrfToken={csrfToken}
+          onBusyChange={setAccountSaving}
+          onCreated={async () => {
+            setShowAccountForm(false)
+            await loadState()
+          }}
+        />
+      </Drawer>
+      <Dialog
+        header="编辑账号名称"
+        visible={Boolean(editingAccount)}
+        onClose={() => {
+          if (!submitting) setEditingAccount('')
+        }}
+        confirmBtn={{ content: '保存名称', loading: submitting, disabled: !alias.trim() }}
+        onConfirm={() => void saveAlias()}
+      >
+        <Field
+          label="名称"
+          value={alias}
+          onChange={setAlias}
+          maxLength={80}
+          required
+          disabled={submitting}
+        />
+      </Dialog>
+      <Drawer
+        header={state?.activeRunId ? '运行控制' : '新建运行'}
+        destroyOnClose
+        visible={showRun}
+        onBeforeClose={restoreTrigger}
+        onClose={() => {
+          if (!submitting) setShowRun(false)
+        }}
+        footer={false}
+        size="480px"
+      >
+        <div className="stack-form">
+          <Feedback error={error} />
+          <div className="form-field">
+            <label>运行范围</label>
+            <Radio.Group
+              value={accountMode}
+              onChange={(value) => {
+                setAccountMode(value)
+              }}
+              disabled={Boolean(state?.activeRunId)}
+              options={[
+                { label: '继续未完成', value: 'continue' },
+                { label: '指定账号', value: 'account' }
+              ]}
+            />
           </div>
-        </aside>
-
-        <section className="content-area">
-          <nav className="view-tabs" aria-label="管理视图">
-            {(
-              ['overview', 'tasks', 'history', 'calendar', 'accounts', 'notifications'] as const
-            ).map((view) => (
-              <button
-                key={view}
-                aria-current={page === view ? 'page' : undefined}
+          {accountMode === 'account' && (
+            <SelectField
+              label="运行账号"
+              value={String(runAccountIndex)}
+              onChange={(value) => {
+                setRunAccountIndex(Number(value))
+              }}
+              disabled={Boolean(state?.activeRunId)}
+              options={
+                state?.accounts
+                  .filter((a) => a.enabled)
+                  .map((a) => ({
+                    label: '账号 ' + String(a.runAccountIndex) + ' · ' + a.displayAlias,
+                    value: String(a.runAccountIndex)
+                  })) ?? []
+              }
+            />
+          )}
+          <div className="form-field">
+            <label>执行方式</label>
+            <Radio.Group
+              value={executionMode}
+              onChange={(value) => {
+                setExecutionMode(value)
+              }}
+              disabled={Boolean(state?.activeRunId)}
+              options={[
+                { label: '只读检查', value: 'read-only' },
+                { label: '执行任务', value: 'mutating' }
+              ]}
+            />
+          </div>
+          <p className="muted">
+            {executionMode === 'read-only'
+              ? '检查任务和现有状态，不提交积分任务。'
+              : '执行所选账号的可用任务，结果未知的已提交任务仅复核。'}
+          </p>
+          {!state?.runnerReady && <Feedback error="执行器尚未就绪" />}
+          {!state?.accounts.some((a) => a.enabled) && <p className="muted">请先添加并启用账号。</p>}
+          {state?.activeRunId ? (
+            <>
+              <Button
+                variant="outline"
                 onClick={() => {
-                  setPage(view)
-                  window.location.hash = view
+                  openRun(state.activeRunId ?? '')
+                  setShowRun(false)
                 }}
               >
-                {
-                  {
-                    overview: '概览',
-                    tasks: '任务',
-                    history: '运行记录',
-                    calendar: '积分日历',
-                    accounts: '账号管理',
-                    notifications: '消息推送'
-                  }[view]
-                }
-              </button>
-            ))}
-          </nav>
-          {page === 'notifications' ? (
-            <NotificationSettings csrfToken={csrfToken} />
-          ) : page === 'history' || page === 'calendar' ? (
-            <RunPages key={page} page={page} activeRunId={state?.activeRunId ?? null} />
-          ) : (
-            <>
-              {page === 'tasks' &&
-                state?.today.map((day) => (
-                  <section key={day.accountId} className="task-section">
-                    <h3>
-                      {day.accountLabel} · 今日账户余额变化 {points(day.dailyBalanceDelta)}
-                    </h3>
-                    <PointSummary value={day} />
-                  </section>
-                ))}
-              <div className="runbar">
-                <div className="segmented" aria-label="运行范围">
-                  <button
-                    className={accountMode === 'continue' ? 'active' : ''}
-                    type="button"
-                    onClick={() => {
-                      setAccountMode('continue')
-                    }}
-                  >
-                    继续未完成
-                  </button>
-                  <button
-                    className={accountMode === 'account' ? 'active' : ''}
-                    type="button"
-                    onClick={() => {
-                      setAccountMode('account')
-                    }}
-                  >
-                    指定账号
-                  </button>
-                </div>
-                {accountMode === 'account' && (
-                  <select
-                    value={runAccountIndex}
-                    onChange={(event) => {
-                      setRunAccountIndex(Number(event.target.value))
-                    }}
-                    aria-label="运行账号"
-                  >
-                    {state?.accounts.map((account) => (
-                      <option key={account.accountId} value={account.runAccountIndex}>
-                        {account.runAccountIndex}. {account.displayAlias}
-                      </option>
-                    ))}
-                  </select>
-                )}
-                <div className="segmented" aria-label="执行方式">
-                  <button
-                    className={executionMode === 'read-only' ? 'active' : ''}
-                    type="button"
-                    onClick={() => {
-                      setExecutionMode('read-only')
-                    }}
-                  >
-                    只读检查
-                  </button>
-                  <button
-                    className={executionMode === 'mutating' ? 'active' : ''}
-                    type="button"
-                    onClick={() => {
-                      setExecutionMode('mutating')
-                    }}
-                  >
-                    执行任务
-                  </button>
-                </div>
-                <button
-                  className="primary"
-                  type="button"
-                  disabled={
-                    !state?.runnerReady ||
-                    submitting ||
-                    Boolean(state.activeRunId) ||
-                    (accountMode === 'account' && !selectedAccount)
-                  }
-                  onClick={() => void startRun()}
-                >
-                  {submitting
-                    ? '处理中'
-                    : state?.activeRunId
-                      ? '运行中'
-                      : executionMode === 'read-only'
-                        ? '开始检查'
-                        : '开始执行'}
-                </button>
-                {state?.activeRunId && (
-                  <button type="button" disabled={submitting} onClick={() => void cancelRun()}>
-                    停止
-                  </button>
-                )}
-              </div>
-
-              {state && !state.runnerReady && (
-                <div className="notice">执行器尚未接入，账号与任务账本可正常管理。</div>
-              )}
-              {error && (
-                <div className="notice error" role="alert">
-                  {error}
-                </div>
-              )}
-
-              {page === 'overview' && (
-                <section className="daily-balances">
-                  <h2>今日已观测余额变化</h2>
-                  {!state ? (
-                    <p>读取中</p>
-                  ) : state.today.length === 0 ? (
-                    <p className="observation">暂无余额观测</p>
-                  ) : (
-                    state.today.map((day) => (
-                      <div key={day.accountId}>
-                        <p>
-                          {day.accountLabel} · {points(day.dailyBalanceDelta)} ·{' '}
-                          {stateLabel(day.verificationStatus)}
-                        </p>
-                        <PointSummary value={day} />
-                      </div>
-                    ))
-                  )}
-                </section>
-              )}
-
-              <section className="metrics" aria-label="任务统计">
-                <Metric label="任务" value={state?.taskSummary.discovered} />
-                <Metric label="已完成" value={state?.taskSummary.completed} tone="success" />
-                <Metric
-                  label="待复核"
-                  value={state?.taskSummary.verificationPending}
-                  tone="warning"
-                />
-                <Metric label="失败" value={state?.taskSummary.failed} tone="danger" />
-                <Metric label="未知" value={state?.taskSummary.unknown} />
-              </section>
-
-              <section className="task-section recent-runs">
-                <div className="section-heading">
-                  <h2>最近运行</h2>
-                  <span>{state?.runs.length ?? 0} 次</span>
-                </div>
-                <div className="task-table-wrap">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>时间</th>
-                        <th>范围</th>
-                        <th>方式</th>
-                        <th>状态</th>
-                        <th>报告</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {state?.runs.map((run) => (
-                        <tr key={run.runId}>
-                          <td>
-                            {clockTime(run.startedAt)}
-                            <small>
-                              {clockTime(run.finishedAt)} ·{' '}
-                              {duration(
-                                run.startedAt,
-                                run.finishedAt ??
-                                  (run.runId === state.activeRunId
-                                    ? new Date().toISOString()
-                                    : null)
-                              )}
-                            </small>
-                          </td>
-                          <td>
-                            已处理 {run.accountsProcessed}/{run.accountsTotal} 个账号
-                            <small>{points(run.runBalanceDelta)}</small>
-                          </td>
-                          <td>{run.executionMode === 'read-only' ? '只读' : '执行'}</td>
-                          <td>
-                            <span className={`status status-${run.status}`}>
-                              {stateLabel(run.status)}
-                            </span>
-                          </td>
-                          <td>
-                            <button
-                              onClick={() => {
-                                window.location.hash = `run/${run.runId}`
-                                setPage('history')
-                              }}
-                            >
-                              查看
-                            </button>
-                            <a href={`/api/runs/${run.runId}/report`} download>
-                              下载
-                            </a>
-                          </td>
-                        </tr>
-                      ))}
-                      {state?.runs.length === 0 && (
-                        <tr>
-                          <td className="empty table-empty" colSpan={5}>
-                            暂无运行记录
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </section>
-
-              <section className="task-section">
-                <div className="section-heading">
-                  <h2>任务状态</h2>
-                  <span>{loading ? '读取中' : `${String(state?.tasks.length ?? 0)} 项`}</span>
-                </div>
-                <div className="task-filters">
-                  <label>
-                    日期
-                    <input
-                      type="date"
-                      value={taskDate || state?.localDate || ''}
-                      onChange={(event) => {
-                        setTaskDate(event.target.value)
-                      }}
-                    />
-                  </label>
-                  <label>
-                    账号
-                    <select
-                      value={taskAccount}
-                      onChange={(event) => {
-                        setTaskAccount(event.target.value)
-                      }}
-                    >
-                      <option value="">全部账号</option>
-                      {state?.accounts.map((account) => (
-                        <option key={account.accountId} value={account.accountId}>
-                          {account.displayAlias}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    状态
-                    <select
-                      value={taskStatus}
-                      onChange={(event) => {
-                        setTaskStatus(event.target.value)
-                      }}
-                    >
-                      <option value="">全部状态</option>
-                      {Object.entries(statusNames).map(([key, label]) => (
-                        <option key={key} value={key}>
-                          {label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-                <div className="task-table-wrap">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>账号</th>
-                        <th>任务</th>
-                        <th>状态</th>
-                        <th>进度</th>
-                        <th>更新时间</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {state?.tasks
-                        .filter(
-                          (task) =>
-                            (!taskAccount || task.accountId === taskAccount) &&
-                            (!taskStatus || task.status === taskStatus)
-                        )
-                        .map((task) => {
-                          const account = state.accounts.find(
-                            (item) => item.accountId === task.accountId
-                          )
-                          return (
-                            <tr key={task.taskId}>
-                              <td>
-                                {account
-                                  ? `${String(account.runAccountIndex)}. ${account.displayAlias}`
-                                  : '已移除账号'}
-                              </td>
-                              <td>
-                                <strong>{task.displayName || taskNames[task.type]}</strong>
-                                {task.reason && <small>{task.reason}</small>}
-                              </td>
-                              <td>
-                                <span className={`status status-${task.status}`}>
-                                  {statusNames[task.status] ?? task.status}
-                                </span>
-                              </td>
-                              <td>
-                                {task.progress.total === null
-                                  ? '待确认'
-                                  : `${String(task.progress.completed)}/${String(task.progress.total)}`}
-                              </td>
-                              <td>
-                                {new Date(task.updatedAt).toLocaleTimeString('zh-CN', {
-                                  hour12: false
-                                })}
-                              </td>
-                            </tr>
-                          )
-                        })}
-                      {state?.tasks.length === 0 && (
-                        <tr>
-                          <td className="empty table-empty" colSpan={5}>
-                            今日暂无任务记录
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </section>
+                查看当前运行
+              </Button>
+              <Button
+                theme="danger"
+                variant="outline"
+                disabled={submitting}
+                onClick={() => {
+                  setConfirmStop(true)
+                }}
+              >
+                停止运行
+              </Button>
             </>
+          ) : (
+            <Button
+              block
+              loading={submitting}
+              disabled={
+                !state?.runnerReady ||
+                !state.accounts.some((a) => a.enabled) ||
+                (accountMode === 'account' && !selectedAccount?.enabled)
+              }
+              onClick={() => void startRun()}
+            >
+              {executionMode === 'read-only' ? '开始检查' : '开始执行'}
+            </Button>
           )}
-        </section>
-      </main>
-    </div>
-  )
-}
-
-function Metric({
-  label,
-  value,
-  tone = ''
-}: {
-  label: string
-  value: number | undefined
-  tone?: string
-}): ReactElement {
-  return (
-    <div className={`metric ${tone}`}>
-      <span>{label}</span>
-      <strong>{value ?? '待确认'}</strong>
+        </div>
+      </Drawer>
+      <Dialog
+        header="有未保存的修改"
+        visible={Boolean(leaveTarget)}
+        body="离开将放弃当前输入；也可以留在本页继续编辑并保存。"
+        cancelBtn="继续编辑"
+        confirmBtn="放弃并离开"
+        onClose={() => {
+          setLeaveTarget('')
+        }}
+        onConfirm={() => {
+          const target = leaveTarget
+          setLeaveTarget('')
+          setUnsaved(false)
+          unsavedRef.current = false
+          navigate(target)
+        }}
+      />
+      <Dialog
+        header="停止当前运行？"
+        visible={confirmStop}
+        onClose={() => {
+          if (!submitting) setConfirmStop(false)
+        }}
+        confirmBtn={{ content: '确认停止', theme: 'danger', loading: submitting }}
+        onConfirm={() => {
+          void cancelRun().then(() => {
+            setConfirmStop(false)
+          })
+        }}
+      >
+        正在执行的操作将等待退出；已完成账号和已保存的积分证据会保留。
+      </Dialog>
     </div>
   )
 }
 
 function AccountForm({
   csrfToken,
+  onBusyChange,
   onCreated
 }: {
   csrfToken: string
+  onBusyChange: (busy: boolean) => void
   onCreated: () => Promise<void>
 }): ReactElement {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [displayAlias, setDisplayAlias] = useState('')
+  const [alias, setAlias] = useState('')
   const [error, setError] = useState('')
-  const [submitting, setSubmitting] = useState(false)
-
+  const [busy, setBusy] = useState(false)
   async function submit(event: FormEvent): Promise<void> {
     event.preventDefault()
-    setSubmitting(true)
+    if (busy) return
+    setBusy(true)
+    onBusyChange(true)
     setError('')
     try {
-      const body: { email: string; password: string; displayAlias?: string } = { email, password }
-      if (displayAlias.trim()) body.displayAlias = displayAlias.trim()
-      await requestJson('/api/accounts', { method: 'POST', body: JSON.stringify(body) }, csrfToken)
+      await requestJson(
+        '/api/accounts',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            email,
+            password,
+            ...(alias.trim() ? { displayAlias: alias.trim() } : {})
+          })
+        },
+        csrfToken
+      )
+      setPassword('')
       await onCreated()
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '账号添加失败')
     } finally {
-      setSubmitting(false)
+      setBusy(false)
+      onBusyChange(false)
     }
   }
-
   return (
-    <form className="account-form" onSubmit={(event) => void submit(event)}>
-      <label>
-        显示名称
-        <input
-          value={displayAlias}
-          onChange={(event) => {
-            setDisplayAlias(event.target.value)
-          }}
-        />
-      </label>
-      <label>
-        Microsoft 账号
-        <input
-          type="email"
-          value={email}
-          onChange={(event) => {
-            setEmail(event.target.value)
-          }}
-          autoComplete="username"
-          required
-        />
-      </label>
-      <label>
-        密码
-        <input
-          type="password"
-          value={password}
-          onChange={(event) => {
-            setPassword(event.target.value)
-          }}
-          autoComplete="new-password"
-          required
-        />
-      </label>
-      {error && (
-        <p className="inline-error" role="alert">
-          {error}
-        </p>
-      )}
-      <button className="primary wide" disabled={submitting} type="submit">
-        {submitting ? '保存中' : '保存账号'}
-      </button>
+    <form className="stack-form" onSubmit={(event) => void submit(event)}>
+      <Field label="显示名称" value={alias} onChange={setAlias} maxLength={80} disabled={busy} />
+      <Field
+        label="Microsoft 账号"
+        type="email"
+        value={email}
+        onChange={setEmail}
+        autoComplete="username"
+        required
+        disabled={busy}
+      />
+      <Field
+        label="密码"
+        type="password"
+        value={password}
+        onChange={setPassword}
+        autoComplete="new-password"
+        required
+        disabled={busy}
+      />
+      <Feedback error={error} />
+      <Button type="submit" block loading={busy}>
+        保存账号
+      </Button>
     </form>
   )
 }

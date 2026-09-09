@@ -34,6 +34,8 @@
     "patchright": "1.61.1",
     "react": "19.1.1",
     "react-dom": "19.1.1",
+    "tdesign-icons-react": "0.6.11",
+    "tdesign-react": "1.18.3",
     "zod": "4.4.3"
   },
   "devDependencies": {

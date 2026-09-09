@@ -1,4 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
+import { Calendar as TCalendar } from 'tdesign-react/es/calendar/index.js'
+import { Card } from 'tdesign-react/es/card/index.js'
+import { DatePicker } from 'tdesign-react/es/date-picker/index.js'
+import { Empty } from 'tdesign-react/es/empty/index.js'
+import { Loading } from 'tdesign-react/es/loading/index.js'
+import { Button, DataTable, Feedback, PageHeader, StatusTag } from './UiKit'
 import type { ReactElement } from 'react'
 import { createRequestQueue } from './requestQueue'
 import { TaskEvidencePanel, type EvidenceRow } from './TaskEvidencePanel'
@@ -169,77 +175,103 @@ function HistoryList({
   activeRunId: string | null
 }): ReactElement {
   const { value, error } = useRead<{ runs: Run[]; hasMore: boolean }>(
-    `/api/runs?page=${String(number)}`,
+    '/api/runs?page=' + String(number),
     activeRunId ?? ''
   )
   return (
     <section>
-      <h2>运行记录</h2>
-      {error && (
-        <p role="alert" className="notice error">
-          {error}
-        </p>
-      )}
-      {!value && <p className="empty">读取中</p>}
-      {value?.runs.length === 0 && <p className="empty">暂无运行记录</p>}
-      <div className="run-records">
-        {value?.runs.map((run) => (
-          <article className="run-record" key={run.runId}>
-            <div>
-              <strong>{stateLabel(run.status)}</strong>
-              <span>{stateLabel(run.persistence)}</span>
-            </div>
-            <p>
-              {clockTime(run.startedAt)} —{' '}
-              {run.finishedAt
-                ? clockTime(run.finishedAt)
-                : ['running', 'cancelling'].includes(run.status)
-                  ? '进行中'
-                  : '待确认'}
-            </p>
-            <p>
-              执行时长：
-              {duration(
-                run.startedAt,
-                run.finishedAt ?? (run.runId === activeRunId ? new Date().toISOString() : null)
-              )}
-            </p>
-            <div>
-              <span>
-                已处理 {run.accountsProcessed}/{run.accountsTotal} 个账号
-              </span>
-              <strong>{points(run.runBalanceDelta)}</strong>
-              <button
-                type="button"
-                onClick={() => {
-                  open(run.runId)
-                }}
-              >
-                查看详情
-              </button>
-            </div>
-          </article>
-        ))}
-      </div>
-      <div className="pagination">
-        <button
-          disabled={number <= 1}
-          onClick={() => {
-            setNumber(number - 1)
-          }}
-        >
-          上一页
-        </button>
-        <span>第 {number} 页</span>
-        <button
-          disabled={!value?.hasMore}
-          onClick={() => {
-            setNumber(number + 1)
-          }}
-        >
-          下一页
-        </button>
-      </div>
+      <PageHeader title="运行记录" description="每次运行独立保存；点击详情查看账号状态和余额证据" />
+      <Feedback error={error} />
+      <Card bordered={false}>
+        <DataTable
+          rows={value?.runs ?? []}
+          rowKey={(row) => row.runId}
+          loading={!value && !error}
+          empty={error ? '记录暂不可用' : '暂无运行记录'}
+          columns={[
+            {
+              key: 'time',
+              title: '开始 — 结束 = 执行时长',
+              cell: (row) => (
+                <>
+                  <span>
+                    {clockTime(row.startedAt)} —{' '}
+                    {row.finishedAt
+                      ? clockTime(row.finishedAt)
+                      : row.runId === activeRunId
+                        ? '进行中'
+                        : '待确认'}
+                  </span>
+                  <small className="muted">
+                    ={' '}
+                    {duration(
+                      row.startedAt,
+                      row.finishedAt ??
+                        (row.runId === activeRunId ? new Date().toISOString() : null)
+                    )}
+                  </small>
+                </>
+              )
+            },
+            {
+              key: 'status',
+              title: '运行 / 数据状态',
+              cell: (row) => (
+                <div className="tag-group">
+                  <StatusTag value={row.status} />
+                  <StatusTag value={row.persistence} />
+                </div>
+              )
+            },
+            {
+              key: 'progress',
+              title: '账号进度',
+              cell: (row) =>
+                '已处理 ' +
+                String(row.accountsProcessed) +
+                '/' +
+                String(row.accountsTotal) +
+                ' 个账号'
+            },
+            { key: 'balance', title: '本次余额变化', cell: (row) => points(row.runBalanceDelta) },
+            {
+              key: 'action',
+              title: '操作',
+              cell: (row) => (
+                <Button
+                  variant="text"
+                  onClick={() => {
+                    open(row.runId)
+                  }}
+                >
+                  查看详情
+                </Button>
+              )
+            }
+          ]}
+        />
+        <div className="pagination">
+          <Button
+            variant="outline"
+            disabled={number <= 1}
+            onClick={() => {
+              setNumber(number - 1)
+            }}
+          >
+            上一页
+          </Button>
+          <span>第 {number} 页</span>
+          <Button
+            variant="outline"
+            disabled={!value?.hasMore}
+            onClick={() => {
+              setNumber(number + 1)
+            }}
+          >
+            下一页
+          </Button>
+        </div>
+      </Card>
     </section>
   )
 }
@@ -256,47 +288,67 @@ function RunDetail({
   activeRunId: string | null
 }): ReactElement {
   const { value, error } = useRead<{ run: Run }>(
-    `/api/runs/${encodeURIComponent(id)}`,
+    '/api/runs/' + encodeURIComponent(id),
     activeRunId ?? ''
   )
   return (
     <section>
-      <div className="section-heading">
-        <h2>运行详情</h2>
-        <button onClick={back}>{backLabel}</button>
-      </div>
-      {error && (
-        <p role="alert" className="notice error">
-          {error}
-        </p>
-      )}
-      {!value && !error && <p className="empty">读取中</p>}
+      <PageHeader
+        title="运行详情"
+        description="执行状态、余额变化和任务到账依据分别展示"
+        actions={
+          <Button variant="outline" onClick={back}>
+            {backLabel}
+          </Button>
+        }
+      />
+      <Feedback error={error} />
+      {!value && !error && <Loading text="读取中" />}
       {value && (
         <>
-          <p className="run-timing">
-            {clockTime(value.run.startedAt)} —{' '}
-            {value.run.finishedAt
-              ? clockTime(value.run.finishedAt)
-              : id === activeRunId
-                ? '进行中'
-                : '待确认'}{' '}
-            ={' '}
-            {duration(
-              value.run.startedAt,
-              value.run.finishedAt ?? (id === activeRunId ? new Date().toISOString() : null)
-            )}
-          </p>
-          <p>
-            {stateLabel(value.run.status)} · {stateLabel(value.run.persistence)} · Asia/Shanghai
-          </p>
+          <Card bordered={false} className="run-summary">
+            <div className="tag-group">
+              <StatusTag value={value.run.status} />
+              <StatusTag value={value.run.persistence} />
+              <span className="muted">Asia/Shanghai</span>
+            </div>
+            <p className="run-timing">
+              {clockTime(value.run.startedAt)} —{' '}
+              {value.run.finishedAt
+                ? clockTime(value.run.finishedAt)
+                : id === activeRunId
+                  ? '进行中'
+                  : '待确认'}{' '}
+              ={' '}
+              {duration(
+                value.run.startedAt,
+                value.run.finishedAt ?? (id === activeRunId ? new Date().toISOString() : null)
+              )}
+            </p>
+            <div className="section-heading">
+              <span>
+                已处理 {value.run.accountsProcessed}/{value.run.accountsTotal} 个账号
+              </span>
+              <Button variant="text" href={'/api/runs/' + encodeURIComponent(id) + '/report'}>
+                下载脱敏报告
+              </Button>
+            </div>
+          </Card>
+          {value.run.accounts.length === 0 && <Empty description="账号明细尚未取得" />}
           {value.run.accounts.map((account) => (
-            <section className="account-detail" key={account.accountId}>
-              <h2>
-                账号 {account.accountIndex ?? '待确认'} · {account.accountLabel}
-              </h2>
-              <p>
-                {stateLabel(account.executionState)} · 余额{stateLabel(account.verificationStatus)}
-              </p>
+            <Card bordered={false} className="account-detail" key={account.accountId}>
+              <div className="section-heading">
+                <h3>
+                  账号 {account.accountIndex ?? '待确认'} · {account.accountLabel}
+                </h3>
+                <div className="tag-group">
+                  <StatusTag value={account.executionState} />
+                  <span>
+                    余额
+                    <StatusTag value={account.verificationStatus} />
+                  </span>
+                </div>
+              </div>
               <p className="run-timing">
                 {clockTime(account.startedAt)} —{' '}
                 {account.endedAt
@@ -324,22 +376,26 @@ function RunDetail({
                 </div>
               </dl>
               <PointSummary value={account} />
-              {account.dailyBalances.map((day) => (
-                <div key={day.businessDate}>
-                  {day.businessDate} · 观测余额净变化 {points(day.dailyBalanceDelta)} ·{' '}
-                  {stateLabel(day.verificationStatus)}
-                  <small className="observation">
-                    {clockTime(day.observedFrom)} — {clockTime(day.observedAt)}
-                  </small>
-                  <PointSummary value={day} />
-                </div>
-              ))}
+              <details className="daily-evidence">
+                <summary>按日期查看余额证据（{account.dailyBalances.length} 天）</summary>
+                {account.dailyBalances.map((day) => (
+                  <div className="daily-record" key={day.businessDate}>
+                    <div className="section-heading">
+                      <strong>
+                        {day.businessDate} · {points(day.dailyBalanceDelta)}
+                      </strong>
+                      <StatusTag value={day.verificationStatus} />
+                    </div>
+                    <p className="muted">
+                      {clockTime(day.observedFrom)} — {clockTime(day.observedAt)}
+                    </p>
+                    <PointSummary value={day} />
+                  </div>
+                ))}
+              </details>
               <TaskEvidencePanel tasks={account.tasks} evidence={account.taskEvidence ?? []} />
-            </section>
+            </Card>
           ))}
-          <a href={`/api/runs/${encodeURIComponent(id)}/report`} download>
-            下载脱敏报告
-          </a>
         </>
       )}
     </section>
@@ -358,77 +414,122 @@ function Calendar({
   activeRunId: string | null
 }): ReactElement {
   const { value, error } = useRead<{ entries: CalendarEntry[] }>(
-    `/api/calendar?month=${month}`,
+    '/api/calendar?month=' + month,
     activeRunId ?? ''
   )
-  const days = new Date(Number(month.slice(0, 4)), Number(month.slice(5)), 0).getDate()
-  const weekdayOffset =
-    (new Date(Number(month.slice(0, 4)), Number(month.slice(5)) - 1, 1).getDay() + 6) % 7
+  const [selected, setSelected] = useState(() =>
+    new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date())
+  )
+  const date = selected.startsWith(month)
+    ? selected
+    : (value?.entries[0]?.businessDate ?? month + '-01')
+  const entries = value?.entries.filter((row) => row.businessDate === date) ?? []
   return (
     <section>
-      <div className="section-heading">
-        <h2>积分日历</h2>
-        <label>
-          月份
-          <input
-            type="month"
-            value={month}
-            onChange={(event) => {
-              if (event.target.value) setMonth(event.target.value)
-            }}
-          />
-        </label>
-      </div>
-      <p className="observation">当日已观测余额净变化 · Asia/Shanghai</p>
-      {error && (
-        <p role="alert" className="notice error">
-          {error}
-        </p>
-      )}
-      <div className="calendar-grid">
-        {['一', '二', '三', '四', '五', '六', '日'].map((day) => (
-          <span className="calendar-weekday" key={day}>
-            周{day}
-          </span>
-        ))}
-        {Array.from({ length: weekdayOffset }, (_, index) => (
-          <span aria-hidden="true" className="calendar-spacer" key={`spacer-${String(index)}`} />
-        ))}
-        {Array.from({ length: days }, (_, i) => {
-          const date = `${month}-${String(i + 1).padStart(2, '0')}`
-          const entries = value?.entries.filter((row) => row.businessDate === date) ?? []
-          return (
-            <article className="calendar-day" key={date}>
-              <h3>{i + 1} 日</h3>
-              {entries.length === 0 && <p className="observation">{value ? '无记录' : '读取中'}</p>}
-              {entries.map((entry) => (
-                <div className="calendar-account" key={entry.accountId}>
-                  <strong>
-                    账号 {entry.accountIndex ?? '待确认'} · {entry.accountLabel}
-                  </strong>
-                  <span>
-                    {points(entry.dailyBalanceDelta)} · {stateLabel(entry.verificationStatus)}
-                  </span>
-                  <details>
-                    <summary>积分依据</summary>
-                    <PointSummary value={entry} />
-                  </details>
-                  {entry.records.map((record) => (
-                    <button
-                      key={record.runId}
-                      onClick={() => {
-                        open(record.runId)
-                      }}
-                    >
-                      {stateLabel(record.status)} · 查看
-                    </button>
-                  ))}
-                </div>
-              ))}
+      <PageHeader
+        title="积分日历"
+        description="当日已观测余额净变化 · Asia/Shanghai"
+        actions={
+          <label className="form-field">
+            <span>月份</span>
+            <DatePicker
+              allowInput
+              mode="month"
+              value={month}
+              clearable={false}
+              onChange={(value) => {
+                if (/^\d{4}-\d{2}$/.test(String(value))) setMonth(String(value))
+              }}
+            />
+          </label>
+        }
+      />
+      <Feedback error={error} />
+      <Card bordered={false} className="calendar-panel">
+        <TCalendar
+          controllerConfig={false}
+          year={Number(month.slice(0, 4))}
+          month={Number(month.slice(5))}
+          value={date}
+          theme="full"
+          firstDayOfWeek={1}
+          cell={(cell) => {
+            const day = cell.formattedDate ?? ''
+            const rows = value?.entries.filter((row) => row.businessDate === day) ?? []
+            return (
+              <button
+                className={
+                  'calendar-cell-button ' +
+                  (day === date ? 'selected' : '') +
+                  (cell.belongTo ? ' outside' : '')
+                }
+                aria-label={day + (rows.length ? ' 有记录' : ' 无记录')}
+                aria-pressed={day === date}
+                onClick={() => {
+                  setSelected(day)
+                  if (day.slice(0, 7) !== month) setMonth(day.slice(0, 7))
+                }}
+              >
+                <span className="day-number">{Number(day.slice(-2))}</span>
+                {rows.length > 0 && (
+                  <>
+                    <span className="day-dot" />
+                    <div className="calendar-cell-accounts">
+                      {rows.slice(0, 3).map((row) => (
+                        <span key={row.accountId}>
+                          账号 {row.accountIndex ?? '?'}：{points(row.dailyBalanceDelta)}
+                        </span>
+                      ))}
+                      {rows.length > 3 && <small>另有 {rows.length - 3} 个账号</small>}
+                    </div>
+                  </>
+                )}
+              </button>
+            )
+          }}
+        />
+      </Card>
+      <Card
+        bordered={false}
+        className="calendar-day-detail"
+        title={date + ' · 当日明细'}
+        subtitle="选择日期查看账号、余额依据和对应运行"
+      >
+        {!value ? (
+          <Empty description={error ? '暂时无法读取' : '读取中'} />
+        ) : entries.length === 0 ? (
+          <Empty description="当天无本地记录" />
+        ) : (
+          entries.map((entry) => (
+            <article className="calendar-account" key={entry.accountId}>
+              <div className="section-heading">
+                <strong>
+                  账号 {entry.accountIndex ?? '待确认'} · {entry.accountLabel}
+                </strong>
+                <StatusTag value={entry.verificationStatus} />
+              </div>
+              <p className="balance-number">{points(entry.dailyBalanceDelta)}</p>
+              <details>
+                <summary>积分依据</summary>
+                <PointSummary value={entry} />
+              </details>
+              <div className="calendar-run-links">
+                {entry.records.map((record) => (
+                  <Button
+                    variant="outline"
+                    key={record.runId}
+                    onClick={() => {
+                      open(record.runId)
+                    }}
+                  >
+                    {stateLabel(record.status)} · 查看
+                  </Button>
+                ))}
+              </div>
             </article>
-          )
-        })}
-      </div>
+          ))
+        )}
+      </Card>
     </section>
   )
 }

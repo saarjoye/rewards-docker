@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { SqliteStore } from '../src/infra/SqliteStore.js'
-import { Notifications } from '../src/notifications/Notifications.js'
+import { Notifications, notificationInput } from '../src/notifications/Notifications.js'
+import { decryptBytes, encryptBytes, type EncryptedEnvelope } from '../src/security/CryptoVault.js'
 
 const config = {
   enabled: true,
@@ -15,6 +16,8 @@ const config = {
   maxAttempts: 3
 }
 const response = (body: object) => new Response(JSON.stringify(body), { status: 200 })
+const requestUrl = (input: Parameters<typeof fetch>[0]) =>
+  new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url)
 function fixture() {
   const store = new SqliteStore(':memory:')
   const send = vi.fn<typeof fetch>().mockImplementation(async (url) => {
@@ -62,6 +65,90 @@ function fixture() {
 }
 
 describe('persistent enterprise notifications', () => {
+  it('upgrades an old settings table idempotently without rewriting existing encrypted settings', () => {
+    const store = new SqliteStore(':memory:')
+    const key = Buffer.alloc(32, 9)
+    const encrypted = JSON.stringify(encryptBytes(Buffer.from(JSON.stringify(config)), key))
+    try {
+      store.database.exec(`CREATE TABLE notification_settings (
+        id INTEGER PRIMARY KEY, schema_version INTEGER NOT NULL, encrypted TEXT NOT NULL,
+        enabled_since TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 0
+      )`)
+      store.database
+        .prepare('INSERT INTO notification_settings VALUES(1,2,?,?,1)')
+        .run(encrypted, '2026-09-09T00:00:00Z')
+      for (let i = 0; i < 2; i++) {
+        const service = new Notifications(store, key)
+        expect(service.status().apiBaseUrl).toBe('https://qyapi.weixin.qq.com')
+        expect(
+          store.database.prepare('SELECT encrypted FROM notification_settings').get()?.encrypted
+        ).toBe(encrypted)
+      }
+    } finally {
+      store.close()
+    }
+  })
+
+  it('persists a reverse proxy for both provider calls, preserves omitted edits, and resets to official on blank', async () => {
+    const { store, service, send, create } = fixture()
+    try {
+      service.save({ ...config, apiBaseUrl: 'https://notify.example.test/wecom/cgi-bin/' })
+      expect(service.status().apiBaseUrl).toBe('https://notify.example.test/wecom')
+      const stored = store.database
+        .prepare('SELECT encrypted, api_base_encrypted FROM notification_settings')
+        .get() as { encrypted: string; api_base_encrypted: string }
+      expect(stored.api_base_encrypted).not.toContain('notify.example.test')
+      const originalShape = JSON.parse(
+        decryptBytes(
+          JSON.parse(stored.encrypted) as EncryptedEnvelope,
+          Buffer.alloc(32, 9)
+        ).toString('utf8')
+      ) as unknown
+      expect(notificationInput.omit({ apiBaseUrl: true }).parse(originalShape)).toEqual(config)
+      const restarted = create()
+      restarted.save({ ...config, corpSecret: '' })
+      await restarted.test()
+      expect(send.mock.calls.map(([url]) => requestUrl(url).pathname)).toEqual([
+        '/wecom/cgi-bin/gettoken',
+        '/wecom/cgi-bin/message/send'
+      ])
+      expect(
+        send.mock.calls.every(
+          ([url, init]) =>
+            requestUrl(url).origin === 'https://notify.example.test' && init?.redirect === 'error'
+        )
+      ).toBe(true)
+      send.mockClear()
+      restarted.save({ ...config, apiBaseUrl: '' })
+      await restarted.test()
+      expect(send.mock.calls).toHaveLength(2)
+      expect(
+        send.mock.calls.every(([url]) => requestUrl(url).origin === 'https://qyapi.weixin.qq.com')
+      ).toBe(true)
+    } finally {
+      store.close()
+    }
+  })
+
+  it.each([
+    'http://notify.example.test',
+    'https://user:synthetic@notify.example.test',
+    'https://notify.example.test/?key=synthetic',
+    'https://notify.example.test/#fragment',
+    'https://127.0.0.1',
+    'https://[::1]',
+    'https://localhost',
+    'file:///tmp/mock'
+  ])('rejects unsafe reverse proxy configuration without fetching: %s', (apiBaseUrl) => {
+    const { store, service, send } = fixture()
+    try {
+      expect(() => service.save({ ...config, apiBaseUrl })).toThrow()
+      expect(send).not.toHaveBeenCalled()
+    } finally {
+      store.close()
+    }
+  })
+
   it('atomically queues ACCOUNT-END without a formal run, and rolls the event back if queuing fails', async () => {
     const { store, service, send } = fixture()
     try {
@@ -91,7 +178,9 @@ describe('persistent enterprise notifications', () => {
       store.database.exec(
         "CREATE TRIGGER simulate_queue_failure BEFORE INSERT ON notification_jobs BEGIN SELECT RAISE(ABORT,'synthetic failure'); END"
       )
-      expect(() => { store.ledger.lifecycle({ ...event, accountId: 'rollback' }); }).toThrow()
+      expect(() => {
+        store.ledger.lifecycle({ ...event, accountId: 'rollback' })
+      }).toThrow()
       expect(
         store.ledger.accounts(event.runId).some((account) => account.accountId === 'rollback')
       ).toBe(false)
@@ -151,7 +240,9 @@ describe('persistent enterprise notifications', () => {
     try {
       await service.tick()
       complete()
-      await vi.waitFor(() => { expect(service.status().recent[0]?.status).toBe('sent'); })
+      await vi.waitFor(() => {
+        expect(service.status().recent[0]?.status).toBe('sent')
+      })
       store.ledger.lifecycle({
         runId,
         accountId: 'second',
@@ -162,13 +253,13 @@ describe('persistent enterprise notifications', () => {
         executionState: 'completed',
         updatedAt: '2026-09-09T00:00:04Z'
       })
-      await vi.waitFor(() =>
-        { expect(service.status().recent.filter((job) => job.status === 'sent')).toHaveLength(2); }
-      )
+      await vi.waitFor(() => {
+        expect(service.status().recent.filter((job) => job.status === 'sent')).toHaveLength(2)
+      })
       store.updateRun(runId, 'completed', '2026-09-09T00:00:05Z')
-      await vi.waitFor(() =>
-        { expect(service.status().recent.filter((job) => job.status === 'sent')).toHaveLength(3); }
-      )
+      await vi.waitFor(() => {
+        expect(service.status().recent.filter((job) => job.status === 'sent')).toHaveLength(3)
+      })
     } finally {
       await service.close()
       store.close()

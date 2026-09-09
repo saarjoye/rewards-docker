@@ -8,7 +8,17 @@ export default defineConfig({
   plugins: [react()],
   build: {
     outDir: fileURLToPath(new URL('./dist/web', import.meta.url)),
-    emptyOutDir: true
+    emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          id = id.replaceAll('\\', '/')
+          if (/node_modules\/(react|react-dom|scheduler)\//.test(id)) return 'react-runtime'
+          if (id.includes('node_modules/tdesign-react/')) return 'tdesign'
+          if (id.includes('node_modules/')) return 'ui-support'
+        }
+      }
+    }
   },
   server: {
     proxy: {

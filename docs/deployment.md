@@ -4,7 +4,9 @@ Next 单应用沿用 `ghcr.io/saarjoye/mrs-core` 镜像名，替代旧版 Core/W
 
 ## 发布和切换
 
-现有仓库的 `main` 分支通过 `.github/workflows/docker-image.yml` 构建。先执行离线测试、类型检查、ESLint、构建和 Compose 校验，再构建 `linux/amd64` 与 `linux/arm64` 候选镜像。候选镜像使用空数据、禁用外部网络做启动健康检查；成功后才更新 `5.0.0-next.2` 与 `latest`。完整提交固定标签为 `sha-<完整提交号>`。
+现有仓库的 `main` 分支通过 `.github/workflows/docker-image.yml` 构建。先执行离线测试、类型检查、ESLint、构建和 Compose 校验，再构建 `linux/amd64` 与 `linux/arm64` 候选镜像。候选镜像使用空数据、禁用外部网络做启动健康检查；成功后才更新 `5.0.0-next.3` 与 `latest`。完整提交固定标签为 `sha-<完整提交号>`。
+
+next.3 包含 TDesign 全页面重构、移动端与操作保护，以及企业微信可选 HTTPS 反代。已有 Next 升级时保留原端口、数据卷和主密钥；新增反代地址在“消息推送”保存，留空使用官方接口，不影响 Rewards 直连。反代地址使用独立加密兼容列，不改写历史积分。回退 next.2 时保留数据库，旧版忽略反代字段并使用官方接口。
 
 不再发布 `mrs-web`，旧版本标签保留。发布不会自动部署运行机，不能只对旧 Compose 执行 pull/up。
 

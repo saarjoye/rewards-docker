@@ -1,8 +1,38 @@
 import { z } from 'zod'
+import { isIP } from 'node:net'
 import type { SqliteStore } from '../infra/SqliteStore.js'
 import { decryptBytes, encryptBytes, type EncryptedEnvelope } from '../security/CryptoVault.js'
 import { redactText } from '../security/Redactor.js'
 import { RunViews } from '../web/RunViews.js'
+
+const officialApiBase = 'https://qyapi.weixin.qq.com'
+const apiBaseUrl = z
+  .string()
+  .trim()
+  .max(512)
+  .transform((input, context) => {
+    if (!input) return officialApiBase
+    try {
+      const url = new URL(input)
+      if (
+        url.protocol !== 'https:' ||
+        url.username ||
+        url.password ||
+        url.search ||
+        url.hash ||
+        !url.hostname.includes('.') ||
+        isIP(url.hostname) ||
+        url.hostname.startsWith('[') ||
+        /\.(localhost|local|internal)$/.test(url.hostname) ||
+        !/^[\w/-]*$/.test(url.pathname)
+      )
+        throw new Error('invalid')
+      return url.origin + url.pathname.replace(/\/+$/, '').replace(/\/cgi-bin$/, '')
+    } catch {
+      context.addIssue({ code: 'custom', message: 'invalid-notification-api-base' })
+      return z.NEVER
+    }
+  })
 
 export const notificationInput = z
   .object({
@@ -20,10 +50,11 @@ export const notificationInput = z
       .min(1)
       .max(1024)
       .regex(/^(@all|[\w.@|-]+)$/),
-    maxAttempts: z.number().int().min(1).max(8).default(5)
+    maxAttempts: z.number().int().min(1).max(8).default(5),
+    apiBaseUrl: apiBaseUrl.optional()
   })
   .strict()
-type Settings = z.infer<typeof notificationInput>
+type Settings = z.infer<typeof notificationInput> & { apiBaseUrl: string }
 interface Job {
   notificationKey: string
   kind: string
@@ -40,7 +71,8 @@ const defaults: Settings = {
   agentId: '',
   corpSecret: '',
   toUser: '@all',
-  maxAttempts: 5
+  maxAttempts: 5,
+  apiBaseUrl: officialApiBase
 }
 const points = (value: number | null) =>
   value === null ? '待确认' : `${value > 0 ? '+' : ''}${String(value)} 分`
@@ -91,6 +123,7 @@ export class Notifications {
           db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`)
       }
       add('notification_settings', 'enabled', 'INTEGER NOT NULL DEFAULT 0')
+      add('notification_settings', 'api_base_encrypted', 'TEXT')
       for (const name of ['run_id', 'account_id', 'event_key', 'created_at'])
         add('notification_jobs', name, 'TEXT')
       db.prepare('UPDATE notification_settings SET enabled=?, schema_version=2 WHERE id=1').run(
@@ -120,11 +153,23 @@ export class Notifications {
 
   private settings(): { config: Settings; since: string } {
     const row = this.store.database
-      .prepare('SELECT encrypted, enabled_since FROM notification_settings WHERE id = 1')
-      .get() as { encrypted: string; enabled_since: string } | undefined
-    return row
-      ? { config: notificationInput.parse(this.decode(row.encrypted)), since: row.enabled_since }
-      : { config: { ...defaults }, since: new Date(this.now()).toISOString() }
+      .prepare(
+        'SELECT encrypted, enabled_since, api_base_encrypted FROM notification_settings WHERE id = 1'
+      )
+      .get() as
+      | { encrypted: string; enabled_since: string; api_base_encrypted: string | null }
+      | undefined
+    if (!row) return { config: { ...defaults }, since: new Date(this.now()).toISOString() }
+    const parsed = notificationInput.parse(this.decode(row.encrypted))
+    return {
+      config: {
+        ...parsed,
+        apiBaseUrl: row.api_base_encrypted
+          ? apiBaseUrl.parse(this.decode(row.api_base_encrypted))
+          : officialApiBase
+      },
+      since: row.enabled_since
+    }
   }
 
   status() {
@@ -143,6 +188,7 @@ export class Notifications {
       agentId: config.agentId,
       toUser: config.toUser,
       maxAttempts: config.maxAttempts,
+      apiBaseUrl: config.apiBaseUrl,
       hasSecret: Boolean(config.corpSecret),
       channel: 'wecom-application' as const,
       serviceError: this.serviceError,
@@ -153,7 +199,11 @@ export class Notifications {
   save(input: unknown) {
     if (this.flight) throw new Error('notification-busy')
     const current = this.settings()
-    const config = notificationInput.parse(input)
+    const parsed = notificationInput.parse(input)
+    const config: Settings = {
+      ...parsed,
+      apiBaseUrl: parsed.apiBaseUrl ?? current.config.apiBaseUrl
+    }
     config.corpSecret ||= current.config.corpSecret
     if (config.enabled && (!config.corpId || !config.agentId || !config.corpSecret))
       throw new Error('notification-config-incomplete')
@@ -172,10 +222,15 @@ export class Notifications {
           "UPDATE notification_jobs SET status = 'cancelled' WHERE status IN ('pending', 'failed', 'sending')"
         ).run()
       }
+      // Keep the original encrypted shape readable by earlier application versions.
+      const { apiBaseUrl: transportBase, ...legacyConfig } = config
       db.prepare(
         `INSERT INTO notification_settings(id, schema_version, encrypted, enabled_since) VALUES(1, 1, ?, ?)
         ON CONFLICT(id) DO UPDATE SET encrypted=excluded.encrypted, enabled_since=excluded.enabled_since`
-      ).run(this.encode(config), since)
+      ).run(this.encode(legacyConfig), since)
+      db.prepare('UPDATE notification_settings SET api_base_encrypted=? WHERE id=1').run(
+        transportBase === officialApiBase ? null : this.encode(transportBase)
+      )
       db.prepare('UPDATE notification_settings SET enabled=?, schema_version=2 WHERE id=1').run(
         Number(config.enabled)
       )
@@ -230,8 +285,12 @@ export class Notifications {
     }
   }
 
-  private async provider(path: string, init?: RequestInit): Promise<Record<string, unknown>> {
-    const response = await this.fetchImpl(`https://qyapi.weixin.qq.com/cgi-bin/${path}`, {
+  private async provider(
+    base: string,
+    path: string,
+    init?: RequestInit
+  ): Promise<Record<string, unknown>> {
+    const response = await this.fetchImpl(`${base}/cgi-bin/${path}`, {
       ...init,
       redirect: 'error',
       signal: AbortSignal.timeout(10_000)
@@ -253,6 +312,7 @@ export class Notifications {
     if (!config.enabled) throw new Error('notifications-disabled')
     if (!this.token || this.token.expiresAt <= this.now()) {
       const data = await this.provider(
+        config.apiBaseUrl,
         `gettoken?${new URLSearchParams({ corpid: config.corpId, corpsecret: config.corpSecret }).toString()}`
       )
       if (typeof data.access_token !== 'string' || !data.access_token)
@@ -269,6 +329,7 @@ export class Notifications {
       }
     }
     const result = await this.provider(
+      config.apiBaseUrl,
       `message/send?${new URLSearchParams({ access_token: this.token.value }).toString()}`,
       {
         method: 'POST',
