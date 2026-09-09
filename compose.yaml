@@ -1,103 +1,45 @@
-name: microsoft-rewards
-
 services:
-    rewards-core:
-        image: ghcr.io/saarjoye/mrs-core:latest
-        container_name: microsoft-rewards-core
-        restart: unless-stopped
-        environment:
-            NODE_ENV: 'production'
-            FORCE_HEADLESS: '1'
-            API_TOKEN: '${REWARDS_API_TOKEN:?Set a shared control API token}'
-            API_MODE: 'true'
-            API_HOST: '0.0.0.0'
-            API_PORT: '3010'
-            RUN_ON_START: 'false'
-            API_ALLOW_ENV_OVERRIDES: 'false'
-            API_ALLOW_CONFIG_REVEAL: 'false'
-            API_ALLOW_CONFIG_WRITE: 'false'
-            API_ALLOW_SCHEDULE_WRITE: 'true'
-            TZ: 'Asia/Shanghai'
-            SCHEDULE_FILE: '/usr/src/microsoft-rewards-script/dist/config/schedule.json'
-            CONFIG_FILE: '/usr/src/microsoft-rewards-script/dist/config/config.json'
-            CONFIG_SESSION_PATH: 'dist/browser/sessions'
-            ACCOUNT_KEY_FILE: '/run/secrets/core_accounts.key'
-            ACCOUNT_STORE_FILE: '/usr/src/microsoft-rewards-script/dist/config/accounts.enc.json'
-            API_RUN_LEDGER_FILE: '/usr/src/microsoft-rewards-script/dist/config/runs.enc.json'
-            CONFIG_SEARCH_QUERY_ENGINES: 'local'
-            CONFIG_SEARCH_ON_BING_LOCAL: 'true'
-            CONFIG_PROXY_QUERY_ENGINE: 'false'
-            CONFIG_EXPERIMENTAL_API_SEARCH: 'false'
-            CONFIG_EXPERIMENTAL_API_SEARCH_ON_BING: 'false'
-        expose:
-            - '3010'
-        volumes:
-            - /home/docker/rewards/config:/usr/src/microsoft-rewards-script/dist/config
-            - /home/docker/rewards/sessions:/usr/src/microsoft-rewards-script/dist/browser/sessions
-            - /home/docker/rewards/logs:/usr/src/microsoft-rewards-script/logs
-        secrets:
-            - source: core_accounts_key
-              target: core_accounts.key
-        healthcheck:
-            test: ['CMD-SHELL', 'scripts/docker/healthcheck.sh']
-            interval: 60s
-            timeout: 5s
-            retries: 3
-            start_period: 30s
-        security_opt:
-            - no-new-privileges:true
-        networks:
-            - rewards-control
+  microsoft-rewards-next:
+    image: ghcr.io/saarjoye/mrs-core:latest
+    container_name: microsoft-rewards-next
+    restart: unless-stopped
+    ports:
+      - '8788:3000'
+    environment:
+      TZ: Asia/Shanghai
+      NODE_ENV: production
+      WEB_HOST: 0.0.0.0
+      WEB_PORT: '3000'
+      WEB_ADMIN_USER: ${WEB_ADMIN_USER:-}
+      WEB_ADMIN_PASSWORD: ${WEB_ADMIN_PASSWORD:-}
+      RUN_SCHEDULE: '0 7 * * *'
+      RUN_ON_START: 'false'
+      CONFIG_PATH: /app/data/config.json
+      DATA_DIR: /app/data
+      SESSIONS_DIR: /app/sessions
+      LOGS_DIR: /app/logs
+      REWARDS_HEADLESS: 'true'
+      PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
+    volumes:
+      - rewards-next-data:/app/data
+      - rewards-next-sessions:/app/sessions
+      - rewards-next-logs:/app/logs
+      - rewards-next-backups:/app/backups
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - require('http').get('http://127.0.0.1:3000/healthz',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
-    rewards-web:
-        image: ghcr.io/saarjoye/mrs-web:latest
-        container_name: microsoft-rewards-web
-        restart: unless-stopped
-        environment:
-            CONTROL_API_TOKEN: '${REWARDS_API_TOKEN:?Set a shared control API token}'
-            TZ: 'Asia/Shanghai'
-            WEB_HOST: '0.0.0.0'
-            WEB_PORT: '3000'
-            WEB_DATA_DIR: '/app/data'
-            WEB_SETTINGS_KEY_FILE: '/run/secrets/web_settings.key'
-            WEB_LOG_RETENTION_DAYS: '7'
-            WEB_LOG_LIMIT: '10000'
-            CONTROL_API_URL: 'http://rewards-core:3010'
-        ports:
-            - '${WEB_PORT:-8787}:3000'
-        volumes:
-            - /home/docker/rewards/web-data:/app/data
-        secrets:
-            - source: web_settings_key
-              target: web_settings.key
-        depends_on:
-            - rewards-core
-        healthcheck:
-            test:
-                [
-                    'CMD',
-                    'node',
-                    '-e',
-                    "require('http').get('http://127.0.0.1:3000/healthz',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
-                ]
-            interval: 30s
-            timeout: 5s
-            retries: 3
-            start_period: 10s
-        read_only: true
-        tmpfs:
-            - /tmp
-        security_opt:
-            - no-new-privileges:true
-        networks:
-            - rewards-control
-
-networks:
-    rewards-control:
-        driver: bridge
-
-secrets:
-    core_accounts_key:
-        file: /home/docker/rewards/secrets/core_accounts.key
-    web_settings_key:
-        file: /home/docker/rewards/secrets/web_settings.key
+volumes:
+  rewards-next-data:
+  rewards-next-sessions:
+  rewards-next-logs:
+  rewards-next-backups:

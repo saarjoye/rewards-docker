@@ -1,0 +1,14 @@
+ARG NODE_IMAGE=node:24.11.1-bookworm-slim
+FROM ${NODE_IMAGE}
+
+ARG PATCHRIGHT_VERSION=1.61.1
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+
+RUN npm install --global "patchright@${PATCHRIGHT_VERSION}" \
+    && patchright install --with-deps chromium \
+    && npm cache clean --force \
+    && chmod -R a+rX /ms-playwright
+
+LABEL org.opencontainers.image.title="Microsoft Rewards Next browser base" \
+      org.opencontainers.image.description="Pinned Patchright and Chromium runtime layer"

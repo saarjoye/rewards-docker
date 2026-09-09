@@ -1,90 +1,88 @@
 name: Build versioned images
 
 on:
-    workflow_dispatch:
+  push:
+    branches: [main]
+  workflow_dispatch:
 
 permissions:
-    contents: read
-    packages: write
+  contents: read
+  packages: write
 
 concurrency:
-    group: docker-images-${{ github.ref }}
-    cancel-in-progress: true
+  group: docker-images-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
-    CORE_IMAGE: ghcr.io/${{ github.repository_owner }}/mrs-core
-    CORE_TAG: 4.3.2-cn12
-    WEB_IMAGE: ghcr.io/${{ github.repository_owner }}/mrs-web
-    WEB_TAG: 4.3.2-cn12
+  CORE_IMAGE: ghcr.io/${{ github.repository_owner }}/mrs-core
+  CORE_TAG: 5.0.0-next.1
 
 jobs:
-    build:
-        runs-on: ubuntu-latest
-        steps:
-            - name: Checkout
-              uses: actions/checkout@v4
-
-            - name: Set up Node
-              uses: actions/setup-node@v4
-              with:
-                  node-version: '24'
-
-            - name: Verify Web offline tests including non-root vault permissions
-              working-directory: web
-              run: |
-                  npm run check
-                  npm test
-
-            - name: Validate Compose configuration
-              run: |
-                  sudo install -d -m 700 /home/docker/rewards/runtime /home/docker/rewards/secrets
-                  sudo cp runtime/core.env.example /home/docker/rewards/runtime/core.env
-                  sudo cp runtime/web.env.example /home/docker/rewards/runtime/web.env
-                  head -c 32 /dev/zero | sudo tee /home/docker/rewards/secrets/core_accounts.key >/dev/null
-                  head -c 32 /dev/zero | sudo tee /home/docker/rewards/secrets/web_settings.key >/dev/null
-                  sudo env REWARDS_API_TOKEN=ci-compose-validation-only docker compose config --quiet
-
-            - name: Set up QEMU
-              uses: docker/setup-qemu-action@v3
-
-            - name: Set up Docker Buildx
-              uses: docker/setup-buildx-action@v3
-
-            - name: Log in to GHCR
-              uses: docker/login-action@v3
-              with:
-                  registry: ghcr.io
-                  username: ${{ github.actor }}
-                  password: ${{ secrets.GITHUB_TOKEN }}
-
-            - name: Build and push core
-              uses: docker/build-push-action@v6
-              with:
-                  context: .
-                  push: true
-                  platforms: linux/amd64,linux/arm64
-                  cache-from: type=gha,scope=mrs-core
-                  cache-to: type=gha,mode=max,scope=mrs-core
-                  labels: |
-                      org.opencontainers.image.source=https://github.com/${{ github.repository }}
-                      org.opencontainers.image.description=Microsoft Rewards Script v4.3.2 core
-                      org.opencontainers.image.revision=${{ github.sha }}
-                  tags: |
-                      ${{ env.CORE_IMAGE }}:${{ env.CORE_TAG }}
-                      ${{ env.CORE_IMAGE }}:latest
-
-            - name: Build and push Chinese Web
-              uses: docker/build-push-action@v6
-              with:
-                  context: ./web
-                  push: true
-                  platforms: linux/amd64,linux/arm64
-                  cache-from: type=gha,scope=mrs-web
-                  cache-to: type=gha,mode=max,scope=mrs-web
-                  labels: |
-                      org.opencontainers.image.source=https://github.com/${{ github.repository }}
-                      org.opencontainers.image.description=Microsoft Rewards Chinese control Web
-                      org.opencontainers.image.revision=${{ github.sha }}
-                  tags: |
-                      ${{ env.WEB_IMAGE }}:${{ env.WEB_TAG }}
-                      ${{ env.WEB_IMAGE }}:latest
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci --ignore-scripts
+      - name: Verify Next offline
+        run: |
+          npm run check
+          npm run lint
+          npm test -- --reporter=dot
+          npm run build
+          docker compose config --quiet
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build pinned browser layer
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.browser
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ env.CORE_IMAGE }}:browser-patchright-1.61.1
+          cache-from: type=gha,scope=next-browser
+          cache-to: type=gha,mode=max,scope=next-browser
+      - name: Build candidate
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            BROWSER_IMAGE=${{ env.CORE_IMAGE }}:browser-patchright-1.61.1
+          tags: ${{ env.CORE_IMAGE }}:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.title=Microsoft Rewards Next
+          cache-from: type=gha,scope=next-app
+          cache-to: type=gha,mode=max,scope=next-app
+      - name: Verify candidate with empty synthetic data
+        env:
+          CANDIDATE: ${{ env.CORE_IMAGE }}:sha-${{ github.sha }}
+        run: |
+          docker run --detach --name next-smoke --network none "$CANDIDATE"
+          trap 'docker rm -f next-smoke >/dev/null' EXIT
+          for attempt in $(seq 1 30); do
+            if docker exec next-smoke node -e "require('http').get('http://127.0.0.1:3000/healthz',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"; then
+              exit 0
+            fi
+            sleep 2
+          done
+          exit 1
+      - name: Promote verified candidate
+        run: |
+          docker buildx imagetools create \
+            --tag "$CORE_IMAGE:$CORE_TAG" \
+            --tag "$CORE_IMAGE:latest" \
+            "$CORE_IMAGE:sha-${{ github.sha }}"

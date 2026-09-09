@@ -1,7 +1,0 @@
-test/
-.env
-.env.*
-secrets/
-node_modules/
-data/
-*.log

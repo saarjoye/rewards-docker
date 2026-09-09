@@ -1,0 +1,179 @@
+import { useState } from 'react'
+import type { ReactElement } from 'react'
+import { clockTime, stateLabel } from './display'
+
+export interface EvidenceRow {
+  taskId: string
+  kind: string
+  source: string
+  observedAt: string
+  businessDate?: string
+  balance?: number | null
+  accepted?: boolean | null
+  completed?: number | null
+  total?: number | null
+  executionState?: string | null
+  confirmedPoints?: number | null
+  creditKey?: string | null
+}
+interface TaskSummary {
+  taskId: string
+  displayName: string
+  status: string
+  reason?: string
+}
+
+const sourceName = (source: string): string =>
+  ({
+    'app-dashboard': 'App 响应',
+    rsc: 'Rewards 页面响应',
+    'bing-flyout': 'Bing 面板响应',
+    'legacy-getuserinfo': '账户信息响应',
+    'browser-response': '浏览器响应'
+  })[source] ?? '来源未识别'
+const kindName = (kind: string): string =>
+  ({
+    response: '提交回执',
+    verification: '任务复核',
+    execution: '执行记录'
+  })[kind] ?? '观测记录'
+const numeric = (value: number | null | undefined): string =>
+  value === null || value === undefined || !Number.isFinite(value) ? '未记录' : String(value)
+
+export function TaskEvidencePanel({
+  tasks,
+  evidence = []
+}: {
+  tasks: readonly TaskSummary[]
+  evidence?: readonly EvidenceRow[]
+}): ReactElement {
+  const [kind, setKind] = useState('all')
+  const groups = new Map(tasks.map((task) => [task.taskId, { task, rows: [] as EvidenceRow[] }]))
+  for (const row of evidence) {
+    if (!groups.has(row.taskId))
+      groups.set(row.taskId, {
+        task: { taskId: row.taskId, displayName: '任务名称未取得', status: 'unknown' },
+        rows: []
+      })
+    groups.get(row.taskId)?.rows.push(row)
+  }
+  return (
+    <div className="task-evidence-panel">
+      <div className="evidence-heading">
+        <h3>
+          任务与证据{' '}
+          <span>
+            （{groups.size} 项任务 · {evidence.length} 条记录）
+          </span>
+        </h3>
+        <label>
+          记录类型
+          <select
+            value={kind}
+            onChange={(event) => {
+              setKind(event.target.value)
+            }}
+          >
+            <option value="all">全部记录</option>
+            <option value="response">提交回执</option>
+            <option value="verification">任务复核</option>
+            <option value="execution">执行记录</option>
+          </select>
+        </label>
+      </div>
+      {groups.size === 0 && <p className="observation">任务明细尚未取得</p>}
+      {[...groups.values()].map(({ task, rows }) => {
+        const visible = rows
+          .filter((row) => kind === 'all' || row.kind === kind)
+          .sort((a, b) => a.observedAt.localeCompare(b.observedAt))
+        return (
+          <details className="task-evidence" key={task.taskId}>
+            <summary>
+              <span className="evidence-task-name">{task.displayName}</span>
+              <span className="evidence-task-status">
+                {stateLabel(task.status)} · {rows.length} 条证据
+              </span>
+            </summary>
+            {task.reason && <p className="observation">{task.reason}</p>}
+            <p className="evidence-identity">
+              任务标识：<code>{task.taskId}</code>
+            </p>
+            {visible.length === 0 ? (
+              <p className="observation">
+                {rows.length ? '当前类型没有记录' : '尚无保存的任务证据'}
+              </p>
+            ) : (
+              <table className="evidence-table">
+                <caption>任务观测账本 · Asia/Shanghai</caption>
+                <thead>
+                  <tr>
+                    <th>观测时间</th>
+                    <th>类型与来源</th>
+                    <th>记录内容</th>
+                    <th>到账证据</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visible.map((row, index) => (
+                    <tr key={`${row.observedAt}:${row.kind}:${String(index)}`}>
+                      <td data-label="观测时间">
+                        <time dateTime={row.observedAt}>{clockTime(row.observedAt)}</time>
+                        <small>业务日期：{row.businessDate ?? '未记录'}</small>
+                      </td>
+                      <td data-label="类型与来源">
+                        {kindName(row.kind)}
+                        <small>{sourceName(row.source)}</small>
+                      </td>
+                      <td data-label="记录内容">
+                        <dl className="evidence-values">
+                          {row.kind === 'response' && (
+                            <div>
+                              <dt>回执</dt>
+                              <dd>
+                                {row.accepted === true
+                                  ? '已记录接收回执'
+                                  : row.accepted === false
+                                    ? '未确认接收'
+                                    : '未记录回执'}
+                              </dd>
+                            </div>
+                          )}
+                          {row.executionState && (
+                            <div>
+                              <dt>执行状态</dt>
+                              <dd>{stateLabel(row.executionState)}</dd>
+                            </div>
+                          )}
+                          {(row.completed != null || row.total != null) && (
+                            <div>
+                              <dt>任务进度</dt>
+                              <dd>
+                                {numeric(row.completed)} / {numeric(row.total)}
+                              </dd>
+                            </div>
+                          )}
+                          <div>
+                            <dt>观测余额</dt>
+                            <dd>
+                              {row.balance == null
+                                ? '未取得余额观测'
+                                : `${numeric(row.balance)} 分`}
+                            </dd>
+                          </div>
+                        </dl>
+                      </td>
+                      <td data-label="到账证据">
+                        未取得到账证据
+                        <small>到账标识：{row.creditKey ?? '未取得'}</small>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </details>
+        )
+      })}
+    </div>
+  )
+}
