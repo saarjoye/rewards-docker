@@ -43,7 +43,10 @@ const coordinator = new ApplicationRunCoordinator(
   logger,
   config
 )
-const scheduler = new Scheduler()
+const scheduler = new Scheduler(
+  store.database,
+  process.env.RUN_SCHEDULE ?? process.env.CRON_SCHEDULE
+)
 const notifications = new Notifications(store, masterKey)
 
 if (!adminAuth.isInitialized()) {
@@ -58,6 +61,7 @@ const app = await createServer({
   store,
   runCoordinator: coordinator,
   notifications,
+  scheduler,
   webRoot: resolve(process.cwd(), 'dist/web'),
   secureCookies: process.env.WEB_SECURE_COOKIES === 'true'
 })
@@ -90,12 +94,8 @@ process.once('SIGTERM', handleShutdown)
 await app.listen({ host, port })
 notifications.start()
 
-scheduler.start({
-  pattern: process.env.RUN_SCHEDULE ?? '0 7 * * *',
-  timezone: config.timezone,
-  run: async () => {
-    await coordinator.start({ accountMode: 'continue', executionMode: 'mutating' })
-  }
+scheduler.start(async () => {
+  await coordinator.start({ accountMode: 'continue', executionMode: 'mutating' })
 })
 
 if (process.env.RUN_ON_START === 'true') {

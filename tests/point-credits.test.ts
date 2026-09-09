@@ -216,7 +216,11 @@ describe('strict credit reconciliation', () => {
         submitted: true
       }
       store.ledger.credits.record(isolated)
-      expect(new RunViews(store).day('account', '2026-09-09').confirmedTaskPoints).toBeNull()
+      // Valid task boundaries are shared by task detail and account totals, without a synthetic credit write.
+      expect(
+        store.ledger.credits.taskPoints('run', 'account', 'task', '2026-09-09').taskEarnedPoints
+      ).toBe(30)
+      expect(new RunViews(store).day('account', '2026-09-09').confirmedTaskPoints).toBe(30)
       const verified: CreditInput = {
         ...isolated,
         observedAt: '2026-09-09T00:21:00Z',

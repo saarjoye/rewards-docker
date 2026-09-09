@@ -11,6 +11,7 @@ import { AdminAuthStore } from '../src/infra/AdminAuthStore.js'
 import { SqliteStore } from '../src/infra/SqliteStore.js'
 import { createServer, type RunCoordinator } from '../src/web/createServer.js'
 import { Notifications } from '../src/notifications/Notifications.js'
+import { Scheduler } from '../src/orchestration/Scheduler.js'
 
 const roots: string[] = []
 
@@ -44,6 +45,7 @@ async function fixture(runCoordinator?: RunCoordinator, withNotifications = fals
     store,
     webRoot,
     secureCookies: false,
+    scheduler: new Scheduler(store.database),
     ...(withNotifications
       ? { notifications: new Notifications(store, Buffer.alloc(32, 9), notificationFetch) }
       : {}),
@@ -64,6 +66,52 @@ async function fixture(runCoordinator?: RunCoordinator, withNotifications = fals
 }
 
 describe('web API', () => {
+  it('protects schedule settings and validates persisted daily edits', async () => {
+    const { app, store, cookie, csrfToken } = await fixture()
+    try {
+      const url = '/api/settings/schedule'
+      expect((await app.inject({ method: 'GET', url })).statusCode).toBe(401)
+      expect(
+        (await app.inject({ method: 'GET', url, headers: { cookie } })).json<{ time: string }>()
+          .time
+      ).toBe('07:00')
+      expect(
+        (
+          await app.inject({
+            method: 'PUT',
+            url,
+            headers: { cookie },
+            payload: { enabled: true, time: '09:30' }
+          })
+        ).statusCode
+      ).toBe(403)
+      const headers = { cookie, 'x-csrf-token': csrfToken }
+      expect(
+        (
+          await app.inject({
+            method: 'PUT',
+            url,
+            headers,
+            payload: { enabled: true, time: '25:30' }
+          })
+        ).statusCode
+      ).toBe(400)
+      expect(
+        (
+          await app.inject({
+            method: 'PUT',
+            url,
+            headers,
+            payload: { enabled: false, time: '09:30' }
+          })
+        ).json()
+      ).toMatchObject({ enabled: false, time: '09:30', timezone: 'Asia/Shanghai' })
+      expect(new Scheduler(store.database).status().time).toBe('09:30')
+    } finally {
+      await app.close()
+      store.close()
+    }
+  })
   it('returns task numbers consistently through live detail and report before the batch ends', async () => {
     const { app, store, cookie } = await fixture()
     try {

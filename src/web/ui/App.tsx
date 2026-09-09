@@ -29,6 +29,9 @@ import {
 } from 'tdesign-icons-react'
 import { createRequestQueue } from './requestQueue'
 const RunPages = lazy(async () => ({ default: (await import('./RunPages')).RunPages }))
+const ScheduleSettings = lazy(async () => ({
+  default: (await import('./ScheduleSettings')).ScheduleSettings
+}))
 const NotificationSettings = lazy(async () => ({
   default: (await import('./NotificationSettings')).NotificationSettings
 }))
@@ -177,7 +180,7 @@ function LoginView({ onLogin }: { onLogin: (token: string) => void }): ReactElem
 export function App(): ReactElement {
   const [restoring, setRestoring] = useState(true)
   const [page, setPage] = useState<
-    'overview' | 'tasks' | 'history' | 'calendar' | 'accounts' | 'notifications'
+    'overview' | 'tasks' | 'history' | 'calendar' | 'accounts' | 'notifications' | 'schedule'
   >(() => {
     const hash = window.location.hash.slice(1)
     if (hash.startsWith('run/')) return 'history'
@@ -185,7 +188,8 @@ export function App(): ReactElement {
       hash === 'history' ||
       hash === 'calendar' ||
       hash === 'accounts' ||
-      hash === 'notifications'
+      hash === 'notifications' ||
+      hash === 'schedule'
       ? hash
       : 'overview'
   })
@@ -385,7 +389,8 @@ export function App(): ReactElement {
     { id: 'history' as const, label: '运行记录', icon: <HistoryIcon /> },
     { id: 'calendar' as const, label: '积分日历', icon: <CalendarIcon /> },
     { id: 'accounts' as const, label: '账号管理', icon: <UserIcon /> },
-    { id: 'notifications' as const, label: '消息推送', icon: <NotificationIcon /> }
+    { id: 'notifications' as const, label: '消息推送', icon: <NotificationIcon /> },
+    { id: 'schedule' as const, label: '定时任务', icon: <CalendarIcon /> }
   ]
   useEffect(() => {
     const change = () => {
@@ -407,7 +412,8 @@ export function App(): ReactElement {
         hash === 'history' ||
         hash === 'calendar' ||
         hash === 'accounts' ||
-        hash === 'notifications'
+        hash === 'notifications' ||
+        hash === 'schedule'
       )
         setPage(hash)
     }
@@ -559,6 +565,9 @@ export function App(): ReactElement {
           )}
           {page === 'notifications' && (
             <NotificationSettings csrfToken={csrfToken} onUnsavedChange={setUnsaved} />
+          )}
+          {page === 'schedule' && (
+            <ScheduleSettings csrfToken={csrfToken} onUnsavedChange={setUnsaved} />
           )}
         </Suspense>
       </main>

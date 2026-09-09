@@ -159,6 +159,8 @@ export class PointCredits {
             .join(',')
         }
     }
+    // A rejected explicit attribution must not be revived by the snapshot fallback.
+    if (credits.some((row) => row.evidenceSource === 'isolated-balance')) return empty
     // Only explicit task boundaries may be attributed. Legacy account snapshots stay account-only.
     const snapshots = this.db
       .prepare(
@@ -355,19 +357,58 @@ export class PointCredits {
         ? this.confirmed(row)
         : null
     )
-    const sumVerified = verified.reduce<number>((sum, value) => sum + (value ?? 0), 0)
+    const taskScopes = this.db
+      .prepare(
+        `SELECT DISTINCT run_id, task_id, business_date
+      FROM balance_observations WHERE account_id=? AND task_id IS NOT NULL
+      AND (? IS NULL OR business_date=?) AND (? IS NULL OR run_id=?)`
+      )
+      .all(accountId, date ?? null, date ?? null, runId ?? null, runId ?? null) as {
+      run_id: string
+      task_id: string
+      business_date: string
+    }[]
+    const derived = taskScopes.flatMap((task) => {
+      if (
+        rows.some(
+          (row, index) =>
+            row.runId === task.run_id &&
+            row.taskId === task.task_id &&
+            row.businessDate === task.business_date &&
+            verified[index] !== null
+        )
+      )
+        return []
+      const points = this.taskPoints(task.run_id, accountId, task.task_id, task.business_date)
+      return points.taskEarnedPoints !== null &&
+        points.taskEarnedPointsSource === 'isolated-balance'
+        ? [{ ...task, points: points.taskEarnedPoints }]
+        : []
+    })
+    const sumVerified =
+      verified.reduce<number>((sum, value) => sum + (value ?? 0), 0) +
+      derived.reduce((sum, task) => sum + task.points, 0)
     const conflict =
       rows.some((row) => row.conflict) || (delta !== null && sumVerified > Math.max(0, delta))
     const confirmedTaskPoints =
-      conflict || delta === null || !rows.length || !verified.some((value) => value !== null)
+      conflict || delta === null || (!derived.length && !verified.some((value) => value !== null))
         ? null
         : sumVerified
     const pending = rows.filter(
-      (row, index) => row.submitted && (verified[index] === null || conflict)
+      (row, index) =>
+        row.submitted &&
+        (conflict ||
+          (verified[index] === null &&
+            !derived.some(
+              (task) =>
+                task.run_id === row.runId &&
+                task.task_id === row.taskId &&
+                task.business_date === row.businessDate
+            )))
     )
     const pendingTaskPoints = pending.length
       ? total(pending.map((row) => row.expectedPoints))
-      : rows.length
+      : rows.length || derived.length
         ? 0
         : null
     const overreportedTaskPoints =
@@ -391,7 +432,7 @@ export class PointCredits {
         ? 'conflict'
         : confirmedTaskPoints === null
           ? 'pending'
-          : verified.some((value) => value === null) || (unattributedBalanceDelta ?? 0) > 0
+          : pending.length > 0 || (unattributedBalanceDelta ?? 0) > 0
             ? 'partial'
             : 'confirmed'
     }

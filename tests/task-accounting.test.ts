@@ -46,6 +46,68 @@ function fixture() {
   return { store, views, current, balance }
 }
 describe('task numeric accounting', () => {
+  it('renders scoped verification before response and execution instead of obsolete flat evidence', () => {
+    const html = renderToStaticMarkup(
+      createElement(TaskEvidencePanel, {
+        tasks: [
+          {
+            taskId: 'task',
+            displayName: 'Synthetic',
+            status: 'running',
+            taskEvidence: [
+              {
+                taskId: 'task',
+                kind: 'execution',
+                source: 'rsc',
+                observedAt: '2026-09-09T08:00:00Z'
+              },
+              {
+                taskId: 'task',
+                kind: 'response',
+                source: 'rsc',
+                observedAt: '2026-09-09T08:01:00Z'
+              },
+              {
+                taskId: 'task',
+                kind: 'verification',
+                source: 'rsc',
+                observedAt: '2026-09-09T08:02:00Z'
+              }
+            ]
+          }
+        ],
+        evidence: [
+          { taskId: 'task', kind: 'execution', source: 'rsc', observedAt: '2026-09-08T01:00:00Z' }
+        ]
+      })
+    )
+    expect(html).toContain('2026-09-09T08:02:00Z')
+    expect(html.indexOf('2026-09-09T08:02:00Z')).toBeLessThan(html.indexOf('2026-09-09T08:01:00Z'))
+    expect(html.indexOf('2026-09-09T08:01:00Z')).toBeLessThan(html.indexOf('2026-09-09T08:00:00Z'))
+    expect(html).not.toContain('2026-09-08T01:00:00Z')
+  })
+  it('includes derived task receipts in account and daily totals without writing duplicate credits', () => {
+    const { store, current, balance } = fixture()
+    try {
+      balance('task-before', 1000, '2026-09-09T08:00:00Z', 'task')
+      balance('task-after', 1010, '2026-09-09T08:01:00Z', 'task')
+      expect(current()?.taskEarnedPoints).toBe(10)
+      for (let i = 0; i < 2; i++) {
+        expect(
+          store.ledger.credits.reconcile('account', 10, '2026-09-09', 'run').confirmedTaskPoints
+        ).toBe(10)
+        expect(
+          store.ledger.credits.reconcile('account', 10, '2026-09-09').confirmedTaskPoints
+        ).toBe(10)
+      }
+      expect(store.ledger.credits.rowsForRun('run')).toHaveLength(0)
+      expect(
+        store.ledger.credits.reconcile('account', 10, '2026-09-10').confirmedTaskPoints
+      ).toBeNull()
+    } finally {
+      store.close()
+    }
+  })
   it('chooses source priority only among equally recent equal balances, and rejects conflicting totals', () => {
     const { store, current, balance } = fixture()
     try {

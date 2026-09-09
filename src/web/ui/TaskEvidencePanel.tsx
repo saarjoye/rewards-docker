@@ -29,6 +29,8 @@ export interface TaskSummary {
   taskEarnedPointsStatus?: string
   taskCreditKey?: string | null
   taskProgress?: { completed: number; total: number | null }
+  taskEvidence?: readonly EvidenceRow[]
+  latestTaskEvidence?: EvidenceRow | null
 }
 
 export interface CreditRow {
@@ -78,13 +80,19 @@ export function TaskEvidencePanel({
       })
     groups.get(row.taskId)?.rows.push(row)
   }
+  for (const { task, rows } of groups.values()) {
+    if (task.taskEvidence) rows.splice(0, rows.length, ...task.taskEvidence)
+    const rank = (kind: string) => ({ verification: 3, response: 2, execution: 1 })[kind] ?? 0
+    rows.sort((a, b) => rank(b.kind) - rank(a.kind) || b.observedAt.localeCompare(a.observedAt))
+  }
   return (
     <div className="task-evidence-panel">
       <div className="evidence-heading">
         <h3>
           任务与证据{' '}
           <span>
-            （{groups.size} 项任务 · {evidence.length} 条记录）
+            （{groups.size} 项任务 ·{' '}
+            {[...groups.values()].reduce((sum, group) => sum + group.rows.length, 0)} 条记录）
           </span>
         </h3>
         <label>
@@ -104,9 +112,7 @@ export function TaskEvidencePanel({
       </div>
       {groups.size === 0 && <p className="observation">暂无任务明细</p>}
       {[...groups.values()].map(({ task, rows }) => {
-        const visible = rows
-          .filter((row) => kind === 'all' || row.kind === kind)
-          .sort((a, b) => a.observedAt.localeCompare(b.observedAt))
+        const visible = rows.filter((row) => kind === 'all' || row.kind === kind)
         return (
           <details className="task-evidence" key={task.taskId}>
             <summary>

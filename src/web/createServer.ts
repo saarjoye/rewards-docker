@@ -13,6 +13,7 @@ import type { AccountSecretStore } from '../infra/AccountSecretStore.js'
 import type { AdminAuthStore } from '../infra/AdminAuthStore.js'
 import type { SqliteStore } from '../infra/SqliteStore.js'
 import { RunViews } from './RunViews.js'
+import { scheduleInput, type Scheduler } from '../orchestration/Scheduler.js'
 import { notificationInput, type Notifications } from '../notifications/Notifications.js'
 
 const SESSION_COOKIE = 'rewards_next_session'
@@ -60,6 +61,7 @@ export interface WebServerDependencies {
   secureCookies: boolean
   runCoordinator?: RunCoordinator
   notifications?: Notifications
+  scheduler?: Scheduler
 }
 
 function getSessionToken(request: FastifyRequest): string | undefined {
@@ -145,6 +147,16 @@ export async function createServer(dependencies: WebServerDependencies): Promise
     return session ?? reply.code(401).send({ error: 'authentication-required' })
   })
 
+  app.get('/api/settings/schedule', (_request, reply) => {
+    reply.header('cache-control', 'no-store')
+    return (
+      dependencies.scheduler?.status() ?? reply.code(503).send({ error: 'schedule-unavailable' })
+    )
+  })
+  app.put('/api/settings/schedule', (request, reply) => {
+    if (!dependencies.scheduler) return reply.code(503).send({ error: 'schedule-unavailable' })
+    return dependencies.scheduler.save(scheduleInput.parse(request.body))
+  })
   app.get('/api/notifications/wecom', (_request, reply) => {
     reply.header('cache-control', 'no-store')
     return (

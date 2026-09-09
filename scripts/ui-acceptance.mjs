@@ -13,8 +13,11 @@ import { AdminAuthStore } from '../.codex-output/next-build/server/infra/AdminAu
 import { AccountSecretStore } from '../.codex-output/next-build/server/infra/AccountSecretStore.js'
 import { createServer } from '../.codex-output/next-build/server/web/createServer.js'
 import { Notifications } from '../.codex-output/next-build/server/notifications/Notifications.js'
+import { Scheduler } from '../.codex-output/next-build/server/orchestration/Scheduler.js'
 
 const store = new SqliteStore(':memory:')
+const scheduler = new Scheduler(store.database)
+scheduler.start(async () => {})
 const adminAuth = new AdminAuthStore(store.database)
 adminAuth.initialize('synthetic-admin', 'synthetic-password')
 const accounts = new AccountSecretStore(store.database, Buffer.alloc(32, 7))
@@ -117,6 +120,7 @@ const app = await createServer({
   secureCookies: false,
   webRoot: resolve('.codex-output/next-build/web'),
   runCoordinator,
+  scheduler,
   notifications: new Notifications(store, Buffer.alloc(32, 7), async (url) => {
     const target = new URL(String(url))
     assert.ok(
@@ -416,6 +420,21 @@ try {
       .filter({ visible: true })
       .waitFor()
     await page.getByRole('button', { name: '重置筛选', exact: true }).click()
+    await navigate('定时任务')
+    await page.getByLabel('每日执行时间（Asia/Shanghai）', { exact: true }).waitFor()
+    const scheduleTime =
+      width === 1440 ? '09:30' : width === 768 ? '10:30' : width === 390 ? '11:30' : '12:30'
+    await page.getByLabel('每日执行时间（Asia/Shanghai）', { exact: true }).fill(scheduleTime)
+    await page.getByRole('button', { name: '保存定时设置', exact: true }).click()
+    await page.getByRole('status').filter({ hasText: '已保存，定时计划立即生效' }).waitFor()
+    assert.equal(scheduler.status().time, scheduleTime)
+    await capture('schedule-' + String(width))
+    await page.reload()
+    await page.getByLabel('每日执行时间（Asia/Shanghai）', { exact: true }).waitFor()
+    assert.equal(
+      await page.getByLabel('每日执行时间（Asia/Shanghai）', { exact: true }).inputValue(),
+      scheduleTime
+    )
     await navigate('消息推送')
     await page.getByLabel('企业 ID', { exact: true }).waitFor()
     if (width === 1440) {
@@ -557,9 +576,21 @@ try {
   await page.getByRole('button', { name: '查看详情', exact: true }).waitFor()
   await navigate('账号管理')
   await page.getByRole('button', { name: '添加账号', exact: true }).click()
+  await page.evaluate(async () => {
+    await Promise.all(
+      globalThis.document
+        .getAnimations()
+        .filter((animation) => animation.effect?.getTiming().iterations !== Infinity)
+        .map((animation) => animation.finished.catch(() => undefined))
+    )
+  })
   await page.getByLabel('Microsoft 账号', { exact: true }).fill('fixture4@example.test')
   await page.getByLabel('密码', { exact: true }).fill('synthetic-only')
   await page.getByLabel('显示名称', { exact: true }).fill('新增合成账号')
+  assert.equal(
+    await page.getByLabel('Microsoft 账号', { exact: true }).inputValue(),
+    'fixture4@example.test'
+  )
   await page.getByRole('button', { name: '保存账号', exact: true }).click()
   await page.getByText('新增合成账号', { exact: true }).filter({ visible: true }).waitFor()
   await page.getByRole('switch', { name: '启用账号 4' }).click()
@@ -637,6 +668,7 @@ try {
   throw error
 } finally {
   await browser?.close()
+  scheduler.stop()
   await app.close()
   store.close()
 }
