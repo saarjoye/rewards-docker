@@ -3,6 +3,7 @@ import { balanceInterval } from '../infra/BalanceInterval.js'
 export { balanceInterval } from '../infra/BalanceInterval.js'
 import type { SqliteStore } from '../infra/SqliteStore.js'
 import { liveAccounting } from '../infra/LiveAccounting.js'
+import { runOutcome, executionModeLabel, accountStatusLabel } from '../domain/RunOutcome.js'
 
 export class RunViews {
   constructor(private readonly store: SqliteStore) {}
@@ -125,6 +126,9 @@ export class RunViews {
         accountIndex: execution?.accountIndex ?? old?.runAccountIndex ?? null,
         accountLabel: execution?.accountLabel ?? '标签—',
         executionState: execution?.executionState ?? old?.status ?? 'unknown',
+        accountStatusLabel: accountStatusLabel(
+          execution?.executionState ?? old?.status ?? 'unknown'
+        ),
         startedAt: execution?.startedAt ?? null,
         endedAt: execution?.endedAt ?? null,
         runBalanceDelta,
@@ -159,12 +163,11 @@ export class RunViews {
         : null
     return {
       ...run,
+      ...runOutcome(run.status, run.selectedAccountIndexes.length, lifecycle),
+      executionModeLabel: executionModeLabel(run.executionMode),
       accounts,
       tasks: snapshots,
       persistence: activeRunId === runId ? 'live' : durable ? 'durable' : 'provisional',
-      accountsTotal: run.selectedAccountIndexes.length,
-      accountsProcessed: lifecycle.filter((row) => row.endedAt !== null).length,
-      accountsCompleted: lifecycle.filter((row) => row.executionState === 'completed').length,
       confirmedTaskPoints: sum(accounts.map((row) => row.confirmedTaskPoints)),
       reportedTaskPoints: sum(accounts.map((row) => row.reportedTaskPoints)),
       pendingTaskPoints: sum(accounts.map((row) => row.pendingTaskPoints)),
@@ -241,6 +244,15 @@ export class RunViews {
           records: records.map((row) => ({
             runId: row.runId,
             status: row.status,
+            runStatusLabel: row.runStatusLabel,
+            executionMode: row.executionMode,
+            executionModeLabel: row.executionModeLabel,
+            accountsEnded: row.accountsEnded,
+            accountsCompleted: row.accountsCompleted,
+            accountsPartial: row.accountsPartial,
+            accountsFailed: row.accountsFailed,
+            accountsNotCompleted: row.accountsNotCompleted,
+            accountsTotal: row.accountsTotal,
             detailUrl: row.detailUrl,
             startedAt: row.startedAt,
             endedAt: row.finishedAt ?? null,

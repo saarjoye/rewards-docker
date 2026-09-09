@@ -9,6 +9,7 @@ import {
   type ReactElement
 } from 'react'
 import { Card } from 'tdesign-react/es/card/index.js'
+import type { RunResultFields } from './RunResultSummary'
 import { Dialog } from 'tdesign-react/es/dialog/index.js'
 import { Drawer } from 'tdesign-react/es/drawer/index.js'
 import { Loading } from 'tdesign-react/es/loading/index.js'
@@ -85,7 +86,7 @@ export interface StatePayload {
   >
 }
 
-interface RunSummary {
+interface RunSummary extends RunResultFields {
   runId: string
   localDate: string
   executionMode: 'read-only' | 'mutating'

@@ -4,7 +4,9 @@ Next 单应用沿用 `ghcr.io/saarjoye/mrs-core` 镜像名，替代旧版 Core/W
 
 ## 发布和切换
 
-现有仓库的 `main` 分支通过 `.github/workflows/docker-image.yml` 构建。先执行离线测试、类型检查、ESLint、构建和 Compose 校验，再构建 `linux/amd64` 与 `linux/arm64` 候选镜像。候选镜像使用空数据、禁用外部网络做启动健康检查；成功后才更新 `5.0.0-next.6` 与 `latest`。完整提交固定标签为 `sha-<完整提交号>`。
+现有仓库的 `main` 分支通过 `.github/workflows/docker-image.yml` 构建。先执行离线测试、类型检查、ESLint、构建和 Compose 校验，再构建 `linux/amd64` 与 `linux/arm64` 候选镜像。候选镜像使用空数据、禁用外部网络做启动健康检查；成功后才更新 `5.0.0-next.7` 与 `latest`。完整提交固定标签为 `sha-<完整提交号>`。
+
+next.7 分离执行模式、批次状态和账号结果，统一详情、首页、日历、报告与通知的状态映射和账号计数。三账号 partial 显示已结束3/3、完全完成0/3、部分完成3。没有新增迁移；沿用next.6的Schema 5，保留卷与全部历史。可以回退到兼容同一Schema的next.6，不能直接让next.5旧writer写新增列后的数据库。
 
 next.6 聚合任务级实时总余额与到账金额，增加可空任务快照关联。升级会幂等执行Schema 5，保留全部历史和卷，先做一致性备份。旧版余额writer不兼容新增列，不能简单切回next.5继续写入；回退应使用兼容Schema 5的镜像或恢复升级前备份并保留升级后数据副本。禁止删表、删列或重建数据卷。
 

@@ -13,7 +13,7 @@ import { stateLabel, publicText } from './display'
 export function Button(props: ButtonProps): ReactElement {
   return <TButton {...props} tag="button" />
 }
-export function StatusTag({ value }: { value: string }): ReactElement {
+export function StatusTag({ value, label }: { value: string; label?: string }): ReactElement {
   const theme = ['completed', 'confirmed', 'final', 'success', 'sent', 'accepted'].includes(value)
     ? 'success'
     : ['failed', 'conflict', 'interrupted'].includes(value)
@@ -33,7 +33,7 @@ export function StatusTag({ value }: { value: string }): ReactElement {
           : 'default'
   return (
     <Tag theme={theme} variant="light-outline">
-      {stateLabel(value)}
+      {label ?? stateLabel(value)}
     </Tag>
   )
 }

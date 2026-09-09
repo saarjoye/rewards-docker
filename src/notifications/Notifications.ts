@@ -6,6 +6,7 @@ import { redactText } from '../security/Redactor.js'
 import { RunViews } from '../web/RunViews.js'
 import { localDateKey } from '../domain/DateKey.js'
 import { stateLabel, publicText } from '../domain/Presentation.js'
+import { accountStatusLabel, executionModeLabel, runStatusLabel } from '../domain/RunOutcome.js'
 
 const officialApiBase = 'https://qyapi.weixin.qq.com'
 const apiBaseUrl = z
@@ -82,14 +83,6 @@ const time = (value?: string | null) =>
   value
     ? new Date(value).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })
     : '—'
-const states: Record<string, string> = {
-  completed: '完成',
-  partial: '部分完成',
-  failed: '失败',
-  cancelled: '已停止',
-  interrupted: '中断',
-  'action-required': '需要人工处理'
-}
 
 /** Durable, at-least-once notification delivery; provider acceptance is not client receipt. */
 export class Notifications {
@@ -263,15 +256,16 @@ export class Notifications {
       if (['completed', 'partial', 'failed', 'cancelled', 'interrupted'].includes(run.status)) {
         const message = [
           'Microsoft Rewards 运行汇总',
-          `状态：${states[run.status] ?? '—'}`,
-          `模式：${run.executionMode === 'read-only' ? '只读检查' : '执行任务'}`,
+          `运行状态：${runStatusLabel(run.status)}`,
+          `模式：${executionModeLabel(run.executionMode)}`,
           `开始：${time(run.startedAt)}`,
           `结束：${time(run.finishedAt)}`,
-          `已完成账号：${String(run.accountsCompleted)}/${String(run.accountsTotal)}`,
-          `已处理账号：${String(run.accountsProcessed)}`,
+          `已结束账号：${String(run.accountsEnded)}/${String(run.accountsTotal)}`,
+          `完全完成账号：${String(run.accountsCompleted)}/${String(run.accountsTotal)}`,
+          `部分完成账号：${String(run.accountsPartial)}`,
           `中断账号：${String(run.accounts.filter((account) => ['cancelled', 'interrupted'].includes(account.executionState)).length)}`,
-          `失败账号：${String(run.accounts.filter((account) => account.executionState === 'failed').length)}`,
-          `未完成账号：${String(run.accountsTotal - run.accountsCompleted)}`,
+          `失败账号：${String(run.accountsFailed)}`,
+          `未完全完成账号：${String(run.accountsNotCompleted)}`,
           `整体确认积分：${points(run.confirmedTaskPoints)}`,
           `未匹配任务预计积分：${points(run.pendingTaskPoints)}`,
           `本轮实时余额变化：${points(run.liveBalanceDelta)}`,
@@ -498,9 +492,9 @@ export class Notifications {
     return [
       `Microsoft Rewards ${completionTitle(event.executionState)}`,
       `账号：${redactText(event.accountLabel)}`,
-      `账号状态：${states[event.executionState] ?? '—'}`,
+      `账号状态：${accountStatusLabel(event.executionState)}`,
       `开始时间：${time(event.startedAt)}`,
-      `完成时间：${time(event.endedAt)}`,
+      `结束时间：${time(event.endedAt)}`,
       `本轮实时余额变化：${points(stats.liveBalanceDelta)}`,
       `最终余额变化：${points(stats.confirmedBalanceDelta)}`,
       `实时总分：${stats.latestBalance === null ? '—' : `${String(stats.latestBalance)} 分`}`,

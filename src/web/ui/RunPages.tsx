@@ -7,6 +7,8 @@ import { Loading } from 'tdesign-react/es/loading/index.js'
 import { Button, DataTable, Feedback, PageHeader, StatusTag } from './UiKit'
 import type { ReactElement } from 'react'
 import { createRequestQueue } from './requestQueue'
+import { RunResultSummary, type RunResultFields } from './RunResultSummary'
+import { runStatusLabel, accountStatusLabel, executionModeLabel } from '../../domain/RunOutcome'
 import {
   TaskEvidencePanel,
   type EvidenceRow,
@@ -14,7 +16,7 @@ import {
   type TaskSummary
 } from './TaskEvidencePanel'
 import { PointSummary, type PointStatistics } from './PointSummary'
-import { stateLabel, points, clockTime, duration } from './display'
+import { points, clockTime, duration } from './display'
 export { stateLabel, points, clockTime, duration } from './display'
 
 interface DailyBalance extends PointStatistics {
@@ -42,7 +44,7 @@ interface RunAccount extends PointStatistics {
   creditEvidence?: CreditRow[]
   runDailyBalances?: PointStatistics[]
 }
-interface Run {
+interface Run extends RunResultFields {
   liveBalanceDelta: number | null
   runId: string
   startedAt: string
@@ -226,7 +228,8 @@ function HistoryList({
               title: '运行 / 数据状态',
               cell: (row) => (
                 <div className="tag-group">
-                  <StatusTag value={row.status} />
+                  <StatusTag value={row.status} label={runStatusLabel(row.status)} />
+                  <small>模式：{executionModeLabel(row.executionMode)}</small>
                   <StatusTag value={row.persistence} />
                 </div>
               )
@@ -234,12 +237,17 @@ function HistoryList({
             {
               key: 'progress',
               title: '账号进度',
-              cell: (row) =>
-                '已处理 ' +
-                String(row.accountsProcessed) +
-                '/' +
-                String(row.accountsTotal) +
-                ' 个账号'
+              cell: (row) => (
+                <>
+                  <span>
+                    已结束 {row.accountsProcessed}/{row.accountsTotal}
+                  </span>
+                  <small>
+                    完全完成 {row.accountsCompleted ?? '—'}/{row.accountsTotal} · 部分完成{' '}
+                    {row.accountsPartial ?? '—'} · 失败 {row.accountsFailed ?? '—'}
+                  </small>
+                </>
+              )
             },
             {
               key: 'balance',
@@ -320,7 +328,7 @@ function RunDetail({
         <>
           <Card bordered={false} className="run-summary">
             <div className="tag-group">
-              <StatusTag value={value.run.status} />
+              <StatusTag value={value.run.status} label={runStatusLabel(value.run.status)} />
               <StatusTag value={value.run.persistence} />
               <span className="muted">Asia/Shanghai</span>
             </div>
@@ -337,9 +345,10 @@ function RunDetail({
                 value.run.finishedAt ?? (id === activeRunId ? new Date().toISOString() : null)
               )}
             </p>
+            <RunResultSummary run={value.run} />
             <div className="section-heading">
               <span>
-                已处理 {value.run.accountsProcessed}/{value.run.accountsTotal} 个账号
+                已结束 {value.run.accountsProcessed}/{value.run.accountsTotal} 个账号
               </span>
               <Button variant="text" href={'/api/runs/' + encodeURIComponent(id) + '/report'}>
                 下载脱敏报告
@@ -354,7 +363,10 @@ function RunDetail({
                   账号 {account.accountIndex ?? '—'} · {account.accountLabel}
                 </h3>
                 <div className="tag-group">
-                  <StatusTag value={account.executionState} />
+                  <StatusTag
+                    value={account.executionState}
+                    label={accountStatusLabel(account.executionState)}
+                  />
                   <span>
                     余额
                     <StatusTag value={account.verificationStatus} />
@@ -546,7 +558,7 @@ function Calendar({
                       open(record.runId)
                     }}
                   >
-                    {stateLabel(record.status)} · 查看
+                    {runStatusLabel(record.status)} · 查看
                   </Button>
                 ))}
               </div>

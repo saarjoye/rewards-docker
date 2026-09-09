@@ -357,7 +357,10 @@ try {
     await capture('history-' + String(width))
     await page.getByRole('button', { name: '查看详情', exact: true }).click()
     await page.locator('.account-detail').waitFor()
-    assert.match(await page.locator('.balance-fields').first().innerText(), /\+88 分/)
+    assert.match(
+      await page.locator('.account-detail .balance-fields').first().innerText(),
+      /\+88 分/
+    )
     assert.match(await page.locator('.account-detail').innerText(), /本轮实时余额变化\s*\+88 分/)
     const evidence = page.locator('.task-evidence').first()
     await evidence.locator('summary').click()
@@ -398,7 +401,7 @@ try {
     await page.getByLabel('月份', { exact: true }).fill(localDate.slice(0, 7))
     await page.getByLabel('月份', { exact: true }).press('Enter')
     await page.getByRole('button', { name: localDate + ' 有记录', exact: true }).click()
-    await page.getByRole('button', { name: '进行中 · 查看', exact: true }).click()
+    await page.getByRole('button', { name: '执行中 · 查看', exact: true }).click()
     await page.locator('.account-detail').waitFor()
     await navigate('任务')
     await page
@@ -471,7 +474,7 @@ try {
   await evidence.locator('summary').click()
   failDetail = true
   await page.getByRole('alert').filter({ hasText: '已有观测可能过期' }).waitFor()
-  assert.match(await page.locator('.balance-fields').first().innerText(), /\+88 分/)
+  assert.match(await page.locator('.account-detail .balance-fields').first().innerText(), /\+88 分/)
   failDetail = false
   await page.waitForFunction(
     () =>
@@ -488,7 +491,7 @@ try {
   await page.waitForTimeout(1500)
   assert.equal(await page.getByRole('heading', { name: '积分日历', exact: true }).count(), 1)
   delayDetail = false
-  await page.getByRole('button', { name: '进行中 · 查看', exact: true }).click()
+  await page.getByRole('button', { name: '执行中 · 查看', exact: true }).click()
   await page.locator('.account-detail').waitFor()
   await evidence.locator('summary').click()
   const liveAt = new Date().toISOString()
@@ -544,7 +547,7 @@ try {
   assert.equal(await evidence.evaluate((node) => node.open), true)
   await capture('detail-finalized-320')
   await navigate('积分日历')
-  await page.getByRole('button', { name: '执行已结束 · 查看', exact: true }).waitFor()
+  await page.getByRole('button', { name: '全部完成 · 查看', exact: true }).waitFor()
   assert.match(await page.locator('.calendar-account').first().innerText(), /已确认[\s\S]*\+88 分/)
   await page.goto(origin + '/#run/' + randomUUID())
   await page.reload()
@@ -577,6 +580,37 @@ try {
   assert.deepEqual(startRequests, [
     { accountMode: 'account', runAccountIndex: 3, executionMode: 'read-only' }
   ])
+  const partialRunId = randomUUID()
+  store.createRun({
+    runId: partialRunId,
+    localDate,
+    executionMode: 'mutating',
+    selectedAccountIndexes: [1, 2, 3],
+    startedAt: start
+  })
+  for (const [index, account] of accounts.list().slice(0, 3).entries())
+    store.ledger.lifecycle({
+      runId: partialRunId,
+      accountId: account.accountId,
+      accountIndex: index + 1,
+      accountLabel: 'Synthetic',
+      executionState: 'partial',
+      startedAt: start,
+      endedAt,
+      updatedAt: endedAt
+    })
+  store.updateRun(partialRunId, 'partial', endedAt)
+  await page.goto(origin + '/#run/' + partialRunId)
+  await page.locator('.run-result-summary').waitFor()
+  const outcome = await page.locator('.run-result-summary').innerText()
+  assert.match(outcome, /模式\s*执行任务/)
+  assert.match(outcome, /运行状态\s*部分完成/)
+  assert.match(outcome, /已结束账号\s*3\/3/)
+  assert.match(outcome, /完全完成账号\s*0\/3/)
+  assert.match(outcome, /部分完成账号\s*3/)
+  assert.match(outcome, /失败账号\s*0/)
+  assert.doesNotMatch(outcome, /全部完成|运行已完成|待确认/)
+  await capture('partial-run-320')
   assert.deepEqual(pageErrors, [])
   const result = {
     passed: true,

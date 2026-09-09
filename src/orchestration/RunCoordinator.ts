@@ -10,6 +10,7 @@ import { LoginStateError, requiresUserAction } from '../auth/LoginState.js'
 import type { EncryptedSessionStore } from '../auth/EncryptedSessionStore.js'
 import { aggregateAccountStatus, type AccountRunStatus } from '../domain/AccountRun.js'
 import { localDateKey } from '../domain/DateKey.js'
+import { batchStatus } from '../domain/RunOutcome.js'
 import type { RunRequest } from '../domain/RunRequest.js'
 import type { TaskRecord } from '../domain/Task.js'
 import type { AccountSecretStore, AccountSummary } from '../infra/AccountSecretStore.js'
@@ -193,11 +194,7 @@ export class ApplicationRunCoordinator {
       const finishedAt = new Date().toISOString()
       if (controller.signal.aborted)
         this.store.updateRun(runId, this.interrupted ? 'interrupted' : 'cancelled', finishedAt)
-      else if (!results.length || results.every((status) => status === 'failed')) {
-        this.store.updateRun(runId, 'failed', finishedAt)
-      } else if (results.some((status) => status !== 'success')) {
-        this.store.updateRun(runId, 'partial', finishedAt)
-      } else this.store.updateRun(runId, 'completed', finishedAt)
+      else this.store.updateRun(runId, batchStatus(results, selected.length), finishedAt)
     } catch (error) {
       this.store.updateRun(
         runId,

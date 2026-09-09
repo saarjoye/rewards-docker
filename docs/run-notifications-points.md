@@ -84,7 +84,13 @@ Schema 5 以原事务新增可空 `balance_observations.task_id` 和范围索引
 
 迁移只增加字段与索引，旧历史值不改；重复迁移和失败回滚在临时数据库验证。注意：next.5 及更早余额 writer 使用无列名 INSERT，无法直接写入增加列后的表；回退需使用兼容新列的修复镜像或在保留新数据的前提下恢复升级前一致性备份，不能删列或删除数据库回退。
 
-## 迁移与验证记录
+## 执行模式与结果（next.7）
+
+`RunOutcome` 是协调器批次归纳、查询视图和用户状态映射的公共模块。执行模式只描述是否执行任务，结束时间只用于时长。`accountsEnded`（兼容 `accountsProcessed`）按非空 endedAt 计数；`accountsCompleted`、`accountsPartial`、`accountsFailed` 分别按明确 completed、partial、failed 计数；未完全完成包括本轮尚未出现完成证据的已选账号。
+
+只有原运行状态 completed 且所有已选账号生命周期 completed 才展示“全部完成”。旧运行状态与账号证据冲突时，查询返回保守结果并保留 `recordedStatus`，不重写历史。原 partial 即使有结束时间也保持部分完成，failed 账号不会加入部分完成计数。页面和通知共享中文映射及后端计数，分别列出模式、运行状态、已结束、完全完成、部分完成、失败及未完全完成。本轮不增加Schema，不改变积分确认和快照规则。
+
+## 验证方式
 
 运行账本 schema v4 在事务内新增 `account_completions`、`point_credits` 和完成来源字段；通知 schema v2 幂等创建加密设置、队列及入队触发器。启动重复迁移不增加积分、不删除旧数据，失败回滚。本轮只在临时 SQLite 验证，未迁移生产数据。
 

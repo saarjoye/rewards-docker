@@ -8,6 +8,8 @@ import { AddIcon } from 'tdesign-icons-react'
 import type { AccountSummary, StatePayload } from './App'
 import { Button, DataTable, Field, PageHeader, SelectField, StatusTag } from './UiKit'
 import { PointSummary } from './PointSummary'
+import { RunResultSummary } from './RunResultSummary'
+import { runStatusLabel, executionModeLabel } from '../../domain/RunOutcome'
 import { clockTime, duration, points, publicText } from './display'
 
 export function Overview({
@@ -41,13 +43,15 @@ export function Overview({
         {active ? (
           <div className="active-run">
             <div>
-              <StatusTag value={active.status} />
+              <StatusTag value={active.status} label={runStatusLabel(active.status)} />
+              <RunResultSummary run={active} />
               <p>
-                已处理 {active.accountsProcessed}/{active.accountsTotal} 个账号
+                已结束 {active.accountsProcessed}/{active.accountsTotal} 个账号
               </p>
               <small className="muted">
-                {clockTime(active.startedAt)} — 进行中 ={' '}
-                {duration(active.startedAt, new Date().toISOString())}
+                {clockTime(active.startedAt)} —{' '}
+                {active.finishedAt ? clockTime(active.finishedAt) : '执行中'} ={' '}
+                {duration(active.startedAt, active.finishedAt ?? new Date().toISOString())}
               </small>
             </div>
             <div>
@@ -121,9 +125,28 @@ export function Overview({
             {
               key: 'progress',
               title: '账号进度',
-              cell: (row) => `已处理 ${String(row.accountsProcessed)}/${String(row.accountsTotal)}`
+              cell: (row) => (
+                <>
+                  <span>
+                    已结束 {row.accountsProcessed}/{row.accountsTotal}
+                  </span>
+                  <small>
+                    完全完成 {row.accountsCompleted ?? '—'}/{row.accountsTotal} · 部分完成{' '}
+                    {row.accountsPartial ?? '—'} · 失败 {row.accountsFailed ?? '—'}
+                  </small>
+                </>
+              )
             },
-            { key: 'status', title: '状态', cell: (row) => <StatusTag value={row.status} /> },
+            {
+              key: 'status',
+              title: '运行状态',
+              cell: (row) => (
+                <>
+                  <StatusTag value={row.status} label={runStatusLabel(row.status)} />
+                  <small>模式：{executionModeLabel(row.executionMode)}</small>
+                </>
+              )
+            },
             {
               key: 'points',
               title: '本轮实时余额变化',
