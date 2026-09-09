@@ -185,13 +185,19 @@ describe('strict credit reconciliation', () => {
         ['task-before', 100, '2026-09-09T00:10:00Z'],
         ['task-after', 130, '2026-09-09T00:20:00Z']
       ] as const)
-        store.ledger.balance('run', 'account', phase, {
-          availability: 'valid',
-          value,
-          source: 'bing-flyout',
-          confidence: 1,
-          observedAt
-        })
+        store.ledger.balance(
+          'run',
+          'account',
+          phase,
+          {
+            availability: 'valid',
+            value,
+            source: 'bing-flyout',
+            confidence: 1,
+            observedAt
+          },
+          'task'
+        )
       const before = store.ledger
         .balances('run')
         .find((row) => row.phase === 'task-before')?.snapshotId

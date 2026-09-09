@@ -46,7 +46,10 @@ export type Credit = z.output<typeof creditInput> & {
 }
 
 export class PointCredits {
-  constructor(private readonly db: DatabaseSync) {}
+  constructor(
+    private readonly db: DatabaseSync,
+    private readonly changed: () => void = () => undefined
+  ) {}
 
   record(input: CreditInput): Credit {
     const value = creditInput.parse(input)
@@ -83,7 +86,10 @@ export class PointCredits {
     next.submitted ||= previous?.submitted === true
     next.reportedPoints ??= previous?.reportedPoints ?? null
     next.expectedPoints ??= previous?.expectedPoints ?? null
-    if (next.evidenceSource === 'official-credit') {
+    if (
+      next.officialCreditId &&
+      ['official-credit', 'official-progress'].includes(next.evidenceSource)
+    ) {
       const report = this.rows(next.accountId, next.businessDate, next.runId).find(
         (row) => row.taskId === next.taskId && row.evidenceSource !== 'official-credit'
       )
@@ -104,6 +110,7 @@ export class PointCredits {
       VALUES(?,?,?,?,?) ON CONFLICT(credit_key) DO UPDATE SET business_date=excluded.business_date, payload_json=excluded.payload_json`
       )
       .run(creditKey, next.accountId, next.runId, next.businessDate, JSON.stringify(next))
+    if (!this.db.isTransaction) this.changed()
     return next
   }
 
@@ -128,6 +135,107 @@ export class PointCredits {
     ).map((row) => JSON.parse(row.payload_json) as Credit)
   }
 
+  taskPoints(runId: string, accountId: string, taskId: string, businessDate: string) {
+    const empty = {
+      taskEarnedPoints: null as number | null,
+      taskEarnedPointsSource: null as string | null,
+      taskEarnedPointsStatus: 'unavailable',
+      taskCreditKey: null as string | null
+    }
+    const credits = this.rows(accountId, businessDate, runId).filter((row) => row.taskId === taskId)
+    if (credits.some((row) => row.conflict)) return empty
+    for (const source of ['official-credit', 'official-progress', 'isolated-balance']) {
+      const valid = credits.filter(
+        (row) => row.evidenceSource === source && this.confirmed(row) !== null
+      )
+      if (valid.length)
+        return {
+          taskEarnedPoints: valid.reduce((sum, row) => sum + (this.confirmed(row) ?? 0), 0),
+          taskEarnedPointsSource: source,
+          taskEarnedPointsStatus: 'confirmed',
+          taskCreditKey: valid
+            .map((row) => row.creditKey)
+            .sort()
+            .join(',')
+        }
+    }
+    // Only explicit task boundaries may be attributed. Legacy account snapshots stay account-only.
+    const snapshots = this.db
+      .prepare(
+        `SELECT snapshot_id, task_id, phase, balance, observed_at FROM balance_observations
+      WHERE run_id=? AND account_id=? AND business_date=? ORDER BY observed_at`
+      )
+      .all(runId, accountId, businessDate) as {
+      snapshot_id: string
+      task_id: string | null
+      phase: string
+      balance: number
+      observed_at: string
+    }[]
+    const before = snapshots.find((row) => row.task_id === taskId && row.phase === 'task-before')
+    const after = snapshots.findLast((row) => row.task_id === taskId && row.phase === 'task-after')
+    if (
+      !before ||
+      !after ||
+      before.observed_at >= after.observed_at ||
+      after.balance < before.balance
+    )
+      return empty
+    const interval = snapshots.filter(
+      (row) => row.observed_at >= before.observed_at && row.observed_at <= after.observed_at
+    )
+    const competingWindows = this.db
+      .prepare(
+        `SELECT MIN(observed_at) AS start, MAX(observed_at) AS end,
+      SUM(CASE WHEN phase='task-after' THEN 1 ELSE 0 END) AS closed
+      FROM balance_observations WHERE account_id=? AND business_date=?
+      AND phase IN ('task-before','task-after') AND (run_id<>? OR task_id IS NULL OR task_id<>?)
+      GROUP BY run_id, task_id`
+      )
+      .all(accountId, businessDate, runId, taskId) as {
+      start: string
+      end: string
+      closed: number
+    }[]
+    if (
+      competingWindows.some(
+        (window) =>
+          window.start < after.observed_at &&
+          (window.closed === 0 || window.end > before.observed_at)
+      )
+    )
+      return empty
+    const times = new Map<string, number>()
+    for (const row of interval) {
+      if (times.has(row.observed_at) && times.get(row.observed_at) !== row.balance) return empty
+      times.set(row.observed_at, row.balance)
+      if (
+        row.task_id !== taskId &&
+        ['task-before', 'task-after'].includes(row.phase) &&
+        row.observed_at > before.observed_at &&
+        row.observed_at < after.observed_at
+      )
+        return empty
+    }
+    if (
+      this.rows(accountId, businessDate).some(
+        (row) =>
+          row.taskId !== taskId &&
+          row.observedAt > before.observed_at &&
+          row.observedAt <= after.observed_at
+      )
+    )
+      return empty
+    return {
+      taskEarnedPoints: after.balance - before.balance,
+      taskEarnedPointsSource: 'isolated-balance',
+      taskEarnedPointsStatus: 'confirmed',
+      taskCreditKey: createHash('sha256')
+        .update(JSON.stringify([before.snapshot_id, after.snapshot_id]))
+        .digest('hex')
+    }
+  }
+
   confirmed(row: Credit): number | null {
     if (
       row.legacyUnverified ||
@@ -136,7 +244,11 @@ export class PointCredits {
       row.earnedPoints === null
     )
       return null
-    if (row.evidenceSource === 'official-credit' && row.officialCreditId) return row.earnedPoints
+    if (
+      ['official-credit', 'official-progress'].includes(row.evidenceSource) &&
+      row.officialCreditId
+    )
+      return row.earnedPoints
     if (
       row.evidenceSource !== 'isolated-balance' ||
       !row.isolationVerified ||
@@ -146,12 +258,13 @@ export class PointCredits {
       return null
     const snapshots = this.db
       .prepare(
-        'SELECT snapshot_id, run_id, account_id, business_date, observed_at, balance, phase FROM balance_observations WHERE snapshot_id IN (?,?)'
+        'SELECT snapshot_id, run_id, account_id, task_id, business_date, observed_at, balance, phase FROM balance_observations WHERE snapshot_id IN (?,?)'
       )
       .all(row.beforeSnapshotId, row.afterSnapshotId) as {
       snapshot_id: string
       run_id: string
       account_id: string
+      task_id: string | null
       business_date: string
       observed_at: string
       balance: number
@@ -164,6 +277,8 @@ export class PointCredits {
       !after ||
       before.phase !== 'task-before' ||
       after.phase !== 'task-after' ||
+      before.task_id !== row.taskId ||
+      after.task_id !== row.taskId ||
       before.run_id !== after.run_id ||
       before.run_id !== row.runId ||
       before.account_id !== row.accountId ||
@@ -199,19 +314,24 @@ export class PointCredits {
 
   reconcile(accountId: string, delta: number | null, date?: string, runId?: string) {
     const allRows = this.rows(accountId, date, runId)
+    const priority = (row: Credit) =>
+      [
+        'official-credit',
+        'official-progress',
+        'isolated-balance',
+        'task-report',
+        'account-balance'
+      ].indexOf(row.evidenceSource)
     const rows = allRows.filter(
       (row) =>
         row.evidenceSource !== 'account-balance' &&
-        !(
-          row.evidenceSource !== 'official-credit' &&
-          allRows.some(
-            (other) =>
-              other.evidenceSource === 'official-credit' &&
-              this.confirmed(other) !== null &&
-              other.runId === row.runId &&
-              other.taskId === row.taskId &&
-              other.businessDate === row.businessDate
-          )
+        !allRows.some(
+          (other) =>
+            priority(other) < priority(row) &&
+            this.confirmed(other) !== null &&
+            other.runId === row.runId &&
+            other.taskId === row.taskId &&
+            other.businessDate === row.businessDate
         )
     )
     const total = (values: (number | null)[]) =>

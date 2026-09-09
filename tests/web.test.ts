@@ -64,6 +64,86 @@ async function fixture(runCoordinator?: RunCoordinator, withNotifications = fals
 }
 
 describe('web API', () => {
+  it('returns task numbers consistently through live detail and report before the batch ends', async () => {
+    const { app, store, cookie } = await fixture()
+    try {
+      const runId = randomUUID()
+      const date = localDateKey()
+      const at = `${date}T08:16:48Z`
+      store.createRun({
+        runId,
+        localDate: date,
+        executionMode: 'mutating',
+        selectedAccountIndexes: [3],
+        startedAt: `${date}T08:00:00Z`
+      })
+      store.updateRun(runId, 'running')
+      store.upsertTask(
+        {
+          taskId: 'synthetic-task',
+          accountId: 'synthetic',
+          sourceTaskId: 'offer',
+          localDate: date,
+          source: 'bing-flyout',
+          type: 'daily-set',
+          displayName: 'Synthetic',
+          status: 'running',
+          progress: { completed: 12, total: 60 },
+          required: true,
+          executable: true,
+          updatedAt: at
+        },
+        runId
+      )
+      const read = async (suffix = '') => {
+        const response = await app.inject({
+          method: 'GET',
+          url: `/api/runs/${runId}${suffix}`,
+          headers: { cookie }
+        })
+        expect(response.statusCode).toBe(200)
+        const payload = response.json<{
+          tasks?: Record<string, unknown>[]
+          run?: { tasks?: Record<string, unknown>[] }
+        }>()
+        return (payload.tasks ?? payload.run?.tasks)?.[0]
+      }
+      expect(await read()).toMatchObject({ accountRealtimeBalance: null, taskEarnedPoints: null })
+      store.ledger.balance(runId, 'synthetic', 'live', {
+        value: 17607,
+        observedAt: at,
+        availability: 'valid',
+        confidence: 1,
+        source: 'bing-flyout'
+      })
+      store.ledger.credits.record({
+        runId,
+        accountId: 'synthetic',
+        taskId: 'synthetic-task',
+        source: 'bing-flyout',
+        observedAt: at,
+        officialCreditId: 'synthetic-credit',
+        earnedPoints: 10,
+        verificationStatus: 'confirmed',
+        evidenceSource: 'official-credit'
+      })
+      for (const suffix of ['', '/report'])
+        expect(await read(suffix)).toMatchObject({
+          taskStatus: 'running',
+          taskProgress: { completed: 12, total: 60 },
+          accountRealtimeBalance: 17607,
+          accountRealtimeBalanceSource: 'bing-flyout',
+          accountRealtimeBalanceAt: `${date}T08:16:48.000Z`,
+          taskEarnedPoints: 10,
+          taskEarnedPointsSource: 'official-credit',
+          taskEarnedPointsStatus: 'confirmed'
+        })
+      expect(store.getRun(runId)?.status).toBe('running')
+    } finally {
+      await app.close()
+      store.close()
+    }
+  })
   it('keeps partial and failed accounts distinct from zero and missing final balances in detail and report', async () => {
     const { app, store, cookie } = await fixture()
     try {

@@ -340,10 +340,20 @@ export async function createServer(dependencies: WebServerDependencies): Promise
     const accounts = run.accounts
     const accountIndexes = new Map(accounts.map((item) => [item.accountId, item.accountIndex]))
     const tasks = run.tasks.map((task) => ({
+      taskId: task.taskId,
       accountIndex: accountIndexes.get(task.accountId),
       type: task.type,
       status: task.status,
       progress: task.progress,
+      taskStatus: task.taskStatus,
+      taskProgress: task.taskProgress,
+      accountRealtimeBalance: task.accountRealtimeBalance,
+      accountRealtimeBalanceSource: task.accountRealtimeBalanceSource,
+      accountRealtimeBalanceAt: task.accountRealtimeBalanceAt,
+      taskEarnedPoints: task.taskEarnedPoints,
+      taskEarnedPointsSource: task.taskEarnedPointsSource,
+      taskEarnedPointsStatus: task.taskEarnedPointsStatus,
+      taskCreditKey: task.taskCreditKey,
       ...(task.reason === undefined ? {} : { reason: task.reason }),
       updatedAt: task.updatedAt
     }))

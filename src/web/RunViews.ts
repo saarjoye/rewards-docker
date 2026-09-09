@@ -11,6 +11,42 @@ export class RunViews {
     return liveAccounting(this.store.ledger, accountId, businessDate, runId)
   }
 
+  task(runId: string, task: ReturnType<SqliteStore['ledger']['tasks']>[number]) {
+    const balances = this.store.ledger.balances(runId, task.accountId, task.localDate)
+    const priority = (source: string) =>
+      ['bing-flyout', 'app-dashboard', 'browser-response'].indexOf(source)
+    const newest = balances.at(-1)?.observedAt
+    const current = balances
+      .filter((row) => row.observedAt === newest)
+      .sort(
+        (a, b) =>
+          (priority(a.source) < 0 ? 99 : priority(a.source)) -
+          (priority(b.source) < 0 ? 99 : priority(b.source))
+      )
+    const balance = new Set(current.map((row) => row.balance)).size === 1 ? current[0] : undefined
+    const ranks = { verification: 3, response: 2, execution: 1 }
+    const evidence = this.store.ledger
+      .taskEvidence(runId)
+      .filter(
+        (row) =>
+          row.accountId === task.accountId &&
+          row.taskId === task.taskId &&
+          localDateKey(new Date(row.observedAt)) === task.localDate
+      )
+      .sort((a, b) => ranks[b.kind] - ranks[a.kind] || b.observedAt.localeCompare(a.observedAt))
+    return {
+      ...task,
+      taskStatus: task.status,
+      taskProgress: task.progress,
+      accountRealtimeBalance: balance?.balance ?? null,
+      accountRealtimeBalanceSource: balance?.source ?? null,
+      accountRealtimeBalanceAt: balance?.observedAt ?? null,
+      ...this.store.ledger.credits.taskPoints(runId, task.accountId, task.taskId, task.localDate),
+      latestTaskEvidence: evidence[0] ?? null,
+      taskEvidence: evidence
+    }
+  }
+
   day(accountId: string, businessDate: string) {
     const balances = this.store.ledger.balances(undefined, accountId, businessDate)
     const interval = balanceInterval(balances)
@@ -25,7 +61,7 @@ export class RunViews {
 
   run(runId: string, activeRunId?: string) {
     const durable = this.store.getRun(runId)
-    const snapshots = this.store.ledger.tasks(runId)
+    const snapshots = this.store.ledger.tasks(runId).map((task) => this.task(runId, task))
     const taskEvidence = this.store.ledger.taskEvidence(runId)
     const balances = this.store.ledger.balances(runId)
     const lifecycle = this.store.ledger.accounts(runId)

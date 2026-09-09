@@ -145,7 +145,8 @@ await mkdir(output, { recursive: true })
 let browser
 let page
 try {
-  const origin = await app.listen({ port: 0, host: '127.0.0.1' })
+  // Some host ephemeral ranges include Chromium-blocked ports such as 6667.
+  const origin = await app.listen({ port: 18787, host: '127.0.0.1' })
   browser = await chromium.launch({
     executablePath: await resolveChromeExecutable(),
     headless: true,
@@ -360,7 +361,10 @@ try {
     assert.match(await page.locator('.account-detail').innerText(), /本轮实时余额变化\s*\+88 分/)
     const evidence = page.locator('.task-evidence').first()
     await evidence.locator('summary').click()
-    assert.match(await evidence.innerText(), /未匹配/)
+    // Fixture has no ordered task-before/task-after pair; account gain is not task credit.
+    assert.match(await evidence.innerText(), /任务到账：— 分/)
+    assert.match(await evidence.innerText(), /账号实时余额：5088 分/)
+    assert.doesNotMatch(await evidence.innerText(), /未取得|未匹配|待确认|已观测/)
     assert.match(await evidence.innerText(), /5088 分/)
     await page.getByLabel('记录类型').selectOption('response')
     assert.equal(await evidence.locator('tbody tr').count(), 1)
@@ -487,6 +491,39 @@ try {
   await page.getByRole('button', { name: '进行中 · 查看', exact: true }).click()
   await page.locator('.account-detail').waitFor()
   await evidence.locator('summary').click()
+  const liveAt = new Date().toISOString()
+  store.upsertTask(
+    {
+      ...store.ledger.tasks(runId)[0],
+      status: 'running',
+      progress: { completed: 12, total: 60 },
+      updatedAt: liveAt
+    },
+    runId
+  )
+  store.ledger.balance(runId, accountId, 'live', {
+    value: 17607,
+    availability: 'valid',
+    source: 'bing-flyout',
+    confidence: 1,
+    observedAt: liveAt
+  })
+  store.ledger.credits.record({
+    runId,
+    accountId,
+    taskId: 'synthetic-task',
+    source: 'rsc',
+    observedAt: liveAt,
+    officialCreditId: 'synthetic-official-10',
+    earnedPoints: 10,
+    evidenceSource: 'official-credit',
+    verificationStatus: 'confirmed'
+  })
+  await evidence.getByText('账号实时余额：17607 分', { exact: true }).waitFor()
+  await evidence.getByText('任务到账：10 分', { exact: true }).waitFor()
+  await evidence.getByText('任务进度：12 / 60', { exact: true }).waitFor()
+  assert.equal(store.getRun(runId).status, 'running')
+  await capture('task-realtime-320')
   const endedAt = new Date().toISOString()
   store.updateRun(runId, 'completed', endedAt)
   runCoordinator.activeRunId = undefined

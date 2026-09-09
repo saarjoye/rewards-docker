@@ -16,11 +16,19 @@ export interface EvidenceRow {
   confirmedPoints?: number | null
   creditKey?: string | null
 }
-interface TaskSummary {
+export interface TaskSummary {
   taskId: string
   displayName: string
   status: string
   reason?: string
+  accountRealtimeBalance?: number | null
+  accountRealtimeBalanceSource?: string | null
+  accountRealtimeBalanceAt?: string | null
+  taskEarnedPoints?: number | null
+  taskEarnedPointsSource?: string | null
+  taskEarnedPointsStatus?: string
+  taskCreditKey?: string | null
+  taskProgress?: { completed: number; total: number | null }
 }
 
 export interface CreditRow {
@@ -48,12 +56,13 @@ const kindName = (kind: string): string =>
     execution: '执行记录'
   })[kind] ?? '观测记录'
 const numeric = (value: number | null | undefined): string =>
-  value === null || value === undefined || !Number.isFinite(value) ? '未记录' : String(value)
+  value === null || value === undefined || !Number.isFinite(value) ? '—' : String(value)
+const detailText = (value: string) =>
+  publicText(value).replace(/已观测|未取得|未匹配|待确认(?:积分)?/g, '—')
 
 export function TaskEvidencePanel({
   tasks,
-  evidence = [],
-  creditEvidence = []
+  evidence = []
 }: {
   tasks: readonly TaskSummary[]
   evidence?: readonly EvidenceRow[]
@@ -64,7 +73,7 @@ export function TaskEvidencePanel({
   for (const row of evidence) {
     if (!groups.has(row.taskId))
       groups.set(row.taskId, {
-        task: { taskId: row.taskId, displayName: '任务名称未取得', status: 'unknown' },
+        task: { taskId: row.taskId, displayName: '任务名称：—', status: 'unknown' },
         rows: []
       })
     groups.get(row.taskId)?.rows.push(row)
@@ -93,7 +102,7 @@ export function TaskEvidencePanel({
           </select>
         </label>
       </div>
-      {groups.size === 0 && <p className="observation">任务明细尚未取得</p>}
+      {groups.size === 0 && <p className="observation">暂无任务明细</p>}
       {[...groups.values()].map(({ task, rows }) => {
         const visible = rows
           .filter((row) => kind === 'all' || row.kind === kind)
@@ -101,38 +110,30 @@ export function TaskEvidencePanel({
         return (
           <details className="task-evidence" key={task.taskId}>
             <summary>
-              <span className="evidence-task-name">{publicText(task.displayName)}</span>
+              <span className="evidence-task-name">{detailText(task.displayName)}</span>
               <span className="evidence-task-status">
-                {stateLabel(task.status)} · {rows.length} 条证据
+                {detailText(stateLabel(task.status))} · {rows.length} 条证据
               </span>
             </summary>
-            {task.reason && <p className="observation">{publicText(task.reason)}</p>}
+            <div className="balance-fields">
+              <p>账号实时余额：{numeric(task.accountRealtimeBalance)} 分</p>
+              <p>任务到账：{numeric(task.taskEarnedPoints)} 分</p>
+            </div>
+            {task.taskProgress && (
+              <p>
+                任务进度：{numeric(task.taskProgress.completed)} /{' '}
+                {numeric(task.taskProgress.total)}
+              </p>
+            )}
+            {task.accountRealtimeBalanceAt && (
+              <small>
+                余额时间：{clockTime(task.accountRealtimeBalanceAt)} ·{' '}
+                {sourceName(task.accountRealtimeBalanceSource ?? '')}
+              </small>
+            )}
+            {task.reason && <p className="observation">{detailText(task.reason)}</p>}
             <div className="observation">
-              到账证据：
-              {creditEvidence
-                .filter((credit) => credit.taskId === task.taskId)
-                .map((credit) => (
-                  <p key={credit.creditKey}>
-                    {credit.businessDate} ·{' '}
-                    {credit.evidenceSource === 'official-credit'
-                      ? '官方到账事件'
-                      : credit.evidenceSource === 'isolated-balance'
-                        ? '隔离余额'
-                        : credit.evidenceSource === 'official-progress'
-                          ? '官方进度（非到账）'
-                          : '任务上报'}{' '}
-                    ·{' '}
-                    {credit.confirmedPoints === null
-                      ? '未匹配'
-                      : credit.evidenceSource === 'isolated-balance'
-                        ? '已匹配'
-                        : '已确认'}{' '}
-                    ·{' '}
-                    {credit.confirmedPoints === null ? '—' : `${String(credit.confirmedPoints)} 分`}
-                    <small className="evidence-identity">到账标识：{credit.creditKey}</small>
-                  </p>
-                ))}
-              {creditEvidence.every((credit) => credit.taskId !== task.taskId) ? '未匹配' : ''}
+              <small className="evidence-identity">到账标识：{task.taskCreditKey ?? '—'}</small>
             </div>
             <p className="evidence-identity">
               任务标识：<code>{task.taskId}</code>
@@ -180,7 +181,7 @@ export function TaskEvidencePanel({
                           {row.executionState && (
                             <div>
                               <dt>执行状态</dt>
-                              <dd>{stateLabel(row.executionState)}</dd>
+                              <dd>{detailText(stateLabel(row.executionState))}</dd>
                             </div>
                           )}
                           {(row.completed != null || row.total != null) && (
@@ -193,19 +194,15 @@ export function TaskEvidencePanel({
                           )}
                           <div>
                             <dt>观测余额</dt>
-                            <dd>
-                              {row.balance == null
-                                ? '未取得余额观测'
-                                : `${numeric(row.balance)} 分`}
-                            </dd>
+                            <dd>{row.balance == null ? '— 分' : `${numeric(row.balance)} 分`}</dd>
                           </div>
                         </dl>
                       </td>
                       <td data-label="到账证据">
                         {row.confirmedPoints == null
-                          ? '未匹配'
+                          ? '— 分'
                           : `已确认到账 ${numeric(row.confirmedPoints)} 分`}
-                        <small>到账标识：{row.creditKey ?? '未取得'}</small>
+                        <small>到账标识：{row.creditKey ?? '—'}</small>
                       </td>
                     </tr>
                   ))}

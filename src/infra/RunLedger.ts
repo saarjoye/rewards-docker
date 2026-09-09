@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 import { localDateKey } from '../domain/DateKey.js'
-import type { FieldEvidence } from '../domain/Evidence.js'
+import type { FieldEvidence, EvidenceSource } from '../domain/Evidence.js'
 import type { TaskRecord } from '../domain/Task.js'
 import { redactText } from '../security/Redactor.js'
 import { PointCredits, type CreditInput } from './PointCredits.js'
@@ -11,11 +11,12 @@ export interface BalanceObservation {
   runId: string
   accountId: string
   snapshotId?: string
+  taskId?: string | null
   phase: 'start' | 'live' | 'end' | 'task-before' | 'task-after'
   balance: number
   observedAt: string
   businessDate: string
-  source: string
+  source: EvidenceSource
 }
 
 export interface TaskEvidence {
@@ -102,6 +103,13 @@ export function migrateRunLedger(database: DatabaseSync): void {
       if (!columns.some((column) => column.name === name))
         database.exec(`ALTER TABLE account_lifecycle ADD COLUMN ${name} TEXT`)
     }
+    const balanceColumns = database.prepare('PRAGMA table_info(balance_observations)').all() as {
+      name: string
+    }[]
+    if (!balanceColumns.some((column) => column.name === 'task_id'))
+      database.exec('ALTER TABLE balance_observations ADD COLUMN task_id TEXT NULL')
+    database.exec(`CREATE INDEX IF NOT EXISTS balance_task_scope ON balance_observations(run_id, account_id, business_date, task_id, observed_at);
+      INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (5, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));`)
     database.exec('COMMIT')
   } catch (error) {
     database.exec('ROLLBACK')
@@ -128,7 +136,7 @@ export class RunLedger {
     private readonly database: DatabaseSync,
     private readonly changed: () => void = () => undefined
   ) {
-    this.credits = new PointCredits(database)
+    this.credits = new PointCredits(database, changed)
   }
 
   recordTaskEvidence(input: TaskEvidence): void {
@@ -189,12 +197,13 @@ export class RunLedger {
             source: 'browser-response',
             confidence: 1,
             observedAt: row.observedAt
-          }
+          },
+          row.taskId
         )
       else if (row.kind === 'response' || row.kind === 'verification')
-        this.captureTaskBalance(row.runId, row.accountId, 'task-after')
+        this.captureTaskBalance(row.runId, row.accountId, 'task-after', row.taskId)
       if (row.kind === 'execution' && row.executionState === 'running')
-        this.captureTaskBalance(row.runId, row.accountId, 'task-before')
+        this.captureTaskBalance(row.runId, row.accountId, 'task-before', row.taskId)
       const task = this.tasks(input.runId).find((item) => item.taskId === input.taskId)
       if (task && task.accountId !== input.accountId)
         throw new TypeError('Task evidence account does not match the run task')
@@ -261,16 +270,27 @@ export class RunLedger {
     })
   }
 
-  captureTaskBalance(runId: string, accountId: string, phase: 'task-before' | 'task-after'): void {
+  captureTaskBalance(
+    runId: string,
+    accountId: string,
+    phase: 'task-before' | 'task-after',
+    taskId?: string
+  ): void {
     const latest = this.balances(runId, accountId).at(-1)
     if (latest)
-      this.balance(runId, accountId, phase, {
-        availability: 'valid',
-        value: latest.balance,
-        source: 'browser-response',
-        confidence: 1,
-        observedAt: latest.observedAt
-      })
+      this.balance(
+        runId,
+        accountId,
+        phase,
+        {
+          availability: 'valid',
+          value: latest.balance,
+          source: latest.source,
+          confidence: 1,
+          observedAt: latest.observedAt
+        },
+        taskId
+      )
   }
 
   task(runId: string, task: TaskRecord): void {
@@ -411,7 +431,8 @@ export class RunLedger {
     runId: string,
     accountId: string,
     phase: BalanceObservation['phase'],
-    evidence: FieldEvidence<number>
+    evidence: FieldEvidence<number>,
+    taskId?: string
   ): void {
     if (
       evidence.availability !== 'valid' ||
@@ -426,10 +447,21 @@ export class RunLedger {
       return
     const observedAt = new Date(evidence.observedAt).toISOString()
     const key = createHash('sha256')
-      .update(JSON.stringify([runId, accountId, phase, observedAt, evidence.source]))
+      .update(
+        JSON.stringify([
+          runId,
+          accountId,
+          phase,
+          observedAt,
+          evidence.source,
+          ...(taskId ? [taskId] : [])
+        ])
+      )
       .digest('hex')
     this.database
-      .prepare('INSERT OR IGNORE INTO balance_observations VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .prepare(
+        'INSERT OR IGNORE INTO balance_observations(snapshot_id, run_id, account_id, phase, balance, observed_at, business_date, source, task_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      )
       .run(
         key,
         runId,
@@ -438,7 +470,8 @@ export class RunLedger {
         evidence.value,
         observedAt,
         localDateKey(new Date(observedAt)),
-        evidence.source
+        evidence.source,
+        taskId ?? null
       )
     // Task evidence uses a savepoint: announce only after its complete transaction commits.
     if (!this.database.isTransaction) this.changed()
@@ -446,7 +479,7 @@ export class RunLedger {
 
   balances(runId?: string, accountId?: string, businessDate?: string): BalanceObservation[] {
     const sql = `SELECT snapshot_id AS snapshotId, run_id AS runId, account_id AS accountId, phase, balance,
-      observed_at AS observedAt, business_date AS businessDate, source FROM balance_observations`
+      observed_at AS observedAt, business_date AS businessDate, source, task_id AS taskId FROM balance_observations`
     return this.database
       .prepare(
         `${sql} WHERE (? IS NULL OR run_id = ?)

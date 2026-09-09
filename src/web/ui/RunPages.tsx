@@ -7,7 +7,12 @@ import { Loading } from 'tdesign-react/es/loading/index.js'
 import { Button, DataTable, Feedback, PageHeader, StatusTag } from './UiKit'
 import type { ReactElement } from 'react'
 import { createRequestQueue } from './requestQueue'
-import { TaskEvidencePanel, type EvidenceRow, type CreditRow } from './TaskEvidencePanel'
+import {
+  TaskEvidencePanel,
+  type EvidenceRow,
+  type CreditRow,
+  type TaskSummary
+} from './TaskEvidencePanel'
 import { PointSummary, type PointStatistics } from './PointSummary'
 import { stateLabel, points, clockTime, duration } from './display'
 export { stateLabel, points, clockTime, duration } from './display'
@@ -32,7 +37,7 @@ interface RunAccount extends PointStatistics {
   pendingTaskCount: number
   verificationStatus: string
   dailyBalances: DailyBalance[]
-  tasks: Array<{ taskId: string; displayName: string; status: string; reason?: string }>
+  tasks: TaskSummary[]
   taskEvidence?: EvidenceRow[]
   creditEvidence?: CreditRow[]
   runDailyBalances?: PointStatistics[]
