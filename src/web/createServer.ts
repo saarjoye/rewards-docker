@@ -13,6 +13,7 @@ import type { AccountSecretStore } from '../infra/AccountSecretStore.js'
 import type { AdminAuthStore } from '../infra/AdminAuthStore.js'
 import type { SqliteStore } from '../infra/SqliteStore.js'
 import { RunViews } from './RunViews.js'
+import { notificationInput, type Notifications } from '../notifications/Notifications.js'
 
 const SESSION_COOKIE = 'rewards_next_session'
 
@@ -58,6 +59,7 @@ export interface WebServerDependencies {
   webRoot?: string
   secureCookies: boolean
   runCoordinator?: RunCoordinator
+  notifications?: Notifications
 }
 
 function getSessionToken(request: FastifyRequest): string | undefined {
@@ -67,6 +69,11 @@ function getSessionToken(request: FastifyRequest): string | undefined {
 export async function createServer(dependencies: WebServerDependencies): Promise<FastifyInstance> {
   const views = new RunViews(dependencies.store)
   const app = Fastify({ logger: false, bodyLimit: 64 * 1024 })
+  const streams = new Set<() => void>()
+  app.addHook('preClose', async () => {
+    for (const close of streams) close()
+    await Promise.resolve()
+  })
   await app.register(cookie)
   await app.register(rateLimit, { global: false, max: 10, timeWindow: '1 minute' })
 
@@ -136,6 +143,79 @@ export async function createServer(dependencies: WebServerDependencies): Promise
     reply.header('cache-control', 'no-store')
     const session = dependencies.adminAuth.restoreSession(getSessionToken(request) ?? '')
     return session ?? reply.code(401).send({ error: 'authentication-required' })
+  })
+
+  app.get('/api/notifications/wecom', (_request, reply) => {
+    reply.header('cache-control', 'no-store')
+    return (
+      dependencies.notifications?.status() ??
+      reply.code(503).send({ error: 'notifications-unavailable' })
+    )
+  })
+  app.get('/api/events', (request, reply) => {
+    reply.hijack()
+    reply.raw.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-store',
+      Connection: 'keep-alive'
+    })
+    const emit = () => {
+      if (!reply.raw.destroyed) reply.raw.write('data: state\n\n')
+    }
+    const unsubscribe = dependencies.store.subscribe(emit)
+    const heartbeat = setInterval(() => {
+      if (!reply.raw.destroyed) reply.raw.write(': heartbeat\n\n')
+    }, 15000)
+    heartbeat.unref()
+    const close = () => {
+      reply.raw.end()
+    }
+    streams.add(close)
+    reply.raw.once('close', () => {
+      clearInterval(heartbeat)
+      unsubscribe()
+      streams.delete(close)
+    })
+    emit()
+  })
+  app.put('/api/notifications/wecom', (request, reply) => {
+    if (!dependencies.notifications)
+      return reply.code(503).send({ error: 'notifications-unavailable' })
+    const input = notificationInput.parse(request.body)
+    try {
+      return dependencies.notifications.save(input)
+    } catch (error) {
+      if (error instanceof Error && error.message === 'notification-busy')
+        return reply.code(409).send({ error: 'notification-busy' })
+      if (error instanceof Error && error.message === 'notification-config-incomplete')
+        return reply.code(400).send({ error: 'notification-config-incomplete' })
+      throw error
+    }
+  })
+  app.post(
+    '/api/notifications/wecom/test',
+    { config: { rateLimit: { max: 1, timeWindow: '1 minute' } } },
+    async (_request, reply) => {
+      if (!dependencies.notifications)
+        return reply.code(503).send({ error: 'notifications-unavailable' })
+      try {
+        return await dependencies.notifications.test()
+      } catch (error) {
+        const message = error instanceof Error ? error.message : ''
+        if (message === 'notification-busy') return reply.code(409).send({ error: message })
+        return reply.code(502).send({
+          error:
+            /^(provider-code-\d+|provider-rejected|provider-http-error|provider-invalid-response|notifications-disabled|network-or-provider-error)$/.test(
+              message
+            )
+              ? message
+              : 'notification-test-failed'
+        })
+      }
+    }
+  )
+  app.addHook('onClose', async () => {
+    await dependencies.notifications?.close()
   })
 
   app.get('/api/state', (request) => {
@@ -287,6 +367,9 @@ export async function createServer(dependencies: WebServerDependencies): Promise
         dailyBalances: account.dailyBalances,
         confirmedTaskPoints: account.confirmedTaskPoints,
         reportedTaskPoints: account.reportedTaskPoints,
+        pendingTaskPoints: account.pendingTaskPoints,
+        unattributedBalanceDelta: account.unattributedBalanceDelta,
+        overreportedTaskPoints: account.overreportedTaskPoints,
         verificationStatus: account.verificationStatus
       })),
       tasks

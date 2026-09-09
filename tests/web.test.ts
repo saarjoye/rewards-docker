@@ -10,6 +10,7 @@ import { AccountSecretStore } from '../src/infra/AccountSecretStore.js'
 import { AdminAuthStore } from '../src/infra/AdminAuthStore.js'
 import { SqliteStore } from '../src/infra/SqliteStore.js'
 import { createServer, type RunCoordinator } from '../src/web/createServer.js'
+import { Notifications } from '../src/notifications/Notifications.js'
 
 const roots: string[] = []
 
@@ -17,7 +18,7 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((path) => rm(path, { recursive: true, force: true })))
 })
 
-async function fixture(runCoordinator?: RunCoordinator) {
+async function fixture(runCoordinator?: RunCoordinator, withNotifications = false) {
   const root = await mkdtemp(join(tmpdir(), 'rewards-next-web-'))
   roots.push(root)
   const webRoot = join(root, 'web')
@@ -27,12 +28,25 @@ async function fixture(runCoordinator?: RunCoordinator) {
   const adminAuth = new AdminAuthStore(store.database)
   adminAuth.initialize('admin', 'synthetic-admin-password')
   const accounts = new AccountSecretStore(store.database, Buffer.alloc(32, 9))
+  const notificationFetch = vi.fn<typeof fetch>().mockImplementation(async (url) => {
+    await Promise.resolve()
+    return new Response(
+      JSON.stringify(
+        typeof url === 'string' && url.includes('gettoken')
+          ? { errcode: 0, access_token: 'synthetic-access', expires_in: 7200 }
+          : { errcode: 0 }
+      )
+    )
+  })
   const dependencies = {
     adminAuth,
     accounts,
     store,
     webRoot,
     secureCookies: false,
+    ...(withNotifications
+      ? { notifications: new Notifications(store, Buffer.alloc(32, 9), notificationFetch) }
+      : {}),
     ...(runCoordinator ? { runCoordinator } : {})
   }
   const app = await createServer(dependencies)
@@ -46,10 +60,185 @@ async function fixture(runCoordinator?: RunCoordinator) {
   const cookie = setCookie.split(';')[0]
   if (!cookie) throw new Error('Synthetic login returned an empty cookie')
   const csrfToken = login.json<{ csrfToken: string }>().csrfToken
-  return { app, store, cookie, csrfToken }
+  return { app, store, cookie, csrfToken, notificationFetch }
 }
 
 describe('web API', () => {
+  it('returns identical account reconciliation in state, detail, report and calendar', async () => {
+    const { app, store, cookie } = await fixture()
+    try {
+      const runId = randomUUID()
+      const date = localDateKey()
+      const start = `${date}T00:00:00Z`
+      const end = `${date}T02:00:00Z`
+      store.createRun({
+        runId,
+        localDate: date,
+        executionMode: 'mutating',
+        selectedAccountIndexes: [3],
+        startedAt: start
+      })
+      for (const [phase, value, observedAt] of [
+        ['start', 5312, start],
+        ['end', 5517, end]
+      ] as const)
+        store.ledger.balance(runId, 'synthetic', phase, {
+          availability: 'valid',
+          value,
+          source: 'bing-flyout',
+          confidence: 1,
+          observedAt
+        })
+      for (const [source, value] of [
+        ['app-dashboard', 30],
+        ['bing-flyout', 60],
+        ['rsc', 30]
+      ] as const)
+        store.ledger.credits.record({
+          runId,
+          accountId: 'synthetic',
+          taskId: source,
+          source,
+          officialCreditId: source,
+          observedAt: `${date}T01:00:00Z`,
+          reportedPoints: value,
+          earnedPoints: value,
+          verificationStatus: 'confirmed',
+          evidenceSource: 'official-credit',
+          submitted: true
+        })
+      store.ledger.lifecycle({
+        runId,
+        accountId: 'synthetic',
+        accountIndex: 3,
+        accountLabel: 'Synthetic',
+        startedAt: start,
+        endedAt: end,
+        executionState: 'completed',
+        updatedAt: end
+      })
+      store.updateRun(runId, 'completed', end)
+      const results = await Promise.all(
+        [
+          '/api/state',
+          `/api/runs/${runId}`,
+          `/api/runs/${runId}/report`,
+          `/api/calendar?month=${date.slice(0, 7)}`
+        ].map((url) => app.inject({ method: 'GET', url, headers: { cookie } }))
+      )
+      for (const result of results) expect(result.statusCode).toBe(200)
+      const expected = {
+        reportedTaskPoints: 120,
+        confirmedTaskPoints: 120,
+        pendingTaskPoints: 0,
+        unattributedBalanceDelta: 85,
+        overreportedTaskPoints: 0
+      }
+      expect(results[0]?.json<{ today: object[] }>().today[0]).toMatchObject({
+        ...expected,
+        dailyBalanceDelta: 205
+      })
+      expect(results[1]?.json<{ accounts: object[] }>().accounts[0]).toMatchObject({
+        ...expected,
+        runBalanceDelta: 205
+      })
+      expect(results[2]?.json<{ accounts: object[] }>().accounts[0]).toMatchObject(expected)
+      expect(results[3]?.json<{ entries: object[] }>().entries[0]).toMatchObject({
+        ...expected,
+        dailyBalanceDelta: 205
+      })
+    } finally {
+      await app.close()
+      store.close()
+    }
+  })
+  it('streams only refresh signals and restores updates after reconnect', async () => {
+    const { app, store, cookie } = await fixture()
+    try {
+      const origin = await app.listen({ host: '127.0.0.1', port: 0 })
+      expect((await fetch(`${origin}/api/events`)).status).toBe(401)
+      for (let connection = 0; connection < 2; connection++) {
+        const response = await fetch(`${origin}/api/events`, {
+          headers: { cookie },
+          signal: AbortSignal.timeout(3000)
+        })
+        expect(response.headers.get('content-type')).toBe('text/event-stream')
+        if (!response.body) throw new Error('Missing event stream')
+        const reader = response.body.getReader()
+        expect(new TextDecoder().decode((await reader.read()).value)).toBe('data: state\n\n')
+        store.ledger.lifecycle({
+          runId: 'synthetic-sse',
+          accountId: 'synthetic',
+          accountIndex: 1,
+          accountLabel: 'Synthetic',
+          startedAt: '2026-09-09T00:00:00Z',
+          endedAt: '2026-09-09T00:01:00Z',
+          executionState: 'completed',
+          updatedAt: '2026-09-09T00:01:00Z'
+        })
+        expect(new TextDecoder().decode((await reader.read()).value)).toBe('data: state\n\n')
+        await reader.cancel()
+      }
+      expect(store.database.prepare('SELECT COUNT(*) AS n FROM account_completions').get()?.n).toBe(
+        1
+      )
+    } finally {
+      await app.close()
+      store.close()
+    }
+  })
+  it('protects notification settings and test sends with session and CSRF without returning secrets', async () => {
+    const { app, store, cookie, csrfToken, notificationFetch } = await fixture(undefined, true)
+    try {
+      expect(
+        (await app.inject({ method: 'GET', url: '/api/notifications/wecom' })).statusCode
+      ).toBe(401)
+      const payload = {
+        enabled: true,
+        corpId: 'synthetic-corp',
+        agentId: '1',
+        corpSecret: 'synthetic-secret',
+        toUser: '@all'
+      }
+      expect(
+        (
+          await app.inject({
+            method: 'PUT',
+            url: '/api/notifications/wecom',
+            headers: { cookie },
+            payload
+          })
+        ).statusCode
+      ).toBe(403)
+      const saved = await app.inject({
+        method: 'PUT',
+        url: '/api/notifications/wecom',
+        headers: { cookie, 'x-csrf-token': csrfToken },
+        payload
+      })
+      expect(saved.statusCode).toBe(200)
+      expect(saved.body).not.toContain('synthetic-secret')
+      const read = await app.inject({
+        method: 'GET',
+        url: '/api/notifications/wecom',
+        headers: { cookie }
+      })
+      expect(read.headers['cache-control']).toBe('no-store')
+      expect(read.json<{ hasSecret: boolean }>().hasSecret).toBe(true)
+      expect(notificationFetch).not.toHaveBeenCalled()
+      const tested = await app.inject({
+        method: 'POST',
+        url: '/api/notifications/wecom/test',
+        headers: { cookie, 'x-csrf-token': csrfToken }
+      })
+      expect(tested.json()).toEqual({ status: 'accepted' })
+      expect(notificationFetch).toHaveBeenCalledTimes(2)
+    } finally {
+      await app.close()
+      store.close()
+    }
+  })
+
   it('restores an authenticated session without replacing it', async () => {
     const { app, store, cookie, csrfToken } = await fixture()
     try {

@@ -44,6 +44,8 @@ export interface TaskRecord {
   progress: TaskProgress
   reason?: string
   updatedAt: string
+  reportedPoints?: number
+  expectedPoints?: number
 }
 
 export interface TaskCountSummary {

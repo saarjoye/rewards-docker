@@ -36,37 +36,40 @@ function fixture() {
 }
 
 describe('run lifecycle durability', () => {
-  it('waits for cancellation cleanup and persists a terminal run and account', async () => {
-    const { store, runner, browser, accounts } = fixture()
-    try {
-      vi.spyOn(accounts, 'getCredentials').mockReturnValue({
-        email: 'synthetic@example.test',
-        password: 'synthetic'
-      })
-      let rejectOpen: (error: Error) => void = () => {
-        throw new Error('not started')
+  it.each(['cancelled', 'interrupted'] as const)(
+    'waits for %s cleanup and persists a terminal run and account',
+    async (reason) => {
+      const { store, runner, browser, accounts } = fixture()
+      try {
+        vi.spyOn(accounts, 'getCredentials').mockReturnValue({
+          email: 'synthetic@example.test',
+          password: 'synthetic'
+        })
+        let rejectOpen: (error: Error) => void = () => {
+          throw new Error('not started')
+        }
+        browser.openSlot.mockImplementation(
+          () =>
+            new Promise((_resolve, reject) => {
+              rejectOpen = reject
+            })
+        )
+        const { runId } = await runner.start({ accountMode: 'continue' })
+        const completion = runner.stopAndWait(reason)
+        expect(store.listRuns()[0]?.status).toBe('cancelling')
+        rejectOpen(new Error('synthetic cancellation'))
+        await completion
+        expect(store.listRuns()[0]).toMatchObject({ runId, status: reason })
+        expect(store.listAccountRuns(runId)[0]).toMatchObject({
+          status: 'partial',
+          stage: 'cancelled'
+        })
+        expect(runner.activeRunId).toBeUndefined()
+      } finally {
+        store.close()
       }
-      browser.openSlot.mockImplementation(
-        () =>
-          new Promise((_resolve, reject) => {
-            rejectOpen = reject
-          })
-      )
-      const { runId } = await runner.start({ accountMode: 'continue' })
-      const completion = runner.stopAndWait()
-      expect(store.listRuns()[0]?.status).toBe('cancelling')
-      rejectOpen(new Error('synthetic cancellation'))
-      await completion
-      expect(store.listRuns()[0]).toMatchObject({ runId, status: 'cancelled' })
-      expect(store.listAccountRuns(runId)[0]).toMatchObject({
-        status: 'partial',
-        stage: 'cancelled'
-      })
-      expect(runner.activeRunId).toBeUndefined()
-    } finally {
-      store.close()
     }
-  })
+  )
 
   it('recovers only unfinished records without inventing an end time or changing points', () => {
     const { store } = fixture()

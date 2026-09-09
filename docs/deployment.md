@@ -4,7 +4,7 @@ Next 单应用沿用 `ghcr.io/saarjoye/mrs-core` 镜像名，替代旧版 Core/W
 
 ## 发布和切换
 
-现有仓库的 `main` 分支通过 `.github/workflows/docker-image.yml` 构建。先执行离线测试、类型检查、ESLint、构建和 Compose 校验，再构建 `linux/amd64` 与 `linux/arm64` 候选镜像。候选镜像使用空数据、禁用外部网络做启动健康检查；成功后才更新 `5.0.0-next.1` 与 `latest`。完整提交固定标签为 `sha-<完整提交号>`。
+现有仓库的 `main` 分支通过 `.github/workflows/docker-image.yml` 构建。先执行离线测试、类型检查、ESLint、构建和 Compose 校验，再构建 `linux/amd64` 与 `linux/arm64` 候选镜像。候选镜像使用空数据、禁用外部网络做启动健康检查；成功后才更新 `5.0.0-next.2` 与 `latest`。完整提交固定标签为 `sha-<完整提交号>`。
 
 不再发布 `mrs-web`，旧版本标签保留。发布不会自动部署运行机，不能只对旧 Compose 执行 pull/up。
 
@@ -37,5 +37,11 @@ docker build -t microsoft-rewards-next:local .
 `WEB_ADMIN_USER` 与 `WEB_ADMIN_PASSWORD` 仅允许首次引导管理员；初始化完成后应从运行配置移除。生产环境优先将主密钥挂载为 Docker Secret。
 
 ## 回退
+
+已经使用 Next 单容器的用户升级时保留原服务名、`8787:3000` 映射及全部 Next 数据卷；无需套用示例的 8788 端口。先停止任务并做一致性备份，再重新拉取 `mrs-core:latest` 并重建容器。不要重新创建空卷，否则配置看起来会消失。
+
+next.2 启动以幂等事务新增账号完成事件、积分账本和通知队列表，不批量改写历史积分。通知设置位于“消息推送”，使用企业微信应用官方接口。旧双容器的通知密文不会导入；在 Next 中重新填写应用配置。Next 自身设置加密保存在数据卷，升级和重启不清空。
+
+本轮统计与通知规则见[运行状态、通知与积分证据](run-notifications-points.md)。回退到 next.1 时保留新增表和数据卷；旧应用不展示新通知功能。不要删除表或数据库来回退。
 
 停止 Next 并保留其独立数据卷，使用保存的旧 Compose 和旧版固定镜像恢复旧 Core/Web，不能使用已指向 Next 的 `latest`。不要让旧程序读写 Next 数据库，也不要删除数据库来回退。

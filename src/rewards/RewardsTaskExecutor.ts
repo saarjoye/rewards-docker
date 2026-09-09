@@ -288,6 +288,7 @@ export class RewardsTaskExecutor {
     }
     return {
       execute: async (context) => {
+        this.store.ledger.captureTaskBalance(this.runId, descriptor.task.accountId, 'task-before')
         const receipt = await adapter.execute(context)
         this.store.ledger.recordTaskEvidence({
           runId: this.runId,
@@ -322,6 +323,7 @@ export class RewardsTaskExecutor {
     payload: Readonly<Record<string, unknown>>
   ): Promise<void> {
     if (!this.appToken) throw new Error('App authentication unavailable')
+    this.store.ledger.captureTaskBalance(this.runId, task.accountId, 'task-before')
     const balance = await this.client.submitAppActivity(this.appToken, payload)
     this.store.ledger.recordTaskEvidence({
       runId: this.runId,

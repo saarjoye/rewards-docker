@@ -1,32 +1,7 @@
 import { localDateKey } from '../domain/DateKey.js'
-import type { BalanceObservation } from '../infra/RunLedger.js'
+import { balanceInterval } from '../infra/BalanceInterval.js'
+export { balanceInterval } from '../infra/BalanceInterval.js'
 import type { SqliteStore } from '../infra/SqliteStore.js'
-
-export function balanceInterval(observations: readonly BalanceObservation[], requireStart = false) {
-  const sorted = [...observations].sort((a, b) => a.observedAt.localeCompare(b.observedAt))
-  const opening = requireStart ? sorted.find((row) => row.phase === 'start') : sorted[0]
-  const closing = sorted.at(-1)
-  const conflicts = new Map<string, number>()
-  let conflicting = false
-  for (const row of sorted) {
-    if (conflicts.has(row.observedAt) && conflicts.get(row.observedAt) !== row.balance)
-      conflicting = true
-    conflicts.set(row.observedAt, row.balance)
-  }
-  const valid = opening && closing && opening.observedAt < closing.observedAt && !conflicting
-  const delta = valid ? closing.balance - opening.balance : null
-  const finalized =
-    valid && sorted.some((row) => row.observedAt === closing.observedAt && row.phase === 'end')
-  return {
-    delta,
-    openingBalance: opening?.balance ?? null,
-    closingBalance: closing?.balance ?? null,
-    observedFrom: opening?.observedAt ?? null,
-    observedAt: closing?.observedAt ?? null,
-    verificationStatus: delta === null ? 'pending' : finalized ? 'confirmed' : 'provisional',
-    evidenceSources: [...new Set(sorted.map((row) => row.source))]
-  }
-}
 
 export class RunViews {
   constructor(private readonly store: SqliteStore) {}
@@ -38,23 +13,42 @@ export class RunViews {
       businessDate,
       timezone: 'Asia/Shanghai',
       dailyBalanceDelta: interval.delta,
-      ...interval
+      ...interval,
+      ...this.store.ledger.credits.reconcile(accountId, interval.delta, businessDate)
     }
   }
 
   run(runId: string, activeRunId?: string) {
-    const run = this.store.getRun(runId)
-    if (!run) return undefined
+    const durable = this.store.getRun(runId)
     const snapshots = this.store.ledger.tasks(runId)
     const taskEvidence = this.store.ledger.taskEvidence(runId)
     const balances = this.store.ledger.balances(runId)
     const lifecycle = this.store.ledger.accounts(runId)
+    const credits = this.store.ledger.credits.rowsForRun(runId)
+    if (!durable && !lifecycle.length && !balances.length && !snapshots.length && !credits.length)
+      return undefined
+    const firstObserved = [
+      ...lifecycle.flatMap((row) => (row.startedAt ? [row.startedAt] : [row.updatedAt])),
+      ...balances.map((row) => row.observedAt),
+      ...snapshots.map((row) => row.updatedAt),
+      ...credits.map((row) => row.observedAt)
+    ].sort()[0]
+    const run = durable ?? {
+      runId,
+      localDate: firstObserved ? localDateKey(new Date(firstObserved)) : localDateKey(),
+      executionMode: 'unknown',
+      status: 'unknown',
+      selectedAccountIndexes: lifecycle.map((row) => row.accountIndex),
+      startedAt: firstObserved ?? '',
+      finishedAt: undefined
+    }
     const legacy = this.store.listAccountRuns(runId)
     const ids = new Set([
       ...lifecycle.map((row) => row.accountId),
       ...legacy.map((row) => row.accountId),
       ...snapshots.map((row) => row.accountId),
-      ...balances.map((row) => row.accountId)
+      ...balances.map((row) => row.accountId),
+      ...this.store.ledger.credits.rowsForRun(runId).map((row) => row.accountId)
     ])
     const accounts = [...ids].map((accountId) => {
       const execution = lifecycle.find((row) => row.accountId === accountId)
@@ -73,7 +67,10 @@ export class RunViews {
         execution?.executionState ?? run.status
       )
       const runBalanceDelta =
-        interrupted && interval.verificationStatus !== 'confirmed' ? null : interval.delta
+        interval.verificationStatus === 'confirmed' ||
+        (!interrupted && activeRunId === runId && execution?.executionState === 'running')
+          ? interval.delta
+          : null
       return {
         accountId,
         accountIndex: execution?.accountIndex ?? old?.runAccountIndex ?? null,
@@ -83,10 +80,11 @@ export class RunViews {
         endedAt: execution?.endedAt ?? null,
         runBalanceDelta,
         dailyBalances: dates.map((date) => this.day(accountId, date)),
-        reportedTaskPoints: null,
-        confirmedTaskPoints: null,
-        pendingTaskPoints: null,
-        pendingTaskCount: tasks.filter((task) => task.status !== 'skipped').length,
+        ...this.store.ledger.credits.reconcile(accountId, runBalanceDelta, undefined, runId),
+        completionSource: execution?.completionSource ?? null,
+        completionEventKey: execution?.completionEventKey ?? null,
+        accountSuccess:
+          execution?.executionState === 'completed' ? true : execution?.endedAt ? false : null,
         verificationStatus: runBalanceDelta === null ? 'pending' : interval.verificationStatus,
         observedAt: interval.observedAt,
         evidenceSources: interval.evidenceSources,
@@ -96,14 +94,21 @@ export class RunViews {
       }
     })
     const deltas = accounts.map((row) => row.runBalanceDelta)
+    const sum = (values: (number | null)[]) =>
+      values.length && values.every((value) => value !== null)
+        ? values.reduce<number>((total, value) => total + value, 0)
+        : null
     return {
       ...run,
       accounts,
       tasks: snapshots,
-      persistence: activeRunId === runId ? 'live' : 'durable',
+      persistence: activeRunId === runId ? 'live' : durable ? 'durable' : 'provisional',
       accountsTotal: run.selectedAccountIndexes.length,
       accountsProcessed: lifecycle.filter((row) => row.endedAt !== null).length,
       accountsCompleted: lifecycle.filter((row) => row.executionState === 'completed').length,
+      confirmedTaskPoints: sum(accounts.map((row) => row.confirmedTaskPoints)),
+      reportedTaskPoints: sum(accounts.map((row) => row.reportedTaskPoints)),
+      pendingTaskPoints: sum(accounts.map((row) => row.pendingTaskPoints)),
       runBalanceDelta:
         deltas.length && deltas.every((value) => value !== null)
           ? deltas.reduce<number>((sum, value) => sum + value, 0)
@@ -121,9 +126,14 @@ export class RunViews {
         `SELECT account_id AS accountId, business_date AS businessDate, run_id AS runId FROM balance_observations WHERE business_date LIKE ?
       UNION SELECT account_id, business_date, run_id FROM run_tasks WHERE business_date LIKE ?
       UNION SELECT account_id, local_date, run_id FROM account_runs WHERE local_date LIKE ?
-      UNION SELECT a.account_id, r.local_date, r.run_id FROM account_lifecycle a JOIN runs r ON a.run_id = r.run_id WHERE r.local_date LIKE ?`
+      UNION SELECT account_id, business_date, run_id FROM point_credits WHERE business_date LIKE ?
+      UNION SELECT a.account_id, r.local_date, r.run_id FROM account_lifecycle a JOIN runs r ON a.run_id = r.run_id WHERE r.local_date LIKE ?
+      UNION SELECT account_id, date(COALESCE(started_at, updated_at), '+8 hours'), run_id FROM account_lifecycle
+        WHERE date(COALESCE(started_at, updated_at), '+8 hours') LIKE ?
+      UNION SELECT account_id, date(ended_at, '+8 hours'), run_id FROM account_lifecycle
+        WHERE date(ended_at, '+8 hours') LIKE ?`
       )
-      .all(`${month}-%`, `${month}-%`, `${month}-%`, `${month}-%`) as Array<{
+      .all(...Array<string>(7).fill(`${month}-%`)) as Array<{
       accountId: string
       businessDate: string
       runId: string
@@ -159,10 +169,7 @@ export class RunViews {
           accountId: first.accountId,
           accountIndex: account?.accountIndex ?? null,
           accountLabel: account?.accountLabel ?? '标签待确认',
-          reportedTaskPoints: null,
-          confirmedTaskPoints: null,
-          pendingTaskCount: tasks.size,
-          pendingTaskPoints: null,
+          taskCount: tasks.size,
           records: records.map((row) => ({
             runId: row.runId,
             status: row.status,

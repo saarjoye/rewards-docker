@@ -11,6 +11,7 @@ import { StructuredLogger } from './infra/StructuredLogger.js'
 import { ApplicationRunCoordinator } from './orchestration/RunCoordinator.js'
 import { Scheduler } from './orchestration/Scheduler.js'
 import { createServer } from './web/createServer.js'
+import { Notifications } from './notifications/Notifications.js'
 
 const dataDirectory = resolve(process.env.DATA_DIR ?? './data')
 const sessionsDirectory = resolve(process.env.SESSIONS_DIR ?? './sessions')
@@ -43,6 +44,7 @@ const coordinator = new ApplicationRunCoordinator(
   config
 )
 const scheduler = new Scheduler()
+const notifications = new Notifications(store, masterKey)
 
 if (!adminAuth.isInitialized()) {
   const username = process.env.WEB_ADMIN_USER
@@ -55,6 +57,7 @@ const app = await createServer({
   accounts,
   store,
   runCoordinator: coordinator,
+  notifications,
   webRoot: resolve(process.cwd(), 'dist/web'),
   secureCookies: process.env.WEB_SECURE_COOKIES === 'true'
 })
@@ -65,7 +68,7 @@ const port = Number.parseInt(process.env.WEB_PORT ?? '3000', 10)
 const shutdown = async (): Promise<void> => {
   scheduler.stop()
   try {
-    await coordinator.stopAndWait()
+    await coordinator.stopAndWait('interrupted')
   } finally {
     await browser.close()
     await app.close()
@@ -85,6 +88,7 @@ process.once('SIGINT', handleShutdown)
 process.once('SIGTERM', handleShutdown)
 
 await app.listen({ host, port })
+notifications.start()
 
 scheduler.start({
   pattern: process.env.RUN_SCHEDULE ?? '0 7 * * *',

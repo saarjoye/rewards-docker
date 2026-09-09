@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent, ReactElement } from 'react'
 import { createRequestQueue } from './requestQueue'
 import { RunPages, stateLabel, points, clockTime, duration } from './RunPages'
+import { NotificationSettings } from './NotificationSettings'
+import { PointSummary, type PointStatistics } from './PointSummary'
 
 interface AccountSummary {
   accountId: string
@@ -43,12 +45,14 @@ interface StatePayload {
   runnerReady: boolean
   activeRunId: string | null
   runs: RunSummary[]
-  today: Array<{
-    accountId: string
-    accountLabel: string
-    dailyBalanceDelta: number | null
-    verificationStatus: string
-  }>
+  today: Array<
+    PointStatistics & {
+      accountId: string
+      accountLabel: string
+      dailyBalanceDelta: number | null
+      verificationStatus: string
+    }
+  >
 }
 
 interface RunSummary {
@@ -178,15 +182,19 @@ function LoginView({ onLogin }: { onLogin: (token: string) => void }): ReactElem
 
 export function App(): ReactElement {
   const [restoring, setRestoring] = useState(true)
-  const [page, setPage] = useState<'overview' | 'tasks' | 'history' | 'calendar' | 'accounts'>(
-    () => {
-      const hash = window.location.hash.slice(1)
-      if (hash.startsWith('run/')) return 'history'
-      return hash === 'tasks' || hash === 'history' || hash === 'calendar' || hash === 'accounts'
-        ? hash
-        : 'overview'
-    }
-  )
+  const [page, setPage] = useState<
+    'overview' | 'tasks' | 'history' | 'calendar' | 'accounts' | 'notifications'
+  >(() => {
+    const hash = window.location.hash.slice(1)
+    if (hash.startsWith('run/')) return 'history'
+    return hash === 'tasks' ||
+      hash === 'history' ||
+      hash === 'calendar' ||
+      hash === 'accounts' ||
+      hash === 'notifications'
+      ? hash
+      : 'overview'
+  })
   const [taskAccount, setTaskAccount] = useState('')
   const [taskStatus, setTaskStatus] = useState('')
   const [taskDate, setTaskDate] = useState('')
@@ -254,6 +262,26 @@ export function App(): ReactElement {
       window.clearInterval(timer)
     }
   }, [csrfToken, loadState, state?.activeRunId])
+
+  useEffect(() => {
+    if (!csrfToken) return
+    const stream = new EventSource('/api/events')
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const refresh = () => {
+      if (timer) return
+      timer = setTimeout(() => {
+        timer = undefined
+        void loadState()
+        window.dispatchEvent(new Event('rewards-state'))
+      }, 150)
+    }
+    stream.onopen = refresh
+    stream.onmessage = refresh
+    return () => {
+      stream.close()
+      if (timer) clearTimeout(timer)
+    }
+  }, [csrfToken, loadState])
 
   const selectedAccount = useMemo(
     () => state?.accounts.find((account) => account.runAccountIndex === runAccountIndex),
@@ -448,7 +476,9 @@ export function App(): ReactElement {
 
         <section className="content-area">
           <nav className="view-tabs" aria-label="管理视图">
-            {(['overview', 'tasks', 'history', 'calendar', 'accounts'] as const).map((view) => (
+            {(
+              ['overview', 'tasks', 'history', 'calendar', 'accounts', 'notifications'] as const
+            ).map((view) => (
               <button
                 key={view}
                 aria-current={page === view ? 'page' : undefined}
@@ -463,16 +493,28 @@ export function App(): ReactElement {
                     tasks: '任务',
                     history: '运行记录',
                     calendar: '积分日历',
-                    accounts: '账号管理'
+                    accounts: '账号管理',
+                    notifications: '消息推送'
                   }[view]
                 }
               </button>
             ))}
           </nav>
-          {page === 'history' || page === 'calendar' ? (
+          {page === 'notifications' ? (
+            <NotificationSettings csrfToken={csrfToken} />
+          ) : page === 'history' || page === 'calendar' ? (
             <RunPages key={page} page={page} activeRunId={state?.activeRunId ?? null} />
           ) : (
             <>
+              {page === 'tasks' &&
+                state?.today.map((day) => (
+                  <section key={day.accountId} className="task-section">
+                    <h3>
+                      {day.accountLabel} · 今日账户余额变化 {points(day.dailyBalanceDelta)}
+                    </h3>
+                    <PointSummary value={day} />
+                  </section>
+                ))}
               <div className="runbar">
                 <div className="segmented" aria-label="运行范围">
                   <button
@@ -573,10 +615,13 @@ export function App(): ReactElement {
                     <p className="observation">暂无余额观测</p>
                   ) : (
                     state.today.map((day) => (
-                      <p key={day.accountId}>
-                        {day.accountLabel} · {points(day.dailyBalanceDelta)} ·{' '}
-                        {stateLabel(day.verificationStatus)}
-                      </p>
+                      <div key={day.accountId}>
+                        <p>
+                          {day.accountLabel} · {points(day.dailyBalanceDelta)} ·{' '}
+                          {stateLabel(day.verificationStatus)}
+                        </p>
+                        <PointSummary value={day} />
+                      </div>
                     ))
                   )}
                 </section>

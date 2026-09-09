@@ -1744,7 +1744,7 @@ describe('App task execution', () => {
         ])
       )
       expect(store.ledger.balances('run')).toEqual(
-        expect.arrayContaining([expect.objectContaining({ balance: 5088, phase: 'live' })])
+        expect.arrayContaining([expect.objectContaining({ balance: 5088, phase: 'task-after' })])
       )
       expect(fetchAppDashboard).toHaveBeenCalledTimes(1)
       expect(store.getTask(task.taskId)).toMatchObject({

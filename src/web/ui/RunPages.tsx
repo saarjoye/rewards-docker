@@ -2,17 +2,18 @@ import { useEffect, useRef, useState } from 'react'
 import type { ReactElement } from 'react'
 import { createRequestQueue } from './requestQueue'
 import { TaskEvidencePanel, type EvidenceRow } from './TaskEvidencePanel'
+import { PointSummary, type PointStatistics } from './PointSummary'
 import { stateLabel, points, clockTime, duration } from './display'
 export { stateLabel, points, clockTime, duration } from './display'
 
-interface DailyBalance {
+interface DailyBalance extends PointStatistics {
   businessDate: string
   dailyBalanceDelta: number | null
   verificationStatus: string
   observedFrom: string | null
   observedAt: string | null
 }
-interface RunAccount {
+interface RunAccount extends PointStatistics {
   accountId: string
   accountIndex: number | null
   accountLabel: string
@@ -92,10 +93,15 @@ function useRead<T>(
     )
     void refresh()
     const timer = window.setInterval(() => void refresh(), revision ? 3000 : 10000)
+    const onState = () => {
+      void refresh()
+    }
+    window.addEventListener('rewards-state', onState)
     return () => {
       alive = false
       controller.abort()
       window.clearInterval(timer)
+      window.removeEventListener('rewards-state', onState)
     }
   }, [path, revision])
   return { value: lastPath.current === path ? value : undefined, error }
@@ -313,26 +319,20 @@ function RunDetail({
                   <dd>{points(account.runBalanceDelta)}</dd>
                 </div>
                 <div>
-                  <dt>任务上报积分</dt>
-                  <dd>{points(account.reportedTaskPoints)}</dd>
-                </div>
-                <div>
-                  <dt>已确认任务积分</dt>
-                  <dd>{points(account.confirmedTaskPoints)}</dd>
-                </div>
-                <div>
                   <dt>待确认任务</dt>
                   <dd>{account.pendingTaskCount}</dd>
                 </div>
               </dl>
+              <PointSummary value={account} />
               {account.dailyBalances.map((day) => (
-                <p key={day.businessDate}>
+                <div key={day.businessDate}>
                   {day.businessDate} · 观测余额净变化 {points(day.dailyBalanceDelta)} ·{' '}
                   {stateLabel(day.verificationStatus)}
                   <small className="observation">
                     {clockTime(day.observedFrom)} — {clockTime(day.observedAt)}
                   </small>
-                </p>
+                  <PointSummary value={day} />
+                </div>
               ))}
               <TaskEvidencePanel tasks={account.tasks} evidence={account.taskEvidence ?? []} />
             </section>
@@ -409,6 +409,10 @@ function Calendar({
                   <span>
                     {points(entry.dailyBalanceDelta)} · {stateLabel(entry.verificationStatus)}
                   </span>
+                  <details>
+                    <summary>积分依据</summary>
+                    <PointSummary value={entry} />
+                  </details>
                   {entry.records.map((record) => (
                     <button
                       key={record.runId}

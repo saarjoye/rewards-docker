@@ -69,6 +69,7 @@ export class ApplicationRunCoordinator {
   private active: { runId: string; controller: AbortController } | undefined
   private completion: Promise<void> | undefined
   private finishing = false
+  private interrupted = false
 
   constructor(
     private readonly accounts: AccountSecretStore,
@@ -109,6 +110,7 @@ export class ApplicationRunCoordinator {
       })
     this.active = { runId, controller }
     this.finishing = false
+    this.interrupted = false
     this.completion = this.executeRun(runId, localDate, executionMode, selected, controller)
     // Keep failures observable to shutdown without an unhandled background rejection.
     void this.completion.catch(() => undefined)
@@ -126,7 +128,8 @@ export class ApplicationRunCoordinator {
     return this.active?.runId
   }
 
-  async stopAndWait(): Promise<void> {
+  async stopAndWait(reason: 'cancelled' | 'interrupted' = 'cancelled'): Promise<void> {
+    if (this.active && !this.finishing && reason === 'interrupted') this.interrupted = true
     if (this.active) this.cancel(this.active.runId)
     await this.completion
   }
@@ -173,7 +176,8 @@ export class ApplicationRunCoordinator {
         results.push(status)
       }
       const finishedAt = new Date().toISOString()
-      if (controller.signal.aborted) this.store.updateRun(runId, 'cancelled', finishedAt)
+      if (controller.signal.aborted)
+        this.store.updateRun(runId, this.interrupted ? 'interrupted' : 'cancelled', finishedAt)
       else if (!results.length || results.every((status) => status === 'failed')) {
         this.store.updateRun(runId, 'failed', finishedAt)
       } else if (results.some((status) => status !== 'success')) {
@@ -182,7 +186,7 @@ export class ApplicationRunCoordinator {
     } catch (error) {
       this.store.updateRun(
         runId,
-        controller.signal.aborted ? 'cancelled' : 'failed',
+        controller.signal.aborted ? (this.interrupted ? 'interrupted' : 'cancelled') : 'failed',
         new Date().toISOString()
       )
       if (!controller.signal.aborted) throw error
@@ -215,7 +219,14 @@ export class ApplicationRunCoordinator {
     }
     const startedAt = new Date().toISOString()
     const lifecycle = (
-      executionState: 'running' | 'completed' | 'failed' | 'cancelled' | 'action-required'
+      executionState:
+        | 'running'
+        | 'completed'
+        | 'partial'
+        | 'failed'
+        | 'cancelled'
+        | 'interrupted'
+        | 'action-required'
     ): void => {
       const at = new Date().toISOString()
       this.runLedger?.lifecycle({
@@ -323,7 +334,7 @@ export class ApplicationRunCoordinator {
       )
       return status
     } catch (error) {
-      lifecycle(signal.aborted ? 'cancelled' : 'failed')
+      lifecycle(signal.aborted ? (this.interrupted ? 'interrupted' : 'cancelled') : 'failed')
       this.store.upsertAccountRun({
         ...context,
         status: signal.aborted ? 'partial' : 'failed',

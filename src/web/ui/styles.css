@@ -817,3 +817,51 @@ td small {
     border-top: 1px solid #e0e4e6;
   }
 }
+/* Notification forms keep controls usable without horizontal scrolling. */
+.notification-settings {
+  max-width: 760px;
+  overflow-wrap: anywhere;
+}
+.notification-settings fieldset {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+.notification-settings label {
+  display: grid;
+  gap: 6px;
+}
+.notification-settings input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.notification-settings .notification-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.notification-settings .notification-toggle input {
+  width: auto;
+}
+.notification-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.notification-records {
+  padding: 0;
+  list-style: none;
+}
+.notification-records li {
+  display: grid;
+  gap: 6px;
+  padding: 12px 0;
+  border-bottom: 1px solid #d5dcde;
+}
+.calendar-account .balance-fields {
+  grid-template-columns: minmax(0, 1fr);
+}

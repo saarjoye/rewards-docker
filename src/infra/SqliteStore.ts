@@ -24,6 +24,22 @@ export interface PointsHistoryRecord {
 export class SqliteStore {
   readonly database: DatabaseSync
   readonly ledger: RunLedger
+  private readonly listeners = new Set<() => void>()
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener)
+    return () => {
+      this.listeners.delete(listener)
+    }
+  }
+  private changed(): void {
+    for (const listener of this.listeners) {
+      try {
+        listener()
+      } catch {
+        /* Observers cannot invalidate durable state. */
+      }
+    }
+  }
 
   constructor(path: string) {
     mkdirSync(dirname(path), { recursive: true })
@@ -33,7 +49,9 @@ export class SqliteStore {
     )
     this.migrate()
     migrateRunLedger(this.database)
-    this.ledger = new RunLedger(this.database)
+    this.ledger = new RunLedger(this.database, () => {
+      this.changed()
+    })
   }
 
   close(): void {
@@ -54,7 +72,9 @@ export class SqliteStore {
           `UPDATE account_runs SET status = 'partial',
         stage = 'interrupted', message = 'Previous process ended before verification', updated_at = ?
         WHERE status = 'running' AND run_id IN
-          (SELECT run_id FROM runs WHERE status IN ('queued', 'running', 'cancelling'))`
+          (SELECT run_id FROM runs WHERE status IN ('queued', 'running', 'cancelling'))
+        AND NOT EXISTS (SELECT 1 FROM account_lifecycle a WHERE a.run_id=account_runs.run_id
+          AND a.account_id=account_runs.account_id AND a.execution_state='completed')`
         )
         .run(at)
       this.database
@@ -91,6 +111,8 @@ export class SqliteStore {
           stage = excluded.stage,
           message = excluded.message,
           updated_at = excluded.updated_at
+        WHERE NOT EXISTS (SELECT 1 FROM account_lifecycle a WHERE a.run_id=excluded.run_id
+          AND a.account_id=excluded.account_id AND a.execution_state='completed')
       `
       )
       .run(
@@ -130,6 +152,7 @@ export class SqliteStore {
     this.database
       .prepare('UPDATE runs SET status = ?, finished_at = ? WHERE run_id = ?')
       .run(status, finishedAt ?? null, runId)
+    this.changed()
   }
 
   listRuns(limit = 20, offset = 0, runId?: string): RunSummary[] {

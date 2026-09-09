@@ -12,6 +12,7 @@ import { SqliteStore } from '../.codex-output/next-build/server/infra/SqliteStor
 import { AdminAuthStore } from '../.codex-output/next-build/server/infra/AdminAuthStore.js'
 import { AccountSecretStore } from '../.codex-output/next-build/server/infra/AccountSecretStore.js'
 import { createServer } from '../.codex-output/next-build/server/web/createServer.js'
+import { Notifications } from '../.codex-output/next-build/server/notifications/Notifications.js'
 
 const store = new SqliteStore(':memory:')
 const adminAuth = new AdminAuthStore(store.database)
@@ -105,7 +106,17 @@ const app = await createServer({
   accounts,
   secureCookies: false,
   webRoot: resolve('.codex-output/next-build/web'),
-  runCoordinator
+  runCoordinator,
+  notifications: new Notifications(store, Buffer.alloc(32, 7), async (url) => {
+    assert.ok(String(url).startsWith('https://qyapi.weixin.qq.com/cgi-bin/'))
+    return new globalThis.Response(
+      JSON.stringify(
+        String(url).includes('gettoken')
+          ? { errcode: 0, access_token: 'synthetic-access', expires_in: 7200 }
+          : { errcode: 0 }
+      )
+    )
+  })
 })
 app.addHook('onSend', async (_request, reply, payload) => {
   reply.header(
@@ -195,7 +206,8 @@ try {
     await openHistory()
     await page.getByRole('button', { name: '查看详情', exact: true }).click()
     await page.locator('.account-detail').waitFor()
-    assert.match(await page.locator('.balance-fields').innerText(), /\+88 分/)
+    assert.match(await page.locator('.balance-fields').first().innerText(), /\+88 分/)
+    assert.match(await page.locator('.account-detail').innerText(), /未归属余额变化\s*\+88 分/)
     const evidence = page.locator('.task-evidence').first()
     await evidence.locator('summary').click()
     assert.match(await evidence.innerText(), /未取得到账证据/)
@@ -218,6 +230,11 @@ try {
       /账号 3 · f\*\*\*@e\*\*\*\.test/
     )
     assert.match(await page.locator('.calendar-account').first().innerText(), /\+88 分/)
+    await page.locator('.calendar-account details summary').first().click()
+    assert.match(
+      await page.locator('.calendar-account').first().innerText(),
+      /未归属余额变化\s*\+88 分/
+    )
     await capture('calendar-' + String(width))
     await page.getByRole('button', { name: '进行中 · 查看', exact: true }).click()
     await page.locator('.account-detail').waitFor()
@@ -228,6 +245,24 @@ try {
       .locator('.task-table-wrap')
       .waitFor()
     await capture('tasks-' + String(width))
+    await page.getByRole('button', { name: '消息推送', exact: true }).click()
+    await page.getByLabel('企业 ID', { exact: true }).waitFor()
+    if (width === 1440) {
+      await page.getByLabel('启用企业微信推送').check()
+      await page.getByLabel('企业 ID', { exact: true }).fill('synthetic-corp')
+      await page.getByLabel('应用 AgentId', { exact: true }).fill('1')
+      await page.getByLabel('应用 Secret', { exact: true }).fill('synthetic-secret')
+      await page.getByRole('button', { name: '保存配置', exact: true }).click()
+      await page.getByRole('status').filter({ hasText: '配置已加密保存' }).waitFor()
+      assert.equal(await page.getByLabel('应用 Secret', { exact: true }).inputValue(), '')
+      await page.getByRole('button', { name: '发送测试消息', exact: true }).click()
+      await page.getByRole('status').filter({ hasText: '接口已接受测试消息' }).waitFor()
+    }
+    await capture('notifications-' + String(width))
+    await page.reload()
+    await page.getByLabel('企业 ID', { exact: true }).waitFor()
+    assert.equal(await page.getByLabel('企业 ID', { exact: true }).inputValue(), 'synthetic-corp')
+    assert.equal(await page.getByLabel('应用 Secret', { exact: true }).inputValue(), '')
     await openHistory()
     await page.getByRole('button', { name: '查看详情', exact: true }).click()
     await page.locator('.account-detail').waitFor()
@@ -236,7 +271,7 @@ try {
   await evidence.locator('summary').click()
   failDetail = true
   await page.getByRole('alert').filter({ hasText: '已有观测可能过期' }).waitFor()
-  assert.match(await page.locator('.balance-fields').innerText(), /\+88 分/)
+  assert.match(await page.locator('.balance-fields').first().innerText(), /\+88 分/)
   failDetail = false
   await page.waitForFunction(
     () =>
@@ -287,6 +322,7 @@ try {
   assert.deepEqual(pageErrors, [])
   const result = {
     passed: true,
+    notificationSettings: true,
     widths: [1440, 768, 390, 320],
     screenshots,
     reload: true,

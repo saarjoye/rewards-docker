@@ -4,11 +4,14 @@ import { localDateKey } from '../domain/DateKey.js'
 import type { FieldEvidence } from '../domain/Evidence.js'
 import type { TaskRecord } from '../domain/Task.js'
 import { redactText } from '../security/Redactor.js'
+import { PointCredits, type CreditInput } from './PointCredits.js'
+import { balanceInterval } from './BalanceInterval.js'
 
 export interface BalanceObservation {
   runId: string
   accountId: string
-  phase: 'start' | 'live' | 'end'
+  snapshotId?: string
+  phase: 'start' | 'live' | 'end' | 'task-before' | 'task-after'
   balance: number
   observedAt: string
   businessDate: string
@@ -27,6 +30,7 @@ export interface TaskEvidence {
   completed?: number
   total?: number | null
   executionState?: string
+  credit?: Omit<CreditInput, 'runId' | 'accountId' | 'taskId' | 'source' | 'observedAt'>
 }
 
 export interface AccountLifecycle {
@@ -40,11 +44,14 @@ export interface AccountLifecycle {
     | 'queued'
     | 'running'
     | 'completed'
+    | 'partial'
     | 'failed'
     | 'cancelled'
     | 'interrupted'
     | 'action-required'
   updatedAt: string
+  completionSource?: string | null
+  completionEventKey?: string | null
 }
 
 export function migrateRunLedger(database: DatabaseSync): void {
@@ -76,7 +83,25 @@ export function migrateRunLedger(database: DatabaseSync): void {
       );
       INSERT OR IGNORE INTO schema_version(version, applied_at)
         VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+      CREATE TABLE IF NOT EXISTS account_completions (
+        event_key TEXT PRIMARY KEY, run_id TEXT NOT NULL, account_id TEXT NOT NULL,
+        ended_at TEXT NOT NULL, payload_json TEXT NOT NULL, UNIQUE(run_id, account_id)
+      );
+      CREATE TABLE IF NOT EXISTS point_credits (
+        credit_key TEXT PRIMARY KEY, account_id TEXT NOT NULL, run_id TEXT NOT NULL,
+        business_date TEXT NOT NULL, payload_json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS credit_account_day ON point_credits(account_id, business_date);
+      INSERT OR IGNORE INTO schema_version(version, applied_at)
+        VALUES (4, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
     `)
+    const columns = database.prepare('PRAGMA table_info(account_lifecycle)').all() as {
+      name: string
+    }[]
+    for (const name of ['completion_source', 'completion_event_key']) {
+      if (!columns.some((column) => column.name === name))
+        database.exec(`ALTER TABLE account_lifecycle ADD COLUMN ${name} TEXT`)
+    }
     database.exec('COMMIT')
   } catch (error) {
     database.exec('ROLLBACK')
@@ -85,7 +110,13 @@ export function migrateRunLedger(database: DatabaseSync): void {
 }
 
 export class RunLedger {
-  constructor(private readonly database: DatabaseSync) {}
+  readonly credits: PointCredits
+  constructor(
+    private readonly database: DatabaseSync,
+    private readonly changed: () => void = () => undefined
+  ) {
+    this.credits = new PointCredits(database)
+  }
 
   recordTaskEvidence(input: TaskEvidence): void {
     if (
@@ -120,13 +151,40 @@ export class RunLedger {
         .prepare('INSERT OR IGNORE INTO task_evidence VALUES (?, ?, ?, ?, ?, ?)')
         .run(id, row.runId, row.accountId, row.taskId, row.observedAt, payload)
       if (row.balance !== null)
-        this.balance(row.runId, row.accountId, 'live', {
-          availability: 'valid',
-          value: row.balance,
-          source: 'browser-response',
-          confidence: 1,
-          observedAt: row.observedAt
-        })
+        this.balance(
+          row.runId,
+          row.accountId,
+          row.kind === 'response' || row.kind === 'verification' ? 'task-after' : 'live',
+          {
+            availability: 'valid',
+            value: row.balance,
+            source: 'browser-response',
+            confidence: 1,
+            observedAt: row.observedAt
+          }
+        )
+      else if (row.kind === 'response' || row.kind === 'verification')
+        this.captureTaskBalance(row.runId, row.accountId, 'task-after')
+      if (row.kind === 'execution' && row.executionState === 'running')
+        this.captureTaskBalance(row.runId, row.accountId, 'task-before')
+      const task = this.tasks(input.runId).find((item) => item.taskId === input.taskId)
+      this.credits.record({
+        taskInstanceId: task?.sourceTaskId,
+        businessDate: task?.localDate,
+        creditType: task?.type ?? 'task',
+        reportedPoints: task?.reportedPoints ?? null,
+        expectedPoints: task?.expectedPoints ?? null,
+        submitted:
+          (row.kind === 'response' && row.accepted === true) ||
+          row.executionState === 'submitted' ||
+          row.executionState === 'verification-pending',
+        ...input.credit,
+        runId: row.runId,
+        accountId: row.accountId,
+        taskId: row.taskId,
+        source: task?.source ?? row.source,
+        observedAt: row.observedAt
+      })
       this.database.exec('RELEASE task_evidence_write')
     } catch (error) {
       this.database.exec('ROLLBACK TO task_evidence_write; RELEASE task_evidence_write')
@@ -145,6 +203,18 @@ export class RunLedger {
     )
   }
 
+  captureTaskBalance(runId: string, accountId: string, phase: 'task-before' | 'task-after'): void {
+    const latest = this.balances(runId, accountId).at(-1)
+    if (latest)
+      this.balance(runId, accountId, phase, {
+        availability: 'valid',
+        value: latest.balance,
+        source: 'browser-response',
+        confidence: 1,
+        observedAt: latest.observedAt
+      })
+  }
+
   task(runId: string, task: TaskRecord): void {
     // Persist only the public task model, never an adapter descriptor or response.
     const payload: TaskRecord = {
@@ -160,7 +230,9 @@ export class RunLedger {
       status: task.status,
       progress: { ...task.progress },
       updatedAt: task.updatedAt,
-      ...(task.reason === undefined ? {} : { reason: redactText(task.reason) })
+      ...(task.reason === undefined ? {} : { reason: redactText(task.reason) }),
+      ...(task.reportedPoints === undefined ? {} : { reportedPoints: task.reportedPoints }),
+      ...(task.expectedPoints === undefined ? {} : { expectedPoints: task.expectedPoints })
     }
     this.database
       .prepare(
@@ -188,26 +260,68 @@ export class RunLedger {
   }
 
   lifecycle(input: AccountLifecycle): void {
-    this.database
-      .prepare(
-        `INSERT INTO account_lifecycle VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    this.database.exec('SAVEPOINT account_completion_write')
+    try {
+      this.database
+        .prepare(
+          `INSERT INTO account_lifecycle(run_id, account_id, account_index, account_label, started_at, ended_at, execution_state, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(run_id, account_id) DO UPDATE SET
         started_at = COALESCE(account_lifecycle.started_at, excluded.started_at),
         ended_at = excluded.ended_at, execution_state = excluded.execution_state,
         updated_at = excluded.updated_at
       WHERE excluded.updated_at >= account_lifecycle.updated_at
-        AND account_lifecycle.ended_at IS NULL`
-      )
-      .run(
-        input.runId,
-        input.accountId,
-        input.accountIndex,
-        input.accountLabel,
-        input.startedAt,
-        input.endedAt,
-        input.executionState,
-        input.updatedAt
-      )
+        AND (account_lifecycle.ended_at IS NULL OR (excluded.execution_state='completed' AND account_lifecycle.execution_state!='completed'))`
+        )
+        .run(
+          input.runId,
+          input.accountId,
+          input.accountIndex,
+          redactText(input.accountLabel),
+          input.startedAt,
+          input.endedAt,
+          input.executionState,
+          input.updatedAt
+        )
+      const current = this.accounts(input.runId).find((row) => row.accountId === input.accountId)
+      if (current?.endedAt && current.executionState === input.executionState) {
+        const eventKey = `account-complete:${input.runId}:${input.accountId}`
+        const observations = this.balances(input.runId, input.accountId)
+        const interval = balanceInterval(observations, true)
+        const delta = interval.verificationStatus === 'confirmed' ? interval.delta : null
+        const event = {
+          ...current,
+          eventType: 'ACCOUNT-END',
+          status: current.executionState,
+          success: current.executionState === 'completed',
+          initialPoints: interval.openingBalance,
+          finalPoints: delta === null ? null : interval.closingBalance,
+          collectedPoints: delta,
+          duration: current.startedAt
+            ? Math.max(0, Date.parse(current.endedAt) - Date.parse(current.startedAt))
+            : null,
+          completionSource: 'ACCOUNT-END',
+          completionEventKey: eventKey,
+          verificationStatus: delta === null ? 'pending' : 'confirmed'
+        }
+        this.database
+          .prepare(
+            `INSERT INTO account_completions VALUES (?,?,?,?,?)
+        ON CONFLICT(event_key) DO UPDATE SET payload_json=excluded.payload_json, ended_at=excluded.ended_at
+        WHERE json_extract(account_completions.payload_json, '$.success') != 1`
+          )
+          .run(eventKey, input.runId, input.accountId, current.endedAt, JSON.stringify(event))
+        this.database
+          .prepare(
+            'UPDATE account_lifecycle SET completion_source=?, completion_event_key=? WHERE run_id=? AND account_id=?'
+          )
+          .run('ACCOUNT-END', eventKey, input.runId, input.accountId)
+      }
+      this.database.exec('RELEASE account_completion_write')
+    } catch (error) {
+      this.database.exec('ROLLBACK TO account_completion_write; RELEASE account_completion_write')
+      throw error
+    }
+    this.changed()
   }
 
   accounts(runId: string): AccountLifecycle[] {
@@ -215,7 +329,8 @@ export class RunLedger {
       .prepare(
         `SELECT run_id AS runId, account_id AS accountId,
       account_index AS accountIndex, account_label AS accountLabel, started_at AS startedAt,
-      ended_at AS endedAt, execution_state AS executionState, updated_at AS updatedAt
+      ended_at AS endedAt, execution_state AS executionState, updated_at AS updatedAt,
+      completion_source AS completionSource, completion_event_key AS completionEventKey
       FROM account_lifecycle WHERE run_id = ? ORDER BY account_index`
       )
       .all(runId) as unknown as AccountLifecycle[]
@@ -257,7 +372,7 @@ export class RunLedger {
   }
 
   balances(runId?: string, accountId?: string, businessDate?: string): BalanceObservation[] {
-    const sql = `SELECT run_id AS runId, account_id AS accountId, phase, balance,
+    const sql = `SELECT snapshot_id AS snapshotId, run_id AS runId, account_id AS accountId, phase, balance,
       observed_at AS observedAt, business_date AS businessDate, source FROM balance_observations`
     return this.database
       .prepare(

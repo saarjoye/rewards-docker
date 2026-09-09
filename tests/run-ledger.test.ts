@@ -105,7 +105,7 @@ describe('run evidence ledger', () => {
         accountsTotal: 1,
         persistence: 'live'
       })
-      expect(views.run('run')?.accounts[0]).toMatchObject({
+      expect(views.run('run', 'run')?.accounts[0]).toMatchObject({
         confirmedTaskPoints: null,
         accountIndex: 3,
         verificationStatus: 'provisional'
@@ -124,7 +124,8 @@ describe('run evidence ledger', () => {
       balance(store, 200, '2026-09-08T00:00:00Z', 'start')
       expect(views.run('run')?.runBalanceDelta).toBeNull()
       balance(store, 200, '2026-09-08T00:01:00Z')
-      expect(views.run('run')?.runBalanceDelta).toBe(0)
+      expect(views.run('run', 'run')?.runBalanceDelta).toBe(0)
+      expect(views.run('run')?.runBalanceDelta).toBeNull()
       balance(store, 180, '2026-09-08T00:02:00Z', 'end')
       expect(views.run('run')?.runBalanceDelta).toBe(-20)
     } finally {
