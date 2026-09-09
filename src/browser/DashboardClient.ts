@@ -810,7 +810,8 @@ export class DashboardClient {
             owner?.getAttribute('data-destination-url') ??
             '',
           ariaLabel: anchor.getAttribute('aria-label') ?? '',
-          title: anchor.getAttribute('title') ?? ''
+          title: anchor.getAttribute('title') ?? '',
+          text: anchor.innerText.slice(0, 200)
         }
       })
     )

@@ -95,6 +95,14 @@ describe('web API', () => {
             availability: 'valid',
             observedAt: end
           })
+        if (index === 2)
+          store.ledger.balance(runId, accountId, 'live', {
+            value: 5909,
+            source: 'rsc',
+            confidence: 1,
+            availability: 'valid',
+            observedAt: `${date}T01:00:00Z`
+          })
         store.ledger.lifecycle({
           runId,
           accountId,
@@ -128,6 +136,22 @@ describe('web API', () => {
           'failed'
         ])
         expect(body.accounts.map((row) => row.runBalanceDelta)).toEqual([0, null, null])
+        expect(body.accounts[0]).toMatchObject({
+          liveBalanceDelta: 0,
+          confirmedBalanceDelta: 0,
+          liveBalanceStatus: 'final'
+        })
+        expect(body.accounts[1]).toMatchObject({
+          liveBalanceDelta: 105,
+          confirmedBalanceDelta: null,
+          liveBalanceStatus: 'live',
+          statisticScope: { runId, accountId: 'synthetic-2', businessDate: date }
+        })
+        expect(body.accounts[2]).toMatchObject({
+          liveBalanceDelta: null,
+          confirmedBalanceDelta: null,
+          liveBalanceStatus: 'unavailable'
+        })
         expect(body.accounts.every((row) => row.confirmedTaskPoints === null)).toBe(true)
         if (!url.endsWith('/report'))
           expect(body.accounts.every((row) => row.accountSuccess === false)).toBe(true)

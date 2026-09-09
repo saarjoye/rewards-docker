@@ -36,7 +36,7 @@ it('separates accepted responses and observed balances from confirmed credits', 
   )
   expect(html).toContain('5088 分')
   expect(html).toContain('已记录接收回执')
-  expect(html).toContain('未取得到账证据')
+  expect(html).toContain('未匹配')
   expect(html).not.toContain('已到账 5088')
   expect(html).toContain('2026-09-08')
   expect(html).toContain('App 响应')

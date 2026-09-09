@@ -2,19 +2,24 @@ import { localDateKey } from '../domain/DateKey.js'
 import { balanceInterval } from '../infra/BalanceInterval.js'
 export { balanceInterval } from '../infra/BalanceInterval.js'
 import type { SqliteStore } from '../infra/SqliteStore.js'
+import { liveAccounting } from '../infra/LiveAccounting.js'
 
 export class RunViews {
   constructor(private readonly store: SqliteStore) {}
+
+  accountDate(runId: string, accountId: string, businessDate: string) {
+    return liveAccounting(this.store.ledger, accountId, businessDate, runId)
+  }
 
   day(accountId: string, businessDate: string) {
     const balances = this.store.ledger.balances(undefined, accountId, businessDate)
     const interval = balanceInterval(balances)
     return {
-      businessDate,
       timezone: 'Asia/Shanghai',
       dailyBalanceDelta: interval.delta,
       ...interval,
-      ...this.store.ledger.credits.reconcile(accountId, interval.delta, businessDate)
+      ...this.store.ledger.credits.reconcile(accountId, interval.delta, businessDate),
+      ...liveAccounting(this.store.ledger, accountId, businessDate)
     }
   }
 
@@ -43,6 +48,14 @@ export class RunViews {
       finishedAt: undefined
     }
     const legacy = this.store.listAccountRuns(runId)
+    const businessDate =
+      [
+        ...balances.map((row) => row.businessDate),
+        ...snapshots.map((row) => row.localDate),
+        run.localDate
+      ]
+        .sort()
+        .at(-1) ?? run.localDate
     const ids = new Set([
       ...lifecycle.map((row) => row.accountId),
       ...legacy.map((row) => row.accountId),
@@ -74,20 +87,30 @@ export class RunViews {
       return {
         accountId,
         accountIndex: execution?.accountIndex ?? old?.runAccountIndex ?? null,
-        accountLabel: execution?.accountLabel ?? '标签待确认',
+        accountLabel: execution?.accountLabel ?? '标签—',
         executionState: execution?.executionState ?? old?.status ?? 'unknown',
         startedAt: execution?.startedAt ?? null,
         endedAt: execution?.endedAt ?? null,
         runBalanceDelta,
         dailyBalances: dates.map((date) => this.day(accountId, date)),
         ...this.store.ledger.credits.reconcile(accountId, runBalanceDelta, undefined, runId),
+        ...this.accountDate(runId, accountId, businessDate),
+        runDailyBalances: dates.map((date) => this.accountDate(runId, accountId, date)),
+        creditEvidence: credits
+          .filter((row) => row.accountId === accountId)
+          .map((row) => ({
+            taskId: row.taskId,
+            businessDate: row.businessDate,
+            creditKey: row.creditKey,
+            evidenceSource: row.evidenceSource,
+            confirmedPoints: this.store.ledger.credits.confirmed(row),
+            reportedPoints: row.reportedPoints,
+            expectedPoints: row.expectedPoints
+          })),
         completionSource: execution?.completionSource ?? null,
         completionEventKey: execution?.completionEventKey ?? null,
         accountSuccess:
           execution?.executionState === 'completed' ? true : execution?.endedAt ? false : null,
-        verificationStatus: runBalanceDelta === null ? 'pending' : interval.verificationStatus,
-        observedAt: interval.observedAt,
-        evidenceSources: interval.evidenceSources,
         legacyUnverified: !execution,
         taskEvidence: taskEvidence.filter((row) => row.accountId === accountId),
         tasks
@@ -109,6 +132,15 @@ export class RunViews {
       confirmedTaskPoints: sum(accounts.map((row) => row.confirmedTaskPoints)),
       reportedTaskPoints: sum(accounts.map((row) => row.reportedTaskPoints)),
       pendingTaskPoints: sum(accounts.map((row) => row.pendingTaskPoints)),
+      liveBalanceDelta: sum(accounts.map((row) => row.liveBalanceDelta)),
+      liveBalanceStatus:
+        accounts.length && accounts.every((row) => row.liveBalanceStatus === 'final')
+          ? 'final'
+          : accounts.some((row) => row.liveBalanceStatus === 'unavailable') || !accounts.length
+            ? 'unavailable'
+            : 'live',
+      confirmedBalanceDelta: sum(accounts.map((row) => row.confirmedBalanceDelta)),
+      statisticScope: { kind: 'run-date', runId, businessDate, timezone: 'Asia/Shanghai' },
       runBalanceDelta:
         deltas.length && deltas.every((value) => value !== null)
           ? deltas.reduce<number>((sum, value) => sum + value, 0)
@@ -168,7 +200,7 @@ export class RunViews {
           ...this.day(first.accountId, first.businessDate),
           accountId: first.accountId,
           accountIndex: account?.accountIndex ?? null,
-          accountLabel: account?.accountLabel ?? '标签待确认',
+          accountLabel: account?.accountLabel ?? '标签—',
           taskCount: tasks.size,
           records: records.map((row) => ({
             runId: row.runId,

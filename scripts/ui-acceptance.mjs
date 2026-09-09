@@ -205,6 +205,7 @@ try {
   await page.getByRole('button', { name: '登录', exact: true }).click()
   await page.locator('.workspace-toolbar').waitFor()
   async function capture(name) {
+    assert.doesNotMatch(await page.locator('body').innerText(), /待确认/)
     await page.evaluate(async () => {
       await Promise.all(
         globalThis.document
@@ -273,8 +274,18 @@ try {
     screenshots += 1
   }
   async function navigate(name) {
-    if (await page.getByRole('button', { name: '打开导航', exact: true }).isVisible())
+    if (await page.getByRole('button', { name: '打开导航', exact: true }).isVisible()) {
       await page.getByRole('button', { name: '打开导航', exact: true }).click()
+      await page.getByRole('navigation', { name: '移动管理视图' }).waitFor()
+      await page.evaluate(async () => {
+        await Promise.all(
+          globalThis.document
+            .getAnimations()
+            .filter((animation) => animation.effect?.getTiming().iterations !== Infinity)
+            .map((animation) => animation.finished.catch(() => undefined))
+        )
+      })
+    }
     const link = page.getByRole('link', { name, exact: true })
     await link.focus()
     await link.press('Enter')
@@ -346,10 +357,10 @@ try {
     await page.getByRole('button', { name: '查看详情', exact: true }).click()
     await page.locator('.account-detail').waitFor()
     assert.match(await page.locator('.balance-fields').first().innerText(), /\+88 分/)
-    assert.match(await page.locator('.account-detail').innerText(), /未归属余额变化\s*\+88 分/)
+    assert.match(await page.locator('.account-detail').innerText(), /本轮实时余额变化\s*\+88 分/)
     const evidence = page.locator('.task-evidence').first()
     await evidence.locator('summary').click()
-    assert.match(await evidence.innerText(), /未取得到账证据/)
+    assert.match(await evidence.innerText(), /未匹配/)
     assert.match(await evidence.innerText(), /5088 分/)
     await page.getByLabel('记录类型').selectOption('response')
     assert.equal(await evidence.locator('tbody tr').count(), 1)
@@ -372,7 +383,7 @@ try {
     await page.locator('.calendar-account details summary').first().click()
     assert.match(
       await page.locator('.calendar-account').first().innerText(),
-      /未归属余额变化\s*\+88 分/
+      /日累计已观测余额变化\s*\+88 分/
     )
     await capture('calendar-' + String(width))
     await page

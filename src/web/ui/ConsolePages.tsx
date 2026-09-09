@@ -8,7 +8,7 @@ import { AddIcon } from 'tdesign-icons-react'
 import type { AccountSummary, StatePayload } from './App'
 import { Button, DataTable, Field, PageHeader, SelectField, StatusTag } from './UiKit'
 import { PointSummary } from './PointSummary'
-import { clockTime, duration, points } from './display'
+import { clockTime, duration, points, publicText } from './display'
 
 export function Overview({
   state,
@@ -52,8 +52,8 @@ export function Overview({
             </div>
             <div>
               <span className="muted">本次余额变化</span>
-              <strong className="balance-number">{points(active.runBalanceDelta)}</strong>
-              <StatusTag value={active.runBalanceDelta === null ? 'pending' : 'provisional'} />
+              <strong className="balance-number">{points(active.liveBalanceDelta)}</strong>
+              <StatusTag value={active.liveBalanceStatus} />
               <Button
                 variant="outline"
                 onClick={() => {
@@ -124,7 +124,11 @@ export function Overview({
               cell: (row) => `已处理 ${String(row.accountsProcessed)}/${String(row.accountsTotal)}`
             },
             { key: 'status', title: '状态', cell: (row) => <StatusTag value={row.status} /> },
-            { key: 'points', title: '本次余额变化', cell: (row) => points(row.runBalanceDelta) },
+            {
+              key: 'points',
+              title: '本轮实时余额变化',
+              cell: (row) => points(row.liveBalanceDelta)
+            },
             {
               key: 'actions',
               title: '操作',
@@ -234,7 +238,7 @@ export function TasksPage({
                       failed: '失败',
                       skipped: '已跳过',
                       'action-required': '需人工处理',
-                      unknown: '待确认'
+                      unknown: '—'
                     } as Record<string, string>
                   )[value] ?? value
               }))
@@ -282,7 +286,7 @@ export function TasksPage({
               cell: (row) => (
                 <>
                   <strong>{row.displayName}</strong>
-                  <small className="muted">{row.reason ?? row.source}</small>
+                  <small className="muted">{publicText(row.reason ?? row.source)}</small>
                 </>
               )
             },
@@ -292,7 +296,7 @@ export function TasksPage({
               title: '任务进度',
               cell: (row) =>
                 row.progress.total === null
-                  ? '待确认'
+                  ? '—'
                   : `${String(row.progress.completed)}/${String(row.progress.total)}`
             },
             { key: 'time', title: '更新时间', cell: (row) => clockTime(row.updatedAt) }

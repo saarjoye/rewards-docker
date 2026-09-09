@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react'
-import { points } from './display'
+import { points, stateLabel } from './display'
 
 export interface PointStatistics {
   reportedTaskPoints?: number | null
@@ -8,6 +8,19 @@ export interface PointStatistics {
   unattributedBalanceDelta?: number | null
   overreportedTaskPoints?: number | null
   creditVerificationStatus?: string
+  liveBalanceDelta?: number | null
+  liveBalanceStatus?: string
+  confirmedBalanceDelta?: number | null
+  unmatchedBalancePoints?: number | null
+  unattributedBalancePoints?: number | null
+  attributionStatus?: string
+  statisticScope?: {
+    kind: string
+    runId?: string | null
+    accountId?: string
+    businessDate: string
+    timezone: string
+  }
 }
 
 export function PointSummary({ value }: { value: PointStatistics }): ReactElement {
@@ -15,40 +28,49 @@ export function PointSummary({ value }: { value: PointStatistics }): ReactElemen
     <>
       <dl className="balance-fields">
         <div>
-          <dt>任务到账证据状态</dt>
+          <dt>数据状态</dt>
+          <dd>{stateLabel(value.attributionStatus ?? 'pending')}</dd>
+        </div>
+        <div>
+          <dt>
+            {value.statisticScope?.kind === 'account-date'
+              ? '日累计已观测余额变化'
+              : '本轮实时余额变化'}
+          </dt>
           <dd>
-            {value.creditVerificationStatus === 'confirmed'
-              ? '已确认'
-              : value.creditVerificationStatus === 'partial'
-                ? '部分确认'
-                : value.creditVerificationStatus === 'conflict'
-                  ? '证据冲突'
-                  : '待确认'}
+            {points(value.liveBalanceDelta)} · {stateLabel(value.liveBalanceStatus ?? 'pending')}
           </dd>
+        </div>
+        <div>
+          <dt>最终余额变化</dt>
+          <dd>{points(value.confirmedBalanceDelta)}</dd>
         </div>
         <div>
           <dt>任务上报积分</dt>
           <dd>{points(value.reportedTaskPoints)}</dd>
         </div>
         <div>
-          <dt>已确认到账积分</dt>
+          <dt>已匹配到账积分</dt>
           <dd>{points(value.confirmedTaskPoints)}</dd>
         </div>
         <div>
-          <dt>待确认积分</dt>
+          <dt>未匹配任务预计积分</dt>
           <dd>{points(value.pendingTaskPoints)}</dd>
         </div>
         <div>
-          <dt>未归属余额变化</dt>
-          <dd>{points(value.unattributedBalanceDelta)}</dd>
+          <dt>未匹配余额</dt>
+          <dd>{points(value.unmatchedBalancePoints)}</dd>
         </div>
         <div>
-          <dt>超出余额证据的上报积分</dt>
+          <dt>上报超额</dt>
           <dd>{points(value.overreportedTaskPoints)}</dd>
         </div>
       </dl>
       <small className="observation">
-        未归属余额：账户余额已增加，但暂时无法关联到唯一任务来源。
+        {value.statisticScope
+          ? `${value.statisticScope.businessDate} · ${value.statisticScope.timezone} · ${value.statisticScope.kind === 'account-date' ? '账号日累计' : '本轮账号'}`
+          : '统计范围：—'}
+        。未匹配余额与上报超额是不同的比较项，不相加；— 表示没有数值证据。
       </small>
     </>
   )

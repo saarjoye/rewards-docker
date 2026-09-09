@@ -313,6 +313,26 @@ export class RewardsTaskExecutor {
       },
       verify: async (context) => {
         const result = await adapter.verify(context)
+        if (
+          result.points?.availability !== 'valid' &&
+          result.confirmed &&
+          !context.signal.aborted
+        ) {
+          try {
+            result.points = (
+              await this.client.fetchDashboard(context.signal, Date.now() + 15_000)
+            ).availablePoints
+          } catch {
+            /* Keep the last real observation; never invent a final balance. */
+          }
+        }
+        if (result.points)
+          this.store.ledger.balance(
+            this.runId,
+            descriptor.task.accountId,
+            'task-after',
+            result.points
+          )
         this.store.ledger.recordTaskEvidence({
           runId: this.runId,
           accountId: descriptor.task.accountId,
@@ -418,20 +438,26 @@ export class RewardsTaskExecutor {
       const offer = observation.offers.find(
         (item) => item.sourceTaskId === descriptor.task.sourceTaskId
       )
-      return this.offerVerification(descriptor.task, offer)
+      return {
+        ...this.offerVerification(descriptor.task, offer),
+        points: observation.availablePoints
+      }
     }
     if (descriptor.offer?.source === 'bing-flyout') {
       const observation = await this.client.fetchFlyout(Date.now() + 15_000, signal)
       const offer = observation?.offers.find(
         (item) => item.sourceTaskId === descriptor.task.sourceTaskId
       )
-      return this.offerVerification(descriptor.task, offer)
+      return {
+        ...this.offerVerification(descriptor.task, offer),
+        ...(observation ? { points: observation.availablePoints } : {})
+      }
     }
     const bootstrap = await this.client.bootstrapRsc()
     const offer = bootstrap.offers.find(
       (item) => item.sourceTaskId === descriptor.task.sourceTaskId
     )
-    return this.offerVerification(descriptor.task, offer)
+    return { ...this.offerVerification(descriptor.task, offer), points: bootstrap.availablePoints }
   }
 
   private offerVerification(task: TaskRecord, offer: RewardOffer | undefined): VerificationResult {

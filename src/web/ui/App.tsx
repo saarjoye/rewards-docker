@@ -94,6 +94,8 @@ interface RunSummary {
   startedAt: string
   finishedAt?: string
   runBalanceDelta: number | null
+  liveBalanceDelta: number | null
+  liveBalanceStatus: string
   accountsProcessed: number
   accountsTotal: number
 }

@@ -11,6 +11,7 @@ export interface OfferAnchor {
   destinationUrl?: string
   ariaLabel?: string
   title?: string
+  text?: string
 }
 
 const bingHosts = new Set(['bing.com', 'www.bing.com', 'cn.bing.com'])
@@ -87,7 +88,9 @@ export function matchOfferAnchor(
     const id =
       identity.sourceTaskId && [anchor.offerId, anchor.taskId].includes(identity.sourceTaskId)
     const label = normalize(identity.displayName)
-    const named = label && [normalize(anchor.ariaLabel), normalize(anchor.title)].includes(label)
+    const named =
+      label &&
+      [normalize(anchor.ariaLabel), normalize(anchor.title), normalize(anchor.text)].includes(label)
     return id || named ? [index] : []
   })
   return {

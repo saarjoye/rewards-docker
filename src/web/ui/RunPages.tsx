@@ -7,7 +7,7 @@ import { Loading } from 'tdesign-react/es/loading/index.js'
 import { Button, DataTable, Feedback, PageHeader, StatusTag } from './UiKit'
 import type { ReactElement } from 'react'
 import { createRequestQueue } from './requestQueue'
-import { TaskEvidencePanel, type EvidenceRow } from './TaskEvidencePanel'
+import { TaskEvidencePanel, type EvidenceRow, type CreditRow } from './TaskEvidencePanel'
 import { PointSummary, type PointStatistics } from './PointSummary'
 import { stateLabel, points, clockTime, duration } from './display'
 export { stateLabel, points, clockTime, duration } from './display'
@@ -34,8 +34,11 @@ interface RunAccount extends PointStatistics {
   dailyBalances: DailyBalance[]
   tasks: Array<{ taskId: string; displayName: string; status: string; reason?: string }>
   taskEvidence?: EvidenceRow[]
+  creditEvidence?: CreditRow[]
+  runDailyBalances?: PointStatistics[]
 }
 interface Run {
+  liveBalanceDelta: number | null
   runId: string
   startedAt: string
   finishedAt?: string
@@ -200,7 +203,7 @@ function HistoryList({
                       ? clockTime(row.finishedAt)
                       : row.runId === activeRunId
                         ? '进行中'
-                        : '待确认'}
+                        : '—'}
                   </span>
                   <small className="muted">
                     ={' '}
@@ -233,7 +236,11 @@ function HistoryList({
                 String(row.accountsTotal) +
                 ' 个账号'
             },
-            { key: 'balance', title: '本次余额变化', cell: (row) => points(row.runBalanceDelta) },
+            {
+              key: 'balance',
+              title: '本轮实时余额变化',
+              cell: (row) => points(row.liveBalanceDelta)
+            },
             {
               key: 'action',
               title: '操作',
@@ -318,7 +325,7 @@ function RunDetail({
                 ? clockTime(value.run.finishedAt)
                 : id === activeRunId
                   ? '进行中'
-                  : '待确认'}{' '}
+                  : '—'}{' '}
               ={' '}
               {duration(
                 value.run.startedAt,
@@ -339,7 +346,7 @@ function RunDetail({
             <Card bordered={false} className="account-detail" key={account.accountId}>
               <div className="section-heading">
                 <h3>
-                  账号 {account.accountIndex ?? '待确认'} · {account.accountLabel}
+                  账号 {account.accountIndex ?? '—'} · {account.accountLabel}
                 </h3>
                 <div className="tag-group">
                   <StatusTag value={account.executionState} />
@@ -355,7 +362,7 @@ function RunDetail({
                   ? clockTime(account.endedAt)
                   : account.executionState === 'running' && id === activeRunId
                     ? '进行中'
-                    : '待确认'}{' '}
+                    : '—'}{' '}
                 ={' '}
                 {duration(
                   account.startedAt,
@@ -367,15 +374,23 @@ function RunDetail({
               </p>
               <dl className="balance-fields">
                 <div>
-                  <dt>本次余额变化</dt>
-                  <dd>{points(account.runBalanceDelta)}</dd>
+                  <dt>本轮实时余额变化</dt>
+                  <dd>{points(account.liveBalanceDelta)}</dd>
                 </div>
                 <div>
-                  <dt>待确认任务</dt>
+                  <dt>未匹配任务</dt>
                   <dd>{account.pendingTaskCount}</dd>
                 </div>
               </dl>
               <PointSummary value={account} />
+              {(account.runDailyBalances?.length ?? 0) > 1 && (
+                <details>
+                  <summary>本轮跨日分账</summary>
+                  {account.runDailyBalances?.map((day) => (
+                    <PointSummary key={day.statisticScope?.businessDate} value={day} />
+                  ))}
+                </details>
+              )}
               <details className="daily-evidence">
                 <summary>按日期查看余额证据（{account.dailyBalances.length} 天）</summary>
                 {account.dailyBalances.map((day) => (
@@ -393,7 +408,11 @@ function RunDetail({
                   </div>
                 ))}
               </details>
-              <TaskEvidencePanel tasks={account.tasks} evidence={account.taskEvidence ?? []} />
+              <TaskEvidencePanel
+                tasks={account.tasks}
+                evidence={account.taskEvidence ?? []}
+                creditEvidence={account.creditEvidence ?? []}
+              />
             </Card>
           ))}
         </>
@@ -504,7 +523,7 @@ function Calendar({
             <article className="calendar-account" key={entry.accountId}>
               <div className="section-heading">
                 <strong>
-                  账号 {entry.accountIndex ?? '待确认'} · {entry.accountLabel}
+                  账号 {entry.accountIndex ?? '—'} · {entry.accountLabel}
                 </strong>
                 <StatusTag value={entry.verificationStatus} />
               </div>

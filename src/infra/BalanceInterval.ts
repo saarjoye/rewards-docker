@@ -19,6 +19,7 @@ export function balanceInterval(observations: readonly BalanceObservation[], req
   const finalized =
     valid && sorted.some((row) => row.observedAt === closing.observedAt && row.phase === 'end')
   return {
+    conflicting,
     delta,
     openingBalance: opening?.balance ?? null,
     closingBalance: closing?.balance ?? null,

@@ -60,6 +60,18 @@
 
 生命周期、任务、余额或信用事件均可生成临时详情与日历记录。SSE 只发送失效提示，不传认证或原始数据；页面合并刷新，重连重读完整状态，失败保留旧观测并显示过期。
 
+## 实时统计与总分通知（next.5）
+
+`LiveAccounting` 统一本轮统计范围为 `runId + accountId + businessDate`，业务日期为上海日期。API 显式返回 `statisticScope`；日累计使用独立的 account-date 范围，跨日运行展开 `runDailyBalances`，不借用其他日期或其他运行的起点。
+
+`liveBalanceDelta` 为同范围可靠起点与最新余额之差，账号部分完成、失败或其他账号继续运行时仍可展示。只有合法 end 快照才能得到 `confirmedBalanceDelta`，状态为 final；否则有差值为 live，无证据为 unavailable。`latestBalance` 为该范围最新观测的绝对余额，冲突或缺失为 null。账号推送用“实时总分”展示该余额，不加正号，另列本轮增量和最终增量；不再用“余额确认”替代实际分数。
+
+任务复核复用读到的实际余额并及时广播。任务确认但未读到有效余额时，最多追加一次有时限的只读余额查询；不因页面刷新产生 Rewards 请求。任务证据事务提交后才广播，回滚不会广播半成品。
+
+`reportedTaskPoints` 只加总同范围的数值型上报，缺失不当零。`unmatchedBalancePoints` 为观测差值减可靠任务确认值的非负部分；任一值未知或证据冲突时保持 null。`overreportedTaskPoints` 为上报减观测差值的非负部分。未匹配余额与上报超额仅用于对比，不相加为收入，不生成任务到账来源。`unattributedBalancePoints` 是未匹配余额的兼容别名，不重复计数。
+
+界面及通知未知数值显示“—”，真实零显示 0 分。状态映射为已确认、实时观测、未匹配、上报超额、数据冲突、暂无数据；内部 pending 保留。历史诊断仅在展示时转换文案，不重写原始记录。已有旧字段保留兼容，新页面统一使用新统计字段。无需新增数据库迁移。
+
 ## 迁移与验证
 
 运行账本 schema v4 在事务内新增 `account_completions`、`point_credits` 和完成来源字段；通知 schema v2 幂等创建加密设置、队列及入队触发器。启动重复迁移不增加积分、不删除旧数据，失败回滚。本轮只在临时 SQLite 验证，未迁移生产数据。

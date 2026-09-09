@@ -65,6 +65,44 @@ function fixture() {
 }
 
 describe('persistent enterprise notifications', () => {
+  it.each([
+    { opening: 1000, latest: 1110, total: '1110 分', delta: '+110 分' },
+    { opening: 0, latest: 0, total: '0 分', delta: '0 分' },
+    { opening: null, latest: null, total: '—', delta: '—' }
+  ])(
+    'shows the latest total separately from the run change: $total',
+    async ({ opening, latest, total, delta }) => {
+      const { store, service, send, runId, complete } = fixture()
+      try {
+        if (opening !== null) {
+          for (const [phase, value, observedAt] of [
+            ['start', opening, '2026-09-09T00:00:01Z'],
+            ['live', latest, '2026-09-09T00:00:02Z']
+          ] as const) {
+            store.ledger.balance(runId, 'synthetic', phase, {
+              value,
+              observedAt,
+              availability: 'valid',
+              confidence: 1,
+              source: 'rsc'
+            })
+          }
+        }
+        complete()
+        await service.tick()
+        const body = send.mock.calls.find(
+          ([url]) => typeof url === 'string' && url.includes('message/send')
+        )?.[1]?.body
+        expect(body).toContain(`实时总分：${total}`)
+        expect(body).toContain(`本轮实时余额变化：${delta}`)
+        expect(body).not.toContain('余额确认：')
+        expect(body).not.toContain('待确认')
+      } finally {
+        store.close()
+      }
+    }
+  )
+
   it('upgrades an old settings table idempotently without rewriting existing encrypted settings', () => {
     const store = new SqliteStore(':memory:')
     const key = Buffer.alloc(32, 9)
@@ -394,7 +432,8 @@ describe('persistent enterprise notifications', () => {
       const messages = () =>
         send.mock.calls.filter(([url]) => typeof url === 'string' && url.includes('message/send'))
       expect(messages()).toHaveLength(1)
-      expect(messages()[0]?.[1]?.body).toContain('已确认任务积分：待确认')
+      expect(messages()[0]?.[1]?.body).toContain('已匹配到账积分：—')
+      expect(messages()[0]?.[1]?.body).not.toContain('待确认')
       store.updateRun(runId, 'interrupted')
       await service.tick()
       expect(messages()).toHaveLength(2)

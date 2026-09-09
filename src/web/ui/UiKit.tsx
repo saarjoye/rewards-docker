@@ -7,20 +7,26 @@ import { Select } from 'tdesign-react/es/select/index.js'
 import { Table } from 'tdesign-react/es/table/index.js'
 import { Tag } from 'tdesign-react/es/tag/index.js'
 import type { ButtonProps, InputRef } from 'tdesign-react'
-import { stateLabel } from './display'
+import { stateLabel, publicText } from './display'
 
 // Preserve native disabled semantics; the library otherwise renders a disabled div.
 export function Button(props: ButtonProps): ReactElement {
   return <TButton {...props} tag="button" />
 }
 export function StatusTag({ value }: { value: string }): ReactElement {
-  const theme = ['completed', 'confirmed', 'success', 'sent', 'accepted'].includes(value)
+  const theme = ['completed', 'confirmed', 'final', 'success', 'sent', 'accepted'].includes(value)
     ? 'success'
     : ['failed', 'conflict', 'interrupted'].includes(value)
       ? 'danger'
-      : ['partial', 'pending', 'provisional', 'verification-pending', 'action-required'].includes(
-            value
-          )
+      : [
+            'partial',
+            'pending',
+            'unmatched',
+            'overreported',
+            'provisional',
+            'verification-pending',
+            'action-required'
+          ].includes(value)
         ? 'warning'
         : ['running', 'live', 'sending'].includes(value)
           ? 'primary'
@@ -36,12 +42,12 @@ export function Feedback({ error, message }: { error?: string; message?: string 
     <>
       {error && (
         <div role="alert">
-          <Alert theme="error" message={error} />
+          <Alert theme="error" message={publicText(error)} />
         </div>
       )}
       {message && (
         <div role="status">
-          <Alert theme="success" message={message} />
+          <Alert theme="success" message={publicText(message)} />
         </div>
       )}
     </>

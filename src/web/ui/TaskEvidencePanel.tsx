@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { ReactElement } from 'react'
-import { clockTime, stateLabel } from './display'
+import { clockTime, stateLabel, publicText } from './display'
 
 export interface EvidenceRow {
   taskId: string
@@ -23,6 +23,16 @@ interface TaskSummary {
   reason?: string
 }
 
+export interface CreditRow {
+  taskId: string
+  businessDate: string
+  creditKey: string
+  evidenceSource: string
+  confirmedPoints: number | null
+  reportedPoints: number | null
+  expectedPoints: number | null
+}
+
 const sourceName = (source: string): string =>
   ({
     'app-dashboard': 'App 响应',
@@ -42,10 +52,12 @@ const numeric = (value: number | null | undefined): string =>
 
 export function TaskEvidencePanel({
   tasks,
-  evidence = []
+  evidence = [],
+  creditEvidence = []
 }: {
   tasks: readonly TaskSummary[]
   evidence?: readonly EvidenceRow[]
+  creditEvidence?: readonly CreditRow[]
 }): ReactElement {
   const [kind, setKind] = useState('all')
   const groups = new Map(tasks.map((task) => [task.taskId, { task, rows: [] as EvidenceRow[] }]))
@@ -89,12 +101,39 @@ export function TaskEvidencePanel({
         return (
           <details className="task-evidence" key={task.taskId}>
             <summary>
-              <span className="evidence-task-name">{task.displayName}</span>
+              <span className="evidence-task-name">{publicText(task.displayName)}</span>
               <span className="evidence-task-status">
                 {stateLabel(task.status)} · {rows.length} 条证据
               </span>
             </summary>
-            {task.reason && <p className="observation">{task.reason}</p>}
+            {task.reason && <p className="observation">{publicText(task.reason)}</p>}
+            <div className="observation">
+              到账证据：
+              {creditEvidence
+                .filter((credit) => credit.taskId === task.taskId)
+                .map((credit) => (
+                  <p key={credit.creditKey}>
+                    {credit.businessDate} ·{' '}
+                    {credit.evidenceSource === 'official-credit'
+                      ? '官方到账事件'
+                      : credit.evidenceSource === 'isolated-balance'
+                        ? '隔离余额'
+                        : credit.evidenceSource === 'official-progress'
+                          ? '官方进度（非到账）'
+                          : '任务上报'}{' '}
+                    ·{' '}
+                    {credit.confirmedPoints === null
+                      ? '未匹配'
+                      : credit.evidenceSource === 'isolated-balance'
+                        ? '已匹配'
+                        : '已确认'}{' '}
+                    ·{' '}
+                    {credit.confirmedPoints === null ? '—' : `${String(credit.confirmedPoints)} 分`}
+                    <small className="evidence-identity">到账标识：{credit.creditKey}</small>
+                  </p>
+                ))}
+              {creditEvidence.every((credit) => credit.taskId !== task.taskId) ? '未匹配' : ''}
+            </div>
             <p className="evidence-identity">
               任务标识：<code>{task.taskId}</code>
             </p>
@@ -164,7 +203,7 @@ export function TaskEvidencePanel({
                       </td>
                       <td data-label="到账证据">
                         {row.confirmedPoints == null
-                          ? '未取得到账证据'
+                          ? '未匹配'
                           : `已确认到账 ${numeric(row.confirmedPoints)} 分`}
                         <small>到账标识：{row.creditKey ?? '未取得'}</small>
                       </td>

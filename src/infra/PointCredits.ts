@@ -218,7 +218,9 @@ export class PointCredits {
       values.length && values.every((value) => value !== null)
         ? values.reduce<number>((sum, value) => sum + value, 0)
         : null
-    const reportedTaskPoints = total(rows.map((row) => row.reportedPoints))
+    const reportedTaskPoints = total(
+      rows.map((row) => row.reportedPoints).filter((value) => value !== null)
+    )
     const scope = this.db
       .prepare(
         `SELECT MIN(observed_at) AS start, MAX(observed_at) AS end FROM balance_observations
@@ -249,9 +251,7 @@ export class PointCredits {
         ? 0
         : null
     const overreportedTaskPoints =
-      reportedTaskPoints === null || delta === null
-        ? null
-        : Math.max(0, reportedTaskPoints - Math.max(0, delta))
+      reportedTaskPoints === null || delta === null ? null : Math.max(0, reportedTaskPoints - delta)
     const legacyBalance = this.rows(accountId, date, runId).some(
       (row) => row.evidenceSource === 'account-balance'
     )

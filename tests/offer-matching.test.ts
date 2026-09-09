@@ -54,4 +54,19 @@ describe('safe offer matching', () => {
       ).index
     ).toBe(-1)
   })
+  it('uses visible task text only with a trusted destination and unique candidate', () => {
+    const candidate = {
+      href: 'https://rewards.bing.com/activate',
+      text: 'Synthetic task',
+      destinationUrl: 'https://bing.com/search?q=topic'
+    }
+    const identity = { sourceTaskId: 'offer1', displayName: 'Synthetic task' }
+    expect(matchOfferAnchor([candidate], candidate.destinationUrl, identity).index).toBe(0)
+    expect(matchOfferAnchor([candidate, candidate], candidate.destinationUrl, identity).index).toBe(
+      -1
+    )
+    expect(
+      matchOfferAnchor([candidate], 'https://bing.com/search?q=different', identity).index
+    ).toBe(-1)
+  })
 })

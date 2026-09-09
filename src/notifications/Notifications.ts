@@ -4,6 +4,8 @@ import type { SqliteStore } from '../infra/SqliteStore.js'
 import { decryptBytes, encryptBytes, type EncryptedEnvelope } from '../security/CryptoVault.js'
 import { redactText } from '../security/Redactor.js'
 import { RunViews } from '../web/RunViews.js'
+import { localDateKey } from '../domain/DateKey.js'
+import { stateLabel, publicText } from '../domain/Presentation.js'
 
 const officialApiBase = 'https://qyapi.weixin.qq.com'
 const apiBaseUrl = z
@@ -75,11 +77,11 @@ const defaults: Settings = {
   apiBaseUrl: officialApiBase
 }
 const points = (value: number | null) =>
-  value === null ? '待确认' : `${value > 0 ? '+' : ''}${String(value)} 分`
+  value === null ? '—' : `${value > 0 ? '+' : ''}${String(value)} 分`
 const time = (value?: string | null) =>
   value
     ? new Date(value).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })
-    : '待确认'
+    : '—'
 const states: Record<string, string> = {
   completed: '完成',
   partial: '部分完成',
@@ -261,7 +263,7 @@ export class Notifications {
       if (['completed', 'partial', 'failed', 'cancelled', 'interrupted'].includes(run.status)) {
         const message = [
           'Microsoft Rewards 运行汇总',
-          `状态：${states[run.status] ?? '待确认'}`,
+          `状态：${states[run.status] ?? '—'}`,
           `模式：${run.executionMode === 'read-only' ? '只读检查' : '执行任务'}`,
           `开始：${time(run.startedAt)}`,
           `结束：${time(run.finishedAt)}`,
@@ -271,8 +273,9 @@ export class Notifications {
           `失败账号：${String(run.accounts.filter((account) => account.executionState === 'failed').length)}`,
           `未完成账号：${String(run.accountsTotal - run.accountsCompleted)}`,
           `整体确认积分：${points(run.confirmedTaskPoints)}`,
-          `待确认积分：${points(run.pendingTaskPoints)}`,
-          `本次余额变化：${points(run.runBalanceDelta)}`,
+          `未匹配任务预计积分：${points(run.pendingTaskPoints)}`,
+          `本轮实时余额变化：${points(run.liveBalanceDelta)}`,
+          `统计日期：${run.statisticScope.businessDate} · Asia/Shanghai`,
           `运行：${runId.slice(0, 8)}`
         ].join('\n')
         insert.run(`run:${runId}`, 'run', this.encode(message), this.now())
@@ -338,7 +341,7 @@ export class Notifications {
           touser: config.toUser,
           agentid: Number(config.agentId),
           msgtype: 'text',
-          text: { content: message },
+          text: { content: publicText(message) },
           enable_duplicate_check: 1,
           duplicate_check_interval: 1800
         })
@@ -487,34 +490,37 @@ export class Notifications {
       completedTasks?: number
       unconfirmedTasks?: number
     }
-    const stats = this.store.ledger.credits.reconcile(
+    const stats = new RunViews(this.store).accountDate(
+      event.runId,
       event.accountId,
-      event.collectedPoints,
-      undefined,
-      event.runId
+      localDateKey(new Date(event.endedAt))
     )
     return [
       `Microsoft Rewards ${completionTitle(event.executionState)}`,
       `账号：${redactText(event.accountLabel)}`,
-      `账号状态：${states[event.executionState] ?? '待确认'}`,
+      `账号状态：${states[event.executionState] ?? '—'}`,
       `开始时间：${time(event.startedAt)}`,
       `完成时间：${time(event.endedAt)}`,
-      `本次余额变化：${points(event.collectedPoints)}`,
-      `余额确认：${event.collectedPoints === null ? '待确认' : '已确认'}`,
-      `已完成任务：${String(event.completedTasks ?? '待确认')}`,
-      `未确认任务：${String(event.unconfirmedTasks ?? '待确认')}`,
+      `本轮实时余额变化：${points(stats.liveBalanceDelta)}`,
+      `最终余额变化：${points(stats.confirmedBalanceDelta)}`,
+      `实时总分：${stats.latestBalance === null ? '—' : `${String(stats.latestBalance)} 分`}`,
+      `已完成任务：${String(event.completedTasks ?? '—')}`,
+      `未匹配任务：${String(event.unconfirmedTasks ?? '—')}`,
       ...(['failed', 'partial', 'action-required', 'interrupted'].includes(event.executionState)
         ? [
             `结束阶段：${redactText(event.failureStage ?? '未取得')}`,
             `原因：${redactText(event.failureReason ?? '详情请查看任务账本')}`
           ]
         : []),
-      `已确认任务积分：${points(stats.confirmedTaskPoints)}`,
+      `已匹配到账积分：${points(stats.confirmedTaskPoints)}`,
       `任务上报积分：${points(stats.reportedTaskPoints)}`,
-      `待确认积分：${points(stats.pendingTaskPoints)}`,
-      `统计可信度：${stats.creditVerificationStatus === 'confirmed' ? '已确认' : stats.creditVerificationStatus === 'partial' ? '部分确认' : '待确认'}`,
+      `未匹配任务预计积分：${points(stats.pendingTaskPoints)}`,
+      `未匹配余额：${points(stats.unmatchedBalancePoints)}`,
+      `上报超额：${points(stats.overreportedTaskPoints)}`,
+      `数据状态：${stateLabel(stats.attributionStatus)}`,
+      `统计日期：${stats.businessDate} · Asia/Shanghai`,
       ...(stats.confirmedTaskPoints === null && event.executionState === 'completed'
-        ? ['账号任务已完成，积分待确认']
+        ? ['账号执行已结束，到账来源未匹配']
         : []),
       `运行：${event.runId.slice(0, 8)}`
     ].join('\n')
@@ -530,7 +536,7 @@ export function completionTitle(state: string): string {
     cancelled: '账号任务已取消',
     interrupted: '账号任务中断'
   }
-  return titles[state] ?? '账号状态待确认'
+  return titles[state] ?? '账号状态—'
 }
 
 function safeFailure(error: unknown): string {

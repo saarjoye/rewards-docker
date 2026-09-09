@@ -110,6 +110,19 @@ export function migrateRunLedger(database: DatabaseSync): void {
 }
 
 export class RunLedger {
+  taskEvidenceForScope(
+    runId: string | undefined,
+    accountId: string,
+    businessDate: string
+  ): boolean {
+    return Boolean(
+      this.database
+        .prepare(
+          `SELECT 1 FROM task_evidence WHERE account_id=? AND (? IS NULL OR run_id=?) AND json_extract(payload_json,'$.businessDate')=? LIMIT 1`
+        )
+        .get(accountId, runId ?? null, runId ?? null, businessDate)
+    )
+  }
   readonly credits: PointCredits
   constructor(
     private readonly database: DatabaseSync,
@@ -221,6 +234,7 @@ export class RunLedger {
       this.database.exec('ROLLBACK TO task_evidence_write; RELEASE task_evidence_write')
       throw error
     }
+    this.changed()
   }
 
   taskEvidence(
@@ -426,6 +440,8 @@ export class RunLedger {
         localDateKey(new Date(observedAt)),
         evidence.source
       )
+    // Task evidence uses a savepoint: announce only after its complete transaction commits.
+    if (!this.database.isTransaction) this.changed()
   }
 
   balances(runId?: string, accountId?: string, businessDate?: string): BalanceObservation[] {
