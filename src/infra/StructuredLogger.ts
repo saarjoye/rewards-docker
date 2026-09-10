@@ -24,11 +24,15 @@ export interface LogEvent {
   status?: string
   durationMs?: number
   attempt?: number
-  httpStatus?: number
+  httpStatus?: number | null
   host?: string
   path?: string
   message?: string
   retryReason?: string
+  result?: string
+  networkErrorType?: string | null
+  activationStarted?: boolean
+  surface?: string
 }
 
 export class StructuredLogger {

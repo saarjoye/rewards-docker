@@ -82,6 +82,30 @@ describe('bounded pre-activation lookup', () => {
     expect(f.page.goto).toHaveBeenCalledTimes(5)
     expect(f.page.goto.mock.calls.every(([url]) => url !== target)).toBe(true)
     expect(JSON.stringify(f.write.mock.calls)).not.toContain('q=synthetic')
+    const lookupLogs = f.write.mock.calls
+      .map(([event]) => event as Record<string, unknown>)
+      .filter((event) => event.event === 'offer-link-lookup')
+    expect(lookupLogs.length).toBeGreaterThan(0)
+    expect(lookupLogs.every((event) =>
+      ['earn', 'dashboard', 'bing-flyout'].includes(String(event.surface)) &&
+      typeof event.attempt === 'number' &&
+      typeof event.result === 'string' &&
+      'networkErrorType' in event &&
+      'httpStatus' in event &&
+      event.activationStarted === false
+    )).toBe(true)
+  })
+  it('does not let an isolated Bing flyout failure override loaded earn/dashboard surfaces', async () => {
+    const f = fixture()
+    f.links.evaluateAll.mockResolvedValue([])
+    f.page.goto.mockImplementation((next: string) => {
+      if (next === 'https://www.bing.com') return Promise.reject(new Error('network timeout'))
+      return Promise.resolve(null)
+    })
+    await expect(f.client.openOfferForInteraction(target)).rejects.toMatchObject({
+      errorCode: 'offer-not-found-before-activation'
+    })
+    expect(f.click).not.toHaveBeenCalled()
   })
   it('rejects a node replaced between indexing and binding, then binds the right node', async () => {
     const f = fixture()
@@ -111,6 +135,7 @@ describe('bounded pre-activation lookup', () => {
   it('keeps network and authentication failures distinct from missing offers', async () => {
     const f = fixture()
     f.links.evaluateAll.mockResolvedValue([])
+    f.page.url.mockReturnValue('https://rewards.bing.com/other')
     f.page.goto.mockRejectedValue(new Error('network timeout'))
     await expect(f.client.openOfferForInteraction(target)).rejects.toMatchObject({
       errorCode: 'offer-network-failed'

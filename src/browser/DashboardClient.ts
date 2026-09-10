@@ -80,6 +80,15 @@ function networkError(error: unknown): boolean {
   return /timeout|timed out|ECONN|ENOTFOUND|EAI_AGAIN|socket|network|fetch failed/i.test(message)
 }
 
+function networkErrorType(error: unknown): string | null {
+  if (!networkError(error)) return null
+  const message = error instanceof Error ? error.message : String(error)
+  if (/timeout|timed out/i.test(message)) return 'timeout'
+  if (/ENOTFOUND|EAI_AGAIN|DNS/i.test(message)) return 'dns'
+  if (/ECONN|socket/i.test(message)) return 'connection'
+  return 'network'
+}
+
 function abortReason(signal: AbortSignal | undefined): Error {
   const reason = signal?.reason as unknown
   return reason instanceof Error ? reason : new Error('Operation was aborted')
@@ -634,7 +643,11 @@ export class DashboardClient {
           level: 'info',
           event: 'offer-link-lookup',
           stage: found.surface,
+          surface: found.surface,
           status: 'activating',
+          result: 'matched',
+          networkErrorType: null,
+          activationStarted: true,
           message: 'matched=true; activationStarted=true'
         })
         if (signal?.aborted) throw abortReason(signal)
@@ -663,7 +676,9 @@ export class DashboardClient {
       throw new MutationNotStartedError('Unsafe offer destination', 'offer-invalid-destination')
     }
     const deadline = Date.now() + DISCOVERY_DEADLINE_MS
-    const networkFailures = new Set<string>()
+    type Surface = 'earn' | 'dashboard' | 'bing-flyout'
+    type SurfaceResult = 'network-failed' | 'loaded-no-match'
+    const surfaceResults = new Map<Surface, SurfaceResult>()
     const check = () => {
       if (signal?.aborted) throw abortReason(signal)
       if (Date.now() >= deadline)
@@ -674,7 +689,7 @@ export class DashboardClient {
     }
     const waitForLink = async (
       links: Locator,
-      surface: 'earn' | 'dashboard' | 'bing-flyout',
+      surface: Surface,
       attempt: number
     ) => {
       // Poll dynamic cards, not the entire page's network-idle state.
@@ -707,16 +722,34 @@ export class DashboardClient {
           const target = surface === 'bing-flyout' ? BING_ORIGIN : REWARDS_URLS[surface]
           const current = new URL(this.page.url())
           const expected = new URL(target)
+          let navigationStatus: number | undefined
           if (
             attempt > 1 ||
             current.origin !== expected.origin ||
             current.pathname !== expected.pathname
           )
-            await this.page.goto(target, {
+            navigationStatus = (await this.page.goto(target, {
               waitUntil: 'domcontentloaded',
               timeout: Math.max(1, Math.min(15_000, deadline - Date.now()))
-            })
+            }))?.status()
           check()
+          if (navigationStatus !== undefined && navigationStatus >= 500) {
+            surfaceResults.set(surface, 'network-failed')
+            await this.logger.write({
+              level: 'warn',
+              event: 'offer-link-lookup',
+              stage: surface,
+              surface,
+              attempt,
+              result: 'network-failed',
+              networkErrorType: 'http-5xx',
+              httpStatus: navigationStatus,
+              activationStarted: false,
+              status: 'network-error',
+              message: 'activationStarted=false'
+            })
+            continue
+          }
           const actual = new URL(this.page.url())
           const allowed =
             surface === 'bing-flyout'
@@ -731,7 +764,7 @@ export class DashboardClient {
           if (surface !== 'bing-flyout') {
             const found = await waitForLink(this.page.locator('a[href]'), surface, attempt)
             if (found) return found
-            networkFailures.delete(surface)
+            surfaceResults.set(surface, 'loaded-no-match')
             continue
           }
           // Only explicit Rewards controls may open the panel; generic reward links are not triggers.
@@ -779,30 +812,59 @@ export class DashboardClient {
             level: 'info',
             event: 'offer-link-lookup',
             stage: surface,
+            surface,
             attempt,
             status: 'missing',
+            result: 'not-found',
+            networkErrorType: null,
+            httpStatus: navigationStatus ?? null,
+            activationStarted: false,
             message: 'matched=false; activationStarted=false'
           })
-          networkFailures.delete(surface)
+          surfaceResults.set(surface, 'loaded-no-match')
         } catch (error) {
           if (signal?.aborted) throw abortReason(signal)
-          if (error instanceof MutationNotStartedError) throw error
+          if (error instanceof MutationNotStartedError) {
+            await this.logger.write({
+              level: 'warn',
+              event: 'offer-link-lookup',
+              stage: surface,
+              surface,
+              attempt,
+              status: error.errorCode ?? 'lookup-failed',
+              result:
+                error.errorCode === 'offer-authentication-failed'
+                  ? 'authentication-failed'
+                  : 'lookup-failed',
+              networkErrorType: null,
+              activationStarted: false,
+              message: 'activationStarted=false'
+            })
+            throw error
+          }
           const network = networkError(error)
           await this.logger.write({
             level: 'warn',
             event: 'offer-link-lookup',
             stage: surface,
+            surface,
             attempt,
             status: network ? 'network-error' : 'browser-error',
+            result: network ? 'network-failed' : 'browser-failed',
+            networkErrorType: networkErrorType(error),
+            activationStarted: false,
             message: 'activationStarted=false'
           })
           if (!network)
             throw new MutationNotStartedError('Offer browser lookup failed', 'offer-browser-failed')
-          networkFailures.add(surface)
+          surfaceResults.set(surface, 'network-failed')
         }
       }
     }
-    if (networkFailures.size)
+    const allSurfacesNetworkFailed =
+      surfaceResults.size === 3 &&
+      [...surfaceResults.values()].every((result) => result === 'network-failed')
+    if (allSurfacesNetworkFailed)
       throw new MutationNotStartedError(
         'Offer lookup network requests failed',
         'offer-network-failed'
@@ -959,8 +1021,13 @@ export class DashboardClient {
       level: 'info',
       event: 'offer-link-lookup',
       stage: surface,
+      surface,
       attempt,
       status: match.method,
+      result: match.index >= 0 ? 'matched' : 'not-found',
+      networkErrorType: null,
+      httpStatus: null,
+      activationStarted: false,
       message: `candidates=${String(candidates.length)}; matched=${String(match.index >= 0)}; activationStarted=false`
     })
     return match.index
