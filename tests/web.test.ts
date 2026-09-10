@@ -642,4 +642,58 @@ describe('web API', () => {
       store.close()
     }
   })
+
+  it('passes pending-search retry only for a selected account', async () => {
+    const start = vi
+      .fn<RunCoordinator['start']>()
+      .mockResolvedValue({ runId: 'synthetic-run', selectedAccountIndexes: [2] })
+    const { app, store, cookie, csrfToken } = await fixture({ start, activeRunId: undefined })
+    try {
+      const headers = { cookie, 'x-csrf-token': csrfToken }
+      expect(
+        (
+          await app.inject({
+            method: 'POST',
+            url: '/api/runs',
+            headers,
+            payload: {
+              accountMode: 'account',
+              runAccountIndex: 2,
+              executionMode: 'mutating',
+              retryPendingSearch: true
+            }
+          })
+        ).statusCode
+      ).toBe(202)
+      expect(start).toHaveBeenCalledWith({
+        accountMode: 'account',
+        runAccountIndex: 2,
+        executionMode: 'mutating',
+        retryPendingSearch: true
+      })
+      expect(
+        (
+          await app.inject({
+            method: 'POST',
+            url: '/api/runs',
+            headers,
+            payload: { accountMode: 'continue', retryPendingSearch: true }
+          })
+        ).statusCode
+      ).toBe(400)
+      expect(
+        (
+          await app.inject({
+            method: 'POST',
+            url: '/api/runs',
+            headers,
+            payload: { accountMode: 'continue', runAccountIndex: 2 }
+          })
+        ).statusCode
+      ).toBe(400)
+    } finally {
+      await app.close()
+      store.close()
+    }
+  })
 })

@@ -5,6 +5,7 @@ export interface RunRequest {
   accountMode: AccountMode
   runAccountIndex?: number
   executionMode?: ExecutionMode
+  retryPendingSearch?: boolean
 }
 
 export interface SelectedAccount<T> {

@@ -15,6 +15,7 @@ import { Drawer } from 'tdesign-react/es/drawer/index.js'
 import { Loading } from 'tdesign-react/es/loading/index.js'
 import { Menu } from 'tdesign-react/es/menu/index.js'
 import { Radio } from 'tdesign-react/es/radio/index.js'
+import { Checkbox } from 'tdesign-react/es/checkbox/index.js'
 import {
   DashboardIcon,
   TaskIcon,
@@ -208,6 +209,7 @@ export function App(): ReactElement {
   const [accountMode, setAccountMode] = useState<'continue' | 'account'>('continue')
   const [executionMode, setExecutionMode] = useState<'read-only' | 'mutating'>('read-only')
   const [runAccountIndex, setRunAccountIndex] = useState(1)
+  const [retryPendingSearch, setRetryPendingSearch] = useState(false)
   const [showAccountForm, setShowAccountForm] = useState(false)
   const [accountSaving, setAccountSaving] = useState(false)
   const [unsaved, setUnsaved] = useState(false)
@@ -313,7 +315,7 @@ export function App(): ReactElement {
     const body =
       accountMode === 'continue'
         ? { accountMode, executionMode }
-        : { accountMode, runAccountIndex, executionMode }
+        : { accountMode, runAccountIndex, executionMode, retryPendingSearch }
     try {
       await requestJson('/api/runs', { method: 'POST', body: JSON.stringify(body) }, csrfToken)
       setShowRun(false)
@@ -644,6 +646,7 @@ export function App(): ReactElement {
               value={accountMode}
               onChange={(value) => {
                 setAccountMode(value)
+                if (value === 'continue') setRetryPendingSearch(false)
               }}
               disabled={Boolean(state?.activeRunId)}
               options={[
@@ -676,6 +679,7 @@ export function App(): ReactElement {
               value={executionMode}
               onChange={(value) => {
                 setExecutionMode(value)
+                if (value === 'read-only') setRetryPendingSearch(false)
               }}
               disabled={Boolean(state?.activeRunId)}
               options={[
@@ -684,6 +688,20 @@ export function App(): ReactElement {
               ]}
             />
           </div>
+          {accountMode === 'account' && executionMode === 'mutating' && (
+            <div className="form-field">
+              <Checkbox
+                checked={retryPendingSearch}
+                onChange={(checked) => {
+                  setRetryPendingSearch(checked)
+                }}
+                disabled={Boolean(state?.activeRunId)}
+              >
+                授权重试未确认的搜索（最多一次）
+              </Checkbox>
+              <p className="muted">仅对指定账号生效，提交后会等待进度复核。</p>
+            </div>
+          )}
           <p className="muted">
             {executionMode === 'read-only'
               ? '检查任务和现有状态，不提交积分任务。'

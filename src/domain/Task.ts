@@ -66,6 +66,7 @@ export interface SearchEvent {
   lastConfirmedCompleted: number
   lastConfirmedTotal: number | null
   canContinue: boolean
+  retryReason?: string
 }
 
 export interface TaskRecord {

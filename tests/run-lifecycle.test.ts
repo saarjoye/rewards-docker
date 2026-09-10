@@ -36,6 +36,18 @@ function fixture() {
 }
 
 describe('run lifecycle durability', () => {
+  it('rejects pending-search retry in continue mode', async () => {
+    const { store, runner } = fixture()
+    try {
+      await expect(
+        runner.start({ accountMode: 'continue', retryPendingSearch: true })
+      ).rejects.toThrow('retryPendingSearch requires single-account mode')
+      expect(store.listRuns()).toHaveLength(0)
+    } finally {
+      store.close()
+    }
+  })
+
   it.each(['cancelled', 'interrupted'] as const)(
     'waits for %s cleanup and persists a terminal run and account',
     async (reason) => {

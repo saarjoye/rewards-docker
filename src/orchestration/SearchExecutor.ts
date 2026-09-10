@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 
 import { DashboardFetchError, type DashboardClient } from '../browser/DashboardClient.js'
 import type { SearchEvent, SearchState, TaskRecord } from '../domain/Task.js'
+import type { AccountMode } from '../domain/RunRequest.js'
 import type { ApplicationConfig } from '../infra/Config.js'
 import type { StructuredLogger } from '../infra/StructuredLogger.js'
 import { BusinessDateChanged } from './BusinessDate.js'
@@ -149,6 +150,11 @@ export class SearchExecutor {
     beforeSubmit?: () => void
     readOnly?: boolean
     singleQuery?: string
+    accountMode?: AccountMode
+    accountIndex?: number
+    targetAccountIndex?: number
+    retryPendingSearch?: boolean
+    executionMode?: 'read-only' | 'mutating'
   }): Promise<TaskRecord> {
     let current = input.task
     const existing = current.searchObservation
@@ -190,7 +196,8 @@ export class SearchExecutor {
             unknownSubmissionCount: summary.unknownSubmissionCount,
             lastConfirmedCompleted: summary.completed,
             lastConfirmedTotal: summary.total,
-            canContinue: false
+            canContinue: false,
+            retryReason: input.retryPendingSearch ? 'authorized-retry' : 'not-requested'
           }
         }
       }
@@ -219,6 +226,16 @@ export class SearchExecutor {
     const queryBudget = this.budgetOverrideMs ?? calculateSearchQueryBudgetMs(this.config)
     const roundDeadline =
       Date.now() + Math.min(60 * 60_000, Math.max(10 * 60_000, queryBudget * maxQueries))
+    const retryScopeAllowed =
+      input.retryPendingSearch === true &&
+      (input.executionMode ?? (input.readOnly === true ? 'read-only' : 'mutating')) === 'mutating' &&
+      input.accountMode === 'account' &&
+      Number.isSafeInteger(input.accountIndex) &&
+      input.targetAccountIndex === input.accountIndex
+    let retryCounterEligible = false
+    let retryAttempted = false
+    const canRetryPendingSearch = (): boolean =>
+      retryScopeAllowed && retryCounterEligible && summary.completed < total
 
     const observe = async (): Promise<boolean> => {
       const deadline = Math.min(roundDeadline, Date.now() + 120_000)
@@ -236,6 +253,7 @@ export class SearchExecutor {
         const requestStarted = Date.now()
         let usedFallback: boolean | null
         let durationMs: number | undefined
+        retryCounterEligible = false
         try {
           const observation = await this.client.fetchDashboard(input.signal, deadline)
           received = true
@@ -251,6 +269,7 @@ export class SearchExecutor {
               counter.availability === 'missing' || counter.availability === 'empty'
                 ? 'counter-missing'
                 : 'counter-invalid'
+          else if (usedFallback === true) result = 'counter-fallback'
           else if (
             counter.confidence < 0.75 ||
             !['legacy-getuserinfo', 'bing-flyout', 'app-dashboard', 'rsc'].includes(
@@ -271,12 +290,14 @@ export class SearchExecutor {
               Date.parse(counter.observedAt) < Date.parse(summary.observedAt))
           )
             result = 'snapshot-regressed'
-          else if (
-            value.completed > summary.completed ||
-            (value.completed === total && !summary.awaitingProgress)
-          )
-            result = 'progress-increased'
-          else result = 'progress-unchanged'
+          else {
+            retryCounterEligible = true
+            result =
+              value.completed > summary.completed ||
+              (value.completed === total && !summary.awaitingProgress)
+                ? 'progress-increased'
+                : 'progress-unchanged'
+          }
         } catch (error) {
           if (input.signal.aborted) throw signalError(input.signal)
           if (error instanceof BusinessDateChanged) throw error
@@ -299,6 +320,7 @@ export class SearchExecutor {
               : [
                     'counter-missing',
                     'counter-invalid',
+                    'counter-fallback',
                     'quota-conflict',
                     'snapshot-regressed'
                   ].includes(result)
@@ -326,7 +348,20 @@ export class SearchExecutor {
               : summary.completed,
           lastConfirmedTotal: summary.total,
           canContinue:
-            !input.readOnly && result === 'progress-increased' && counter?.value?.remaining !== 0
+            !input.readOnly &&
+            !retryAttempted &&
+            result === 'progress-increased' &&
+            counter?.value?.remaining !== 0,
+          retryReason:
+            input.retryPendingSearch !== true
+              ? 'not-requested'
+              : !retryScopeAllowed
+                ? 'single-account-scope-required'
+                : result === 'progress-increased'
+                  ? 'progress-already-confirmed'
+                  : retryCounterEligible
+                    ? 'authorized-valid-counter'
+                    : result
         }
         summary = { ...summary, result, state, canContinue: event.canContinue, lastEvent: event }
         await this.logger.write({
@@ -346,7 +381,9 @@ export class SearchExecutor {
           submittedCount: summary.submittedCount,
           unknownSubmissionCount: summary.unknownSubmissionCount,
           durationMs: event.durationMs,
-          usedFallback
+          usedFallback,
+          ...(input.accountIndex === undefined ? {} : { accountIndex: input.accountIndex }),
+          ...(event.retryReason === undefined ? {} : { retryReason: event.retryReason })
         })
         if (result === 'authentication-failed') {
           save()
@@ -396,19 +433,27 @@ export class SearchExecutor {
 
     // A persisted in-flight submission is only reconciled by reads, never replayed.
     if (summary.awaitingProgress || current.status === 'verification-pending' || input.readOnly) {
-      if (!(await observe())) return pending()
+      const grew = await observe()
       if (current.status === 'completed') return current
-      if (input.readOnly) return current
+      if (grew) return current
+      if (input.readOnly === true) return pending()
+      if (!canRetryPendingSearch()) return pending()
+      retryAttempted = true
     }
     if (summary.runId !== this.runId) {
       summary = { ...summary, runId: this.runId, submittedCount: 0, unknownSubmissionCount: 0 }
       save()
     }
-    for (let index = 0; index < maxQueries && current.progress.completed < total; index += 1) {
+    const queryLimit = retryAttempted ? 1 : maxQueries
+    const queryOffset = summary.submittedCount + summary.unknownSubmissionCount
+    for (let index = 0; index < queryLimit && current.progress.completed < total; index += 1) {
       input.signal.throwIfAborted()
       input.beforeSubmit?.()
       if (Date.now() >= roundDeadline) return pending()
-      const query = input.singleQuery ?? SEARCH_TERMS[index % SEARCH_TERMS.length] ?? SEARCH_TERMS[0]
+      const query =
+        input.singleQuery ??
+        SEARCH_TERMS[(queryOffset + index) % SEARCH_TERMS.length] ??
+        SEARCH_TERMS[0]
       try {
         await this.performQuery(
           query,
@@ -456,6 +501,11 @@ export class SearchExecutor {
       }
       if (!(await observe())) return pending()
       if (current.status === 'completed') return current
+      if (retryAttempted) {
+        summary = { ...summary, canContinue: false }
+        save()
+        return current
+      }
       if (input.singleQuery !== undefined) {
         summary = { ...summary, canContinue: false }
         save()

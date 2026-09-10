@@ -39,12 +39,13 @@ const runRequestSchema = z.discriminatedUnion('accountMode', [
     accountMode: z.literal('continue'),
     runAccountIndex: z.undefined().optional(),
     executionMode: z.enum(['read-only', 'mutating']).default('read-only')
-  }),
+  }).strict(),
   z.object({
     accountMode: z.literal('account'),
     runAccountIndex: z.number().int().min(1),
-    executionMode: z.enum(['read-only', 'mutating']).default('read-only')
-  })
+    executionMode: z.enum(['read-only', 'mutating']).default('read-only'),
+    retryPendingSearch: z.boolean().default(false)
+  }).strict()
 ])
 
 export interface RunCoordinator {
@@ -293,11 +294,15 @@ export async function createServer(dependencies: WebServerDependencies): Promise
     }
     const runRequest: RunRequest =
       body.accountMode === 'continue'
-        ? { accountMode: 'continue', executionMode: body.executionMode }
+        ? {
+            accountMode: 'continue',
+            executionMode: body.executionMode
+          }
         : {
             accountMode: 'account',
             runAccountIndex: body.runAccountIndex,
-            executionMode: body.executionMode
+            executionMode: body.executionMode,
+            ...(body.retryPendingSearch ? { retryPendingSearch: true } : {})
           }
     return reply.code(202).send(await dependencies.runCoordinator.start(runRequest))
   })

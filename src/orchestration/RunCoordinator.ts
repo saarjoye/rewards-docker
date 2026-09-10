@@ -101,6 +101,9 @@ export class ApplicationRunCoordinator {
   async start(request: RunRequest): Promise<RunStartResult> {
     await Promise.resolve()
     if (this.active) throw new RunAlreadyActiveError(this.active.runId)
+    if (request.accountMode === 'continue' && request.retryPendingSearch === true) {
+      throw new TypeError('retryPendingSearch requires single-account mode')
+    }
     const localDate = localDateKey()
     const selected = this.selectAccounts(request, localDate)
     const runId = randomUUID()
@@ -127,7 +130,16 @@ export class ApplicationRunCoordinator {
     this.active = { runId, controller }
     this.finishing = false
     this.interrupted = false
-    this.completion = this.executeRun(runId, localDate, executionMode, selected, controller)
+    this.completion = this.executeRun(
+      runId,
+      localDate,
+      executionMode,
+      selected,
+      controller,
+      request.accountMode === 'account',
+      request.runAccountIndex,
+      request.retryPendingSearch === true
+    )
     // Keep failures observable to shutdown without an unhandled background rejection.
     void this.completion.catch(() => undefined)
     return { runId, selectedAccountIndexes: selected.map((account) => account.runAccountIndex) }
@@ -175,7 +187,10 @@ export class ApplicationRunCoordinator {
     localDate: string,
     mode: ExecutionMode,
     selected: readonly AccountSummary[],
-    controller: AbortController
+    controller: AbortController,
+    singleAccountMode: boolean,
+    targetAccountIndex: number | undefined,
+    retryPendingSearch: boolean
   ): Promise<void> {
     const results: AccountRunStatus[] = []
     try {
@@ -187,7 +202,10 @@ export class ApplicationRunCoordinator {
           localDateKey(),
           mode,
           account,
-          controller.signal
+          controller.signal,
+          singleAccountMode,
+          targetAccountIndex,
+          retryPendingSearch
         )
         results.push(status)
       }
@@ -214,7 +232,10 @@ export class ApplicationRunCoordinator {
     localDate: string,
     mode: ExecutionMode,
     account: AccountSummary,
-    signal: AbortSignal
+    signal: AbortSignal,
+    singleAccountMode: boolean,
+    targetAccountIndex: number | undefined,
+    retryPendingSearch: boolean
   ): Promise<AccountRunStatus> {
     const credentials = this.accounts.getCredentials(account.accountId)
     if (!credentials) return 'failed'
@@ -266,7 +287,16 @@ export class ApplicationRunCoordinator {
         if (stage !== 'authenticate') resources.guardDate?.()
         if (rediscovering && stage === 'authenticate')
           return Promise.resolve({ status: 'completed' })
-        return this.executeStage(stage, context, mode, credentials, resources)
+        return this.executeStage(
+          stage,
+          context,
+          mode,
+          credentials,
+          resources,
+          singleAccountMode,
+          targetAccountIndex,
+          retryPendingSearch
+        )
       },
       checkpoint: (stage, result) => {
         const status: AccountRunStatus =
@@ -395,7 +425,10 @@ export class ApplicationRunCoordinator {
     context: AccountPipelineContext,
     mode: ExecutionMode,
     credentials: { email: string; password: string },
-    resources: AccountResources
+    resources: AccountResources,
+    singleAccountMode: boolean,
+    targetAccountIndex: number | undefined,
+    retryPendingSearch: boolean
   ): Promise<StageResult> {
     if (stage === 'authenticate') return this.authenticate(context, credentials, resources)
     if (!resources.desktop || !resources.desktopClient) throw new Error('desktop-login unavailable')
@@ -536,7 +569,15 @@ export class ApplicationRunCoordinator {
     const types = this.enabledTaskTypes(stage)
     const outcome =
       stage === 'search'
-        ? await this.executeSearchStage(context, mode, resources, types)
+        ? await this.executeSearchStage(
+            context,
+            mode,
+            resources,
+            types,
+            singleAccountMode,
+            targetAccountIndex,
+            retryPendingSearch
+          )
         : await new RewardsTaskExecutor(
             stage === 'app-tasks' && resources.mobile
               ? resources.mobile.context
@@ -556,7 +597,11 @@ export class ApplicationRunCoordinator {
             discovery: resources.discovery,
             types,
             mode,
-            signal: context.signal
+            signal: context.signal,
+            accountMode: singleAccountMode ? 'account' : 'continue',
+            accountIndex: context.runAccountIndex,
+            ...(targetAccountIndex === undefined ? {} : { targetAccountIndex }),
+            retryPendingSearch
           })
     const failedTask = this.store
       .listTaskState(context.localDate)
@@ -576,7 +621,10 @@ export class ApplicationRunCoordinator {
     context: AccountPipelineContext,
     mode: ExecutionMode,
     resources: AccountResources,
-    types: readonly TaskRecord['type'][]
+    types: readonly TaskRecord['type'][],
+    singleAccountMode: boolean,
+    targetAccountIndex: number | undefined,
+    retryPendingSearch: boolean
   ): Promise<{ status: 'completed' | 'partial' | 'failed' }> {
     if (!resources.discovery || !resources.desktop || !resources.desktopClient) {
       throw new Error('desktop-search resources unavailable')
@@ -599,7 +647,11 @@ export class ApplicationRunCoordinator {
         discovery: resources.discovery,
         types: ['pc-search'],
         mode,
-        signal: context.signal
+        signal: context.signal,
+        accountMode: singleAccountMode ? 'account' : 'continue',
+        accountIndex: context.runAccountIndex,
+        ...(targetAccountIndex === undefined ? {} : { targetAccountIndex }),
+        retryPendingSearch
       })
       if (desktopOutcome.status === 'failed') return { status: 'failed' }
       if (desktopOutcome.status === 'partial') status = 'partial'
@@ -636,7 +688,11 @@ export class ApplicationRunCoordinator {
           discovery: resources.discovery,
           types: ['mobile-search'],
           mode,
-          signal: context.signal
+          signal: context.signal,
+          accountMode: singleAccountMode ? 'account' : 'continue',
+          accountIndex: context.runAccountIndex,
+          ...(targetAccountIndex === undefined ? {} : { targetAccountIndex }),
+          retryPendingSearch
         })
         if (mobileOutcome.status === 'failed') return { status: 'failed' }
         if (mobileOutcome.status === 'partial') status = 'partial'

@@ -17,6 +17,7 @@ export interface LogEvent {
   level: 'debug' | 'info' | 'warn' | 'error'
   event: string
   runId?: string
+  accountIndex?: number
   accountAlias?: string
   taskType?: string
   stage?: string
@@ -26,6 +27,7 @@ export interface LogEvent {
   httpStatus?: number
   path?: string
   message?: string
+  retryReason?: string
 }
 
 export class StructuredLogger {

@@ -96,6 +96,190 @@ async function finish<T>(promise: Promise<T>): Promise<T> {
 }
 
 describe('search dashboard observation', () => {
+  it('does not submit a pending search without explicit retry authorization', async () => {
+    const h = harness([observation([{ pointProgress: 48, pointProgressMax: 60 }])], {
+      ...task(),
+      status: 'verification-pending',
+      progress: { completed: 48, total: 60 },
+      searchObservation: {
+        runId: 'run',
+        submittedCount: 1,
+        unknownSubmissionCount: 0,
+        awaitingProgress: true,
+        completed: 48,
+        total: 60,
+        observedAt: '2026-09-10T00:00:00.000Z',
+        result: 'progress-pending'
+      }
+    })
+    const result = await finish(h.executor.run(h.input))
+    expect(result).toMatchObject({ status: 'verification-pending', progress: { completed: 48 } })
+    expect(h.press).not.toHaveBeenCalled()
+  })
+
+  it('allows exactly one pending-search retry only for the selected account', async () => {
+    const h = harness(
+      [
+        observation([{ pointProgress: 48, pointProgressMax: 60 }]),
+        observation([{ pointProgress: 48, pointProgressMax: 60 }]),
+        observation([{ pointProgress: 48, pointProgressMax: 60 }]),
+        observation([{ pointProgress: 48, pointProgressMax: 60 }]),
+        observation([{ pointProgress: 49, pointProgressMax: 60 }])
+      ],
+      {
+        ...task(),
+        status: 'verification-pending',
+        progress: { completed: 48, total: 60 },
+        searchObservation: {
+          runId: 'run',
+          submittedCount: 1,
+          unknownSubmissionCount: 0,
+          awaitingProgress: true,
+          completed: 48,
+          total: 60,
+          observedAt: '2026-09-10T00:00:00.000Z',
+          result: 'progress-pending'
+        }
+      }
+    )
+    const result = await finish(
+      h.executor.run({
+        ...h.input,
+        accountMode: 'account',
+        accountIndex: 2,
+        targetAccountIndex: 2,
+        retryPendingSearch: true
+      })
+    )
+    expect(result).toMatchObject({
+      status: 'running',
+      progress: { completed: 49, total: 60 },
+      searchObservation: { state: 'progress-confirmed', submittedCount: 2, canContinue: false }
+    })
+    expect(h.press).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps pending when an authorized retry does not change progress', async () => {
+    const h = harness([observation([{ pointProgress: 48, pointProgressMax: 60 }])], {
+      ...task(),
+      status: 'verification-pending',
+      progress: { completed: 48, total: 60 },
+      searchObservation: {
+        runId: 'run',
+        submittedCount: 1,
+        unknownSubmissionCount: 0,
+        awaitingProgress: true,
+        completed: 48,
+        total: 60,
+        observedAt: '2026-09-10T00:00:00.000Z',
+        result: 'progress-pending'
+      }
+    })
+    const result = await finish(
+      h.executor.run({
+        ...h.input,
+        accountMode: 'account',
+        accountIndex: 2,
+        targetAccountIndex: 2,
+        retryPendingSearch: true
+      })
+    )
+    expect(result).toMatchObject({
+      status: 'verification-pending',
+      progress: { completed: 48, total: 60 },
+      searchObservation: { submittedCount: 2, state: 'progress-pending' }
+    })
+    expect(h.press).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not retry when the selected account does not match the target', async () => {
+    const h = harness([observation([{ pointProgress: 48, pointProgressMax: 60 }])], {
+      ...task(),
+      status: 'verification-pending',
+      progress: { completed: 48, total: 60 },
+      searchObservation: {
+        runId: 'run',
+        submittedCount: 1,
+        unknownSubmissionCount: 0,
+        awaitingProgress: true,
+        completed: 48,
+        total: 60,
+        observedAt: '2026-09-10T00:00:00.000Z',
+        result: 'progress-pending'
+      }
+    })
+    const result = await finish(
+      h.executor.run({
+        ...h.input,
+        accountMode: 'account',
+        accountIndex: 2,
+        targetAccountIndex: 1,
+        retryPendingSearch: true
+      })
+    )
+    expect(result.status).toBe('verification-pending')
+    expect(h.press).not.toHaveBeenCalled()
+  })
+
+  it('does not submit an already completed account during retry', async () => {
+    const h = harness([observation([{ pointProgress: 60, pointProgressMax: 60 }])], {
+      ...task(),
+      status: 'verification-pending',
+      progress: { completed: 60, total: 60 },
+      searchObservation: {
+        runId: 'run',
+        submittedCount: 1,
+        unknownSubmissionCount: 0,
+        awaitingProgress: false,
+        completed: 60,
+        total: 60,
+        observedAt: '2026-09-10T00:00:00.000Z',
+        result: 'progress-confirmed'
+      }
+    })
+    const result = await finish(
+      h.executor.run({
+        ...h.input,
+        accountMode: 'account',
+        accountIndex: 2,
+        targetAccountIndex: 2,
+        retryPendingSearch: true
+      })
+    )
+    expect(result.status).toBe('completed')
+    expect(h.press).not.toHaveBeenCalled()
+  })
+
+  it('does not authorize a retry from an invalid counter', async () => {
+    const h = harness([observation([{ pointProgress: false, pointProgressMax: 60 }])], {
+      ...task(),
+      status: 'verification-pending',
+      progress: { completed: 48, total: 60 },
+      searchObservation: {
+        runId: 'run',
+        submittedCount: 1,
+        unknownSubmissionCount: 0,
+        awaitingProgress: true,
+        completed: 48,
+        total: 60,
+        observedAt: '2026-09-10T00:00:00.000Z',
+        result: 'progress-pending'
+      }
+    })
+    const result = await finish(
+      h.executor.run({
+        ...h.input,
+        accountMode: 'account',
+        accountIndex: 2,
+        targetAccountIndex: 2,
+        retryPendingSearch: true
+      })
+    )
+    expect(result).toMatchObject({ status: 'verification-pending', progress: { completed: 48 } })
+    expect(h.press).not.toHaveBeenCalled()
+    expect(h.write.mock.calls.some(([event]) => event.retryReason === 'counter-invalid')).toBe(true)
+  })
+
   it('stops after one authorized search even when the counter grows below its quota', async () => {
     const h = harness([observation([{ pointProgress: 48, pointProgressMax: 60 }])], {
       ...task(),

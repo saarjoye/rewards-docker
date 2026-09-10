@@ -5,6 +5,7 @@ import type { BrowserContext } from 'patchright'
 import type { DashboardClient } from '../browser/DashboardClient.js'
 import { REWARDS_URLS } from '../browser/Urls.js'
 import type { TaskRecord } from '../domain/Task.js'
+import type { AccountMode } from '../domain/RunRequest.js'
 import type { ApplicationConfig } from '../infra/Config.js'
 import type { SqliteStore } from '../infra/SqliteStore.js'
 import type { StructuredLogger } from '../infra/StructuredLogger.js'
@@ -63,6 +64,10 @@ export class RewardsTaskExecutor {
     types: readonly TaskRecord['type'][]
     mode: ExecutionMode
     signal: AbortSignal
+    accountMode?: AccountMode
+    accountIndex?: number
+    targetAccountIndex?: number
+    retryPendingSearch?: boolean
   }): Promise<{ status: 'completed' | 'partial' | 'failed'; tasks: readonly TaskRecord[] }> {
     throwIfAborted(input.signal)
     this.guardDate?.()
@@ -131,7 +136,16 @@ export class RewardsTaskExecutor {
             mobile: original.type === 'mobile-search',
             signal: input.signal,
             onProgress: (task) => void this.persist(task),
-            ...(this.guardDate ? { beforeSubmit: this.guardDate } : {})
+            ...(this.guardDate ? { beforeSubmit: this.guardDate } : {}),
+            ...(input.accountMode === undefined ? {} : { accountMode: input.accountMode }),
+            ...(input.accountIndex === undefined ? {} : { accountIndex: input.accountIndex }),
+            ...(input.targetAccountIndex === undefined
+              ? {}
+              : { targetAccountIndex: input.targetAccountIndex }),
+            ...(input.retryPendingSearch === undefined
+              ? {}
+              : { retryPendingSearch: input.retryPendingSearch }),
+            executionMode: input.mode
           })
           reconciliation.task = this.persist(completed)
           if (completed.status !== 'completed') partial = true
