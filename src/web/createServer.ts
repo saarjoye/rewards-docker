@@ -253,7 +253,7 @@ export async function createServer(dependencies: WebServerDependencies): Promise
       runs: dependencies.store
         .listRuns(10)
         .map((run) => views.run(run.runId, dependencies.runCoordinator?.activeRunId)),
-      today: views.today()
+      today: views.today(accounts)
     }
   })
 

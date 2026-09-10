@@ -280,9 +280,55 @@ export class RunViews {
       )
   }
 
-  today() {
-    return this.calendar(localDateKey().slice(0, 7)).filter(
-      (row) => row.businessDate === localDateKey()
-    )
+  today(
+    accounts: readonly {
+      accountId: string
+      displayAlias: string
+      maskedEmail: string
+      runAccountIndex: number
+    }[] = []
+  ) {
+    const date = localDateKey()
+    const days = this.calendar(date.slice(0, 7)).filter((row) => row.businessDate === date)
+    const selected = accounts.length
+      ? accounts
+      : days.map((row) => ({
+          accountId: row.accountId,
+          displayAlias: row.accountLabel,
+          maskedEmail: row.accountLabel,
+          runAccountIndex: row.accountIndex ?? 0
+        }))
+    return selected.map((account) => {
+      const day = days.find((row) => row.accountId === account.accountId)
+      const latest = this.store.database
+        .prepare(
+          `SELECT balance, observed_at AS observedAt, source
+        FROM balance_observations WHERE account_id=? AND julianday(observed_at)=(
+          SELECT MAX(julianday(observed_at)) FROM balance_observations WHERE account_id=?)`
+        )
+        .all(account.accountId, account.accountId) as {
+        balance: number
+        observedAt: string
+        source: string
+      }[]
+      const valid =
+        latest.length > 0 &&
+        latest.every(
+          (row) =>
+            Number.isSafeInteger(row.balance) &&
+            row.balance >= 0 &&
+            row.balance === latest[0]?.balance
+        )
+      return {
+        ...this.day(account.accountId, date),
+        ...day,
+        accountId: account.accountId,
+        accountIndex: account.runAccountIndex,
+        accountLabel: account.displayAlias || account.maskedEmail,
+        accountTotalPoints: valid ? (latest[0]?.balance ?? null) : null,
+        accountTotalPointsAt: valid ? (latest[0]?.observedAt ?? null) : null,
+        accountTotalPointsSource: valid ? (latest[0]?.source ?? null) : null
+      }
+    })
   }
 }

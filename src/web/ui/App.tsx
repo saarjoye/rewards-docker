@@ -84,6 +84,8 @@ export interface StatePayload {
       accountId: string
       accountLabel: string
       dailyBalanceDelta: number | null
+      accountTotalPoints?: number | null
+      accountTotalPointsAt?: string | null
       verificationStatus: string
     }
   >

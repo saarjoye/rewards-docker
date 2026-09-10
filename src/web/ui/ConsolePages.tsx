@@ -75,8 +75,8 @@ export function Overview({
       </Card>
       <Card
         bordered={false}
-        title="今日账户余额变化"
-        subtitle="Asia/Shanghai · 任务执行与到账确认独立统计"
+        title="账号积分"
+        subtitle="今日得分按上海日期统计 · 账号总分随余额读取更新"
       >
         {!state ? (
           <Empty description="读取中" />
@@ -90,7 +90,11 @@ export function Overview({
                   <strong>{day.accountLabel}</strong>
                   <StatusTag value={day.verificationStatus} />
                 </div>
-                <div className="balance-number">{points(day.dailyBalanceDelta)}</div>
+                <AccountPointTotals
+                  today={day.dailyBalanceDelta}
+                  total={day.accountTotalPoints ?? null}
+                />
+                <p className="muted">余额更新：{clockTime(day.accountTotalPointsAt)}</p>
                 <details>
                   <summary>查看积分依据</summary>
                   <PointSummary value={day} />
@@ -171,6 +175,27 @@ export function Overview({
         />
       </Card>
     </>
+  )
+}
+
+export function AccountPointTotals({
+  today,
+  total
+}: {
+  today: number | null
+  total: number | null
+}): ReactElement {
+  return (
+    <dl className="account-point-totals">
+      <div>
+        <dt>今日得分</dt>
+        <dd>{points(today)}</dd>
+      </div>
+      <div>
+        <dt>账号总分</dt>
+        <dd>{total === null ? '—' : `${String(total)} 分`}</dd>
+      </div>
+    </dl>
   )
 }
 
