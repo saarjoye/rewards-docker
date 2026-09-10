@@ -66,6 +66,30 @@ const valid = {
 afterEach(() => vi.useRealTimers())
 
 describe('dashboard acquisition', () => {
+  it('does not treat HTTP 200 as evidence of a valid search counter', async () => {
+    const { client } = fixture([
+      response(200, { dashboard: { userStatus: { counters: {} } } }),
+      response(200, {
+        dashboard: {
+          userStatus: { counters: { pcSearch: [{ pointProgress: null, pointProgressMax: 60 }] } }
+        }
+      }),
+      response(200, valid)
+    ])
+    const missing = await client.fetchDashboard()
+    expect(missing.pcSearch).toMatchObject({ availability: 'missing' })
+    expect(missing.readMetadata).toMatchObject({
+      usedFallback: false,
+      attempts: 1
+    })
+    expect(Number.isSafeInteger(missing.readMetadata?.durationMs)).toBe(true)
+    expect(missing.readMetadata?.durationMs).toBeGreaterThanOrEqual(0)
+    expect((await client.fetchDashboard()).pcSearch).toMatchObject({ availability: 'invalid' })
+    expect((await client.fetchDashboard()).pcSearch).toMatchObject({
+      availability: 'valid',
+      value: { completed: 0, total: 60 }
+    })
+  })
   it('retries 504 and 503 at most before accepting 200 text/plain JSON', async () => {
     vi.useFakeTimers()
     const { client, get } = fixture([
@@ -96,6 +120,7 @@ describe('dashboard acquisition', () => {
 
     await expect(client.fetchDashboard()).resolves.toMatchObject({
       source: 'bing-flyout',
+      readMetadata: { usedFallback: true },
       availablePoints: { availability: 'valid', value: 42 },
       pcSearch: { availability: 'valid', value: { completed: 0, total: 60, remaining: 60 } }
     })

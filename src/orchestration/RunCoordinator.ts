@@ -638,7 +638,8 @@ export class ApplicationRunCoordinator {
           mode,
           signal: context.signal
         })
-        if (mobileOutcome.status !== 'completed') status = 'partial'
+        if (mobileOutcome.status === 'failed') return { status: 'failed' }
+        if (mobileOutcome.status === 'partial') status = 'partial'
       }
     }
     return { status }

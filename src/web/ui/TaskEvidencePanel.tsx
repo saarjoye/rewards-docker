@@ -2,8 +2,10 @@ import { useState } from 'react'
 import type { ReactElement } from 'react'
 import { clockTime, stateLabel, publicText } from './display'
 import { taskFailure } from '../../domain/Presentation'
+import { searchStateLabel, type SearchEvent, type TaskRecord } from '../../domain/Task'
 
 export interface EvidenceRow {
+  search?: SearchEvent
   taskId: string
   kind: string
   source: string
@@ -18,6 +20,7 @@ export interface EvidenceRow {
   creditKey?: string | null
 }
 export interface TaskSummary {
+  searchObservation?: TaskRecord['searchObservation']
   taskId: string
   displayName: string
   status: string
@@ -133,6 +136,25 @@ export function TaskEvidencePanel({
                 {numeric(task.taskProgress.total)}
               </p>
             )}
+            {task.searchObservation && (
+              <div className="observation">
+                <p>
+                  最后确认进度：{numeric(task.searchObservation.completed)} /{' '}
+                  {numeric(task.searchObservation.total)}
+                </p>
+                <p>
+                  本轮已提交：{task.searchObservation.submittedCount} 次 · 提交结果未知：
+                  {task.searchObservation.unknownSubmissionCount} 次
+                </p>
+                <p>
+                  {task.searchObservation.state
+                    ? searchStateLabel(task.searchObservation.state)
+                    : '—'}{' '}
+                  ·{' '}
+                  {task.searchObservation.canContinue ? '允许继续执行' : '禁止自动提交，仅允许复核'}
+                </p>
+              </div>
+            )}
             {task.accountRealtimeBalanceAt && (
               <small>
                 余额时间：{clockTime(task.accountRealtimeBalanceAt)} ·{' '}
@@ -174,6 +196,38 @@ export function TaskEvidencePanel({
                       </td>
                       <td data-label="记录内容">
                         <dl className="evidence-values">
+                          {row.search && (
+                            <>
+                              <div>
+                                <dt>搜索观察</dt>
+                                <dd>{searchStateLabel(row.search.state)}</dd>
+                              </div>
+                              <div>
+                                <dt>读取进度</dt>
+                                <dd>
+                                  {numeric(row.search.completed)} / {numeric(row.search.total)}
+                                </dd>
+                              </div>
+                              <div>
+                                <dt>读取耗时</dt>
+                                <dd>{numeric(row.search.durationMs)} ms</dd>
+                              </div>
+                              <div>
+                                <dt>备用来源</dt>
+                                <dd>
+                                  {row.search.usedFallback === null
+                                    ? '—'
+                                    : row.search.usedFallback
+                                      ? '是'
+                                      : '否'}
+                                </dd>
+                              </div>
+                              <div>
+                                <dt>复核序号</dt>
+                                <dd>{row.search.attempt || '—'}</dd>
+                              </div>
+                            </>
+                          )}
                           {row.kind === 'response' && (
                             <div>
                               <dt>回执</dt>

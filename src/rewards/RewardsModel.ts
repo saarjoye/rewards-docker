@@ -27,6 +27,7 @@ export interface RewardOffer {
 }
 
 export interface RewardsObservation {
+  readMetadata?: { startedAt: string; durationMs: number; usedFallback: boolean; attempts: number }
   source: RewardOffer['source']
   rewardsUser: FieldEvidence<boolean>
   market: FieldEvidence<string>

@@ -63,7 +63,8 @@ export class DashboardFetchError extends Error {
     message: string,
     readonly status: number | undefined,
     readonly attempts: number,
-    readonly durationMs: number
+    readonly durationMs: number,
+    readonly usedFallback: boolean | null = null
   ) {
     super(message)
     this.name = 'DashboardFetchError'
@@ -189,6 +190,16 @@ export class DashboardClient {
     outerDeadline = Date.now() + DASHBOARD_DEADLINE_MS
   ): Promise<RewardsObservation> {
     const started = Date.now()
+    let usedFallback = false
+    const finish = (observation: RewardsObservation): RewardsObservation => ({
+      ...observation,
+      readMetadata: {
+        startedAt: new Date(started).toISOString(),
+        durationMs: Date.now() - started,
+        usedFallback,
+        attempts
+      }
+    })
     const deadline = Math.min(outerDeadline, started + DASHBOARD_DEADLINE_MS)
     const captured: RewardsObservation[] = []
     const listener = (response: Response): void => {
@@ -242,7 +253,7 @@ export class DashboardClient {
                   'legacy-getuserinfo'
                 )
                 this.accept(observation)
-                return observation
+                return finish(observation)
               } catch (error) {
                 lastReason = error instanceof Error ? error.message : 'dashboard parse error'
                 allowFlyoutFallback = true
@@ -286,18 +297,19 @@ export class DashboardClient {
         }
       }
 
+      usedFallback = true
       const capturedObservation = captured.find(
         (item) => item.availablePoints.availability === 'valid' && item.rewardsUser.value === true
       )
       if (capturedObservation) {
         this.accept(capturedObservation)
-        return capturedObservation
+        return finish(capturedObservation)
       }
 
       const currentHtml = await this.page.content().catch(() => '')
       const currentParsed = currentHtml ? parseRewardsHtml(currentHtml) : undefined
       if (currentParsed?.availablePoints.availability === 'valid') {
-        return this.fromHtml(currentParsed)
+        return finish(this.fromHtml(currentParsed))
       }
 
       if (deadline - Date.now() > 3_000) {
@@ -312,18 +324,18 @@ export class DashboardClient {
         )
         if (reloaded) {
           this.accept(reloaded)
-          return reloaded
+          return finish(reloaded)
         }
         const html = await this.page.content().catch(() => '')
         const parsed = html ? parseRewardsHtml(html) : undefined
-        if (parsed?.availablePoints.availability === 'valid') return this.fromHtml(parsed)
+        if (parsed?.availablePoints.availability === 'valid') return finish(this.fromHtml(parsed))
       }
 
       if (deadline - Date.now() > 3_000) {
         const html = await this.fetchHtml(REWARDS_URLS.dashboard, deadline)
         if (html) {
           const parsed = parseRewardsHtml(html)
-          if (parsed.availablePoints.availability === 'valid') return this.fromHtml(parsed)
+          if (parsed.availablePoints.availability === 'valid') return finish(this.fromHtml(parsed))
         }
       }
 
@@ -331,15 +343,16 @@ export class DashboardClient {
         deadline - Date.now() > 3_000 &&
         (allowFlyoutFallback || lastStatus === undefined || [502, 503, 504].includes(lastStatus))
       ) {
-        const flyout = await this.fetchFlyout(deadline)
-        if (flyout) return flyout
+        const flyout = await this.fetchFlyout(deadline, signal)
+        if (flyout) return finish(flyout)
       }
 
       throw new DashboardFetchError(
         `dashboard 获取失败: ${lastReason}`,
         lastStatus,
         attempts,
-        Date.now() - started
+        Date.now() - started,
+        usedFallback
       )
     } finally {
       this.page.off('response', listener)

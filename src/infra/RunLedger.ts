@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 import { localDateKey } from '../domain/DateKey.js'
 import type { FieldEvidence, EvidenceSource } from '../domain/Evidence.js'
-import type { TaskRecord } from '../domain/Task.js'
+import type { SearchEvent, TaskRecord } from '../domain/Task.js'
 import { redactText } from '../security/Redactor.js'
 import { PointCredits, type CreditInput } from './PointCredits.js'
 import { balanceInterval } from './BalanceInterval.js'
@@ -21,6 +21,7 @@ export interface BalanceObservation {
 }
 
 export interface TaskEvidence {
+  search?: SearchEvent
   runId: string
   accountId: string
   taskId: string
@@ -163,7 +164,8 @@ export class RunLedger {
       total: numeric(input.total) ? input.total : null,
       executionState: input.executionState ? redactText(input.executionState) : null,
       confirmedPoints: null,
-      creditKey: null as string | null
+      creditKey: null as string | null,
+      ...(input.search ? { search: input.search } : {})
     }
     const payload = JSON.stringify(row)
     const hash = createHash('sha256').update(payload)
@@ -181,7 +183,13 @@ export class RunLedger {
           input.credit.earnedPoints ?? null
         ])
       )
-    const id = hash.digest('hex')
+    const id = input.search
+      ? createHash('sha256')
+          .update(
+            JSON.stringify([input.runId, input.accountId, input.taskId, input.search.eventId])
+          )
+          .digest('hex')
+      : hash.digest('hex')
     this.database.exec('SAVEPOINT task_evidence_write')
     try {
       this.database
@@ -201,9 +209,9 @@ export class RunLedger {
           },
           row.taskId
         )
-      else if (row.kind === 'response' || row.kind === 'verification')
+      else if (!input.search && (row.kind === 'response' || row.kind === 'verification'))
         this.captureTaskBalance(row.runId, row.accountId, 'task-after', row.taskId)
-      if (row.kind === 'execution' && row.executionState === 'running')
+      if (!input.search && row.kind === 'execution' && row.executionState === 'running')
         this.captureTaskBalance(row.runId, row.accountId, 'task-before', row.taskId)
       const task = this.tasks(input.runId).find((item) => item.taskId === input.taskId)
       if (task && task.accountId !== input.accountId)
@@ -215,24 +223,25 @@ export class RunLedger {
         input.credit?.submitted === true ||
         input.credit?.evidenceSource !== undefined ||
         task?.reportedPoints !== undefined
-      const credit = hasCreditObservation
-        ? this.credits.record({
-            ...(task?.identityStable === false ? {} : { taskInstanceId: task?.sourceTaskId }),
-            businessDate: task?.localDate,
-            creditType: task?.type ?? 'task',
-            reportedPoints: task?.reportedPoints ?? null,
-            expectedPoints: task?.expectedPoints ?? null,
-            submitted:
-              (row.kind === 'response' && row.accepted === true) ||
-              row.executionState === 'submitted',
-            ...input.credit,
-            runId: row.runId,
-            accountId: row.accountId,
-            taskId: row.taskId,
-            source: task?.source ?? row.source,
-            observedAt: row.observedAt
-          })
-        : undefined
+      const credit =
+        hasCreditObservation && !input.search
+          ? this.credits.record({
+              ...(task?.identityStable === false ? {} : { taskInstanceId: task?.sourceTaskId }),
+              businessDate: task?.localDate,
+              creditType: task?.type ?? 'task',
+              reportedPoints: task?.reportedPoints ?? null,
+              expectedPoints: task?.expectedPoints ?? null,
+              submitted:
+                (row.kind === 'response' && row.accepted === true) ||
+                row.executionState === 'submitted',
+              ...input.credit,
+              runId: row.runId,
+              accountId: row.accountId,
+              taskId: row.taskId,
+              source: task?.source ?? row.source,
+              observedAt: row.observedAt
+            })
+          : undefined
       if (credit) {
         row.creditKey = credit.creditKey
         this.database
@@ -294,7 +303,24 @@ export class RunLedger {
       )
   }
 
-  task(runId: string, task: TaskRecord): void {
+  task(runId: string, task: TaskRecord): TaskRecord {
+    if (!task.searchObservation && (task.type === 'pc-search' || task.type === 'mobile-search')) {
+      const previous = this.latestSearchTask(task.taskId)
+      if (
+        previous?.searchObservation &&
+        (previous.searchObservation.awaitingProgress || previous.searchObservation.runId === runId)
+      ) {
+        task = {
+          ...task,
+          searchObservation: previous.searchObservation,
+          progress: previous.progress,
+          status: previous.searchObservation.awaitingProgress
+            ? 'verification-pending'
+            : previous.status,
+          ...(previous.reason ? { reason: previous.reason } : {})
+        }
+      }
+    }
     // Persist only the public task model, never an adapter descriptor or response.
     const payload: TaskRecord = {
       taskId: task.taskId,
@@ -308,6 +334,7 @@ export class RunLedger {
       required: task.required,
       status: task.status,
       progress: { ...task.progress },
+      ...(task.searchObservation ? { searchObservation: { ...task.searchObservation } } : {}),
       updatedAt: task.updatedAt,
       ...(task.identityStable === undefined ? {} : { identityStable: task.identityStable }),
       ...(task.reason === undefined ? {} : { reason: redactText(task.reason) }),
@@ -328,6 +355,18 @@ export class RunLedger {
         task.updatedAt,
         JSON.stringify(payload)
       )
+    return payload
+  }
+
+  latestSearchTask(taskId: string): TaskRecord | undefined {
+    const row = this.database
+      .prepare(
+        `SELECT payload_json FROM run_tasks
+      WHERE task_id = ? AND json_type(payload_json, '$.searchObservation') = 'object'
+      ORDER BY julianday(updated_at) DESC, rowid DESC LIMIT 1`
+      )
+      .get(taskId) as { payload_json: string } | undefined
+    return row ? (JSON.parse(row.payload_json) as TaskRecord) : undefined
   }
 
   tasks(runId: string): TaskRecord[] {

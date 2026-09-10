@@ -30,7 +30,58 @@ export interface TaskProgress {
   total: number | null
 }
 
+export type SearchState =
+  | 'search-submitted'
+  | 'progress-confirmed'
+  | 'progress-pending'
+  | 'counter-unavailable'
+  | 'failed'
+
+export function searchStateLabel(state: SearchState): string {
+  return {
+    'search-submitted': '搜索已提交',
+    'progress-confirmed': '进度已增长',
+    'progress-pending': '搜索进度尚未更新',
+    'counter-unavailable': '搜索额度暂无有效数据',
+    failed: '搜索读取或执行失败'
+  }[state]
+}
+
+export interface SearchEvent {
+  eventId: string
+  kind: 'submission' | 'observation'
+  state: SearchState
+  reason: string
+  source: string
+  availability: string
+  completed: number | null
+  total: number | null
+  remaining: number | null
+  observedAt: string
+  durationMs: number
+  usedFallback: boolean | null
+  attempt: number
+  submittedCount: number
+  unknownSubmissionCount: number
+  lastConfirmedCompleted: number
+  lastConfirmedTotal: number | null
+  canContinue: boolean
+}
+
 export interface TaskRecord {
+  searchObservation?: {
+    runId: string
+    submittedCount: number
+    unknownSubmissionCount: number
+    awaitingProgress: boolean
+    completed: number
+    total: number | null
+    observedAt: string | null
+    result: string
+    state?: SearchState
+    canContinue?: boolean
+    lastEvent?: SearchEvent
+  }
   taskId: string
   accountId: string
   localDate: string

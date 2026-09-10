@@ -5,6 +5,15 @@ import { localDateKey } from '../domain/DateKey.js'
 import { redactRecord } from '../security/Redactor.js'
 
 export interface LogEvent {
+  usedFallback?: boolean | null
+  source?: string
+  availability?: string
+  completed?: number | null
+  total?: number | null
+  remaining?: number | null
+  observedAt?: string
+  submittedCount?: number
+  unknownSubmissionCount?: number
   level: 'debug' | 'info' | 'warn' | 'error'
   event: string
   runId?: string

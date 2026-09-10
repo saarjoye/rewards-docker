@@ -17,6 +17,8 @@ function stringValue(value: unknown): string | undefined {
 }
 
 function finiteNumber(value: unknown): number | undefined {
+  if (typeof value !== 'number' && (typeof value !== 'string' || !/^\d+$/.test(value.trim())))
+    return undefined
   const number = typeof value === 'number' ? value : Number(value)
   return Number.isFinite(number) ? number : undefined
 }
@@ -157,6 +159,13 @@ function parseCounterArray(
   name: string
 ): FieldEvidence<SearchQuota> {
   if (value === undefined || value === null) return missing(source, observedAt, `${name} missing`)
+  if (isRecord(value)) {
+    const keys = Object.keys(value)
+    const wrappers = keys.filter((key) => ['items', 'counters'].includes(key.toLowerCase()))
+    if (wrappers.length === 1 && keys.length === 1 && wrappers[0]) value = value[wrappers[0]]
+    else if (keys.some((key) => ['pointprogress', 'point_progress'].includes(key.toLowerCase())))
+      value = [value]
+  }
   if (!Array.isArray(value)) {
     return evidence({
       availability: 'invalid',
@@ -188,8 +197,16 @@ function parseCounterArray(
         reason: `${name} contains a non-object entry`
       })
     }
-    const itemTotal = safeNonNegativeInteger(item.pointProgressMax)
-    const itemCompleted = safeNonNegativeInteger(item.pointProgress)
+    const read = (aliases: string[]): number | undefined => {
+      const values = Object.entries(item)
+        .filter(([key]) => aliases.includes(key.toLowerCase()))
+        .map(([, raw]) => safeNonNegativeInteger(raw))
+      return values.length && values.every((entry) => entry !== undefined && entry === values[0])
+        ? values[0]
+        : undefined
+    }
+    const itemTotal = read(['pointprogressmax', 'point_progress_max'])
+    const itemCompleted = read(['pointprogress', 'point_progress'])
     if (itemTotal === undefined || itemCompleted === undefined || itemCompleted > itemTotal) {
       return evidence({
         availability: 'invalid',
@@ -201,6 +218,15 @@ function parseCounterArray(
     }
     completed += itemCompleted
     total += itemTotal
+    if (!Number.isSafeInteger(completed) || !Number.isSafeInteger(total)) {
+      return evidence({
+        availability: 'invalid',
+        source,
+        confidence: 0,
+        observedAt,
+        reason: `${name} sum overflows`
+      })
+    }
   }
 
   return evidence({
@@ -210,6 +236,36 @@ function parseCounterArray(
     observedAt,
     value: { completed, total, remaining: total - completed }
   })
+}
+
+function searchCounter(
+  counters: RecordValue | undefined,
+  name: string,
+  source: EvidenceSource,
+  observedAt: string
+): FieldEvidence<SearchQuota> {
+  const entries = Object.entries(counters ?? {}).filter(
+    ([key]) => key.toLowerCase() === name.toLowerCase()
+  )
+  const parsed = entries.map(([, value]) => parseCounterArray(value, source, observedAt, name))
+  if (!parsed.length) return missing(source, observedAt, `${name} missing`)
+  if (
+    parsed.length > 1 &&
+    parsed.some(
+      (item) =>
+        item.availability !== 'valid' ||
+        JSON.stringify(item.value) !== JSON.stringify(parsed[0]?.value)
+    )
+  ) {
+    return evidence({
+      availability: 'invalid',
+      source,
+      confidence: 0,
+      observedAt,
+      reason: `${name} aliases conflict`
+    })
+  }
+  return parsed[0] ?? missing(source, observedAt, `${name} missing`)
 }
 
 function attributeStrings(value: unknown): Readonly<Record<string, string>> | undefined {
@@ -470,18 +526,8 @@ export function parseDashboardPayload(
     rewardsUser: parseRewardsUser(sourceName, observedAt, userStatus, userInfo, appResponse),
     market: parseMarket(sourceName, observedAt, root, userStatus, userInfo, appResponse),
     availablePoints: parseBalance(sourceName, observedAt, userStatus, userInfo, appResponse),
-    pcSearch: parseCounterArray(
-      counters?.pcSearch ?? counters?.PCSearch,
-      sourceName,
-      observedAt,
-      'pcSearch'
-    ),
-    mobileSearch: parseCounterArray(
-      counters?.mobileSearch ?? counters?.MobileSearch,
-      sourceName,
-      observedAt,
-      'mobileSearch'
-    ),
+    pcSearch: searchCounter(counters, 'pcSearch', sourceName, observedAt),
+    mobileSearch: searchCounter(counters, 'mobileSearch', sourceName, observedAt),
     offers: uniqueOffers(offers),
     topLevelFields: Object.keys(envelope).sort()
   }

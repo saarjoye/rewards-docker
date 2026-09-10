@@ -226,8 +226,8 @@ export class SqliteStore {
   upsertTask(task: TaskRecord, runId?: string): void {
     this.database.exec('SAVEPOINT task_snapshot')
     try {
-      if (runId) this.ledger.task(runId, task)
-      this.upsertCurrentTask(task)
+      const snapshot = runId ? this.ledger.task(runId, task) : task
+      this.upsertCurrentTask(snapshot)
       this.database.exec('RELEASE task_snapshot')
     } catch (error) {
       this.database.exec('ROLLBACK TO task_snapshot; RELEASE task_snapshot')

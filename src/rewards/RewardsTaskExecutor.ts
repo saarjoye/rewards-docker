@@ -67,14 +67,37 @@ export class RewardsTaskExecutor {
     throwIfAborted(input.signal)
     this.guardDate?.()
     const selected = input.discovery.tasks.filter((task) => input.types.includes(task.type))
-    const reconciled = selected.map((task) => this.reconcileKnownMutation(task))
+    const reconciled = selected.map((task) => {
+      if (task.type === 'pc-search' || task.type === 'mobile-search') {
+        const previous = this.store.ledger.latestSearchTask(task.taskId)
+        if (
+          previous?.searchObservation &&
+          (previous.searchObservation.awaitingProgress ||
+            previous.searchObservation.runId === this.runId)
+        ) {
+          return {
+            task: {
+              ...task,
+              progress: previous.progress,
+              searchObservation: previous.searchObservation,
+              status: previous.searchObservation.awaitingProgress
+                ? ('verification-pending' as const)
+                : previous.status
+            },
+            handled: false,
+            pending: previous.searchObservation.awaitingProgress
+          }
+        }
+      }
+      return this.reconcileKnownMutation(task)
+    })
     if (input.mode === 'read-only') {
       return {
         status: reconciled.some(({ pending }) => pending) ? 'partial' : 'completed',
         tasks: reconciled.map(({ task }) => task)
       }
     }
-    let partial = reconciled.some(({ pending }) => pending)
+    let partial = reconciled.some(({ pending, handled }) => pending && handled)
 
     for (const reconciliation of reconciled) {
       this.guardDate?.()
@@ -110,8 +133,10 @@ export class RewardsTaskExecutor {
             onProgress: (task) => void this.persist(task),
             ...(this.guardDate ? { beforeSubmit: this.guardDate } : {})
           })
-          this.persist(completed)
+          reconciliation.task = this.persist(completed)
+          if (completed.status !== 'completed') partial = true
         } catch (error) {
+          throwIfAborted(input.signal)
           if (error instanceof BusinessDateChanged) {
             this.persist({
               ...(this.store.getTask(original.taskId) ?? original),
@@ -120,15 +145,27 @@ export class RewardsTaskExecutor {
             })
             throw error
           }
-          const latest = this.store.getTask(original.taskId) ?? original
+          const latest =
+            this.store.ledger.latestSearchTask(original.taskId) ??
+            this.store.getTask(original.taskId) ??
+            original
           const failed = this.persist({
             ...latest,
             status: 'failed',
+            ...(latest.searchObservation
+              ? {
+                  searchObservation: {
+                    ...latest.searchObservation,
+                    state: 'failed',
+                    canContinue: false
+                  }
+                }
+              : {}),
             reason:
               error instanceof SearchExecutionError
                 ? `${error.operationStage}: ${error.message}`
                 : error instanceof Error
-                  ? error.message
+                  ? '搜索执行异常'
                   : '搜索失败'
           })
           await this.logTask(failed)
@@ -658,13 +695,15 @@ export class RewardsTaskExecutor {
   private persist(task: TaskRecord): TaskRecord {
     const updated = { ...task, updatedAt: new Date().toISOString() }
     this.store.upsertTask(updated, this.runId)
+    const search = task.searchObservation?.lastEvent
     this.store.ledger.recordTaskEvidence({
       runId: this.runId,
       accountId: task.accountId,
       taskId: task.taskId,
       source: task.source,
-      kind: 'execution',
-      observedAt: updated.updatedAt,
+      kind: search?.kind === 'observation' ? 'verification' : 'execution',
+      observedAt: search?.observedAt ?? updated.updatedAt,
+      ...(search ? { search } : {}),
       completed: task.progress.completed,
       total: task.progress.total,
       executionState: task.status,

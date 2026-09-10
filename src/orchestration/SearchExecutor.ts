@@ -1,7 +1,8 @@
 import type { BrowserContext } from 'patchright'
+import { randomUUID } from 'node:crypto'
 
-import type { DashboardClient } from '../browser/DashboardClient.js'
-import type { TaskRecord } from '../domain/Task.js'
+import { DashboardFetchError, type DashboardClient } from '../browser/DashboardClient.js'
+import type { SearchEvent, SearchState, TaskRecord } from '../domain/Task.js'
 import type { ApplicationConfig } from '../infra/Config.js'
 import type { StructuredLogger } from '../infra/StructuredLogger.js'
 import { BusinessDateChanged } from './BusinessDate.js'
@@ -146,107 +147,331 @@ export class SearchExecutor {
     signal: AbortSignal
     onProgress: (task: TaskRecord) => void
     beforeSubmit?: () => void
+    readOnly?: boolean
+    singleQuery?: string
   }): Promise<TaskRecord> {
-    const total = input.task.progress.total
-    if (total === null) {
-      throw new SearchExecutionError(
-        '搜索额度未确认',
-        'dashboard-refresh',
-        input.task.progress.completed,
-        0
-      )
-    }
     let current = input.task
-    let stagnant = 0
-    const maxQueries = Math.min(50, Math.max(10, (total - current.progress.completed) * 2))
-    const queryBudget = this.budgetOverrideMs ?? calculateSearchQueryBudgetMs(this.config)
-    const roundBudget = Math.min(60 * 60_000, Math.max(10 * 60_000, queryBudget * maxQueries))
-    const roundDeadline = Date.now() + roundBudget
-
-    for (let index = 0; index < maxQueries && current.progress.completed < total; index += 1) {
-      input.beforeSubmit?.()
-      if (input.signal.aborted) throw input.signal.reason
-      if (Date.now() >= roundDeadline) {
-        throw new SearchExecutionError(
-          '整轮搜索达到最大耗时',
-          'search-delay',
-          current.progress.completed,
-          total
-        )
-      }
-      const query = SEARCH_TERMS[index % SEARCH_TERMS.length] as string
-      try {
-        await this.performQuery(query, input.mobile, queryBudget, input.signal, input.beforeSubmit)
-      } catch (error) {
-        if (error instanceof SearchExecutionError) {
-          throw new SearchExecutionError(
-            error.message,
-            error.operationStage,
-            current.progress.completed,
-            total
-          )
+    const existing = current.searchObservation
+    let summary: NonNullable<TaskRecord['searchObservation']> = existing ?? {
+      runId: this.runId,
+      submittedCount: 0,
+      unknownSubmissionCount: 0,
+      awaitingProgress: false,
+      completed: current.progress.completed,
+      total: current.progress.total,
+      observedAt: null,
+      result: 'initial'
+    }
+    const save = (submission = false): void => {
+      if (
+        submission &&
+        (summary.result === 'submitted' || summary.result === 'submission-started') &&
+        summary.lastEvent?.reason !== summary.result
+      ) {
+        summary = {
+          ...summary,
+          state: 'search-submitted',
+          canContinue: false,
+          lastEvent: {
+            eventId: randomUUID(),
+            kind: 'submission',
+            state: 'search-submitted',
+            reason: summary.result,
+            source: 'browser',
+            availability: 'unknown',
+            completed: null,
+            total: null,
+            remaining: null,
+            observedAt: new Date().toISOString(),
+            durationMs: 0,
+            usedFallback: null,
+            attempt: 0,
+            submittedCount: summary.submittedCount,
+            unknownSubmissionCount: summary.unknownSubmissionCount,
+            lastConfirmedCompleted: summary.completed,
+            lastConfirmedTotal: summary.total,
+            canContinue: false
+          }
         }
-        throw error
       }
-
-      let observation
-      try {
-        observation = await this.client.fetchDashboard(input.signal)
-      } catch (error) {
-        throw new SearchExecutionError(
-          error instanceof Error ? error.message : 'Dashboard 刷新失败',
-          'dashboard-refresh',
-          current.progress.completed,
-          total
-        )
-      }
-      const counter = input.mobile ? observation.mobileSearch : observation.pcSearch
-      input.beforeSubmit?.()
-      if (counter.availability !== 'valid' || !counter.value) {
-        throw new SearchExecutionError(
-          counter.reason ?? '搜索 counter 未确认',
-          'dashboard-refresh',
-          current.progress.completed,
-          total
-        )
-      }
-      const nextCompleted = Math.max(current.progress.completed, counter.value.completed)
-      stagnant = nextCompleted === current.progress.completed ? stagnant + 1 : 0
       current = {
         ...current,
-        status: counter.value.remaining === 0 ? 'completed' : 'running',
-        progress: { completed: nextCompleted, total: counter.value.total },
+        searchObservation: { ...summary },
         updatedAt: new Date().toISOString()
       }
       input.onProgress(current)
-      if (counter.value.remaining === 0) return current
-      if (stagnant >= 5) {
+    }
+    const pending = (): TaskRecord => {
+      summary = { ...summary, canContinue: false }
+      current = {
+        ...current,
+        status: 'verification-pending',
+        reason: 'progress-unconfirmed: 搜索进度尚未更新'
+      }
+      save()
+      return current
+    }
+    const total = summary.total
+    save()
+    if (total === null) return pending()
+    current = { ...current, progress: { completed: summary.completed, total } }
+    const maxQueries = Math.min(50, Math.max(10, (total - current.progress.completed) * 2))
+    const queryBudget = this.budgetOverrideMs ?? calculateSearchQueryBudgetMs(this.config)
+    const roundDeadline =
+      Date.now() + Math.min(60 * 60_000, Math.max(10 * 60_000, queryBudget * maxQueries))
+
+    const observe = async (): Promise<boolean> => {
+      const deadline = Math.min(roundDeadline, Date.now() + 120_000)
+      const waits = [0, 5_000, 10_000, 20_000]
+      let received = false
+      let requestFailures = 0
+      for (let attempt = 0; attempt < waits.length; attempt += 1) {
+        input.signal.throwIfAborted()
+        input.beforeSubmit?.()
+        const wait = waits[attempt] ?? 0
+        if (Date.now() + wait >= deadline) break
+        if (wait) await abortableDelay(wait, input.signal)
+        let counter
+        let result: string
+        const requestStarted = Date.now()
+        let usedFallback: boolean | null
+        let durationMs: number | undefined
+        try {
+          const observation = await this.client.fetchDashboard(input.signal, deadline)
+          received = true
+          usedFallback = observation.readMetadata?.usedFallback ?? null
+          durationMs = observation.readMetadata?.durationMs
+          input.signal.throwIfAborted()
+          input.beforeSubmit?.()
+          counter = input.mobile ? observation.mobileSearch : observation.pcSearch
+          const value = counter.value
+          if (Date.now() >= deadline) result = 'observation-deadline'
+          else if (counter.availability !== 'valid' || !value)
+            result =
+              counter.availability === 'missing' || counter.availability === 'empty'
+                ? 'counter-missing'
+                : 'counter-invalid'
+          else if (
+            counter.confidence < 0.75 ||
+            !['legacy-getuserinfo', 'bing-flyout', 'app-dashboard', 'rsc'].includes(
+              counter.source
+            ) ||
+            !Number.isSafeInteger(value.completed) ||
+            !Number.isSafeInteger(value.total) ||
+            value.completed < 0 ||
+            value.total < value.completed ||
+            value.remaining !== value.total - value.completed ||
+            !Number.isFinite(Date.parse(counter.observedAt))
+          )
+            result = 'counter-invalid'
+          else if (value.total !== total) result = 'quota-conflict'
+          else if (
+            value.completed < summary.completed ||
+            (summary.observedAt !== null &&
+              Date.parse(counter.observedAt) < Date.parse(summary.observedAt))
+          )
+            result = 'snapshot-regressed'
+          else if (
+            value.completed > summary.completed ||
+            (value.completed === total && !summary.awaitingProgress)
+          )
+            result = 'progress-increased'
+          else result = 'progress-unchanged'
+        } catch (error) {
+          if (input.signal.aborted) throw signalError(input.signal)
+          if (error instanceof BusinessDateChanged) throw error
+          usedFallback = error instanceof DashboardFetchError ? error.usedFallback : null
+          result =
+            error instanceof DashboardFetchError && [401, 403].includes(error.status ?? 0)
+              ? 'authentication-failed'
+              : error instanceof TypeError ||
+                  (error instanceof DashboardFetchError && error.status === 200)
+                ? 'counter-invalid'
+                : 'request-failed'
+          if (result === 'request-failed') requestFailures += 1
+          else received = true
+        }
+        const state: SearchState =
+          result === 'progress-increased'
+            ? 'progress-confirmed'
+            : ['authentication-failed', 'request-failed'].includes(result)
+              ? 'failed'
+              : [
+                    'counter-missing',
+                    'counter-invalid',
+                    'quota-conflict',
+                    'snapshot-regressed'
+                  ].includes(result)
+                ? 'counter-unavailable'
+                : 'progress-pending'
+        const event: SearchEvent = {
+          eventId: randomUUID(),
+          kind: 'observation',
+          state,
+          reason: result,
+          source: counter?.source ?? 'dashboard',
+          availability: counter?.availability ?? 'unknown',
+          completed: counter?.availability === 'valid' ? (counter.value?.completed ?? null) : null,
+          total: counter?.availability === 'valid' ? (counter.value?.total ?? null) : null,
+          remaining: counter?.availability === 'valid' ? (counter.value?.remaining ?? null) : null,
+          observedAt: counter?.observedAt ?? new Date().toISOString(),
+          durationMs: durationMs ?? Date.now() - requestStarted,
+          usedFallback,
+          attempt: attempt + 1,
+          submittedCount: summary.submittedCount,
+          unknownSubmissionCount: summary.unknownSubmissionCount,
+          lastConfirmedCompleted:
+            result === 'progress-increased'
+              ? (counter?.value?.completed ?? summary.completed)
+              : summary.completed,
+          lastConfirmedTotal: summary.total,
+          canContinue:
+            !input.readOnly && result === 'progress-increased' && counter?.value?.remaining !== 0
+        }
+        summary = { ...summary, result, state, canContinue: event.canContinue, lastEvent: event }
+        await this.logger.write({
+          level: result === 'progress-increased' ? 'debug' : 'warn',
+          event: 'search-dashboard-observation',
+          runId: this.runId,
+          taskType: input.task.type,
+          stage: 'dashboard-refresh',
+          status: result,
+          source: counter?.source ?? 'dashboard',
+          availability: counter?.availability ?? 'unknown',
+          completed: counter?.availability === 'valid' ? (counter.value?.completed ?? null) : null,
+          total: counter?.availability === 'valid' ? (counter.value?.total ?? null) : null,
+          remaining: counter?.availability === 'valid' ? (counter.value?.remaining ?? null) : null,
+          observedAt: counter?.observedAt ?? new Date().toISOString(),
+          attempt: attempt + 1,
+          submittedCount: summary.submittedCount,
+          unknownSubmissionCount: summary.unknownSubmissionCount,
+          durationMs: event.durationMs,
+          usedFallback
+        })
+        if (result === 'authentication-failed') {
+          save()
+          throw new SearchExecutionError(
+            'dashboard-authentication-failed',
+            'dashboard-refresh',
+            summary.completed,
+            total
+          )
+        }
+        if (result === 'progress-increased' && counter?.value) {
+          summary = {
+            ...summary,
+            completed: counter.value.completed,
+            total: counter.value.total,
+            observedAt: counter.observedAt,
+            awaitingProgress: false
+          }
+          current = {
+            ...current,
+            status: summary.completed === total ? 'completed' : 'running',
+            progress: { completed: summary.completed, total }
+          }
+          save()
+          return true
+        }
+        save()
+      }
+      if (!received && requestFailures > 0) {
+        summary = { ...summary, state: 'failed', canContinue: false }
+        save()
         throw new SearchExecutionError(
-          '连续 5 次搜索未观察到进度变化',
+          'dashboard-request-failed',
           'dashboard-refresh',
-          current.progress.completed,
-          current.progress.total ?? total
+          summary.completed,
+          total
         )
       }
+      summary = {
+        ...summary,
+        state:
+          summary.state === 'failed' ? 'progress-pending' : (summary.state ?? 'progress-pending'),
+        canContinue: false
+      }
+      return false
     }
 
-    if (current.progress.completed < total) {
-      throw new SearchExecutionError(
-        '搜索查询达到安全上限但额度尚未完成',
-        'dashboard-refresh',
-        current.progress.completed,
-        total
-      )
+    // A persisted in-flight submission is only reconciled by reads, never replayed.
+    if (summary.awaitingProgress || current.status === 'verification-pending' || input.readOnly) {
+      if (!(await observe())) return pending()
+      if (current.status === 'completed') return current
+      if (input.readOnly) return current
     }
-    return current
+    if (summary.runId !== this.runId) {
+      summary = { ...summary, runId: this.runId, submittedCount: 0, unknownSubmissionCount: 0 }
+      save()
+    }
+    for (let index = 0; index < maxQueries && current.progress.completed < total; index += 1) {
+      input.signal.throwIfAborted()
+      input.beforeSubmit?.()
+      if (Date.now() >= roundDeadline) return pending()
+      const query = input.singleQuery ?? SEARCH_TERMS[index % SEARCH_TERMS.length] ?? SEARCH_TERMS[0]
+      try {
+        await this.performQuery(
+          query,
+          input.mobile,
+          queryBudget,
+          input.signal,
+          input.beforeSubmit,
+          () => {
+            summary = {
+              ...summary,
+              runId: this.runId,
+              unknownSubmissionCount: summary.unknownSubmissionCount + 1,
+              awaitingProgress: true,
+              result: 'submission-started'
+            }
+            save(true)
+          },
+          () => {
+            summary = {
+              ...summary,
+              submittedCount: summary.submittedCount + 1,
+              unknownSubmissionCount: summary.unknownSubmissionCount - 1,
+              result: 'submitted'
+            }
+            save(true)
+          }
+        )
+      } catch (error) {
+        if (input.signal.aborted) throw signalError(input.signal)
+        if (error instanceof BusinessDateChanged) throw error
+        if (summary.awaitingProgress) {
+          const grew = await observe()
+          if (error instanceof SearchExecutionError && error.operationStage === 'submit') {
+            if (!grew) return pending()
+            if (current.status === 'completed') return current
+          }
+          // Do not submit more after a browser action failed, even if progress arrived.
+        }
+        throw new SearchExecutionError(
+          '搜索页面操作失败',
+          error instanceof SearchExecutionError ? error.operationStage : 'submit',
+          summary.completed,
+          total
+        )
+      }
+      if (!(await observe())) return pending()
+      if (current.status === 'completed') return current
+      if (input.singleQuery !== undefined) {
+        summary = { ...summary, canContinue: false }
+        save()
+        return current
+      }
+    }
+    return current.progress.completed < total ? pending() : { ...current, status: 'completed' }
   }
-
   private async performQuery(
     query: string,
     mobile: boolean,
     timeoutMs: number,
     parentSignal: AbortSignal,
-    beforeSubmit?: () => void
+    beforeSubmit?: () => void,
+    onSubmitting?: () => void,
+    onSubmitted?: () => void
   ): Promise<void> {
     const page = await this.context.newPage()
     const controller = new AbortController()
@@ -265,7 +490,10 @@ export class SearchExecutor {
         controller.signal.throwIfAborted()
         stage = 'submit'
         beforeSubmit?.()
+        onSubmitting?.()
         await box.press('Enter', { timeout: 15_000 })
+        controller.signal.throwIfAborted()
+        onSubmitted?.()
         controller.signal.throwIfAborted()
         stage = 'post-submit-wait'
         await abortableDelay(5_000, controller.signal)
@@ -316,7 +544,6 @@ export class SearchExecutor {
         level: 'debug',
         event: 'search-query',
         runId: this.runId,
-        accountAlias: this.accountAlias,
         stage,
         status: 'submitted',
         message: mobile ? 'mobile' : 'desktop'
