@@ -147,9 +147,14 @@ describe('account result regression', () => {
       store.close()
     }
   })
-  it.each([false, true])(
-    'runs three synthetic accounts and preserves partial (final read succeeds=%s)',
-    async (finalReadSucceeds) => {
+  it.each([
+    { finalReadSucceeds: false, partialCloseout: false },
+    { finalReadSucceeds: true, partialCloseout: false },
+    { finalReadSucceeds: false, partialCloseout: true },
+    { finalReadSucceeds: true, partialCloseout: true }
+  ])(
+    'runs three synthetic accounts (final read=$finalReadSucceeds, partial=$partialCloseout)',
+    async ({ finalReadSucceeds, partialCloseout }) => {
       vi.useFakeTimers()
       vi.setSystemTime(new Date('2026-09-09T01:00:00Z'))
       const store = new SqliteStore(':memory:')
@@ -226,12 +231,12 @@ describe('account result regression', () => {
             )
             store.upsertTask(task(context.accountId), context.runId)
           }
-          if (stage === 'web-rewards' && !finalReadSucceeds)
-            return { status: 'partial', message: 'Offer currently unavailable; no submission' }
+          if (stage === 'web-rewards' && (!finalReadSucceeds || partialCloseout))
+            return { status: 'partial', message: 'offer-not-found-before-activation' }
           if (stage === 'final-verification') {
             if (context.runAccountIndex !== 1)
               return {
-                status: 'failed',
+                status: partialCloseout ? 'partial' : 'failed',
                 failureStage: 'final-dashboard',
                 message: 'synthetic final read unavailable'
               }
@@ -247,8 +252,8 @@ describe('account result regression', () => {
         expect(store.getRun(runId)?.status).toBe('partial')
         expect(store.ledger.accounts(runId).map((row) => row.executionState)).toEqual([
           'partial',
-          'failed',
-          'failed'
+          partialCloseout ? 'partial' : 'failed',
+          partialCloseout ? 'partial' : 'failed'
         ])
         expect(finalRead).toHaveBeenCalledTimes(2)
         const view = new RunViews(store).run(runId)
@@ -266,10 +271,21 @@ describe('account result regression', () => {
         const messages = send.mock.calls
           .filter(([url]) => typeof url === 'string' && url.includes('message/send'))
           .map(([, init]) => (typeof init?.body === 'string' ? init.body : ''))
-        expect(messages.some((message) => message.includes('账号任务部分完成'))).toBe(true)
+        expect(messages.some((message) => message.includes('账号部分完成'))).toBe(true)
         expect(
           messages.filter((message) => message.includes('Microsoft Rewards 账号任务失败'))
-        ).toHaveLength(2)
+        ).toHaveLength(partialCloseout ? 0 : 2)
+        expect(messages.join('\n')).not.toMatch(
+          /待确认|未取得|未匹配|Microsoft Rewards 账号任务完成/
+        )
+        if (partialCloseout)
+          expect(view).toMatchObject({
+            status: 'partial',
+            accountsEnded: 3,
+            accountsCompleted: 0,
+            accountsPartial: 3,
+            accountsFailed: 0
+          })
         expect(messages.some((message) => message.includes('账号任务已完成，积分待确认'))).toBe(
           false
         )

@@ -6,7 +6,12 @@ import { redactText } from '../security/Redactor.js'
 import { RunViews } from '../web/RunViews.js'
 import { localDateKey } from '../domain/DateKey.js'
 import { stateLabel, publicText } from '../domain/Presentation.js'
-import { accountStatusLabel, executionModeLabel, runStatusLabel } from '../domain/RunOutcome.js'
+import {
+  accountStatusLabel,
+  executionModeLabel,
+  runStatusLabel,
+  taskBoundAccountState
+} from '../domain/RunOutcome.js'
 
 const officialApiBase = 'https://qyapi.weixin.qq.com'
 const apiBaseUrl = z
@@ -267,7 +272,7 @@ export class Notifications {
           `失败账号：${String(run.accountsFailed)}`,
           `未完全完成账号：${String(run.accountsNotCompleted)}`,
           `整体确认积分：${points(run.confirmedTaskPoints)}`,
-          `未匹配任务预计积分：${points(run.pendingTaskPoints)}`,
+          `任务预计积分：${points(run.pendingTaskPoints)}`,
           `本轮实时余额变化：${points(run.liveBalanceDelta)}`,
           `统计日期：${run.statisticScope.businessDate} · Asia/Shanghai`,
           `运行：${runId.slice(0, 8)}`
@@ -484,6 +489,10 @@ export class Notifications {
       completedTasks?: number
       unconfirmedTasks?: number
     }
+    event.executionState = taskBoundAccountState(
+      event.executionState,
+      this.store.ledger.tasks(event.runId).filter((task) => task.accountId === event.accountId)
+    )
     const stats = new RunViews(this.store).accountDate(
       event.runId,
       event.accountId,
@@ -499,22 +508,22 @@ export class Notifications {
       `最终余额变化：${points(stats.confirmedBalanceDelta)}`,
       `实时总分：${stats.latestBalance === null ? '—' : `${String(stats.latestBalance)} 分`}`,
       `已完成任务：${String(event.completedTasks ?? '—')}`,
-      `未匹配任务：${String(event.unconfirmedTasks ?? '—')}`,
+      `未完成任务：${String(event.unconfirmedTasks ?? '—')}`,
       ...(['failed', 'partial', 'action-required', 'interrupted'].includes(event.executionState)
         ? [
-            `结束阶段：${redactText(event.failureStage ?? '未取得')}`,
+            `结束阶段：${redactText(event.failureStage ?? '—')}`,
             `原因：${redactText(event.failureReason ?? '详情请查看任务账本')}`
           ]
         : []),
       `已匹配到账积分：${points(stats.confirmedTaskPoints)}`,
       `任务上报积分：${points(stats.reportedTaskPoints)}`,
-      `未匹配任务预计积分：${points(stats.pendingTaskPoints)}`,
-      `未匹配余额：${points(stats.unmatchedBalancePoints)}`,
+      `任务预计积分：${points(stats.pendingTaskPoints)}`,
+      `未归属余额变化：${points(stats.unmatchedBalancePoints)}`,
       `上报超额：${points(stats.overreportedTaskPoints)}`,
       `数据状态：${stateLabel(stats.attributionStatus)}`,
       `统计日期：${stats.businessDate} · Asia/Shanghai`,
       ...(stats.confirmedTaskPoints === null && event.executionState === 'completed'
-        ? ['账号执行已结束，到账来源未匹配']
+        ? ['账号执行已结束，任务到账：—']
         : []),
       `运行：${event.runId.slice(0, 8)}`
     ].join('\n')
@@ -524,7 +533,7 @@ export class Notifications {
 export function completionTitle(state: string): string {
   const titles: Record<string, string> = {
     completed: '账号任务完成',
-    partial: '账号任务部分完成',
+    partial: '账号部分完成',
     failed: '账号任务失败',
     'action-required': '账号需要人工处理',
     cancelled: '账号任务已取消',

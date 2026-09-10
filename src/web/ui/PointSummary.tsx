@@ -54,11 +54,11 @@ export function PointSummary({ value }: { value: PointStatistics }): ReactElemen
           <dd>{points(value.confirmedTaskPoints)}</dd>
         </div>
         <div>
-          <dt>未匹配任务预计积分</dt>
+          <dt>任务预计积分</dt>
           <dd>{points(value.pendingTaskPoints)}</dd>
         </div>
         <div>
-          <dt>未匹配余额</dt>
+          <dt>未归属余额变化</dt>
           <dd>{points(value.unmatchedBalancePoints)}</dd>
         </div>
         <div>
@@ -70,7 +70,7 @@ export function PointSummary({ value }: { value: PointStatistics }): ReactElemen
         {value.statisticScope
           ? `${value.statisticScope.businessDate} · ${value.statisticScope.timezone} · ${value.statisticScope.kind === 'account-date' ? '账号日累计' : '本轮账号'}`
           : '统计范围：—'}
-        。未匹配余额与上报超额是不同的比较项，不相加；— 表示没有数值证据。
+        。未归属余额变化与上报超额是不同的比较项，不相加；— 表示没有数值证据。
       </small>
     </>
   )

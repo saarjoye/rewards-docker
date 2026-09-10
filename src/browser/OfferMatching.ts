@@ -1,5 +1,7 @@
 export interface OfferIdentity {
   sourceTaskId?: string
+  taskId?: string
+  offerId?: string
   displayName?: string
 }
 
@@ -85,8 +87,9 @@ export function matchOfferAnchor(
       return []
     // A wrapper needs an explicit matching destination. IDs/titles cannot override search semantics.
     if (!anchor.destinationUrl || !sameOfferUrl(anchor.destinationUrl, destination)) return []
-    const id =
-      identity.sourceTaskId && [anchor.offerId, anchor.taskId].includes(identity.sourceTaskId)
+    const id = [identity.sourceTaskId, identity.taskId, identity.offerId].some(
+      (value) => Boolean(value) && [anchor.offerId, anchor.taskId].includes(value)
+    )
     const label = normalize(identity.displayName)
     const named =
       label &&

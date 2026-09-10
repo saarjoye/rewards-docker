@@ -1,6 +1,13 @@
 import { randomInt } from 'node:crypto'
 
-import type { APIResponse, BrowserContext, Locator, Page, Response } from 'patchright'
+import type {
+  APIResponse,
+  BrowserContext,
+  ElementHandle,
+  Locator,
+  Page,
+  Response
+} from 'patchright'
 
 import type { StructuredLogger } from '../infra/StructuredLogger.js'
 import { safePath } from '../security/Redactor.js'
@@ -15,6 +22,7 @@ import { inspectCreditStructure, type CreditStructure } from '../rewards/CreditS
 import { shouldRetry } from '../orchestration/RetryPolicy.js'
 import {
   MutationNotStartedError,
+  OfferActivationError,
   OfferUnavailableError
 } from '../orchestration/MutationExecutor.js'
 import { matchOfferAnchor, type OfferIdentity } from './OfferMatching.js'
@@ -28,6 +36,27 @@ const DISCOVERY_DEADLINE_MS = 90_000
 const SCRIPT_SCAN_TIMEOUT_MS = 12_000
 const SCRIPT_REQUEST_TIMEOUT_MS = 4_000
 const SCRIPT_SCAN_CONCURRENCY = 6
+
+function readOfferAnchor(node: HTMLElement | SVGElement) {
+  const anchor = node as HTMLAnchorElement
+  const owner = anchor.closest('[data-offer-id], [data-task-id], [data-destination-url]')
+  return {
+    href: anchor.href,
+    visible:
+      anchor.isConnected &&
+      anchor.getClientRects().length > 0 &&
+      window.getComputedStyle(anchor).visibility !== 'hidden',
+    offerId: anchor.getAttribute('data-offer-id') ?? owner?.getAttribute('data-offer-id') ?? '',
+    taskId: anchor.getAttribute('data-task-id') ?? owner?.getAttribute('data-task-id') ?? '',
+    destinationUrl:
+      anchor.getAttribute('data-destination-url') ??
+      owner?.getAttribute('data-destination-url') ??
+      '',
+    ariaLabel: anchor.getAttribute('aria-label') ?? '',
+    title: anchor.getAttribute('title') ?? '',
+    text: anchor.innerText.slice(0, 200)
+  }
+}
 
 export class DashboardFetchError extends Error {
   constructor(
@@ -95,7 +124,7 @@ export interface RscBootstrap {
 
 export interface OfferLinkInspection {
   found: boolean
-  surface: 'earn' | 'dashboard' | 'none'
+  surface: 'earn' | 'dashboard' | 'bing-flyout' | 'none'
   opensNewPage: boolean
   sameOriginDestination: boolean
   hasInlineClick: boolean
@@ -446,7 +475,12 @@ export class DashboardClient {
     deploymentId?: string
     routerStateTree: string
     offerId?: string
-  }): Promise<{ status: number; acknowledged: boolean; credit?: TaskCreditEvidence }> {
+  }): Promise<{
+    status: number
+    acknowledged: boolean
+    rejected?: boolean
+    credit?: TaskCreditEvidence
+  }> {
     const url = input.url ?? REWARDS_URLS.earn
     const referer = input.referer ?? url
     const refererUrl = new URL(referer)
@@ -516,6 +550,10 @@ export class DashboardClient {
     return {
       status: response.status,
       acknowledged: serverActionAcknowledged(response.ok, response.text),
+      rejected:
+        response.ok &&
+        /^\d+:false\s*$/m.test(response.text) &&
+        !/^\d+:true\s*$/m.test(response.text),
       ...(credit ? { credit } : {})
     }
   }
@@ -554,8 +592,12 @@ export class DashboardClient {
     }
   }
 
-  async navigateOffer(url: string, identity: OfferIdentity = {}): Promise<void> {
-    const activated = await this.openOfferForInteraction(url, identity)
+  async navigateOffer(
+    url: string,
+    identity: OfferIdentity = {},
+    signal?: AbortSignal
+  ): Promise<void> {
+    const activated = await this.openOfferForInteraction(url, identity, signal)
     try {
       await activated.page.waitForTimeout(3_000)
     } finally {
@@ -565,145 +607,229 @@ export class DashboardClient {
 
   async openOfferForInteraction(
     url: string,
-    identity: OfferIdentity = {}
+    identity: OfferIdentity = {},
+    signal?: AbortSignal
   ): Promise<ActivatedOfferPage> {
-    let activationStarted = false
+    const found = await this.findOffer(url, identity, signal)
+    if (!found) throw new OfferUnavailableError()
+    const activation = { started: false }
     try {
-      const destination = new URL(url, REWARDS_ORIGIN)
-      if (destination.protocol !== 'https:' || destination.username || destination.password)
-        throw new TypeError('Offer destination must use credential-free HTTPS')
-      // Retry discovery only before activation. A click with an unknown result is never repeated.
-      for (let attempt = 1; attempt <= 2; attempt += 1) {
-        const surfaces = [REWARDS_URLS.earn, REWARDS_URLS.dashboard]
-        for (const surface of surfaces) {
-          const current = new URL(this.page.url())
-          const expected = new URL(surface)
-          if (current.origin !== expected.origin || current.pathname !== expected.pathname) {
-            await this.page.goto(surface, { waitUntil: 'domcontentloaded', timeout: 30_000 })
-          }
-          await this.page.waitForTimeout(1_000)
-          if (new URL(this.page.url()).origin !== expected.origin)
-            throw new MutationNotStartedError('Offer surface redirected before activation')
-          const anchorIndex = await this.offerAnchorIndex(
-            destination.href,
-            undefined,
-            identity,
-            expected.pathname,
-            attempt
-          )
-          if (anchorIndex < 0) continue
-          const anchor = this.page.locator('a[href]').nth(anchorIndex)
-          activationStarted = true
-          return await this.activateOfferAnchor(anchor)
-        }
-
-        await this.page.goto(BING_ORIGIN, { waitUntil: 'domcontentloaded', timeout: 30_000 })
-        await this.page.waitForTimeout(1_000)
-        const triggerSelectors = [
-          '#id_rh',
-          '[aria-label*="Microsoft Rewards" i]',
-          '[title*="Microsoft Rewards" i]',
-          'a[href*="rewards" i]'
-        ]
-        let flyoutOpened = false
-        let flyoutInspected = false
-        for (const selector of triggerSelectors) {
-          const trigger = this.page.locator(selector).first()
-          if ((await trigger.count()) === 0 || !(await trigger.isVisible().catch(() => false)))
-            continue
-          await trigger.click({ timeout: 10_000 })
-          flyoutOpened = true
-          break
-        }
-        if (flyoutOpened) {
-          await this.page.waitForTimeout(2_000)
-          for (const frame of this.page.frames()) {
-            const frameUrl = new URL(frame.url())
-            if (
-              frameUrl.protocol !== 'https:' ||
-              !['bing.com', 'www.bing.com', 'cn.bing.com'].includes(frameUrl.hostname) ||
-              !frameUrl.pathname.includes('/rewards/panelflyout')
-            )
-              continue
-            const links = frame.locator('a[href]')
-            flyoutInspected = true
-            const anchorIndex = await this.offerAnchorIndex(
-              destination.href,
-              links,
-              identity,
-              'bing-flyout',
-              attempt
-            )
-            if (anchorIndex < 0) continue
-            activationStarted = true
-            return await this.activateOfferAnchor(links.nth(anchorIndex))
-          }
-        }
-        if (!flyoutInspected)
-          await this.logger.write({
-            level: 'info',
-            event: 'offer-link-lookup',
-            stage: 'bing-flyout',
-            attempt,
-            status: 'unavailable',
-            message: 'candidates=0; matched=false'
-          })
-      }
-      throw new OfferUnavailableError(
-        'Offer currently unavailable after two surface discoveries; no task was submitted'
-      )
-    } catch (error) {
-      if (activationStarted || error instanceof MutationNotStartedError) throw error
-      await this.logger.write({
-        level: 'warn',
-        event: 'offer-link-lookup',
-        stage: 'pre-activation',
-        status: networkError(error) ? 'network-error' : 'browser-or-authentication-error'
+      if (signal?.aborted) throw abortReason(signal)
+      return await this.activateOfferAnchor(found.anchor, async () => {
+        if (signal?.aborted) throw abortReason(signal)
+        await this.logger.write({
+          level: 'info',
+          event: 'offer-link-lookup',
+          stage: found.surface,
+          status: 'activating',
+          message: 'matched=true; activationStarted=true'
+        })
+        if (signal?.aborted) throw abortReason(signal)
+        activation.started = true
       })
-      throw new MutationNotStartedError('Offer lookup failed before activation')
+    } catch {
+      if (!activation.started)
+        throw new MutationNotStartedError(
+          'Offer activation preparation failed',
+          'offer-browser-failed'
+        )
+      // Once activation is attempted the ledger must prevent another click.
+      throw new OfferActivationError()
+    } finally {
+      await found.anchor.dispose()
     }
   }
 
-  async inspectOfferLink(url: string): Promise<OfferLinkInspection> {
-    const destination = new URL(url, REWARDS_ORIGIN)
-    if (destination.protocol !== 'https:') throw new TypeError('Offer destination must use HTTPS')
-    const surfaces = [
-      { name: 'earn' as const, url: REWARDS_URLS.earn },
-      { name: 'dashboard' as const, url: REWARDS_URLS.dashboard }
-    ]
-    for (const surface of surfaces) {
-      const current = new URL(this.page.url())
-      const expected = new URL(surface.url)
-      if (current.origin !== expected.origin || current.pathname !== expected.pathname) {
-        await this.page.goto(surface.url, { waitUntil: 'domcontentloaded', timeout: 30_000 })
+  private async findOffer(url: string, identity: OfferIdentity, signal?: AbortSignal) {
+    let destination: URL
+    try {
+      destination = new URL(url, REWARDS_ORIGIN)
+      if (destination.protocol !== 'https:' || destination.username || destination.password)
+        throw new Error()
+    } catch {
+      throw new MutationNotStartedError('Unsafe offer destination', 'offer-invalid-destination')
+    }
+    const deadline = Date.now() + DISCOVERY_DEADLINE_MS
+    const networkFailures = new Set<string>()
+    const check = () => {
+      if (signal?.aborted) throw abortReason(signal)
+      if (Date.now() >= deadline)
+        throw new MutationNotStartedError(
+          'Offer discovery deadline expired',
+          'offer-network-failed'
+        )
+    }
+    const waitForLink = async (
+      links: Locator,
+      surface: 'earn' | 'dashboard' | 'bing-flyout',
+      attempt: number
+    ) => {
+      // Poll dynamic cards, not the entire page's network-idle state.
+      for (let poll = 0; poll < 8; poll += 1) {
+        check()
+        const index = await this.offerAnchorIndex(
+          destination.href,
+          links,
+          identity,
+          surface,
+          attempt
+        )
+        if (index >= 0) {
+          const anchor = await links.nth(index).elementHandle()
+          if (anchor) {
+            const candidate = await anchor.evaluate(readOfferAnchor)
+            if (matchOfferAnchor([candidate], destination.href, identity).index === 0)
+              return { anchor, surface }
+            await anchor.dispose()
+          }
+        }
+        if (poll < 7) await this.page.waitForTimeout(250)
       }
-      await this.page.waitForTimeout(1_000)
-      const anchorIndex = await this.offerAnchorIndex(destination.href)
-      const inspection = await this.page.evaluate((index) => {
-        const anchor = [...document.querySelectorAll<HTMLAnchorElement>('a[href]')][index]
-        if (!anchor) return undefined
-        const interactive = anchor.parentElement?.closest('button, [role="button"]')
+      return undefined
+    }
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      for (const surface of ['earn', 'dashboard', 'bing-flyout'] as const) {
+        check()
+        try {
+          const target = surface === 'bing-flyout' ? BING_ORIGIN : REWARDS_URLS[surface]
+          const current = new URL(this.page.url())
+          const expected = new URL(target)
+          if (
+            attempt > 1 ||
+            current.origin !== expected.origin ||
+            current.pathname !== expected.pathname
+          )
+            await this.page.goto(target, {
+              waitUntil: 'domcontentloaded',
+              timeout: Math.max(1, Math.min(15_000, deadline - Date.now()))
+            })
+          check()
+          const actual = new URL(this.page.url())
+          const allowed =
+            surface === 'bing-flyout'
+              ? actual.protocol === 'https:' &&
+                ['bing.com', 'www.bing.com', 'cn.bing.com'].includes(actual.hostname)
+              : actual.origin === expected.origin
+          if (!allowed)
+            throw new MutationNotStartedError(
+              'Offer surface redirected',
+              'offer-authentication-failed'
+            )
+          if (surface !== 'bing-flyout') {
+            const found = await waitForLink(this.page.locator('a[href]'), surface, attempt)
+            if (found) return found
+            networkFailures.delete(surface)
+            continue
+          }
+          // Only explicit Rewards controls may open the panel; generic reward links are not triggers.
+          let opened = false
+          for (let poll = 0; poll < 8 && !opened; poll += 1) {
+            check()
+            for (const selector of [
+              '#id_rh',
+              '[aria-label="Microsoft Rewards" i]',
+              '[title="Microsoft Rewards" i]'
+            ]) {
+              const trigger = this.page.locator(selector).first()
+              if ((await trigger.count()) > 0 && (await trigger.isVisible())) {
+                await trigger.click({ timeout: 5_000 })
+                opened = true
+                break
+              }
+            }
+            if (!opened) await this.page.waitForTimeout(250)
+          }
+          if (opened) {
+            for (let poll = 0; poll < 8; poll += 1) {
+              check()
+              const frames = this.page.frames().filter((frame) => {
+                try {
+                  const value = new URL(frame.url())
+                  return (
+                    value.protocol === 'https:' &&
+                    ['bing.com', 'www.bing.com', 'cn.bing.com'].includes(value.hostname) &&
+                    value.pathname.includes('/rewards/panelflyout')
+                  )
+                } catch {
+                  return false
+                }
+              })
+              for (const frame of frames) {
+                const found = await waitForLink(frame.locator('a[href]'), surface, attempt)
+                if (found) return found
+              }
+              if (frames.length) break
+              await this.page.waitForTimeout(250)
+            }
+          }
+          await this.logger.write({
+            level: 'info',
+            event: 'offer-link-lookup',
+            stage: surface,
+            attempt,
+            status: 'missing',
+            message: 'matched=false; activationStarted=false'
+          })
+          networkFailures.delete(surface)
+        } catch (error) {
+          if (signal?.aborted) throw abortReason(signal)
+          if (error instanceof MutationNotStartedError) throw error
+          const network = networkError(error)
+          await this.logger.write({
+            level: 'warn',
+            event: 'offer-link-lookup',
+            stage: surface,
+            attempt,
+            status: network ? 'network-error' : 'browser-error',
+            message: 'activationStarted=false'
+          })
+          if (!network)
+            throw new MutationNotStartedError('Offer browser lookup failed', 'offer-browser-failed')
+          networkFailures.add(surface)
+        }
+      }
+    }
+    if (networkFailures.size)
+      throw new MutationNotStartedError(
+        'Offer lookup network requests failed',
+        'offer-network-failed'
+      )
+    return undefined
+  }
+
+  async inspectOfferLink(
+    url: string,
+    identity: OfferIdentity = {},
+    signal?: AbortSignal
+  ): Promise<OfferLinkInspection> {
+    const found = await this.findOffer(url, identity, signal)
+    if (!found)
+      return {
+        found: false,
+        surface: 'none',
+        opensNewPage: false,
+        sameOriginDestination: new URL(url, REWARDS_ORIGIN).origin === REWARDS_ORIGIN,
+        hasInlineClick: false,
+        hasInteractiveAncestor: false,
+        attributeNames: []
+      }
+    try {
+      const metadata = await found.anchor.evaluate((node) => {
+        const anchor = node as HTMLAnchorElement
         return {
           opensNewPage: anchor.target.toLowerCase() === '_blank',
           sameOriginDestination: new URL(anchor.href).origin === window.location.origin,
           hasInlineClick: anchor.hasAttribute('onclick'),
-          hasInteractiveAncestor: interactive != null,
+          hasInteractiveAncestor: anchor.parentElement?.closest('button, [role="button"]') != null,
           attributeNames: anchor
             .getAttributeNames()
             .filter((name) => !['href', 'aria-label', 'title'].includes(name.toLowerCase()))
             .sort()
         }
-      }, anchorIndex)
-      if (inspection) return { found: true, surface: surface.name, ...inspection }
-    }
-    return {
-      found: false,
-      surface: 'none',
-      opensNewPage: false,
-      sameOriginDestination: destination.origin === REWARDS_ORIGIN,
-      hasInlineClick: false,
-      hasInteractiveAncestor: false,
-      attributeNames: []
+      })
+      return { found: true, surface: found.surface, ...metadata }
+    } finally {
+      await found.anchor.dispose()
     }
   }
 
@@ -796,7 +922,7 @@ export class DashboardClient {
     const candidates = await (links ?? this.page.locator('a[href]')).evaluateAll((anchors) =>
       anchors.map((candidate) => {
         const anchor = candidate as HTMLAnchorElement
-        const owner = anchor.closest('[data-offer-id], [data-task-id]')
+        const owner = anchor.closest('[data-offer-id], [data-task-id], [data-destination-url]')
         return {
           href: anchor.href,
           visible:
@@ -822,17 +948,21 @@ export class DashboardClient {
       stage: surface,
       attempt,
       status: match.method,
-      message: `candidates=${String(candidates.length)}; matched=${String(match.index >= 0)}`
+      message: `candidates=${String(candidates.length)}; matched=${String(match.index >= 0)}; activationStarted=false`
     })
     return match.index
   }
 
-  private async activateOfferAnchor(anchor: Locator): Promise<ActivatedOfferPage> {
+  private async activateOfferAnchor(
+    anchor: ElementHandle<HTMLElement | SVGElement>,
+    beforeClick: () => Promise<void>
+  ): Promise<ActivatedOfferPage> {
     const opensNewPage = (await anchor.getAttribute('target'))?.toLowerCase() === '_blank'
     if (opensNewPage) {
       const openedPage = this.context
         .waitForEvent('page', { timeout: 10_000 })
         .catch(() => undefined)
+      await beforeClick()
       await anchor.click({ timeout: 10_000 })
       const opened = await openedPage
       if (opened) {
@@ -853,6 +983,7 @@ export class DashboardClient {
         close: () => Promise.resolve()
       }
     }
+    await beforeClick()
     await anchor.click({ timeout: 10_000 })
     await this.page.waitForLoadState('domcontentloaded', { timeout: 15_000 }).catch(() => undefined)
     return {

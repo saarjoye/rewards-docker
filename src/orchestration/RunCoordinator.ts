@@ -312,7 +312,8 @@ export class ApplicationRunCoordinator {
         }
       }
       if (
-        result.status === 'failed' &&
+        ['failed', 'partial'].includes(result.status) &&
+        !resources.finalEvidence &&
         resources.discovery &&
         resources.desktopClient &&
         !signal.aborted
@@ -321,7 +322,10 @@ export class ApplicationRunCoordinator {
         delete resources.finalPoints
         // One read-only closeout attempt. Authentication failures and cancelled runs never enter here.
         try {
-          const observation = await resources.desktopClient.fetchDashboard(signal)
+          const observation = await resources.desktopClient.fetchDashboard(
+            signal,
+            Date.now() + 15_000
+          )
           if (observation.availablePoints.availability === 'valid') {
             resources.finalEvidence = observation.availablePoints
           }

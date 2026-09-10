@@ -7,10 +7,11 @@ import { Switch } from 'tdesign-react/es/switch/index.js'
 import { AddIcon } from 'tdesign-icons-react'
 import type { AccountSummary, StatePayload } from './App'
 import { Button, DataTable, Field, PageHeader, SelectField, StatusTag } from './UiKit'
+import { taskFailure } from '../../domain/Presentation'
 import { PointSummary } from './PointSummary'
 import { RunResultSummary } from './RunResultSummary'
 import { runStatusLabel, executionModeLabel } from '../../domain/RunOutcome'
-import { clockTime, duration, points, publicText } from './display'
+import { clockTime, duration, points, publicText, stateLabel } from './display'
 
 export function Overview({
   state,
@@ -313,7 +314,16 @@ export function TasksPage({
                 </>
               )
             },
-            { key: 'status', title: '执行状态', cell: (row) => <StatusTag value={row.status} /> },
+            {
+              key: 'status',
+              title: '执行状态',
+              cell: (row) => (
+                <StatusTag
+                  value={row.status}
+                  label={taskFailure(row.reason).failureLabel ?? stateLabel(row.status)}
+                />
+              )
+            },
             {
               key: 'progress',
               title: '任务进度',

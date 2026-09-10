@@ -12,7 +12,7 @@ export const stateLabel = (value: string): string =>
     'action-required': '需要人工处理',
     confirmed: '已确认',
     final: '最终观测',
-    unmatched: '未匹配',
+    unmatched: '—',
     overreported: '上报超额',
     conflict: '数据冲突',
     unavailable: '暂无数据',

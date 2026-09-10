@@ -3,7 +3,13 @@ import { balanceInterval } from '../infra/BalanceInterval.js'
 export { balanceInterval } from '../infra/BalanceInterval.js'
 import type { SqliteStore } from '../infra/SqliteStore.js'
 import { liveAccounting } from '../infra/LiveAccounting.js'
-import { runOutcome, executionModeLabel, accountStatusLabel } from '../domain/RunOutcome.js'
+import {
+  runOutcome,
+  executionModeLabel,
+  accountStatusLabel,
+  taskBoundAccountState
+} from '../domain/RunOutcome.js'
+import { taskFailure } from '../domain/Presentation.js'
 
 export class RunViews {
   constructor(private readonly store: SqliteStore) {}
@@ -38,6 +44,7 @@ export class RunViews {
     return {
       ...task,
       taskStatus: task.status,
+      ...taskFailure(task.reason),
       taskProgress: task.progress,
       accountRealtimeBalance: balance?.balance ?? null,
       accountRealtimeBalanceSource: balance?.source ?? null,
@@ -65,7 +72,13 @@ export class RunViews {
     const snapshots = this.store.ledger.tasks(runId).map((task) => this.task(runId, task))
     const taskEvidence = this.store.ledger.taskEvidence(runId)
     const balances = this.store.ledger.balances(runId)
-    const lifecycle = this.store.ledger.accounts(runId)
+    const lifecycle = this.store.ledger.accounts(runId).map((account) => ({
+      ...account,
+      executionState: taskBoundAccountState(
+        account.executionState,
+        snapshots.filter((task) => task.accountId === account.accountId)
+      )
+    }))
     const credits = this.store.ledger.credits.rowsForRun(runId)
     if (!durable && !lifecycle.length && !balances.length && !snapshots.length && !credits.length)
       return undefined

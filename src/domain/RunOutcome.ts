@@ -25,6 +25,17 @@ export const accountStatusLabel = (status: string): string =>
     queued: '等待执行'
   })[status] ?? '—'
 
+export function taskBoundAccountState(
+  state: string,
+  tasks: readonly { required: boolean; status: string }[]
+): string {
+  if (state !== 'completed') return state
+  return tasks.length > 0 &&
+    tasks.filter((task) => task.required).every((task) => task.status === 'completed')
+    ? 'completed'
+    : 'partial'
+}
+
 export function batchStatus(
   results: readonly string[],
   expectedCount: number

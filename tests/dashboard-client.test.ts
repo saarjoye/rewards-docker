@@ -280,6 +280,17 @@ describe('offer link inspection', () => {
       goto: vi.fn().mockResolvedValue(null),
       waitForTimeout: vi.fn().mockResolvedValue(undefined),
       locator: vi.fn().mockReturnValue({
+        nth: vi.fn().mockReturnValue({
+          elementHandle: vi.fn().mockResolvedValue({
+            evaluate: vi
+              .fn()
+              .mockResolvedValueOnce({
+                href: 'https://destination.example.test/private?token=canary'
+              })
+              .mockImplementation(evaluate),
+            dispose: vi.fn().mockResolvedValue(undefined)
+          })
+        }),
         evaluateAll: vi
           .fn()
           .mockResolvedValue([{ href: 'https://destination.example.test/private?token=canary' }])
@@ -323,6 +334,14 @@ describe('offer link inspection', () => {
         .fn()
         .mockResolvedValue([{ href: 'https://rewards.bing.com/earn/task?opaque=canary' }]),
       nth: vi.fn().mockReturnValue({
+        elementHandle: vi.fn().mockResolvedValue({
+          evaluate: vi
+            .fn()
+            .mockResolvedValue({ href: 'https://rewards.bing.com/earn/task?opaque=canary' }),
+          getAttribute: vi.fn().mockResolvedValue('_blank'),
+          click,
+          dispose: vi.fn().mockResolvedValue(undefined)
+        }),
         getAttribute: vi.fn().mockResolvedValue('_blank'),
         click
       })
@@ -360,6 +379,14 @@ describe('offer link inspection', () => {
         .fn()
         .mockResolvedValue([{ href: 'https://www.bing.com/search?q=synthetic&filters=quiz' }]),
       nth: vi.fn().mockReturnValue({
+        elementHandle: vi.fn().mockResolvedValue({
+          evaluate: vi
+            .fn()
+            .mockResolvedValue({ href: 'https://www.bing.com/search?q=synthetic&filters=quiz' }),
+          getAttribute: vi.fn().mockResolvedValue('_blank'),
+          click: vi.fn().mockResolvedValue(undefined),
+          dispose: vi.fn().mockResolvedValue(undefined)
+        }),
         getAttribute: vi.fn().mockResolvedValue('_blank'),
         click: vi.fn().mockResolvedValue(undefined)
       })
@@ -413,6 +440,14 @@ describe('offer link inspection', () => {
         .fn()
         .mockResolvedValue([{ href: 'https://www.bing.com/search?q=synthetic&form=new' }]),
       nth: vi.fn().mockReturnValue({
+        elementHandle: vi.fn().mockResolvedValue({
+          evaluate: vi
+            .fn()
+            .mockResolvedValue({ href: 'https://www.bing.com/search?q=synthetic&form=new' }),
+          getAttribute: vi.fn().mockResolvedValue('_blank'),
+          click: anchorClick,
+          dispose: vi.fn().mockResolvedValue(undefined)
+        }),
         getAttribute: vi.fn().mockResolvedValue('_blank'),
         click: anchorClick
       })
@@ -583,7 +618,7 @@ describe('offer link inspection', () => {
 
     await expect(
       client.navigateOffer('https://destination.example.test/private?token=canary')
-    ).rejects.toThrow('Offer currently unavailable after two surface discoveries')
+    ).rejects.toMatchObject({ errorCode: 'offer-not-found-before-activation' })
     expect(goto).toHaveBeenCalledTimes(5)
     expect(missingTrigger.click).not.toHaveBeenCalled()
     expect(goto).not.toHaveBeenCalledWith(

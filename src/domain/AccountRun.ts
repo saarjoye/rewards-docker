@@ -35,6 +35,13 @@ export function aggregateAccountStatus(
     Number.isSafeInteger(finalBalance.value) &&
     (finalBalance.value ?? -1) >= 0
 
-  if (incomplete || hasUnknownTask || !balanceConfirmed) return 'partial'
+  if (
+    !tasks.length ||
+    tasks.some((task) => task.required && task.status !== 'completed') ||
+    incomplete ||
+    hasUnknownTask ||
+    !balanceConfirmed
+  )
+    return 'partial'
   return 'success'
 }

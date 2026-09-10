@@ -10,6 +10,7 @@ export interface TaskActionContext {
 
 export interface MutationReceipt {
   accepted: boolean
+  rejected?: boolean
   observedAt: string
   safeReference?: string
   credit?: TaskCreditEvidence

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { ReactElement } from 'react'
 import { clockTime, stateLabel, publicText } from './display'
+import { taskFailure } from '../../domain/Presentation'
 
 export interface EvidenceRow {
   taskId: string
@@ -118,7 +119,8 @@ export function TaskEvidencePanel({
             <summary>
               <span className="evidence-task-name">{detailText(task.displayName)}</span>
               <span className="evidence-task-status">
-                {detailText(stateLabel(task.status))} · {rows.length} 条证据
+                {taskFailure(task.reason).failureLabel ?? detailText(stateLabel(task.status))} ·{' '}
+                {rows.length} 条证据
               </span>
             </summary>
             <div className="balance-fields">

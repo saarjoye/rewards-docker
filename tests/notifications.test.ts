@@ -40,6 +40,23 @@ function fixture() {
     startedAt: new Date(now).toISOString()
   })
   const complete = () => {
+    store.upsertTask(
+      {
+        taskId: 'completed-fixture',
+        accountId: 'synthetic',
+        localDate: '2026-09-09',
+        sourceTaskId: 'fixture',
+        source: 'rsc',
+        type: 'daily-set',
+        displayName: 'Synthetic completed task',
+        executable: true,
+        required: true,
+        status: 'completed',
+        progress: { completed: 1, total: 1 },
+        updatedAt: new Date(now).toISOString()
+      },
+      runId
+    )
     store.ledger.lifecycle({
       runId,
       accountId: 'synthetic',

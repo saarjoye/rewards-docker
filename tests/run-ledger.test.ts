@@ -151,6 +151,10 @@ describe('run evidence ledger', () => {
   it('keeps completed account lifecycle when the run is interrupted', () => {
     const store = setup()
     try {
+      store.upsertTask(
+        { ...task, status: 'completed', progress: { completed: 1, total: 1 } },
+        'run'
+      )
       const account = store.ledger.accounts('run')[0]
       if (!account) throw new Error('Missing synthetic account')
       store.ledger.lifecycle({

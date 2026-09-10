@@ -169,7 +169,7 @@ export class RewardsTaskExecutor {
         const failed = this.persist({
           ...running,
           status: 'failed',
-          reason: outcome.message ?? 'mutation rejected'
+          reason: outcome.errorCode ?? outcome.message ?? 'Execution failed'
         })
         await this.logTask(failed)
         if (original.required) return { status: 'failed', tasks: selected }
@@ -181,7 +181,8 @@ export class RewardsTaskExecutor {
         this.persist({
           ...running,
           status: 'verification-pending',
-          reason: outcome.message ?? outcome.verification?.reason ?? '只读复核未确认'
+          reason:
+            outcome.errorCode ?? outcome.message ?? outcome.verification?.reason ?? '只读复核未通过'
         })
       } else {
         this.persist({
@@ -280,15 +281,22 @@ export class RewardsTaskExecutor {
           })
           return {
             accepted: response.acknowledged,
+            ...(response.rejected === undefined ? {} : { rejected: response.rejected }),
             observedAt: new Date().toISOString(),
             ...(response.credit ? { credit: response.credit } : {})
           }
         }
         if (executionPath === 'navigate-only' && offer.destinationUrl) {
-          await this.client.navigateOffer(offer.destinationUrl, {
-            sourceTaskId: offer.sourceTaskId,
-            displayName: offer.displayName
-          })
+          await this.client.navigateOffer(
+            offer.destinationUrl,
+            {
+              sourceTaskId: offer.sourceTaskId,
+              taskId: descriptor.task.taskId,
+              offerId: offer.sourceTaskId,
+              displayName: offer.displayName
+            },
+            signal
+          )
           return { accepted: true, observedAt: new Date().toISOString() }
         }
         return { accepted: false, observedAt: new Date().toISOString() }

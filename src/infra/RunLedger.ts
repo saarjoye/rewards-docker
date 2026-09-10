@@ -6,6 +6,7 @@ import type { TaskRecord } from '../domain/Task.js'
 import { redactText } from '../security/Redactor.js'
 import { PointCredits, type CreditInput } from './PointCredits.js'
 import { balanceInterval } from './BalanceInterval.js'
+import { taskBoundAccountState } from '../domain/RunOutcome.js'
 
 export interface BalanceObservation {
   runId: string
@@ -339,6 +340,14 @@ export class RunLedger {
   }
 
   lifecycle(input: AccountLifecycle): void {
+    if (
+      input.executionState === 'completed' &&
+      taskBoundAccountState(
+        input.executionState,
+        this.tasks(input.runId).filter((task) => task.accountId === input.accountId)
+      ) !== 'completed'
+    )
+      input = { ...input, executionState: 'partial' }
     this.database.exec('SAVEPOINT account_completion_write')
     try {
       this.database

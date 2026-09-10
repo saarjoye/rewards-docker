@@ -14,6 +14,7 @@ import { AccountSecretStore } from '../.codex-output/next-build/server/infra/Acc
 import { createServer } from '../.codex-output/next-build/server/web/createServer.js'
 import { Notifications } from '../.codex-output/next-build/server/notifications/Notifications.js'
 import { Scheduler } from '../.codex-output/next-build/server/orchestration/Scheduler.js'
+import { DashboardClient } from '../.codex-output/next-build/server/browser/DashboardClient.js'
 
 const store = new SqliteStore(':memory:')
 const scheduler = new Scheduler(store.database)
@@ -163,6 +164,36 @@ try {
     ]
   })
   const context = await browser.newContext()
+  const lookupContext = await browser.newContext()
+  try {
+    // All addresses in this context are fulfilled locally; no Rewards request leaves the browser.
+    await lookupContext.route('**/*', (route) =>
+      route.fulfill({
+        contentType: 'text/html',
+        body: '<!doctype html><html><body><a href="https://www.bing.com/search?q=unrelated">Unrelated</a><script>setTimeout(() => { const a=document.createElement("a"); a.href="https://www.bing.com/search?q=synthetic&filters=offer&FORM=test"; a.textContent="Synthetic"; a.onclick=e=>{e.preventDefault();document.body.dataset.activations=String(Number(document.body.dataset.activations||0)+1)};document.body.append(a) }, 600)</script></body></html>'
+      })
+    )
+    const lookupPage = await lookupContext.newPage()
+    await lookupPage.goto('https://rewards.bing.com/earn')
+    const client = new DashboardClient(
+      lookupContext,
+      lookupPage,
+      { write: async () => {} },
+      'synthetic',
+      'synthetic'
+    )
+    const inspected = await client.inspectOfferLink(
+      'https://www.bing.com/search?q=synthetic&filters=offer'
+    )
+    assert.equal(inspected.found, true)
+    const activated = await client.openOfferForInteraction(
+      'https://www.bing.com/search?q=synthetic&filters=offer'
+    )
+    assert.equal(await lookupPage.locator('body').getAttribute('data-activations'), '1')
+    await activated.close()
+  } finally {
+    await lookupContext.close()
+  }
   let failDetail = false
   let delayDetail = false
   await context.route('**/*', async (route) => {
@@ -210,7 +241,7 @@ try {
   await page.getByRole('button', { name: '登录', exact: true }).click()
   await page.locator('.workspace-toolbar').waitFor()
   async function capture(name) {
-    assert.doesNotMatch(await page.locator('body').innerText(), /待确认/)
+    assert.doesNotMatch(await page.locator('body').innerText(), /待确认|未取得|未匹配/)
     await page.evaluate(async () => {
       await Promise.all(
         globalThis.document
@@ -547,6 +578,16 @@ try {
   assert.equal(store.getRun(runId).status, 'running')
   await capture('task-realtime-320')
   const endedAt = new Date().toISOString()
+  for (const task of store.ledger.tasks(runId))
+    store.upsertTask(
+      {
+        ...task,
+        status: 'completed',
+        progress: { completed: task.progress.total ?? 1, total: task.progress.total ?? 1 },
+        updatedAt: endedAt
+      },
+      runId
+    )
   store.updateRun(runId, 'completed', endedAt)
   runCoordinator.activeRunId = undefined
   store.ledger.balance(runId, accountId, 'end', {
@@ -645,6 +686,7 @@ try {
   assert.deepEqual(pageErrors, [])
   const result = {
     passed: true,
+    offerLookupBrowser: true,
     notificationSettings: true,
     allPages: true,
     accountOperations: true,

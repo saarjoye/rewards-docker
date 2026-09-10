@@ -32,7 +32,8 @@ function interactionPath(offer: RewardOffer): string {
 function hasSafeNavigationTarget(offer: RewardOffer): boolean {
   if (!offer.destinationUrl) return false
   try {
-    return new URL(offer.destinationUrl, 'https://rewards.bing.com').protocol === 'https:'
+    const url = new URL(offer.destinationUrl, 'https://rewards.bing.com')
+    return url.protocol === 'https:' && !url.username && !url.password
   } catch {
     return false
   }

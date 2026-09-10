@@ -355,7 +355,7 @@ function RunDetail({
               </Button>
             </div>
           </Card>
-          {value.run.accounts.length === 0 && <Empty description="账号明细尚未取得" />}
+          {value.run.accounts.length === 0 && <Empty description="暂无账号明细" />}
           {value.run.accounts.map((account) => (
             <Card bordered={false} className="account-detail" key={account.accountId}>
               <div className="section-heading">
@@ -395,7 +395,7 @@ function RunDetail({
                   <dd>{points(account.liveBalanceDelta)}</dd>
                 </div>
                 <div>
-                  <dt>未匹配任务</dt>
+                  <dt>未完成任务</dt>
                   <dd>{account.pendingTaskCount}</dd>
                 </div>
               </dl>
