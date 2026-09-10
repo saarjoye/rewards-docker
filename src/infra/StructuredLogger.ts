@@ -25,6 +25,7 @@ export interface LogEvent {
   durationMs?: number
   attempt?: number
   httpStatus?: number
+  host?: string
   path?: string
   message?: string
   retryReason?: string

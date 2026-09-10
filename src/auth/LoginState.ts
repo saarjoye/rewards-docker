@@ -12,6 +12,7 @@ export type LoginState =
   | 'captcha'
   | 'account-locked'
   | 'error-alert'
+  | 'auth-callback'
   | 'logged-in'
   | 'unknown'
 

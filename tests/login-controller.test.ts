@@ -51,6 +51,9 @@ function page(input: {
   otherAccount?: Locator
   authenticator?: Locator
   accountLocked?: Locator
+  captcha?: Locator
+  passkey?: Locator
+  otp?: Locator
 }): Page {
   return {
     waitForLoadState: vi.fn().mockResolvedValue(undefined),
@@ -64,6 +67,9 @@ function page(input: {
       if (selector.includes('deviceShieldCheckmarkVideo')) {
         return input.authenticator ?? locator(false)
       }
+      if (selector.includes('captcha')) return input.captcha ?? locator(false)
+      if (selector.includes('biometricVideo')) return input.passkey ?? locator(false)
+      if (selector.includes('codeEntry')) return input.otp ?? locator(false)
       if (selector.includes('serviceAbuseLandingTitle')) {
         return input.accountLocked ?? locator(false)
       }
@@ -149,6 +155,88 @@ describe('login state detection', () => {
     expect(
       (await controller().detectCurrentState(page({ url: 'https://rewards.bing.com/about' }))).state
     ).toBe('unknown')
+  })
+
+  it('classifies the Rewards auth callback as a login transition', async () => {
+    await expect(
+      controller().detectCurrentState(page({ url: 'https://rewards.bing.com/auth/callback/' }))
+    ).resolves.toMatchObject({
+      state: 'auth-callback',
+      loginStage: 'login-auth-callback',
+      host: 'rewards.bing.com',
+      path: '/auth/callback/'
+    })
+  })
+
+  it('keeps an explicit callback error in the error state', async () => {
+    await expect(
+      controller().detectCurrentState(
+        page({ url: 'https://rewards.bing.com/auth/callback', alert: locator(true, 'Sign in failed') })
+      )
+    ).resolves.toMatchObject({ state: 'error-alert', loginStage: 'login-error-alert' })
+  })
+
+  it('waits through a callback transition without resubmitting credentials', async () => {
+    const loginController = controller()
+    vi.spyOn(loginController, 'detectCurrentState')
+      .mockResolvedValueOnce(snapshot('auth-callback', 'login-auth-callback'))
+      .mockResolvedValueOnce(snapshot('logged-in', 'login-candidate'))
+    const fill = vi.fn().mockResolvedValue(undefined)
+    const click = vi.fn().mockResolvedValue(undefined)
+    let now = 0
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now)
+    const candidatePage = {
+      url: vi.fn().mockReturnValue('https://rewards.bing.com/auth/callback'),
+      waitForTimeout: vi.fn((milliseconds: number) => {
+        now += milliseconds === 700 ? 30_000 : milliseconds
+        return Promise.resolve()
+      }),
+      locator: vi.fn().mockReturnValue(locator(false, '', '', click)),
+      getByRole: vi.fn().mockReturnValue(locator(false, '', '', click)),
+      getByText: vi.fn().mockReturnValue(locator(false, '', '', click))
+    } as unknown as Page
+
+    try {
+      await expect(
+        loginController.login(
+          candidatePage,
+          { email: 'synthetic@example.test', password: 'password-canary' },
+          new AbortController().signal
+        )
+      ).resolves.toBeUndefined()
+    } finally {
+      nowSpy.mockRestore()
+    }
+    expect(fill).not.toHaveBeenCalled()
+    expect(click).not.toHaveBeenCalled()
+  })
+
+  it('returns auth-callback-timeout after the callback grace period', async () => {
+    const loginController = controller()
+    vi.spyOn(loginController, 'detectCurrentState').mockResolvedValue(
+      snapshot('auth-callback', 'login-auth-callback')
+    )
+    let now = 0
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now)
+    const callbackPage = {
+      url: vi.fn().mockReturnValue('https://rewards.bing.com/auth/callback'),
+      waitForTimeout: vi.fn((milliseconds: number) => {
+        now += milliseconds
+        return Promise.resolve()
+      })
+    } as unknown as Page
+
+    try {
+      await expect(
+        loginController.login(
+          callbackPage,
+          { email: 'synthetic@example.test', password: 'password-canary' },
+          new AbortController().signal
+        )
+      ).rejects.toMatchObject({ loginState: 'auth-callback', loginStage: 'auth-callback-timeout' })
+    } finally {
+      nowSpy.mockRestore()
+    }
   })
 
   it('detects the visible login control when a hidden duplicate appears first', async () => {

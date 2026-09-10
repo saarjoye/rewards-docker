@@ -15,6 +15,10 @@ export interface LoginStateSnapshot {
   path: string
 }
 
+const LOGIN_TIMEOUT_MS = 120_000
+const AUTH_CALLBACK_GRACE_MS = 90_000
+const LOGIN_POLL_MS = 700
+
 const SELECTORS = {
   email: 'input#usernameEntry, input[name="loginfmt"]',
   password: 'input[data-testid="passwordEntry"], input[name="passwd"], input[type="password"]',
@@ -101,6 +105,10 @@ export class LoginController {
       current.host === 'login.live.com' ||
       current.host === 'login.microsoft.com' ||
       current.host === 'login.microsoftonline.com'
+    const onRewardsAuthCallback =
+      current.host === 'rewards.bing.com' &&
+      (current.path.toLowerCase() === '/auth/callback' ||
+        current.path.toLowerCase().startsWith('/auth/callback/'))
 
     if (await visible(page.locator(SELECTORS.captcha))) {
       return { state: 'captcha', loginStage: 'login-captcha', ...current }
@@ -120,10 +128,6 @@ export class LoginController {
       return { state: 'passkey-error', loginStage: 'login-passkey-error', ...current }
     }
 
-    if (await this.passwordSignInButton(page)) {
-      return { state: 'password-choice', loginStage: 'login-password-choice', ...current }
-    }
-
     const alert = page.locator(SELECTORS.alert)
     if (await visible(alert)) {
       const text = await firstText(alert)
@@ -138,6 +142,14 @@ export class LoginController {
           ...current
         }
       }
+    }
+
+    if (onRewardsAuthCallback) {
+      return { state: 'auth-callback', loginStage: 'login-auth-callback', ...current }
+    }
+
+    if (await this.passwordSignInButton(page)) {
+      return { state: 'password-choice', loginStage: 'login-password-choice', ...current }
     }
 
     if (await visible(page.locator(SELECTORS.password))) {
@@ -203,22 +215,53 @@ export class LoginController {
       await page.goto(REWARDS_URLS.login, { waitUntil: 'domcontentloaded', timeout: 30_000 })
     }
 
-    const deadline = Date.now() + 120_000
+    const deadline = Date.now() + LOGIN_TIMEOUT_MS
     let previousState: LoginState | undefined
     let unchangedSince = Date.now()
     let unknownRecoveryAttempted = false
+    let callbackSince: number | undefined
     while (Date.now() < deadline) {
       if (signal.aborted) throw signal.reason
-      const snapshot = await this.detectCurrentState(page)
+      let snapshot = await this.detectCurrentState(page)
+      const observedAt = Date.now()
+      if (snapshot.state === 'auth-callback') {
+        if (callbackSince === undefined || previousState !== 'auth-callback') callbackSince = observedAt
+      } else {
+        callbackSince = undefined
+      }
       await this.logger.write({
         level: 'debug',
         event: 'login-state',
         stage: snapshot.loginStage,
         status: snapshot.state,
-        path: snapshot.url
+        host: snapshot.host,
+        path: snapshot.path,
+        ...(callbackSince === undefined
+          ? {}
+          : { durationMs: Math.max(0, observedAt - callbackSince) })
       })
 
       if (snapshot.state === 'logged-in') return
+      if (snapshot.state === 'auth-callback') {
+        const callbackWait = observedAt - (callbackSince ?? observedAt)
+        const remaining = deadline - observedAt
+        if (callbackWait >= AUTH_CALLBACK_GRACE_MS || remaining <= LOGIN_POLL_MS) {
+          const finalSnapshot = await this.detectCurrentState(page)
+          if (finalSnapshot.state === 'logged-in') return
+          if (finalSnapshot.state === 'auth-callback') {
+            throw this.stateError({
+              ...finalSnapshot,
+              loginStage: 'auth-callback-timeout',
+              errorMessage: 'Rewards 登录回调在宽限时间内未完成跳转'
+            })
+          }
+          snapshot = finalSnapshot
+        } else {
+          previousState = snapshot.state
+          await page.waitForTimeout(Math.min(LOGIN_POLL_MS, remaining))
+          continue
+        }
+      }
       if (snapshot.state === 'error-alert' || snapshot.state === 'account-locked') {
         throw this.stateError(snapshot)
       }
@@ -230,7 +273,7 @@ export class LoginController {
       }
       if (snapshot.state === 'otp-code-entry') {
         if (await this.clickPasswordSignIn(page)) {
-          await page.waitForTimeout(700)
+          await page.waitForTimeout(LOGIN_POLL_MS)
           continue
         }
         throw this.stateError({
@@ -270,9 +313,37 @@ export class LoginController {
       }
 
       await this.handleState(page, snapshot.state, credentials)
-      await page.waitForTimeout(700)
+      await page.waitForTimeout(LOGIN_POLL_MS)
     }
 
+    const currentSnapshot = await this.detectCurrentState(page)
+    if (currentSnapshot.state === 'logged-in') return
+    if (currentSnapshot.state === 'auth-callback') {
+      throw this.stateError({
+        ...currentSnapshot,
+        loginStage: 'auth-callback-timeout',
+        errorMessage: 'Rewards 登录回调在整体登录超时前未完成跳转'
+      })
+    }
+    if (
+      currentSnapshot.state === 'error-alert' ||
+      currentSnapshot.state === 'account-locked' ||
+      currentSnapshot.state === 'passkey-error'
+    ) {
+      throw this.stateError(currentSnapshot)
+    }
+    if (currentSnapshot.state === 'captcha') {
+      throw this.stateError({ ...currentSnapshot, errorMessage: '登录需要人工完成 CAPTCHA' })
+    }
+    if (currentSnapshot.state === 'otp-code-entry') {
+      throw this.stateError({ ...currentSnapshot, errorMessage: '登录需要人工输入验证码' })
+    }
+    if (currentSnapshot.state === 'authenticator-approval') {
+      throw this.stateError({
+        ...currentSnapshot,
+        errorMessage: '登录需要人工批准 Microsoft Authenticator 请求'
+      })
+    }
     const current = location(page)
     throw new LoginStateError({
       loginState: previousState ?? 'unknown',
@@ -407,6 +478,10 @@ export class LoginController {
       if (await this.clickPasswordSignIn(page)) return
       if (await this.clickOtherSignInWay(page)) return
       await page.waitForTimeout(1000)
+      return
+    }
+    if (state === 'auth-callback') {
+      // OAuth navigation is in flight. Never refill credentials or resubmit the form.
       return
     }
     throw this.stateError({ ...location(page), state, loginStage: `login-${state}` })
