@@ -15,7 +15,7 @@ concurrency:
 
 env:
   CORE_IMAGE: ghcr.io/${{ github.repository_owner }}/mrs-core
-  CORE_TAG: 5.0.0-next.14
+  CORE_TAG: 5.0.0-next.15
 
 jobs:
   build:

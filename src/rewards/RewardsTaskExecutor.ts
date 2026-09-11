@@ -67,7 +67,9 @@ export class RewardsTaskExecutor {
     accountMode?: AccountMode
     accountIndex?: number
     targetAccountIndex?: number
+    singleQuery?: string
     retryPendingSearch?: boolean
+    resumePendingSearch?: boolean
   }): Promise<{ status: 'completed' | 'partial' | 'failed'; tasks: readonly TaskRecord[] }> {
     throwIfAborted(input.signal)
     this.guardDate?.()
@@ -80,6 +82,7 @@ export class RewardsTaskExecutor {
           (previous.searchObservation.awaitingProgress ||
             previous.searchObservation.runId === this.runId)
         ) {
+          const recoveryHandled = previous.searchObservation.recoveryAttemptedRunId === this.runId
           return {
             task: {
               ...task,
@@ -89,8 +92,10 @@ export class RewardsTaskExecutor {
                 ? ('verification-pending' as const)
                 : previous.status
             },
-            handled: false,
-            pending: previous.searchObservation.awaitingProgress
+            handled: recoveryHandled,
+            pending:
+              previous.searchObservation.awaitingProgress ||
+              (recoveryHandled && !['completed', 'skipped'].includes(previous.status))
           }
         }
       }
@@ -142,9 +147,13 @@ export class RewardsTaskExecutor {
             ...(input.targetAccountIndex === undefined
               ? {}
               : { targetAccountIndex: input.targetAccountIndex }),
+            ...(input.singleQuery === undefined ? {} : { singleQuery: input.singleQuery }),
             ...(input.retryPendingSearch === undefined
               ? {}
               : { retryPendingSearch: input.retryPendingSearch }),
+            ...(input.resumePendingSearch === undefined
+              ? {}
+              : { resumePendingSearch: input.resumePendingSearch }),
             executionMode: input.mode
           })
           reconciliation.task = this.persist(completed)

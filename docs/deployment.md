@@ -4,7 +4,7 @@ Next 单应用沿用 `ghcr.io/saarjoye/mrs-core` 镜像名，替代旧版 Core/W
 
 ## 发布和切换
 
-现有仓库的 `main` 分支通过 `.github/workflows/docker-image.yml` 构建。先执行离线测试、类型检查、ESLint、构建和 Compose 校验，再构建 `linux/amd64` 与 `linux/arm64` 候选镜像。候选镜像使用空数据、禁用外部网络做启动健康检查；成功后才更新 `5.0.0-next.14` 与 `latest`。完整提交固定标签为 `sha-<完整提交号>`。
+现有仓库的 `main` 分支通过 `.github/workflows/docker-image.yml` 构建。先执行离线测试、类型检查、ESLint、构建和 Compose 校验，再构建 `linux/amd64` 与 `linux/arm64` 候选镜像。候选镜像使用空数据、禁用外部网络做启动健康检查；成功后才更新 `5.0.0-next.15` 与 `latest`。完整提交固定标签为 `sha-<完整提交号>`。
 
 next.12 在 next.11 的 dashboard 进度保护基础上，增加 verification-pending 搜索的显式、受限重试：默认只读复核，仅单账号、指定账号、变更模式且用户授权时最多提交一次；continue 模式拒绝目标账号和重试参数。保留今日得分、账号总分、定时和通知反代；可保留数据卷回退 next.11。升级后检查观察进度及部分完成状态；单次成功不保证后续搜索持续计分。
 

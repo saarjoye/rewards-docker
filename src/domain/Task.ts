@@ -79,6 +79,7 @@ export interface TaskRecord {
     total: number | null
     observedAt: string | null
     result: string
+    recoveryAttemptedRunId?: string
     state?: SearchState
     canContinue?: boolean
     lastEvent?: SearchEvent

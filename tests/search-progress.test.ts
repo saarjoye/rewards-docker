@@ -22,7 +22,7 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-const task = (): TaskRecord => ({
+const task = (completed = 9): TaskRecord => ({
   taskId: 'synthetic:2026-09-10:pc-search',
   accountId: 'synthetic',
   localDate: '2026-09-10',
@@ -33,7 +33,7 @@ const task = (): TaskRecord => ({
   executable: true,
   required: true,
   status: 'running',
-  progress: { completed: 9, total: 60 },
+  progress: { completed, total: 60 },
   updatedAt: '2026-09-10T00:00:00.000Z'
 })
 
@@ -47,7 +47,8 @@ function observation(value: unknown = [{ pointProgress: 9, pointProgressMax: 60 
 function harness(values = [observation()], inputTask = task()) {
   vi.useFakeTimers()
   const press = vi.fn().mockResolvedValue(undefined)
-  const box = { first: () => box, waitFor: vi.fn(), fill: vi.fn(), press }
+  const fill = vi.fn().mockResolvedValue(undefined)
+  const box = { first: () => box, waitFor: vi.fn(), fill, press }
   const page = { goto: vi.fn(), locator: () => box, close: vi.fn().mockResolvedValue(undefined) }
   const context = { newPage: vi.fn().mockResolvedValue(page) } as unknown as BrowserContext
   const fetchDashboard = vi
@@ -74,6 +75,7 @@ function harness(values = [observation()], inputTask = task()) {
     executor,
     input,
     press,
+    fill,
     fetchDashboard,
     write,
     context,
@@ -420,26 +422,88 @@ describe('search dashboard observation', () => {
     ).toBe(true)
   })
 
+  it('accepts a structurally valid fallback counter and confirms delayed growth', async () => {
+    const fallbackObservation = (completed: number) => ({
+      ...observation([{ pointProgress: completed, pointProgressMax: 1 }]),
+      readMetadata: {
+        startedAt: '2026-09-10T00:00:00.000Z',
+        durationMs: 1,
+        usedFallback: true,
+        attempts: 1
+      }
+    })
+    const seed = {
+      ...task(0),
+      status: 'verification-pending' as const,
+      progress: { completed: 0, total: 1 },
+      searchObservation: {
+        runId: 'previous-run',
+        submittedCount: 1,
+        unknownSubmissionCount: 0,
+        awaitingProgress: true,
+        completed: 0,
+        total: 1,
+        observedAt: '2026-09-10T00:00:00.000Z',
+        result: 'progress-pending'
+      }
+    }
+    const h = harness(
+      [
+        fallbackObservation(0),
+        fallbackObservation(0),
+        fallbackObservation(0),
+        fallbackObservation(0),
+        fallbackObservation(1)
+      ],
+      seed
+    )
+    const result = await finish(
+      h.executor.run({
+        ...h.input,
+        accountMode: 'account',
+        accountIndex: 1,
+        targetAccountIndex: 1,
+        retryPendingSearch: true
+      })
+    )
+    expect(result).toMatchObject({
+      status: 'completed',
+      progress: { completed: 1, total: 1 },
+      searchObservation: { state: 'progress-confirmed', submittedCount: 2 }
+    })
+    expect(h.press).toHaveBeenCalledTimes(1)
+    const observations = h.write.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event.event === 'search-dashboard-observation')
+    expect(observations.some((event) => event.status === 'progress-increased')).toBe(true)
+    expect(observations.every((event) => event.usedFallback === true)).toBe(true)
+  })
+
   it.each([
     ['unchanged', [{ pointProgress: 9, pointProgressMax: 60 }], 'progress-unchanged'],
     ['missing', null, 'counter-missing'],
     ['invalid', [{ pointProgress: false, pointProgressMax: 60 }], 'counter-invalid'],
     ['regressed', [{ pointProgress: 6, pointProgressMax: 60 }], 'snapshot-regressed'],
     ['quota changed', [{ pointProgress: 9, pointProgressMax: 9 }], 'quota-conflict']
-  ])('retains progress and submits only once for %s', async (_name, value, classification) => {
+  ])('retains progress and applies bounded handling for %s', async (_name, value, classification) => {
     const h = harness([observation(value)])
     const result = await finish(h.executor.run(h.input))
+    const unchanged = classification === 'progress-unchanged'
     expect(result).toMatchObject({
       status: 'verification-pending',
       progress: { completed: 9, total: 60 },
-      searchObservation: { submittedCount: 1, result: classification, awaitingProgress: true }
+      searchObservation: {
+        submittedCount: unchanged ? 50 : 1,
+        result: classification,
+        awaitingProgress: true
+      }
     })
-    expect(h.fetchDashboard).toHaveBeenCalledTimes(4)
-    expect(h.press).toHaveBeenCalledTimes(1)
+    expect(h.fetchDashboard).toHaveBeenCalledTimes(unchanged ? 200 : 4)
+    expect(h.press).toHaveBeenCalledTimes(unchanged ? 50 : 1)
     const logs = h.write.mock.calls
       .map(([event]) => event)
       .filter((event) => event.event === 'search-dashboard-observation')
-    expect(logs).toHaveLength(4)
+    expect(logs).toHaveLength(unchanged ? 200 : 4)
     expect(logs[0]).toMatchObject({ source: 'bing-flyout', status: classification, attempt: 1 })
     expect(Object.keys(logs[0] ?? {})).toEqual(
       expect.arrayContaining([
@@ -454,6 +518,39 @@ describe('search dashboard observation', () => {
     expect(JSON.stringify(logs)).not.toMatch(/accountAlias|https?:|Cookie|Token|Authorization/)
     if (classification === 'counter-missing' || classification === 'counter-invalid')
       expect(logs[0]?.completed).toBeNull()
+  })
+
+  it('continues bounded batch searches through delayed progress observations', async () => {
+    const delayed = (completed: number) => observation([{ pointProgress: completed, pointProgressMax: 6 }])
+    const h = harness([delayed(0), delayed(0), delayed(0), delayed(3), delayed(6)], {
+      ...task(0),
+      progress: { completed: 0, total: 6 }
+    })
+    const result = await finish(h.executor.run(h.input))
+    expect(result).toMatchObject({
+      status: 'completed',
+      progress: { completed: 6, total: 6 },
+      searchObservation: { submittedCount: 2, state: 'progress-confirmed' }
+    })
+    expect(h.press).toHaveBeenCalledTimes(2)
+    expect(h.fetchDashboard).toHaveBeenCalledTimes(5)
+  })
+
+  it('rejects a counter whose remaining value is inconsistent', async () => {
+    const invalid = observation([{ pointProgress: 3, pointProgressMax: 10 }])
+    const malformed = {
+      ...invalid,
+      pcSearch: {
+        ...invalid.pcSearch,
+        value: { completed: 3, total: 10, remaining: 8 }
+      }
+    }
+    const h = harness([malformed])
+    const result = await finish(h.executor.run(h.input))
+    expect(result).toMatchObject({
+      status: 'verification-pending',
+      searchObservation: { result: 'counter-invalid' }
+    })
   })
 
   it('observes delayed growth without resubmitting during review', async () => {
@@ -569,6 +666,106 @@ describe('search dashboard observation', () => {
     expect(h.press).toHaveBeenCalledTimes(1)
   })
 
+  it('resumes one pending search in batch continue mode and never repeats it in the same run', async () => {
+    const seed = {
+      ...task(48),
+      status: 'verification-pending' as const,
+      progress: { completed: 48, total: 60 },
+      searchObservation: {
+        runId: 'previous-run',
+        submittedCount: 1,
+        unknownSubmissionCount: 0,
+        awaitingProgress: true,
+        completed: 48,
+        total: 60,
+        observedAt: '2026-09-10T00:00:00.000Z',
+        result: 'progress-pending'
+      }
+    }
+    const h = harness(
+      [
+        observation([{ pointProgress: 48, pointProgressMax: 60 }]),
+        observation([{ pointProgress: 48, pointProgressMax: 60 }]),
+        observation([{ pointProgress: 48, pointProgressMax: 60 }]),
+        observation([{ pointProgress: 48, pointProgressMax: 60 }]),
+        observation([{ pointProgress: 49, pointProgressMax: 60 }])
+      ],
+      seed
+    )
+    const store = new SqliteStore(':memory:')
+    try {
+      store.upsertTask(seed, 'run')
+      const discovery = {
+        tasks: [seed],
+        descriptors: new Map([[seed.taskId, { task: seed }]])
+      } as unknown as DiscoveryOutput
+      const executor = new RewardsTaskExecutor(
+        h.context,
+        h.client,
+        store,
+        h.logger,
+        h.config,
+        'run',
+        'synthetic'
+      )
+      const input = {
+        discovery,
+        types: ['pc-search'] as const,
+        mode: 'mutating' as const,
+        signal: h.input.signal,
+        accountMode: 'continue' as const,
+        resumePendingSearch: true
+      }
+      const first = await finish(executor.executeTypes(input))
+      expect(first).toMatchObject({
+        status: 'partial',
+        tasks: [{ progress: { completed: 49 }, searchObservation: { submittedCount: 2 } }]
+      })
+      expect(h.press).toHaveBeenCalledTimes(1)
+      expect(h.fill).toHaveBeenCalledTimes(1)
+
+      const second = await finish(executor.executeTypes(input))
+      expect(second).toMatchObject({ status: 'partial' })
+      expect(h.press).toHaveBeenCalledTimes(1)
+      expect(store.ledger.latestSearchTask(seed.taskId)).toMatchObject({
+        progress: { completed: 49 },
+        searchObservation: { recoveryAttemptedRunId: 'run', submittedCount: 2 }
+      })
+    } finally {
+      store.close()
+    }
+  })
+
+  it('keeps a pending search read-only in batch continue mode', async () => {
+    const seed = {
+      ...task(48),
+      status: 'verification-pending' as const,
+      progress: { completed: 48, total: 60 },
+      searchObservation: {
+        runId: 'previous-run',
+        submittedCount: 1,
+        unknownSubmissionCount: 0,
+        awaitingProgress: true,
+        completed: 48,
+        total: 60,
+        observedAt: '2026-09-10T00:00:00.000Z',
+        result: 'progress-pending'
+      }
+    }
+    const h = harness([observation([{ pointProgress: 48, pointProgressMax: 60 }])], seed)
+    const result = await finish(
+      h.executor.run({
+        ...h.input,
+        accountMode: 'continue',
+        executionMode: 'read-only',
+        resumePendingSearch: true,
+        readOnly: true
+      })
+    )
+    expect(result).toMatchObject({ status: 'verification-pending', progress: { completed: 48 } })
+    expect(h.press).not.toHaveBeenCalled()
+  })
+
   it('persists pending results in the run ledger and recovers without a new search', async () => {
     const h = harness()
     const directory = await mkdtemp(join(tmpdir(), 'search-progress-'))
@@ -597,7 +794,8 @@ describe('search dashboard observation', () => {
           discovery,
           types: ['pc-search'],
           mode: 'mutating',
-          signal: h.input.signal
+          signal: h.input.signal,
+          singleQuery: 'synthetic-pending-query'
         })
       expect(await finish(execute())).toMatchObject({
         status: 'partial',

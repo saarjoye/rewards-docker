@@ -132,6 +132,8 @@ async function abortableDelay(milliseconds: number, signal: AbortSignal): Promis
 }
 
 export class SearchExecutor {
+  private activePageCount = 0
+
   constructor(
     private readonly context: BrowserContext,
     private readonly client: DashboardClient,
@@ -154,6 +156,7 @@ export class SearchExecutor {
     accountIndex?: number
     targetAccountIndex?: number
     retryPendingSearch?: boolean
+    resumePendingSearch?: boolean
     executionMode?: 'read-only' | 'mutating'
   }): Promise<TaskRecord> {
     let current = input.task
@@ -197,7 +200,10 @@ export class SearchExecutor {
             lastConfirmedCompleted: summary.completed,
             lastConfirmedTotal: summary.total,
             canContinue: false,
-            retryReason: input.retryPendingSearch ? 'authorized-retry' : 'not-requested'
+            retryReason:
+              input.retryPendingSearch || input.resumePendingSearch
+                ? 'authorized-retry'
+                : 'not-requested'
           }
         }
       }
@@ -208,7 +214,8 @@ export class SearchExecutor {
       }
       input.onProgress(current)
     }
-    const pending = (): TaskRecord => {
+    let budgetExhausted = false
+    const pending = async (): Promise<TaskRecord> => {
       summary = { ...summary, canContinue: false }
       current = {
         ...current,
@@ -216,6 +223,35 @@ export class SearchExecutor {
         reason: 'progress-unconfirmed: 搜索进度尚未更新'
       }
       save()
+      if (typeof this.logger.write === 'function')
+        await this.logger.write({
+          level: 'warn',
+          event: 'search-verification-pending',
+          runId: this.runId,
+          taskId: current.taskId,
+          taskType: current.type,
+          phase: 'dashboard-refresh',
+          status: 'verification-pending',
+          submittedCount: summary.submittedCount,
+          completed: summary.completed,
+          total: summary.total,
+          activePageCount: this.activePageCount,
+          retryReason: summary.result
+        }).catch(() => undefined)
+      if (budgetExhausted && typeof this.logger.write === 'function')
+        await this.logger.write({
+          level: 'warn',
+          event: 'search-budget-exhausted',
+          runId: this.runId,
+          taskId: current.taskId,
+          taskType: current.type,
+          phase: 'dashboard-refresh',
+          status: 'verification-pending',
+          submittedCount: summary.submittedCount,
+          completed: summary.completed,
+          total: summary.total,
+          retryReason: 'query-or-round-deadline'
+        }).catch(() => undefined)
       return current
     }
     const total = summary.total
@@ -227,16 +263,21 @@ export class SearchExecutor {
     const roundDeadline =
       Date.now() + Math.min(60 * 60_000, Math.max(10 * 60_000, queryBudget * maxQueries))
     const retryScopeAllowed =
-      input.retryPendingSearch === true &&
       (input.executionMode ?? (input.readOnly === true ? 'read-only' : 'mutating')) === 'mutating' &&
-      input.accountMode === 'account' &&
-      Number.isSafeInteger(input.accountIndex) &&
-      input.targetAccountIndex === input.accountIndex
+      ((input.retryPendingSearch === true &&
+        input.accountMode === 'account' &&
+        Number.isSafeInteger(input.accountIndex) &&
+        input.targetAccountIndex === input.accountIndex) ||
+        (input.resumePendingSearch === true && input.accountMode === 'continue'))
     let retryCounterEligible = false
     let retryAttempted = false
     const canRetryPendingSearch = (): boolean =>
-      retryScopeAllowed && retryCounterEligible && summary.completed < total
+      retryScopeAllowed &&
+      retryCounterEligible &&
+      summary.completed < total &&
+      summary.recoveryAttemptedRunId !== this.runId
 
+    let lastObservationResult = 'not-observed'
     const observe = async (): Promise<boolean> => {
       const deadline = Math.min(roundDeadline, Date.now() + 120_000)
       const waits = [0, 5_000, 10_000, 20_000]
@@ -269,7 +310,6 @@ export class SearchExecutor {
               counter.availability === 'missing' || counter.availability === 'empty'
                 ? 'counter-missing'
                 : 'counter-invalid'
-          else if (usedFallback === true) result = 'counter-fallback'
           else if (
             counter.confidence < 0.75 ||
             !['legacy-getuserinfo', 'bing-flyout', 'app-dashboard', 'rsc'].includes(
@@ -277,7 +317,10 @@ export class SearchExecutor {
             ) ||
             !Number.isSafeInteger(value.completed) ||
             !Number.isSafeInteger(value.total) ||
+            !Number.isSafeInteger(value.remaining) ||
+            value.total <= 0 ||
             value.completed < 0 ||
+            value.remaining < 0 ||
             value.total < value.completed ||
             value.remaining !== value.total - value.completed ||
             !Number.isFinite(Date.parse(counter.observedAt))
@@ -312,6 +355,7 @@ export class SearchExecutor {
           if (result === 'request-failed') requestFailures += 1
           else received = true
         }
+        lastObservationResult = result
         const state: SearchState =
           result === 'progress-increased'
             ? 'progress-confirmed'
@@ -320,7 +364,6 @@ export class SearchExecutor {
               : [
                     'counter-missing',
                     'counter-invalid',
-                    'counter-fallback',
                     'quota-conflict',
                     'snapshot-regressed'
                   ].includes(result)
@@ -353,7 +396,7 @@ export class SearchExecutor {
             result === 'progress-increased' &&
             counter?.value?.remaining !== 0,
           retryReason:
-            input.retryPendingSearch !== true
+            input.retryPendingSearch !== true && input.resumePendingSearch !== true
               ? 'not-requested'
               : !retryScopeAllowed
                 ? 'single-account-scope-required'
@@ -368,6 +411,7 @@ export class SearchExecutor {
           level: result === 'progress-increased' ? 'debug' : 'warn',
           event: 'search-dashboard-observation',
           runId: this.runId,
+          taskId: current.taskId,
           taskType: input.task.type,
           stage: 'dashboard-refresh',
           status: result,
@@ -378,6 +422,7 @@ export class SearchExecutor {
           remaining: counter?.availability === 'valid' ? (counter.value?.remaining ?? null) : null,
           observedAt: counter?.observedAt ?? new Date().toISOString(),
           attempt: attempt + 1,
+          queryIndex: summary.submittedCount + summary.unknownSubmissionCount,
           submittedCount: summary.submittedCount,
           unknownSubmissionCount: summary.unknownSubmissionCount,
           durationMs: event.durationMs,
@@ -439,9 +484,11 @@ export class SearchExecutor {
       if (input.readOnly === true) return pending()
       if (!canRetryPendingSearch()) return pending()
       retryAttempted = true
+      summary = { ...summary, recoveryAttemptedRunId: this.runId }
+      save()
     }
     if (summary.runId !== this.runId) {
-      summary = { ...summary, runId: this.runId, submittedCount: 0, unknownSubmissionCount: 0 }
+      summary = { ...summary, runId: this.runId }
       save()
     }
     const queryLimit = retryAttempted ? 1 : maxQueries
@@ -449,7 +496,10 @@ export class SearchExecutor {
     for (let index = 0; index < queryLimit && current.progress.completed < total; index += 1) {
       input.signal.throwIfAborted()
       input.beforeSubmit?.()
-      if (Date.now() >= roundDeadline) return pending()
+      if (Date.now() >= roundDeadline) {
+        budgetExhausted = true
+        return pending()
+      }
       const query =
         input.singleQuery ??
         SEARCH_TERMS[(queryOffset + index) % SEARCH_TERMS.length] ??
@@ -460,6 +510,11 @@ export class SearchExecutor {
           input.mobile,
           queryBudget,
           input.signal,
+          {
+            taskId: current.taskId,
+            queryIndex: queryOffset + index,
+            submittedCount: summary.submittedCount
+          },
           input.beforeSubmit,
           () => {
             summary = {
@@ -499,7 +554,13 @@ export class SearchExecutor {
           total
         )
       }
-      if (!(await observe())) return pending()
+      const observation = await observe()
+      if (!observation) {
+        // A valid but unchanged counter is not proof that this query failed. Continue
+        // with the next bounded query; malformed counters and request failures remain pending.
+        if (input.singleQuery !== undefined || lastObservationResult !== 'progress-unchanged')
+          return pending()
+      }
       if (current.status === 'completed') return current
       if (retryAttempted) {
         summary = { ...summary, canContinue: false }
@@ -512,18 +573,35 @@ export class SearchExecutor {
         return current
       }
     }
-    return current.progress.completed < total ? pending() : { ...current, status: 'completed' }
+    if (current.progress.completed < total) {
+      budgetExhausted = true
+      return pending()
+    }
+    return { ...current, status: 'completed' }
   }
   private async performQuery(
     query: string,
     mobile: boolean,
     timeoutMs: number,
     parentSignal: AbortSignal,
+    metadata: { taskId: string; queryIndex: number; submittedCount: number },
     beforeSubmit?: () => void,
     onSubmitting?: () => void,
     onSubmitted?: () => void
   ): Promise<void> {
     const page = await this.context.newPage()
+    this.activePageCount += 1
+    if (typeof this.logger.write === 'function')
+      await this.logger.write({
+        level: 'debug',
+        event: 'search-page-opened',
+        runId: this.runId,
+        taskId: metadata.taskId,
+        queryIndex: metadata.queryIndex,
+        submittedCount: metadata.submittedCount,
+        activePageCount: this.activePageCount,
+        phase: 'search-page'
+      }).catch(() => undefined)
     const controller = new AbortController()
     let stage: SearchOperationStage = 'search-box'
     let operationError: unknown
@@ -575,34 +653,45 @@ export class SearchExecutor {
     })()
 
     let timer: NodeJS.Timeout | undefined
+    let closePromise: Promise<void> | undefined
+    const closePage = (): Promise<void> => {
+      closePromise ??= page.close().catch(() => undefined)
+      return closePromise
+    }
     const timeout = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => {
         const error = new SearchExecutionError(`单次搜索超时: ${String(timeoutMs)}ms`, stage, 0, 0)
         controller.abort(error)
-        void page.close().catch(() => undefined)
+        void closePage()
         reject(error)
       }, timeoutMs)
     })
     const abort = (): void => {
       controller.abort(signalError(parentSignal))
-      void page.close().catch(() => undefined)
+      void closePage()
     }
     parentSignal.addEventListener('abort', abort, { once: true })
     try {
       await Promise.race([operation, timeout])
-      await this.logger.write({
-        level: 'debug',
-        event: 'search-query',
-        runId: this.runId,
-        stage,
-        status: 'submitted',
-        message: mobile ? 'mobile' : 'desktop'
-      })
+      if (typeof this.logger.write === 'function')
+        await this.logger.write({
+          level: 'debug',
+          event: 'search-query',
+          runId: this.runId,
+          taskId: metadata.taskId,
+          queryIndex: metadata.queryIndex,
+          submittedCount: metadata.submittedCount,
+          activePageCount: this.activePageCount,
+          phase: 'submit',
+          stage,
+          status: 'submitted',
+          message: mobile ? 'mobile' : 'desktop'
+        }).catch(() => undefined)
     } catch (error) {
-      await page.close().catch(() => undefined)
+      await closePage()
       await Promise.race([
         operation.catch(() => undefined),
-        new Promise<void>((resolve) => setTimeout(resolve, 1000))
+        new Promise<void>((resolve) => setTimeout(resolve, 1_000))
       ])
       if (error instanceof SearchExecutionError || error instanceof BusinessDateChanged) throw error
       throw new SearchExecutionError(
@@ -614,7 +703,19 @@ export class SearchExecutor {
     } finally {
       if (timer) clearTimeout(timer)
       parentSignal.removeEventListener('abort', abort)
-      await page.close().catch(() => undefined)
+      await closePage()
+      this.activePageCount = Math.max(0, this.activePageCount - 1)
+      if (typeof this.logger.write === 'function')
+        await this.logger.write({
+          level: 'debug',
+          event: 'search-page-closed',
+          runId: this.runId,
+          taskId: metadata.taskId,
+          queryIndex: metadata.queryIndex,
+          submittedCount: metadata.submittedCount,
+          activePageCount: this.activePageCount,
+          phase: 'search-page'
+        }).catch(() => undefined)
     }
   }
 }

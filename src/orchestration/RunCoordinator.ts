@@ -82,6 +82,7 @@ interface AccountResources {
 }
 
 export class ApplicationRunCoordinator {
+  private static readonly activeStoreRuns = new WeakMap<object, string>()
   private active: { runId: string; controller: AbortController } | undefined
   private completion: Promise<void> | undefined
   private finishing = false
@@ -100,7 +101,10 @@ export class ApplicationRunCoordinator {
 
   async start(request: RunRequest): Promise<RunStartResult> {
     await Promise.resolve()
-    if (this.active) throw new RunAlreadyActiveError(this.active.runId)
+    const storeActiveRunId = ApplicationRunCoordinator.activeStoreRuns.get(this.store)
+    if (this.active || storeActiveRunId) {
+      throw new RunAlreadyActiveError(this.active?.runId ?? storeActiveRunId as string)
+    }
     if (request.accountMode === 'continue' && request.retryPendingSearch === true) {
       throw new TypeError('retryPendingSearch requires single-account mode')
     }
@@ -109,24 +113,31 @@ export class ApplicationRunCoordinator {
     const runId = randomUUID()
     const executionMode = request.executionMode ?? 'read-only'
     const controller = new AbortController()
-    this.store.createRun({
-      runId,
-      localDate,
-      executionMode,
-      selectedAccountIndexes: selected.map((account) => account.runAccountIndex),
-      startedAt: new Date().toISOString()
-    })
-    for (const account of selected)
-      this.runLedger?.lifecycle({
+    ApplicationRunCoordinator.activeStoreRuns.set(this.store, runId)
+    try {
+      this.store.createRun({
         runId,
-        accountId: account.accountId,
-        accountIndex: account.runAccountIndex,
-        accountLabel: account.maskedEmail,
-        startedAt: null,
-        endedAt: null,
-        executionState: 'queued',
-        updatedAt: new Date().toISOString()
+        localDate,
+        executionMode,
+        selectedAccountIndexes: selected.map((account) => account.runAccountIndex),
+        startedAt: new Date().toISOString()
       })
+      for (const account of selected)
+        this.runLedger?.lifecycle({
+          runId,
+          accountId: account.accountId,
+          accountIndex: account.runAccountIndex,
+          accountLabel: account.maskedEmail,
+          startedAt: null,
+          endedAt: null,
+          executionState: 'queued',
+          updatedAt: new Date().toISOString()
+        })
+    } catch (error) {
+      if (ApplicationRunCoordinator.activeStoreRuns.get(this.store) === runId)
+        ApplicationRunCoordinator.activeStoreRuns.delete(this.store)
+      throw error
+    }
     this.active = { runId, controller }
     this.finishing = false
     this.interrupted = false
@@ -224,6 +235,8 @@ export class ApplicationRunCoordinator {
       this.finishing = true
       await this.browser.close().catch(() => undefined)
       if (this.active?.runId === runId) this.active = undefined
+      if (ApplicationRunCoordinator.activeStoreRuns.get(this.store) === runId)
+        ApplicationRunCoordinator.activeStoreRuns.delete(this.store)
     }
   }
 
@@ -651,7 +664,8 @@ export class ApplicationRunCoordinator {
         accountMode: singleAccountMode ? 'account' : 'continue',
         accountIndex: context.runAccountIndex,
         ...(targetAccountIndex === undefined ? {} : { targetAccountIndex }),
-        retryPendingSearch
+        retryPendingSearch,
+        resumePendingSearch: mode === 'mutating' && !singleAccountMode
       })
       if (desktopOutcome.status === 'failed') return { status: 'failed' }
       if (desktopOutcome.status === 'partial') status = 'partial'

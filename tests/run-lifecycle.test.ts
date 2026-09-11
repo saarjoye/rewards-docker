@@ -159,4 +159,34 @@ describe('run lifecycle durability', () => {
       store.close()
     }
   })
+
+  it('rejects concurrent coordinators sharing one store before a second run is created', async () => {
+    const first = fixture()
+    const second = new ApplicationRunCoordinator(
+      first.accounts as unknown as AccountSecretStore,
+      first.store,
+      {} as EncryptedSessionStore,
+      first.browser as unknown as BrowserRuntime,
+      {} as StructuredLogger,
+      DEFAULT_CONFIG
+    )
+    try {
+      const firstStart = first.runner.start({ accountMode: 'continue' })
+      const secondStart = second.start({ accountMode: 'continue' })
+      const [firstResult, secondResult] = await Promise.all([
+        firstStart.then(() => ({ status: 'fulfilled' as const })),
+        secondStart.then(
+          () => ({ status: 'fulfilled' as const }),
+          (error: unknown) => ({ status: 'rejected' as const, reason: error })
+        )
+      ])
+      expect(firstResult.status).toBe('fulfilled')
+      expect(secondResult.status).toBe('rejected')
+      if (secondResult.status === 'rejected')
+        expect(secondResult.reason).toMatchObject({ name: 'RunAlreadyActiveError' })
+      await first.runner.stopAndWait().catch(() => undefined)
+    } finally {
+      first.store.close()
+    }
+  })
 })

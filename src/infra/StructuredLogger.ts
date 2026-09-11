@@ -33,6 +33,10 @@ export interface LogEvent {
   networkErrorType?: string | null
   activationStarted?: boolean
   surface?: string
+  taskId?: string
+  queryIndex?: number
+  phase?: string
+  activePageCount?: number
 }
 
 export class StructuredLogger {
