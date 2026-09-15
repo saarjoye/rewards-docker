@@ -66,6 +66,140 @@ async function fixture(runCoordinator?: RunCoordinator, withNotifications = fals
 }
 
 describe('web API', () => {
+  it('caches state snapshots and invalidates them on data or active-run changes', async () => {
+    let activeRunId: string | undefined
+    const coordinator = {
+      get activeRunId() {
+        return activeRunId
+      },
+      start: vi.fn<RunCoordinator['start']>()
+    }
+    const { app, store, cookie } = await fixture(coordinator)
+    const runId = randomUUID()
+    try {
+      store.createRun({
+        runId,
+        localDate: '2026-09-09',
+        executionMode: 'read-only',
+        selectedAccountIndexes: [1],
+        startedAt: '2026-09-09T00:00:00Z'
+      })
+      const taskSpy = vi.spyOn(store.ledger, 'tasks')
+      const first = await app.inject({ method: 'GET', url: '/api/state', headers: { cookie } })
+      const callsAfterFirst = taskSpy.mock.calls.length
+      const second = await app.inject({ method: 'GET', url: '/api/state', headers: { cookie } })
+      expect(first.statusCode).toBe(200)
+      expect(second.statusCode).toBe(200)
+      expect(taskSpy.mock.calls.length).toBe(callsAfterFirst)
+      activeRunId = runId
+      const active = await app.inject({ method: 'GET', url: '/api/state', headers: { cookie } })
+      expect(active.json<{ activeRunId: string | null }>().activeRunId).toBe(runId)
+      store.updateRun(runId, 'partial', '2026-09-09T00:01:00Z')
+      const changed = await app.inject({ method: 'GET', url: '/api/state', headers: { cookie } })
+      expect(changed.json<{ runs: Array<{ status: string }> }>().runs[0]?.status).toBe('partial')
+      expect(taskSpy.mock.calls.length).toBeGreaterThan(callsAfterFirst)
+    } finally {
+      await app.close()
+      store.close()
+    }
+  })
+
+  it('returns lightweight paged run summaries while keeping required fields', async () => {
+    const { app, store, cookie } = await fixture()
+    try {
+      for (let index = 0; index < 21; index += 1)
+        store.createRun({
+          runId: randomUUID(),
+          localDate: '2026-09-09',
+          executionMode: 'read-only',
+          selectedAccountIndexes: [1],
+          startedAt: new Date(Date.UTC(2026, 8, 9, 0, index)).toISOString()
+        })
+      const response = await app.inject({ method: 'GET', url: '/api/runs?page=1', headers: { cookie } })
+      expect(response.statusCode).toBe(200)
+      const body = response.json<{
+        runs: Array<Record<string, unknown>>
+        hasMore: boolean
+      }>()
+      expect(body.runs).toHaveLength(20)
+      expect(body.hasMore).toBe(true)
+      const first = body.runs[0]
+      expect(typeof first?.runId).toBe('string')
+      expect(typeof first?.executionModeLabel).toBe('string')
+      expect(typeof first?.detailUrl).toBe('string')
+      expect(first).toEqual(
+        expect.objectContaining({
+          executionMode: 'read-only',
+          status: 'queued',
+          recordedStatus: 'queued',
+          accountsTotal: 1,
+          accountsEnded: 0,
+          accountsProcessed: 0,
+          accountsCompleted: 0,
+          accountsPartial: 0,
+          accountsFailed: 0,
+          accountsNotCompleted: 1,
+          liveBalanceDelta: null,
+          timezone: 'Asia/Shanghai'
+        })
+      )
+      expect(first?.detailUrl).toContain('/api/runs/')
+    } finally {
+      await app.close()
+      store.close()
+    }
+  })
+
+  it('summarizes an ended account with an incomplete required task as partial', async () => {
+    const { app, store, cookie } = await fixture()
+    const runId = randomUUID()
+    try {
+      store.createRun({
+        runId,
+        localDate: '2026-09-09',
+        executionMode: 'mutating',
+        selectedAccountIndexes: [1],
+        startedAt: '2026-09-09T00:00:00Z'
+      })
+      store.upsertTask(
+        {
+          taskId: 'required-pending',
+          accountId: 'synthetic',
+          localDate: '2026-09-09',
+          sourceTaskId: 'pending',
+          source: 'rsc',
+          type: 'daily-set',
+          displayName: 'Synthetic pending',
+          executable: true,
+          required: true,
+          status: 'running',
+          progress: { completed: 0, total: 1 },
+          updatedAt: '2026-09-09T00:00:30Z'
+        },
+        runId
+      )
+      store.ledger.lifecycle({
+        runId,
+        accountId: 'synthetic',
+        accountIndex: 1,
+        accountLabel: 'Synthetic',
+        startedAt: '2026-09-09T00:00:00Z',
+        endedAt: '2026-09-09T00:01:00Z',
+        executionState: 'completed',
+        updatedAt: '2026-09-09T00:01:00Z'
+      })
+      store.updateRun(runId, 'completed', '2026-09-09T00:01:00Z')
+      const response = await app.inject({ method: 'GET', url: '/api/runs?page=1', headers: { cookie } })
+      expect(response.json<{ runs: Array<{ status: string; accountsPartial: number }> }>().runs[0]).toMatchObject({
+        status: 'partial',
+        accountsPartial: 1
+      })
+    } finally {
+      await app.close()
+      store.close()
+    }
+  })
+
   it('protects schedule settings and validates persisted daily edits', async () => {
     const { app, store, cookie, csrfToken } = await fixture()
     try {
@@ -359,6 +493,7 @@ describe('web API', () => {
         unattributedBalanceDelta: 85,
         overreportedTaskPoints: 0
       }
+      expect(results[0]?.json<{ version: string }>().version).toBe('development')
       expect(results[0]?.json<{ today: object[] }>().today[0]).toMatchObject({
         ...expected,
         dailyBalanceDelta: 205

@@ -18,6 +18,13 @@ import { notificationInput, type Notifications } from '../notifications/Notifica
 
 const SESSION_COOKIE = 'rewards_next_session'
 
+function appVersion(): string {
+  const configured = process.env.APP_VERSION?.trim()
+  return configured && /^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$/.test(configured)
+    ? configured
+    : 'development'
+}
+
 const loginSchema = z.object({
   username: z.string().min(1).max(100),
   password: z.string().min(1).max(1024)
@@ -73,8 +80,19 @@ export async function createServer(dependencies: WebServerDependencies): Promise
   const views = new RunViews(dependencies.store)
   const app = Fastify({ logger: false, bodyLimit: 64 * 1024 })
   const streams = new Set<() => void>()
+  let stateRevision = 0
+  const stateCache = new Map<
+    string,
+    { expiresAt: number; revision: number; value: unknown }
+  >()
+  const unsubscribeState = dependencies.store.subscribe(() => {
+    stateRevision += 1
+    stateCache.clear()
+  })
   app.addHook('preClose', async () => {
     for (const close of streams) close()
+    unsubscribeState()
+    views.dispose()
     await Promise.resolve()
   })
   await app.register(cookie)
@@ -242,20 +260,39 @@ export async function createServer(dependencies: WebServerDependencies): Promise
       })
       .parse(request.query)
     const accounts = dependencies.accounts.list()
+    const activeRunId = dependencies.runCoordinator?.activeRunId ?? null
+    const key = `${date}:${activeRunId ?? ''}:${JSON.stringify(
+      accounts.map((account) => ({
+        accountId: account.accountId,
+        displayAlias: account.displayAlias,
+        maskedEmail: account.maskedEmail,
+        runAccountIndex: account.runAccountIndex,
+        enabled: account.enabled
+      }))
+    )}`
+    const now = Date.now()
+    const cached = stateCache.get(key)
+    if (cached && cached.revision === stateRevision && cached.expiresAt > now)
+      return cached.value
+    const revision = stateRevision
     const tasks = dependencies.store.listTaskState(date)
     const taskSummary = summarizeTasks(tasks)
-    return {
+    const value = {
+      version: appVersion(),
       localDate,
       accounts,
       tasks,
       taskSummary,
       runnerReady: dependencies.runCoordinator !== undefined,
-      activeRunId: dependencies.runCoordinator?.activeRunId ?? null,
+      activeRunId,
       runs: dependencies.store
         .listRuns(10)
-        .map((run) => views.run(run.runId, dependencies.runCoordinator?.activeRunId)),
+        .map((run) => views.runSummary(run.runId, activeRunId ?? undefined)),
       today: views.today(accounts)
     }
+    if (revision === stateRevision)
+      stateCache.set(key, { expiresAt: now + 3_000, revision, value })
+    return value
   })
 
   app.post('/api/accounts', async (request, reply) => {
@@ -327,7 +364,7 @@ export async function createServer(dependencies: WebServerDependencies): Promise
       hasMore: rows.length > pageSize,
       runs: rows
         .slice(0, pageSize)
-        .map((row) => views.run(row.runId, dependencies.runCoordinator?.activeRunId))
+        .map((row) => views.runSummary(row.runId, dependencies.runCoordinator?.activeRunId))
     }
   })
 

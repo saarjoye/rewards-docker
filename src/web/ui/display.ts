@@ -29,6 +29,11 @@ export const stateLabel = (value: string): string =>
 
 export { publicText } from '../../domain/Presentation'
 
+export function versionLabel(value: string | null | undefined): string {
+  const version = value?.trim()
+  return version ? `v${version}` : 'vdevelopment'
+}
+
 export function points(value: number | null | undefined): string {
   return value === null || value === undefined || !Number.isFinite(value)
     ? '—'

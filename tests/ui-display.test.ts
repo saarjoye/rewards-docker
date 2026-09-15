@@ -1,5 +1,11 @@
 import { expect, it } from 'vitest'
-import { points, clockTime, duration } from '../src/web/ui/display'
+import { points, clockTime, duration, versionLabel } from '../src/web/ui/display'
+
+it('formats the application version for the web header', () => {
+  expect(versionLabel('5.0.0-next.15')).toBe('v5.0.0-next.15')
+  expect(versionLabel('')).toBe('vdevelopment')
+  expect(versionLabel(null)).toBe('vdevelopment')
+})
 
 it('keeps unknown, real zero and negative point values separate', () => {
   expect(points(null)).toBe('—')

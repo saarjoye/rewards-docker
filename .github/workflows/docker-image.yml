@@ -15,7 +15,7 @@ concurrency:
 
 env:
   CORE_IMAGE: ghcr.io/${{ github.repository_owner }}/mrs-core
-  CORE_TAG: 5.0.0-next.15
+  CORE_TAG: 5.0.0-next.16
 
 jobs:
   build:
@@ -60,6 +60,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           build-args: |
             BROWSER_IMAGE=${{ env.CORE_IMAGE }}:browser-patchright-1.61.1
+            APP_VERSION=${{ env.CORE_TAG }}
           tags: ${{ env.CORE_IMAGE }}:sha-${{ github.sha }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}

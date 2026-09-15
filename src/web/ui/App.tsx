@@ -39,6 +39,7 @@ const NotificationSettings = lazy(async () => ({
 import { type PointStatistics } from './PointSummary'
 import { AccountsPage, Overview, TasksPage } from './ConsolePages'
 import { Button, Feedback, Field, SelectField } from './UiKit'
+import { versionLabel } from './display'
 
 export interface AccountSummary {
   accountId: string
@@ -64,6 +65,7 @@ interface TaskState {
 }
 
 export interface StatePayload {
+  version: string
   localDate: string
   accounts: AccountSummary[]
   tasks: TaskState[]
@@ -499,6 +501,9 @@ export function App(): ReactElement {
           <h1>Rewards Next</h1>
         </div>
         <div className="header-actions">
+          <span className="header-version" data-testid="app-version">
+            版本 {versionLabel(state?.version)}
+          </span>
           <span className="header-date">{state?.localDate} · 上海时间</span>
           <Button
             variant="text"

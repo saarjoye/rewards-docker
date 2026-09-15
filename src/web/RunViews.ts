@@ -12,7 +12,32 @@ import {
 import { taskFailure } from '../domain/Presentation.js'
 
 export class RunViews {
-  constructor(private readonly store: SqliteStore) {}
+  private static readonly todayTtlMs = 3_000
+  private static readonly runTtlMs = 30_000
+  private revision = 0
+  private readonly todayCache = new Map<
+    string,
+    { expiresAt: number; revision: number; value: unknown }
+  >()
+  private readonly runCache = new Map<
+    string,
+    { expiresAt: number; revision: number; value: unknown }
+  >()
+  private readonly unsubscribe: () => void
+
+  constructor(private readonly store: SqliteStore) {
+    this.unsubscribe = store.subscribe(() => {
+      this.revision += 1
+      this.todayCache.clear()
+      this.runCache.clear()
+    })
+  }
+
+  dispose(): void {
+    this.unsubscribe()
+    this.todayCache.clear()
+    this.runCache.clear()
+  }
 
   accountDate(runId: string, accountId: string, businessDate: string) {
     return liveAccounting(this.store.ledger, accountId, businessDate, runId)
@@ -67,7 +92,7 @@ export class RunViews {
     }
   }
 
-  run(runId: string, activeRunId?: string) {
+  private buildRun(runId: string, activeRunId?: string) {
     const durable = this.store.getRun(runId)
     const snapshots = this.store.ledger.tasks(runId).map((task) => this.task(runId, task))
     const taskEvidence = this.store.ledger.taskEvidence(runId)
@@ -203,6 +228,75 @@ export class RunViews {
     }
   }
 
+  run(runId: string, activeRunId?: string): ReturnType<RunViews['buildRun']> {
+    const key = `${runId}:${activeRunId ?? ''}`
+    const now = Date.now()
+    const cached = this.runCache.get(key)
+    if (cached && cached.revision === this.revision && cached.expiresAt > now)
+      return cached.value as ReturnType<RunViews['buildRun']>
+    const revision = this.revision
+    const value = this.buildRun(runId, activeRunId)
+    if (value !== undefined && revision === this.revision)
+      this.runCache.set(key, {
+        expiresAt: now + RunViews.runTtlMs,
+        revision,
+        value
+      })
+    return value
+  }
+
+  private buildRunSummary(runId: string, activeRunId?: string) {
+    const durable = this.store.getRun(runId)
+    if (!durable) return undefined
+    const tasks = this.store.ledger.tasks(runId)
+    const lifecycle = this.store.ledger.accounts(runId).map((account) => ({
+      ...account,
+      executionState: taskBoundAccountState(
+        account.executionState,
+        tasks.filter((task) => task.accountId === account.accountId)
+      )
+    }))
+    const outcome = runOutcome(durable.status, durable.selectedAccountIndexes.length, lifecycle)
+    const balances = this.store.ledger.balances(runId)
+    const deltas = lifecycle.map((account) => {
+      const interval = balanceInterval(
+        balances.filter((row) => row.accountId === account.accountId),
+        true
+      )
+      return interval.delta
+    })
+    const liveBalanceDelta = deltas.length && deltas.every((value) => value !== null)
+      ? deltas.reduce<number>((sum, value) => sum + value, 0)
+      : null
+    return {
+      ...durable,
+      ...outcome,
+      executionModeLabel: executionModeLabel(durable.executionMode),
+      persistence: activeRunId === runId ? 'live' : 'durable',
+      liveBalanceDelta,
+      detailUrl: `/api/runs/${runId}`,
+      timezone: 'Asia/Shanghai',
+      dataFreshness: activeRunId === runId ? 'live' : 'historical'
+    }
+  }
+
+  runSummary(runId: string, activeRunId?: string): ReturnType<RunViews['buildRunSummary']> {
+    const key = `summary:${runId}:${activeRunId ?? ''}`
+    const now = Date.now()
+    const cached = this.runCache.get(key)
+    if (cached && cached.revision === this.revision && cached.expiresAt > now)
+      return cached.value as ReturnType<RunViews['buildRunSummary']>
+    const revision = this.revision
+    const value = this.buildRunSummary(runId, activeRunId)
+    if (value !== undefined && revision === this.revision)
+      this.runCache.set(key, {
+        expiresAt: now + RunViews.todayTtlMs,
+        revision,
+        value
+      })
+    return value
+  }
+
   calendar(month: string, activeRunId?: string) {
     const runCache = new Map<string, ReturnType<RunViews['run']>>()
     const pairs = this.store.database
@@ -286,20 +380,50 @@ export class RunViews {
       displayAlias: string
       maskedEmail: string
       runAccountIndex: number
+      enabled?: boolean
     }[] = []
-  ) {
+  ): Array<
+    ReturnType<RunViews['day']> & {
+      accountId: string
+      accountIndex: number
+      accountLabel: string
+      accountTotalPoints: number | null
+      accountTotalPointsAt: string | null
+      accountTotalPointsSource: string | null
+    }
+  > {
     const date = localDateKey()
-    const days = this.calendar(date.slice(0, 7)).filter((row) => row.businessDate === date)
+    const key = `${date}:${JSON.stringify(
+      accounts.map((account) => ({
+        accountId: account.accountId,
+        displayAlias: account.displayAlias,
+        maskedEmail: account.maskedEmail,
+        runAccountIndex: account.runAccountIndex,
+        enabled: account.enabled ?? null
+      }))
+    )}`
+    const now = Date.now()
+    const cached = this.todayCache.get(key)
+    if (cached && cached.revision === this.revision && cached.expiresAt > now)
+      return cached.value as ReturnType<RunViews['today']>
+    const revision = this.revision
     const selected = accounts.length
       ? accounts
-      : days.map((row) => ({
+      : (this.store.database
+          .prepare(
+            `SELECT DISTINCT account_id AS accountId FROM balance_observations
+             WHERE business_date = ?
+             UNION SELECT DISTINCT account_id FROM tasks WHERE local_date = ?
+             ORDER BY accountId`
+          )
+          .all(date, date) as { accountId: string }[]).map((row) => ({
           accountId: row.accountId,
-          displayAlias: row.accountLabel,
-          maskedEmail: row.accountLabel,
-          runAccountIndex: row.accountIndex ?? 0
+          displayAlias: row.accountId,
+          maskedEmail: row.accountId,
+          runAccountIndex: 0
         }))
-    return selected.map((account) => {
-      const day = days.find((row) => row.accountId === account.accountId)
+    const value = selected.map((account) => {
+      const day = this.day(account.accountId, date)
       const latest = this.store.database
         .prepare(
           `SELECT balance, observed_at AS observedAt, source
@@ -320,7 +444,6 @@ export class RunViews {
             row.balance === latest[0]?.balance
         )
       return {
-        ...this.day(account.accountId, date),
         ...day,
         accountId: account.accountId,
         accountIndex: account.runAccountIndex,
@@ -330,5 +453,12 @@ export class RunViews {
         accountTotalPointsSource: valid ? (latest[0]?.source ?? null) : null
       }
     })
+    if (revision === this.revision)
+      this.todayCache.set(key, {
+        expiresAt: now + RunViews.todayTtlMs,
+        revision: this.revision,
+        value
+      })
+    return value
   }
 }

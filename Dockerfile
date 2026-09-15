@@ -1,6 +1,8 @@
 ARG BROWSER_IMAGE=microsoft-rewards-next-browser:patchright-1.61.1
+ARG APP_VERSION=development
 
 FROM ${BROWSER_IMAGE} AS build
+ARG APP_VERSION
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts
@@ -10,7 +12,9 @@ RUN npm run build \
     && npm prune --omit=dev
 
 FROM ${BROWSER_IMAGE} AS runtime
+ARG APP_VERSION=development
 ENV NODE_ENV=production \
+    APP_VERSION=${APP_VERSION} \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     DATA_DIR=/app/data \
     SESSIONS_DIR=/app/sessions \

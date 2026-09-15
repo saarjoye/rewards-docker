@@ -100,6 +100,12 @@ small.observation {
   font-size: 12px;
   margin-right: 12px;
 }
+.header-version {
+  color: #4b5563;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 .navigation-rail {
   width: 208px;
   position: fixed;

@@ -125,6 +125,7 @@ export class SqliteStore {
         input.message ?? null,
         input.updatedAt
       )
+    this.changed()
   }
 
   createRun(input: {
@@ -146,6 +147,7 @@ export class SqliteStore {
         JSON.stringify(input.selectedAccountIndexes),
         input.startedAt
       )
+    this.changed()
   }
 
   updateRun(runId: string, status: RunStatus, finishedAt?: string): void {
@@ -229,6 +231,7 @@ export class SqliteStore {
       const snapshot = runId ? this.ledger.task(runId, task) : task
       this.upsertCurrentTask(snapshot)
       this.database.exec('RELEASE task_snapshot')
+      this.changed()
     } catch (error) {
       this.database.exec('ROLLBACK TO task_snapshot; RELEASE task_snapshot')
       throw error
@@ -351,6 +354,7 @@ export class SqliteStore {
         balanceConfirmed ? 1 : 0,
         input.recordedAt
       )
+    this.changed()
   }
 
   getLatestPointsHistory(accountId: string, localDate: string): PointsHistoryRecord | undefined {
@@ -412,6 +416,7 @@ export class SqliteStore {
         input.evidence.value === undefined ? null : JSON.stringify(input.evidence.value),
         input.evidence.reason ?? null
       )
+    this.changed()
   }
 
   beginMutation(taskId: string, startedAt = new Date().toISOString()): boolean {
@@ -423,13 +428,15 @@ export class SqliteStore {
       `
       )
       .run(taskId, startedAt, startedAt)
+    if (result.changes === 1) this.changed()
     return result.changes === 1
   }
 
   cancelMutation(taskId: string): void {
-    this.database
+    const result = this.database
       .prepare(`DELETE FROM mutation_ledger WHERE task_id = ? AND state = 'submission-started'`)
       .run(taskId)
+    if (result.changes > 0) this.changed()
   }
 
   updateMutation(
@@ -437,9 +444,10 @@ export class SqliteStore {
     state: 'submitted' | 'verification-pending' | 'verified' | 'failed',
     updatedAt = new Date().toISOString()
   ): void {
-    this.database
+    const result = this.database
       .prepare('UPDATE mutation_ledger SET state = ?, updated_at = ? WHERE task_id = ?')
       .run(state, updatedAt, taskId)
+    if (result.changes > 0) this.changed()
   }
 
   getMutationState(

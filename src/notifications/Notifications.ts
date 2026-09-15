@@ -285,6 +285,7 @@ export class Notifications {
           .run(runId, new Date(this.now()).toISOString(), `run:${runId}`)
       }
     }
+    views.dispose()
   }
 
   private async provider(
@@ -449,8 +450,14 @@ export class Notifications {
   start(): void {
     if (this.timer) return
     this.stopped = false
+    let scheduled = false
     this.unsubscribe = this.store.subscribe(() => {
-      void this.tick()
+      if (scheduled) return
+      scheduled = true
+      queueMicrotask(() => {
+        scheduled = false
+        void this.tick()
+      })
     })
     this.timer = setInterval(() => {
       void this.tick()
@@ -493,11 +500,9 @@ export class Notifications {
       event.executionState,
       this.store.ledger.tasks(event.runId).filter((task) => task.accountId === event.accountId)
     )
-    const stats = new RunViews(this.store).accountDate(
-      event.runId,
-      event.accountId,
-      localDateKey(new Date(event.endedAt))
-    )
+    const views = new RunViews(this.store)
+    const stats = views.accountDate(event.runId, event.accountId, localDateKey(new Date(event.endedAt)))
+    views.dispose()
     return [
       `Microsoft Rewards ${completionTitle(event.executionState)}`,
       `账号：${redactText(event.accountLabel)}`,
