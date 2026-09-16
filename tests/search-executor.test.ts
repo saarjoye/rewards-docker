@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { BrowserContext, Page } from 'patchright'
 
 import type { DashboardClient } from '../src/browser/DashboardClient.js'
@@ -11,6 +11,10 @@ import {
   SearchExecutionError,
   SearchExecutor
 } from '../src/orchestration/SearchExecutor.js'
+
+afterEach(() => {
+  vi.useRealTimers()
+})
 
 function task(completed = 9): TaskRecord {
   return {
@@ -75,7 +79,94 @@ function delayedSearchBoxPage(): {
   }
 }
 
+function searchBoxPage(waitFor: ReturnType<typeof vi.fn>): {
+  page: Page
+  closed: ReturnType<typeof vi.fn>
+  fill: ReturnType<typeof vi.fn>
+  press: ReturnType<typeof vi.fn>
+} {
+  const closed = vi.fn().mockResolvedValue(undefined)
+  const fill = vi.fn().mockResolvedValue(undefined)
+  const press = vi.fn().mockResolvedValue(undefined)
+  const box = { first: () => box, waitFor, fill, press }
+  return {
+    page: {
+      goto: vi.fn().mockResolvedValue(null),
+      locator: vi.fn().mockReturnValue(box),
+      close: closed
+    } as unknown as Page,
+    closed,
+    fill,
+    press
+  }
+}
+
 describe('search budgets and cancellation', () => {
+  it('retries a search-box failure once without duplicating submission', async () => {
+    vi.useFakeTimers()
+    const first = searchBoxPage(vi.fn().mockRejectedValue(new Error('not visible')))
+    const second = searchBoxPage(vi.fn().mockResolvedValue(undefined))
+    const newPage = vi.fn().mockResolvedValueOnce(first.page).mockResolvedValueOnce(second.page)
+    const counter = {
+      availability: 'valid',
+      confidence: 1,
+      source: 'bing-flyout',
+      observedAt: new Date().toISOString(),
+      value: { completed: 10, total: 60, remaining: 50 }
+    }
+    const write = vi.fn().mockResolvedValue(undefined)
+    const logger = { write } as unknown as StructuredLogger
+    const executor = new SearchExecutor(
+      { newPage } as unknown as BrowserContext,
+      { fetchDashboard: vi.fn().mockResolvedValue({ pcSearch: counter, mobileSearch: counter }) } as unknown as DashboardClient,
+      logger,
+      { ...DEFAULT_CONFIG.search, delayMinSeconds: 0, delayMaxSeconds: 0, scroll: false, clickResult: false },
+      'run',
+      'account-1'
+    )
+
+    const pending = executor.run({
+      task: task(),
+      mobile: false,
+      singleQuery: 'synthetic-query',
+      signal: new AbortController().signal,
+      onProgress: vi.fn()
+    })
+    await vi.runAllTimersAsync()
+    const result = await pending
+
+    expect(result.progress.completed).toBe(10)
+    expect(newPage).toHaveBeenCalledTimes(2)
+    expect(first.press.mock.calls).toHaveLength(0)
+    expect(second.press.mock.calls).toHaveLength(1)
+    expect(write).toHaveBeenCalledWith(expect.objectContaining({ event: 'search-box-retry', retryAttempt: 1 }))
+  })
+
+  it('does not retry a submit-stage failure', async () => {
+    const page = searchBoxPage(vi.fn().mockResolvedValue(undefined))
+    page.press.mockRejectedValue(new Error('submit failed'))
+    const newPage = vi.fn().mockResolvedValue(page.page)
+    const counter = {
+      availability: 'valid',
+      confidence: 1,
+      source: 'bing-flyout',
+      observedAt: new Date().toISOString(),
+      value: { completed: 10, total: 60, remaining: 50 }
+    }
+    const executor = new SearchExecutor(
+      { newPage } as unknown as BrowserContext,
+      { fetchDashboard: vi.fn().mockResolvedValue({ pcSearch: counter, mobileSearch: counter }) } as unknown as DashboardClient,
+      { write: vi.fn().mockResolvedValue(undefined) } as unknown as StructuredLogger,
+      { ...DEFAULT_CONFIG.search, delayMinSeconds: 0, delayMaxSeconds: 0, scroll: false, clickResult: false },
+      'run',
+      'account-1'
+    )
+    await expect(
+      executor.run({ task: task(), mobile: false, signal: new AbortController().signal, onProgress: vi.fn() })
+    ).rejects.toMatchObject({ operationStage: 'submit' })
+    expect(newPage).toHaveBeenCalledTimes(1)
+  })
+
   it('does not submit if the date changes while the search page is preparing', async () => {
     const { page, press } = delayedSearchBoxPage()
     let checks = 0

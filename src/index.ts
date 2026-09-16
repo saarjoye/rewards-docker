@@ -62,6 +62,8 @@ const app = await createServer({
   runCoordinator: coordinator,
   notifications,
   scheduler,
+  config,
+  configPath,
   webRoot: resolve(process.cwd(), 'dist/web'),
   secureCookies: process.env.WEB_SECURE_COOKIES === 'true'
 })

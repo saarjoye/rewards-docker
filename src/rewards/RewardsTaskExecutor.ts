@@ -41,6 +41,31 @@ function findAction(snapshot: RewardsDiscoverySnapshot, name: string): string | 
   return entry?.[1]
 }
 
+export function normalizeIncompleteSearchTask(task: TaskRecord): TaskRecord {
+  if (task.type !== 'pc-search' && task.type !== 'mobile-search') return task
+  if (
+    task.status !== 'running' ||
+    task.progress.total === null ||
+    task.progress.completed >= task.progress.total
+  ) {
+    return task
+  }
+  return {
+    ...task,
+    status: 'verification-pending',
+    reason: task.reason ?? 'progress-unconfirmed: 搜索仍有剩余进度',
+    ...(task.searchObservation
+      ? {
+          searchObservation: {
+            ...task.searchObservation,
+            canContinue: false,
+            state: task.searchObservation.state ?? 'progress-pending'
+          }
+        }
+      : {})
+  }
+}
+
 export class RewardsTaskExecutor {
   private readonly mutation: MutationExecutor
 
@@ -156,8 +181,9 @@ export class RewardsTaskExecutor {
               : { resumePendingSearch: input.resumePendingSearch }),
             executionMode: input.mode
           })
-          reconciliation.task = this.persist(completed)
-          if (completed.status !== 'completed') partial = true
+          const normalized = normalizeIncompleteSearchTask(completed)
+          reconciliation.task = this.persist(normalized)
+          if (normalized.status !== 'completed') partial = true
         } catch (error) {
           throwIfAborted(input.signal)
           if (error instanceof BusinessDateChanged) {
@@ -172,6 +198,29 @@ export class RewardsTaskExecutor {
             this.store.ledger.latestSearchTask(original.taskId) ??
             this.store.getTask(original.taskId) ??
             original
+          if (
+            error instanceof SearchExecutionError &&
+            error.operationStage === 'search-box' &&
+            latest.searchObservation?.awaitingProgress !== true
+          ) {
+            const pending = this.persist({
+              ...latest,
+              status: 'verification-pending',
+              reason: 'search-box: 搜索页面未就绪，本次未提交搜索',
+              ...(latest.searchObservation
+                ? {
+                    searchObservation: {
+                      ...latest.searchObservation,
+                      canContinue: false,
+                      state: 'progress-pending'
+                    }
+                  }
+                : {})
+            })
+            await this.logTask(pending)
+            partial = true
+            continue
+          }
           const failed = this.persist({
             ...latest,
             status: 'failed',

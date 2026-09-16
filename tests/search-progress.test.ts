@@ -48,9 +48,11 @@ function harness(values = [observation()], inputTask = task()) {
   vi.useFakeTimers()
   const press = vi.fn().mockResolvedValue(undefined)
   const fill = vi.fn().mockResolvedValue(undefined)
-  const box = { first: () => box, waitFor: vi.fn(), fill, press }
+  const waitFor = vi.fn()
+  const box = { first: () => box, waitFor, fill, press }
   const page = { goto: vi.fn(), locator: () => box, close: vi.fn().mockResolvedValue(undefined) }
-  const context = { newPage: vi.fn().mockResolvedValue(page) } as unknown as BrowserContext
+  const newPage = vi.fn().mockResolvedValue(page)
+  const context = { newPage } as unknown as BrowserContext
   const fetchDashboard = vi
     .fn()
     .mockImplementation(() => Promise.resolve(values.length > 1 ? values.shift() : values[0]))
@@ -82,7 +84,9 @@ function harness(values = [observation()], inputTask = task()) {
     client,
     logger,
     config,
-    controller
+    controller,
+    waitFor,
+    newPage
   }
 }
 
@@ -280,6 +284,143 @@ describe('search dashboard observation', () => {
     expect(result).toMatchObject({ status: 'verification-pending', progress: { completed: 48 } })
     expect(h.press).not.toHaveBeenCalled()
     expect(h.write.mock.calls.some(([event]) => event.retryReason === 'counter-invalid')).toBe(true)
+  })
+
+  it('keeps retry eligibility after later invalid counters in the same observation round', async () => {
+    const seed = {
+      ...task(),
+      status: 'verification-pending' as const,
+      progress: { completed: 48, total: 60 },
+      searchObservation: {
+        runId: 'run',
+        submittedCount: 1,
+        unknownSubmissionCount: 0,
+        awaitingProgress: true,
+        completed: 48,
+        total: 60,
+        observedAt: '2026-09-10T00:00:00.000Z',
+        result: 'progress-pending'
+      }
+    }
+    const h = harness(
+      [
+        observation([{ pointProgress: 48, pointProgressMax: 60 }]),
+        observation([{ pointProgress: false, pointProgressMax: 60 }]),
+        observation([{ pointProgress: false, pointProgressMax: 60 }]),
+        observation([{ pointProgress: false, pointProgressMax: 60 }]),
+        observation([{ pointProgress: 49, pointProgressMax: 60 }])
+      ],
+      seed
+    )
+    const result = await finish(
+      h.executor.run({
+        ...h.input,
+        accountMode: 'account',
+        accountIndex: 2,
+        targetAccountIndex: 2,
+        retryPendingSearch: true
+      })
+    )
+    expect(result).toMatchObject({
+      progress: { completed: 49, total: 60 },
+      searchObservation: { submittedCount: 2 }
+    })
+    expect(h.press).toHaveBeenCalledTimes(1)
+    const reasons = h.write.mock.calls
+      .map(([event]) => event.retryReason)
+      .filter((reason): reason is string => typeof reason === 'string')
+    expect(reasons).toContain('authorized-valid-counter')
+    expect(reasons.filter((reason) => reason === 'counter-invalid').length).toBeGreaterThan(0)
+    expect(
+      h.write.mock.calls.some(
+        ([event]) => event.status === 'counter-invalid' && event.retryReason === 'authorized-valid-counter'
+      )
+    ).toBe(false)
+  })
+
+  it('closes a search-box failure as verification-pending after one retry', async () => {
+    const seed = task(9)
+    const h = harness([observation()], seed)
+    h.waitFor.mockRejectedValue(new Error('not visible'))
+    const store = new SqliteStore(':memory:')
+    try {
+      store.upsertTask(seed, 'run')
+      const discovery = {
+        tasks: [seed],
+        descriptors: new Map([[seed.taskId, { task: seed }]])
+      } as unknown as DiscoveryOutput
+      const executor = new RewardsTaskExecutor(
+        h.context,
+        h.client,
+        store,
+        h.logger,
+        h.config,
+        'run',
+        'synthetic'
+      )
+      const result = await finish(
+        executor.executeTypes({
+          discovery,
+          types: ['pc-search'],
+          mode: 'mutating',
+          signal: h.input.signal
+        })
+      )
+      expect(result.status).toBe('partial')
+      expect(store.ledger.latestSearchTask(seed.taskId)).toMatchObject({
+        status: 'verification-pending',
+        progress: { completed: 9, total: 60 },
+        reason: 'search-box: 搜索页面未就绪，本次未提交搜索'
+      })
+      expect(h.press).not.toHaveBeenCalled()
+      expect(h.newPage).toHaveBeenCalledTimes(2)
+    } finally {
+      store.close()
+    }
+  })
+
+  it('closes an incomplete running search as verification-pending without dropping progress', async () => {
+    const seed = task(9)
+    const h = harness([observation([{ pointProgress: 10, pointProgressMax: 60 }])], seed)
+    const store = new SqliteStore(':memory:')
+    try {
+      store.upsertTask(seed, 'run')
+      const discovery = {
+        tasks: [seed],
+        descriptors: new Map([[seed.taskId, { task: seed }]])
+      } as unknown as DiscoveryOutput
+      const executor = new RewardsTaskExecutor(
+        h.context,
+        h.client,
+        store,
+        h.logger,
+        h.config,
+        'run',
+        'synthetic'
+      )
+      const result = await finish(
+        executor.executeTypes({
+          discovery,
+          types: ['pc-search'],
+          mode: 'mutating',
+          signal: h.input.signal,
+          singleQuery: 'synthetic-query'
+        })
+      )
+      expect(result).toMatchObject({
+        status: 'partial',
+        tasks: [
+          {
+            status: 'verification-pending',
+            progress: { completed: 10, total: 60 },
+            reason: 'progress-unconfirmed: 搜索仍有剩余进度'
+          }
+        ]
+      })
+      expect(h.press).toHaveBeenCalledTimes(1)
+    } finally {
+      store.close()
+    }
   })
 
   it('stops after one authorized search even when the counter grows below its quota', async () => {

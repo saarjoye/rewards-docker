@@ -4,7 +4,9 @@ Next 单应用沿用 `ghcr.io/saarjoye/mrs-core` 镜像名，替代旧版 Core/W
 
 ## 发布和切换
 
-现有仓库的 `main` 分支通过 `.github/workflows/docker-image.yml` 构建。先执行离线测试、类型检查、ESLint、构建和 Compose 校验，再构建 `linux/amd64` 与 `linux/arm64` 候选镜像。候选镜像使用空数据、禁用外部网络做启动健康检查；成功后才更新 `5.0.0-next.16` 与 `latest`。完整提交固定标签为 `sha-<完整提交号>`。
+现有仓库的 `main` 分支通过 `.github/workflows/docker-image.yml` 构建。先执行离线测试、类型检查、ESLint、构建和 Compose 校验，再构建 `linux/amd64` 与 `linux/arm64` 候选镜像。候选镜像使用空数据、禁用外部网络做启动健康检查；成功后才更新 `5.0.0-next.17` 与 `latest`。完整提交固定标签为 `sha-<完整提交号>`。
+
+next.17 新增“搜索设置”页面，保存搜索间隔、随机滚动、结果点击与结果页停留时间，保存后下一次搜索即生效。搜索框未就绪时最多重试一次且不重复提交；未完成的 PC/移动搜索在运行收口时保留进度并转为 verification-pending。无新增数据库迁移，保留全部历史与数据卷；可保留数据卷回退 next.16。
 
 next.12 在 next.11 的 dashboard 进度保护基础上，增加 verification-pending 搜索的显式、受限重试：默认只读复核，仅单账号、指定账号、变更模式且用户授权时最多提交一次；continue 模式拒绝目标账号和重试参数。保留今日得分、账号总分、定时和通知反代；可保留数据卷回退 next.11。升级后检查观察进度及部分完成状态；单次成功不保证后续搜索持续计分。
 

@@ -29,6 +29,12 @@ export class SearchExecutionError extends Error {
   }
 }
 
+export interface SearchQueryMetadata {
+  taskId: string
+  queryIndex: number
+  submittedCount: number
+}
+
 const SEARCH_TERMS = [
   '中国传统节日',
   '今日科技新闻',
@@ -294,7 +300,6 @@ export class SearchExecutor {
         const requestStarted = Date.now()
         let usedFallback: boolean | null
         let durationMs: number | undefined
-        retryCounterEligible = false
         try {
           const observation = await this.client.fetchDashboard(input.signal, deadline)
           received = true
@@ -402,7 +407,7 @@ export class SearchExecutor {
                 ? 'single-account-scope-required'
                 : result === 'progress-increased'
                   ? 'progress-already-confirmed'
-                  : retryCounterEligible
+                  : result === 'progress-unchanged' && retryCounterEligible
                     ? 'authorized-valid-counter'
                     : result
         }
@@ -505,7 +510,7 @@ export class SearchExecutor {
         SEARCH_TERMS[(queryOffset + index) % SEARCH_TERMS.length] ??
         SEARCH_TERMS[0]
       try {
-        await this.performQuery(
+        await this.performQueryWithSearchBoxRetry(
           query,
           input.mobile,
           queryBudget,
@@ -579,12 +584,72 @@ export class SearchExecutor {
     }
     return { ...current, status: 'completed' }
   }
+
+  private async performQueryWithSearchBoxRetry(
+    query: string,
+    mobile: boolean,
+    timeoutMs: number,
+    parentSignal: AbortSignal,
+    metadata: SearchQueryMetadata,
+    beforeSubmit?: () => void,
+    onSubmitting?: () => void,
+    onSubmitted?: () => void
+  ): Promise<void> {
+    try {
+      await this.performQuery(
+        query,
+        mobile,
+        timeoutMs,
+        parentSignal,
+        metadata,
+        beforeSubmit,
+        onSubmitting,
+        onSubmitted
+      )
+      return
+    } catch (error) {
+      if (
+        !(error instanceof SearchExecutionError) ||
+        error.operationStage !== 'search-box' ||
+        parentSignal.aborted
+      ) {
+        throw error
+      }
+
+      await this.logger.write({
+        level: 'warn',
+        event: 'search-box-retry',
+        runId: this.runId,
+        taskId: metadata.taskId,
+        taskType: mobile ? 'mobile-search' : 'pc-search',
+        stage: 'search-box',
+        status: 'retrying',
+        submitted: false,
+        queryIndex: metadata.queryIndex,
+        submittedCount: metadata.submittedCount,
+        retryAttempt: 1,
+        reason: 'search-box-not-visible'
+      }).catch(() => undefined)
+
+      return this.performQuery(
+        query,
+        mobile,
+        timeoutMs,
+        parentSignal,
+        metadata,
+        beforeSubmit,
+        onSubmitting,
+        onSubmitted
+      )
+    }
+  }
+
   private async performQuery(
     query: string,
     mobile: boolean,
     timeoutMs: number,
     parentSignal: AbortSignal,
-    metadata: { taskId: string; queryIndex: number; submittedCount: number },
+    metadata: SearchQueryMetadata,
     beforeSubmit?: () => void,
     onSubmitting?: () => void,
     onSubmitted?: () => void

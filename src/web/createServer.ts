@@ -1,3 +1,4 @@
+import { writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 
 import cookie from '@fastify/cookie'
@@ -11,6 +12,7 @@ import type { RunRequest } from '../domain/RunRequest.js'
 import { summarizeTasks } from '../domain/Task.js'
 import type { AccountSecretStore } from '../infra/AccountSecretStore.js'
 import type { AdminAuthStore } from '../infra/AdminAuthStore.js'
+import type { ApplicationConfig } from '../infra/Config.js'
 import type { SqliteStore } from '../infra/SqliteStore.js'
 import { RunViews } from './RunViews.js'
 import { scheduleInput, type Scheduler } from '../orchestration/Scheduler.js'
@@ -54,6 +56,17 @@ const runRequestSchema = z.discriminatedUnion('accountMode', [
     retryPendingSearch: z.boolean().default(false)
   }).strict()
 ])
+const searchSettingsSchema = z
+  .object({
+    delayMinSeconds: z.number().int().min(5).max(300),
+    delayMaxSeconds: z.number().int().min(5).max(300),
+    scroll: z.boolean(),
+    clickResult: z.boolean(),
+    resultVisitSeconds: z.number().int().min(1).max(120)
+  })
+  .refine((value) => value.delayMaxSeconds >= value.delayMinSeconds, {
+    message: 'delayMaxSeconds must be greater than or equal to delayMinSeconds'
+  })
 
 export interface RunCoordinator {
   start(request: RunRequest): Promise<{ runId: string; selectedAccountIndexes: readonly number[] }>
@@ -70,6 +83,8 @@ export interface WebServerDependencies {
   runCoordinator?: RunCoordinator
   notifications?: Notifications
   scheduler?: Scheduler
+  config?: ApplicationConfig
+  configPath?: string
 }
 
 function getSessionToken(request: FastifyRequest): string | undefined {
@@ -175,6 +190,24 @@ export async function createServer(dependencies: WebServerDependencies): Promise
   app.put('/api/settings/schedule', (request, reply) => {
     if (!dependencies.scheduler) return reply.code(503).send({ error: 'schedule-unavailable' })
     return dependencies.scheduler.save(scheduleInput.parse(request.body))
+  })
+  app.get('/api/settings/search', (_request, reply) => {
+    reply.header('cache-control', 'no-store')
+    if (!dependencies.config?.search) return reply.code(503).send({ error: 'config-unavailable' })
+    return dependencies.config.search
+  })
+  app.put('/api/settings/search', async (request, reply) => {
+    if (!dependencies.config?.search || !dependencies.configPath)
+      return reply.code(503).send({ error: 'config-unavailable' })
+    const input = searchSettingsSchema.parse(request.body)
+    Object.assign(dependencies.config.search, input)
+    const next = { ...dependencies.config, search: { ...dependencies.config.search } }
+    try {
+      await writeFile(dependencies.configPath, `${JSON.stringify(next, null, 2)}\n`, 'utf8')
+    } catch {
+      return reply.code(500).send({ error: 'config-write-failed' })
+    }
+    return next.search
   })
   app.get('/api/notifications/wecom', (_request, reply) => {
     reply.header('cache-control', 'no-store')

@@ -14,6 +14,8 @@ export interface LogEvent {
   observedAt?: string
   submittedCount?: number
   unknownSubmissionCount?: number
+  submitted?: boolean
+  retryAttempt?: number
   level: 'debug' | 'info' | 'warn' | 'error'
   event: string
   runId?: string
@@ -29,6 +31,7 @@ export interface LogEvent {
   path?: string
   message?: string
   retryReason?: string
+  reason?: string
   result?: string
   networkErrorType?: string | null
   activationStarted?: boolean

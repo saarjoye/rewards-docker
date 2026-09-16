@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { localDateKey } from '../src/domain/DateKey.js'
 import { AccountSecretStore } from '../src/infra/AccountSecretStore.js'
 import { AdminAuthStore } from '../src/infra/AdminAuthStore.js'
+import { DEFAULT_CONFIG, type ApplicationConfig } from '../src/infra/Config.js'
 import { SqliteStore } from '../src/infra/SqliteStore.js'
 import { createServer, type RunCoordinator } from '../src/web/createServer.js'
 import { Notifications } from '../src/notifications/Notifications.js'
@@ -19,7 +20,11 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((path) => rm(path, { recursive: true, force: true })))
 })
 
-async function fixture(runCoordinator?: RunCoordinator, withNotifications = false) {
+async function fixture(
+  runCoordinator?: RunCoordinator,
+  withNotifications = false,
+  extras?: { config?: ApplicationConfig; configPath?: string }
+) {
   const root = await mkdtemp(join(tmpdir(), 'rewards-next-web-'))
   roots.push(root)
   const webRoot = join(root, 'web')
@@ -49,7 +54,9 @@ async function fixture(runCoordinator?: RunCoordinator, withNotifications = fals
     ...(withNotifications
       ? { notifications: new Notifications(store, Buffer.alloc(32, 9), notificationFetch) }
       : {}),
-    ...(runCoordinator ? { runCoordinator } : {})
+    ...(runCoordinator ? { runCoordinator } : {}),
+    ...(extras?.config ? { config: extras.config } : {}),
+    ...(extras?.configPath ? { configPath: extras.configPath } : {})
   }
   const app = await createServer(dependencies)
   const login = await app.inject({
@@ -62,7 +69,7 @@ async function fixture(runCoordinator?: RunCoordinator, withNotifications = fals
   const cookie = setCookie.split(';')[0]
   if (!cookie) throw new Error('Synthetic login returned an empty cookie')
   const csrfToken = login.json<{ csrfToken: string }>().csrfToken
-  return { app, store, cookie, csrfToken, notificationFetch }
+  return { app, store, cookie, csrfToken, notificationFetch, config: extras?.config }
 }
 
 describe('web API', () => {
@@ -244,6 +251,124 @@ describe('web API', () => {
     } finally {
       await app.close()
       store.close()
+    }
+  })
+
+  it('protects search settings and persists valid edits', async () => {
+    {
+      const { app, store, cookie, csrfToken } = await fixture()
+      try {
+        const url = '/api/settings/search'
+        expect((await app.inject({ method: 'GET', url })).statusCode).toBe(401)
+        expect((await app.inject({ method: 'GET', url, headers: { cookie } })).statusCode).toBe(503)
+        expect(
+          (
+            await app.inject({
+              method: 'PUT',
+              url,
+              headers: { cookie, 'x-csrf-token': csrfToken },
+              payload: {
+                delayMinSeconds: 20,
+                delayMaxSeconds: 40,
+                scroll: false,
+                clickResult: true,
+                resultVisitSeconds: 8
+              }
+            })
+          ).statusCode
+        ).toBe(503)
+      } finally {
+        await app.close()
+        store.close()
+      }
+    }
+
+    const root = await mkdtemp(join(tmpdir(), 'rewards-next-search-settings-'))
+    roots.push(root)
+    const configPath = join(root, 'config.json')
+    const config = structuredClone(DEFAULT_CONFIG)
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8')
+    const loaded = await fixture(undefined, false, { config, configPath })
+    try {
+      const url = '/api/settings/search'
+      expect((await loaded.app.inject({ method: 'GET', url, headers: { cookie: loaded.cookie } })).json()).toMatchObject({
+        delayMinSeconds: 30,
+        delayMaxSeconds: 60,
+        scroll: true,
+        clickResult: false,
+        resultVisitSeconds: 8
+      })
+      expect(
+        (
+          await loaded.app.inject({
+            method: 'PUT',
+            url,
+            headers: { cookie: loaded.cookie },
+            payload: {
+              delayMinSeconds: 20,
+              delayMaxSeconds: 40,
+              scroll: false,
+              clickResult: true,
+              resultVisitSeconds: 8
+            }
+          })
+        ).statusCode
+      ).toBe(403)
+      expect(
+        (
+          await loaded.app.inject({
+            method: 'PUT',
+            url,
+            headers: { cookie: loaded.cookie, 'x-csrf-token': loaded.csrfToken },
+            payload: {
+              delayMinSeconds: 40,
+              delayMaxSeconds: 20,
+              scroll: false,
+              clickResult: true,
+              resultVisitSeconds: 8
+            }
+          })
+        ).statusCode
+      ).toBe(400)
+      expect(
+        (
+          await loaded.app.inject({
+            method: 'PUT',
+            url,
+            headers: { cookie: loaded.cookie, 'x-csrf-token': loaded.csrfToken },
+            payload: {
+              delayMinSeconds: 15,
+              delayMaxSeconds: 25,
+              scroll: false,
+              clickResult: true,
+              resultVisitSeconds: 12
+            }
+          })
+        ).json()
+      ).toMatchObject({
+        delayMinSeconds: 15,
+        delayMaxSeconds: 25,
+        scroll: false,
+        clickResult: true,
+        resultVisitSeconds: 12
+      })
+      expect(loaded.config?.search).toMatchObject({
+        delayMinSeconds: 15,
+        delayMaxSeconds: 25,
+        scroll: false,
+        clickResult: true,
+        resultVisitSeconds: 12
+      })
+      expect((JSON.parse(await readFile(configPath, 'utf8')) as { search: unknown }).search).toMatchObject({
+        delayMinSeconds: 15,
+        delayMaxSeconds: 25,
+        scroll: false,
+        clickResult: true,
+        resultVisitSeconds: 12
+      })
+    } finally {
+      await loaded.app.close()
+      loaded.store.close()
     }
   })
   it('returns task numbers consistently through live detail and report before the batch ends', async () => {

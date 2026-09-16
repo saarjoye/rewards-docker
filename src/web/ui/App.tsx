@@ -26,7 +26,8 @@ import {
   RefreshIcon,
   LogoutIcon,
   MenuIcon,
-  PlayCircleIcon
+  PlayCircleIcon,
+  SearchIcon
 } from 'tdesign-icons-react'
 import { createRequestQueue } from './requestQueue'
 const RunPages = lazy(async () => ({ default: (await import('./RunPages')).RunPages }))
@@ -35,6 +36,9 @@ const ScheduleSettings = lazy(async () => ({
 }))
 const NotificationSettings = lazy(async () => ({
   default: (await import('./NotificationSettings')).NotificationSettings
+}))
+const SearchSettings = lazy(async () => ({
+  default: (await import('./SearchSettings')).SearchSettings
 }))
 import { type PointStatistics } from './PointSummary'
 import { AccountsPage, Overview, TasksPage } from './ConsolePages'
@@ -185,7 +189,7 @@ function LoginView({ onLogin }: { onLogin: (token: string) => void }): ReactElem
 export function App(): ReactElement {
   const [restoring, setRestoring] = useState(true)
   const [page, setPage] = useState<
-    'overview' | 'tasks' | 'history' | 'calendar' | 'accounts' | 'notifications' | 'schedule'
+    'overview' | 'tasks' | 'history' | 'calendar' | 'accounts' | 'notifications' | 'schedule' | 'search'
   >(() => {
     const hash = window.location.hash.slice(1)
     if (hash.startsWith('run/')) return 'history'
@@ -194,7 +198,8 @@ export function App(): ReactElement {
       hash === 'calendar' ||
       hash === 'accounts' ||
       hash === 'notifications' ||
-      hash === 'schedule'
+      hash === 'schedule' ||
+      hash === 'search'
       ? hash
       : 'overview'
   })
@@ -396,7 +401,8 @@ export function App(): ReactElement {
     { id: 'calendar' as const, label: '积分日历', icon: <CalendarIcon /> },
     { id: 'accounts' as const, label: '账号管理', icon: <UserIcon /> },
     { id: 'notifications' as const, label: '消息推送', icon: <NotificationIcon /> },
-    { id: 'schedule' as const, label: '定时任务', icon: <CalendarIcon /> }
+    { id: 'schedule' as const, label: '定时任务', icon: <CalendarIcon /> },
+    { id: 'search' as const, label: '搜索设置', icon: <SearchIcon /> }
   ]
   useEffect(() => {
     const change = () => {
@@ -419,7 +425,8 @@ export function App(): ReactElement {
         hash === 'calendar' ||
         hash === 'accounts' ||
         hash === 'notifications' ||
-        hash === 'schedule'
+        hash === 'schedule' ||
+        hash === 'search'
       )
         setPage(hash)
     }
@@ -577,6 +584,9 @@ export function App(): ReactElement {
           )}
           {page === 'schedule' && (
             <ScheduleSettings csrfToken={csrfToken} onUnsavedChange={setUnsaved} />
+          )}
+          {page === 'search' && (
+            <SearchSettings csrfToken={csrfToken} onUnsavedChange={setUnsaved} />
           )}
         </Suspense>
       </main>
