@@ -3,6 +3,7 @@ import type { APIResponse, BrowserContext, Page } from 'patchright'
 
 import { DashboardClient, DashboardFetchError } from '../src/browser/DashboardClient.js'
 import type { StructuredLogger } from '../src/infra/StructuredLogger.js'
+import { OfferUnavailableError } from '../src/orchestration/MutationExecutor.js'
 
 function response(status: number, payload: unknown, contentType = 'application/json'): APIResponse {
   return {
@@ -650,5 +651,54 @@ describe('offer link inspection', () => {
       'https://destination.example.test/private?token=canary',
       expect.anything()
     )
+  })
+})
+
+describe('claim dashboard navigation tolerance', () => {
+  function navFailureClient() {
+    const goto = vi.fn().mockRejectedValue(new Error('navigation timeout'))
+    const evaluate = vi.fn()
+    const locator = vi.fn()
+    const page = {
+      url: vi.fn().mockReturnValue('https://rewards.bing.com/earn'),
+      goto,
+      evaluate,
+      locator
+    } as unknown as Page
+    const client = new DashboardClient(
+      {} as BrowserContext,
+      page,
+      { write: vi.fn().mockResolvedValue(undefined) } as unknown as StructuredLogger,
+      'run',
+      'account-1'
+    )
+    return { client, goto, evaluate, locator }
+  }
+
+  it('returns undefined from claimable points when dashboard navigation fails', async () => {
+    const { client, goto, evaluate } = navFailureClient()
+    await expect(client.readClaimablePoints()).resolves.toBeUndefined()
+    expect(goto).toHaveBeenCalledTimes(1)
+    expect(evaluate).not.toHaveBeenCalled()
+  })
+
+  it('returns an empty inspection list when dashboard navigation fails', async () => {
+    const { client, goto, evaluate } = navFailureClient()
+    await expect(client.inspectClaimControls()).resolves.toEqual([])
+    expect(goto).toHaveBeenCalledTimes(1)
+    expect(evaluate).not.toHaveBeenCalled()
+  })
+
+  it('returns an empty expanded-inspection list when dashboard navigation fails', async () => {
+    const { client, goto, locator } = navFailureClient()
+    await expect(client.inspectExpandedClaimControls()).resolves.toEqual([])
+    expect(goto).toHaveBeenCalledTimes(1)
+    expect(locator).not.toHaveBeenCalled()
+  })
+
+  it('treats claim UI navigation failure as an unavailable offer', async () => {
+    const { client, goto } = navFailureClient()
+    await expect(client.claimBonusByUiWithResult()).rejects.toBeInstanceOf(OfferUnavailableError)
+    expect(goto).toHaveBeenCalledTimes(1)
   })
 })

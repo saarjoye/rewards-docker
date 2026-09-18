@@ -9,7 +9,7 @@ const typeCheckedConfigs = tseslint.configs.strictTypeChecked.map((config) => ({
 }))
 
 export default defineConfig(
-  globalIgnores(['dist/**', 'coverage/**', 'data/**', 'sessions/**', 'logs/**', 'backups/**']),
+  globalIgnores(['dist/**', 'coverage/**', 'data/**', 'sessions/**', 'logs/**', 'backups/**', '.codex-output/**', '.codex-notes/**']),
   eslint.configs.recommended,
   ...typeCheckedConfigs,
   {

@@ -66,7 +66,8 @@ function harness(values = [observation()], inputTask = task()) {
       delayMinSeconds: 0,
       delayMaxSeconds: 0,
       scroll: false,
-      clickResult: false
+      clickResult: false,
+      stagnantLimit: 50
     }
   }
   const executor = new SearchExecutor(context, client, logger, config.search, 'run', 'synthetic')

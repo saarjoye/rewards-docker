@@ -1,5 +1,5 @@
-import type { BrowserContext } from 'patchright'
-import { randomUUID } from 'node:crypto'
+import type { BrowserContext, Page } from 'patchright'
+import { randomBytes, randomUUID } from 'node:crypto'
 
 import { DashboardFetchError, type DashboardClient } from '../browser/DashboardClient.js'
 import type { SearchEvent, SearchState, TaskRecord } from '../domain/Task.js'
@@ -7,6 +7,12 @@ import type { AccountMode } from '../domain/RunRequest.js'
 import type { ApplicationConfig } from '../infra/Config.js'
 import type { StructuredLogger } from '../infra/StructuredLogger.js'
 import { BusinessDateChanged } from './BusinessDate.js'
+import {
+  defaultSearchQueryPool,
+  SearchQueryPool
+} from './SearchQueryPool.js'
+
+export { FALLBACK_SEARCH_TERMS as SEARCH_TERMS } from './SearchQueryPool.js'
 
 export type SearchOperationStage =
   | 'search-box'
@@ -34,61 +40,6 @@ export interface SearchQueryMetadata {
   queryIndex: number
   submittedCount: number
 }
-
-const SEARCH_TERMS = [
-  '中国传统节日',
-  '今日科技新闻',
-  '人工智能发展',
-  '北京天气',
-  '上海旅游',
-  '中国历史文化',
-  '健康生活方式',
-  '世界地理知识',
-  '国产电影推荐',
-  '音乐基础知识',
-  '计算机科学',
-  '绿色能源',
-  '航天科技',
-  '海洋生物',
-  '古典文学',
-  '摄影技巧',
-  '家庭烹饪',
-  '运动健康',
-  '城市交通',
-  '自然保护',
-  '数学趣题',
-  '物理实验',
-  '化学元素',
-  '天文观测',
-  '建筑设计',
-  '园艺知识',
-  '博物馆展览',
-  '语言学习',
-  '网络安全',
-  '开源软件',
-  '数据库基础',
-  '云计算',
-  '机器学习',
-  '机器人技术',
-  '新能源汽车',
-  '高速铁路',
-  '农业科技',
-  '气象科学',
-  '地质公园',
-  '非物质文化遗产',
-  '诗词鉴赏',
-  '书法艺术',
-  '国画基础',
-  '戏曲文化',
-  '围棋入门',
-  '羽毛球规则',
-  '篮球比赛',
-  '足球历史',
-  '游泳技巧',
-  '营养搭配',
-  '睡眠健康',
-  '心理健康'
-] as const
 
 export function calculateSearchQueryBudgetMs(search: ApplicationConfig['search']): number {
   const navigation = 25_000
@@ -147,7 +98,8 @@ export class SearchExecutor {
     private readonly config: ApplicationConfig['search'],
     private readonly runId: string,
     private readonly accountAlias: string,
-    private readonly budgetOverrideMs?: number
+    private readonly budgetOverrideMs?: number,
+    private readonly queryPool: SearchQueryPool = defaultSearchQueryPool
   ) {}
 
   async run(input: {
@@ -481,113 +433,211 @@ export class SearchExecutor {
       return false
     }
 
-    // A persisted in-flight submission is only reconciled by reads, never replayed.
-    if (summary.awaitingProgress || current.status === 'verification-pending' || input.readOnly) {
-      const grew = await observe()
-      if (current.status === 'completed') return current
-      if (grew) return current
-      if (input.readOnly === true) return pending()
-      if (!canRetryPendingSearch()) return pending()
-      retryAttempted = true
-      summary = { ...summary, recoveryAttemptedRunId: this.runId }
-      save()
-    }
-    if (summary.runId !== this.runId) {
-      summary = { ...summary, runId: this.runId }
-      save()
-    }
-    const queryLimit = retryAttempted ? 1 : maxQueries
-    const queryOffset = summary.submittedCount + summary.unknownSubmissionCount
-    for (let index = 0; index < queryLimit && current.progress.completed < total; index += 1) {
-      input.signal.throwIfAborted()
-      input.beforeSubmit?.()
-      if (Date.now() >= roundDeadline) {
-        budgetExhausted = true
-        return pending()
+    let searchPage: Page | null = null
+    const ensureSearchPage = async (signal: AbortSignal): Promise<Page> => {
+      signal.throwIfAborted()
+      const isClosed = searchPage
+        ? typeof searchPage.isClosed === 'function'
+          ? searchPage.isClosed()
+          : false
+        : true
+      if (searchPage && !isClosed) {
+        return searchPage
       }
-      const query =
-        input.singleQuery ??
-        SEARCH_TERMS[(queryOffset + index) % SEARCH_TERMS.length] ??
-        SEARCH_TERMS[0]
-      try {
-        await this.performQueryWithSearchBoxRetry(
-          query,
-          input.mobile,
-          queryBudget,
-          input.signal,
-          {
+      searchPage = await this.context.newPage()
+      this.activePageCount += 1
+      if (typeof this.logger.write === 'function') {
+        await this.logger.write({
+          level: 'debug',
+          event: 'search-page-opened',
+          runId: this.runId,
+          taskId: current.taskId,
+          queryIndex: summary.submittedCount + summary.unknownSubmissionCount,
+          submittedCount: summary.submittedCount,
+          activePageCount: this.activePageCount,
+          phase: 'search-page'
+        }).catch(() => undefined)
+      }
+      signal.throwIfAborted()
+      await searchPage.goto('https://www.bing.com/', {
+        waitUntil: 'domcontentloaded',
+        timeout: 25_000
+      })
+      return searchPage
+    }
+
+    const closeSearchPage = async (): Promise<void> => {
+      if (searchPage) {
+        const pageToClose = searchPage
+        searchPage = null
+        await pageToClose.close().catch(() => undefined)
+        this.activePageCount = Math.max(0, this.activePageCount - 1)
+        if (typeof this.logger.write === 'function') {
+          await this.logger.write({
+            level: 'debug',
+            event: 'search-page-closed',
+            runId: this.runId,
             taskId: current.taskId,
-            queryIndex: queryOffset + index,
-            submittedCount: summary.submittedCount
-          },
-          input.beforeSubmit,
-          () => {
-            summary = {
-              ...summary,
-              runId: this.runId,
-              unknownSubmissionCount: summary.unknownSubmissionCount + 1,
-              awaitingProgress: true,
-              result: 'submission-started'
-            }
-            save(true)
-          },
-          () => {
-            summary = {
-              ...summary,
-              submittedCount: summary.submittedCount + 1,
-              unknownSubmissionCount: summary.unknownSubmissionCount - 1,
-              result: 'submitted'
-            }
-            save(true)
-          }
-        )
-      } catch (error) {
-        if (input.signal.aborted) throw signalError(input.signal)
-        if (error instanceof BusinessDateChanged) throw error
-        if (summary.awaitingProgress) {
-          const grew = await observe()
-          if (error instanceof SearchExecutionError && error.operationStage === 'submit') {
-            if (!grew) return pending()
-            if (current.status === 'completed') return current
-          }
-          // Do not submit more after a browser action failed, even if progress arrived.
+            queryIndex: summary.submittedCount + summary.unknownSubmissionCount,
+            submittedCount: summary.submittedCount,
+            activePageCount: this.activePageCount,
+            phase: 'search-page'
+          }).catch(() => undefined)
         }
-        throw new SearchExecutionError(
-          '搜索页面操作失败',
-          error instanceof SearchExecutionError ? error.operationStage : 'submit',
-          summary.completed,
-          total
-        )
-      }
-      const observation = await observe()
-      if (!observation) {
-        // A valid but unchanged counter is not proof that this query failed. Continue
-        // with the next bounded query; malformed counters and request failures remain pending.
-        if (input.singleQuery !== undefined || lastObservationResult !== 'progress-unchanged')
-          return pending()
-      }
-      if (current.status === 'completed') return current
-      if (retryAttempted) {
-        summary = { ...summary, canContinue: false }
-        save()
-        return current
-      }
-      if (input.singleQuery !== undefined) {
-        summary = { ...summary, canContinue: false }
-        save()
-        return current
       }
     }
-    if (current.progress.completed < total) {
-      budgetExhausted = true
-      return pending()
+
+    try {
+      if (summary.awaitingProgress || current.status === 'verification-pending' || input.readOnly) {
+        const grew = await observe()
+        if (current.status === 'completed') return current
+        if (grew) return current
+        if (input.readOnly === true) return await pending()
+        if (!canRetryPendingSearch()) return await pending()
+        retryAttempted = true
+        summary = { ...summary, recoveryAttemptedRunId: this.runId }
+        save()
+      }
+      if (summary.runId !== this.runId) {
+        summary = { ...summary, runId: this.runId }
+        save()
+      }
+      const queryLimit = retryAttempted ? 1 : maxQueries
+      const queryOffset = summary.submittedCount + summary.unknownSubmissionCount
+      const stagnantLimit = this.config.stagnantLimit
+      let consecutiveUnchangedCount = 0
+      let searchCount = 0
+
+      for (let index = 0; index < queryLimit && current.progress.completed < total; index += 1) {
+        input.signal.throwIfAborted()
+        input.beforeSubmit?.()
+        if (Date.now() >= roundDeadline) {
+          budgetExhausted = true
+          return await pending()
+        }
+        const query =
+          input.singleQuery ??
+          this.queryPool.getQuery(this.accountAlias, input.task.localDate, queryOffset + index)
+
+        searchCount += 1
+        try {
+          await this.performQueryWithSearchBoxRetry(
+            ensureSearchPage,
+            closeSearchPage,
+            query,
+            input.mobile,
+            searchCount,
+            queryBudget,
+            input.signal,
+            {
+              taskId: current.taskId,
+              queryIndex: queryOffset + index,
+              submittedCount: summary.submittedCount
+            },
+            input.beforeSubmit,
+            () => {
+              summary = {
+                ...summary,
+                runId: this.runId,
+                unknownSubmissionCount: summary.unknownSubmissionCount + 1,
+                awaitingProgress: true,
+                result: 'submission-started'
+              }
+              save(true)
+            },
+            () => {
+              summary = {
+                ...summary,
+                submittedCount: summary.submittedCount + 1,
+                unknownSubmissionCount: summary.unknownSubmissionCount - 1,
+                result: 'submitted'
+              }
+              save(true)
+            }
+          )
+        } catch (error) {
+          if (input.signal.aborted) throw signalError(input.signal)
+          if (error instanceof BusinessDateChanged) throw error
+          if (summary.awaitingProgress) {
+            const grew = await observe()
+            if (error instanceof SearchExecutionError && error.operationStage === 'submit') {
+              if (!grew) return await pending()
+              if (current.status === 'completed') return current
+            }
+          }
+          throw new SearchExecutionError(
+            '搜索页面操作失败', error instanceof SearchExecutionError ? error.operationStage : 'submit',
+            summary.completed,
+            total
+          )
+        }
+
+        const observation = await observe()
+        if (!observation) {
+          if (input.singleQuery !== undefined || lastObservationResult !== 'progress-unchanged')
+            return await pending()
+        }
+
+        if (lastObservationResult === 'progress-increased') {
+          consecutiveUnchangedCount = 0
+        } else if (lastObservationResult === 'progress-unchanged') {
+          consecutiveUnchangedCount += 1
+          if (consecutiveUnchangedCount >= stagnantLimit) {
+            summary = { ...summary, canContinue: false }
+            current = {
+              ...current,
+              status: 'verification-pending',
+              reason: `stagnant-progress: 连续 ${String(stagnantLimit)} 次搜索未获积分，停止本轮搜索`
+            }
+            save()
+            if (typeof this.logger.write === 'function') {
+              await this.logger.write({
+                level: 'warn',
+                event: 'search-stagnant-aborted',
+                runId: this.runId,
+                taskId: current.taskId,
+                taskType: current.type,
+                phase: 'dashboard-refresh',
+                status: 'verification-pending',
+                submittedCount: summary.submittedCount,
+                completed: summary.completed,
+                total: summary.total,
+                activePageCount: this.activePageCount,
+                retryReason: 'stagnant-progress'
+              }).catch(() => undefined)
+            }
+            return current
+          }
+        }
+
+        if (current.status === 'completed') return current
+        if (retryAttempted) {
+          summary = { ...summary, canContinue: false }
+          save()
+          return current
+        }
+        if (input.singleQuery !== undefined) {
+          summary = { ...summary, canContinue: false }
+          save()
+          return current
+        }
+      }
+      if (current.progress.completed < total) {
+        budgetExhausted = true
+        return await pending()
+      }
+      return { ...current, status: 'completed' }
+    } finally {
+      await closeSearchPage()
     }
-    return { ...current, status: 'completed' }
   }
 
   private async performQueryWithSearchBoxRetry(
+    ensureSearchPage: (signal: AbortSignal) => Promise<Page>,
+    closeSearchPage: () => Promise<void>,
     query: string,
     mobile: boolean,
+    searchCount: number,
     timeoutMs: number,
     parentSignal: AbortSignal,
     metadata: SearchQueryMetadata,
@@ -597,8 +647,11 @@ export class SearchExecutor {
   ): Promise<void> {
     try {
       await this.performQuery(
+        ensureSearchPage,
+        closeSearchPage,
         query,
         mobile,
+        searchCount,
         timeoutMs,
         parentSignal,
         metadata,
@@ -616,6 +669,8 @@ export class SearchExecutor {
         throw error
       }
 
+      await closeSearchPage()
+
       await this.logger.write({
         level: 'warn',
         event: 'search-box-retry',
@@ -631,9 +686,12 @@ export class SearchExecutor {
         reason: 'search-box-not-visible'
       }).catch(() => undefined)
 
-      return this.performQuery(
+      await this.performQuery(
+        ensureSearchPage,
+        closeSearchPage,
         query,
         mobile,
+        searchCount,
         timeoutMs,
         parentSignal,
         metadata,
@@ -641,12 +699,16 @@ export class SearchExecutor {
         onSubmitting,
         onSubmitted
       )
+      return
     }
   }
 
   private async performQuery(
+    ensureSearchPage: (signal: AbortSignal) => Promise<Page>,
+    closeSearchPage: () => Promise<void>,
     query: string,
     mobile: boolean,
+    searchCount: number,
     timeoutMs: number,
     parentSignal: AbortSignal,
     metadata: SearchQueryMetadata,
@@ -654,58 +716,129 @@ export class SearchExecutor {
     onSubmitting?: () => void,
     onSubmitted?: () => void
   ): Promise<void> {
-    const page = await this.context.newPage()
-    this.activePageCount += 1
-    if (typeof this.logger.write === 'function')
-      await this.logger.write({
-        level: 'debug',
-        event: 'search-page-opened',
-        runId: this.runId,
-        taskId: metadata.taskId,
-        queryIndex: metadata.queryIndex,
-        submittedCount: metadata.submittedCount,
-        activePageCount: this.activePageCount,
-        phase: 'search-page'
-      }).catch(() => undefined)
+    const page = await ensureSearchPage(parentSignal)
     const controller = new AbortController()
     let stage: SearchOperationStage = 'search-box'
     let operationError: unknown
+
     const operation = (async () => {
       try {
         controller.signal.throwIfAborted()
-        await page.goto('https://www.bing.com/', { waitUntil: 'domcontentloaded', timeout: 25_000 })
+
+        if (searchCount > 0 && searchCount % 10 === 0) {
+          const cvid = randomBytes(16).toString('hex')
+          const refreshUrl = `https://www.bing.com/search?q=${encodeURIComponent(query)}&PC=U531&FORM=ANNTA1&cvid=${cvid}`
+          await page.goto(refreshUrl, {
+            waitUntil: 'domcontentloaded',
+            timeout: 25_000
+          })
+        }
+
         controller.signal.throwIfAborted()
         stage = 'search-box'
-        const box = page.locator('textarea[name="q"], input[name="q"], #sb_form_q').first()
+
+        if (typeof page.evaluate === 'function') {
+          await page
+            .evaluate(() => {
+              window.scrollTo({ left: 0, top: 0, behavior: 'auto' })
+            })
+            .catch(() => undefined)
+        }
+        const keyboard = (
+          page as unknown as {
+            keyboard?: {
+              press?: (key: string, options?: { delay?: number }) => Promise<void>
+              type?: (text: string, options?: { delay?: number }) => Promise<void>
+            }
+          }
+        ).keyboard
+
+        if (typeof keyboard?.press === 'function') {
+          await keyboard.press('Home').catch(() => undefined)
+        }
+
+        const box = page.locator('#sb_form_q, textarea[name="q"], input[name="q"]').first()
         await box.waitFor({ state: 'visible', timeout: 16_000 })
         controller.signal.throwIfAborted()
-        await box.fill(query)
+
+        const boxOps = box as unknown as {
+          click?: (options?: { clickCount?: number }) => Promise<void>
+          press?: (key: string, options?: { timeout?: number }) => Promise<void>
+        }
+
+        if (typeof keyboard?.type === 'function') {
+          if (typeof boxOps.click === 'function') {
+            await boxOps.click({ clickCount: 3 }).catch(() => undefined)
+          }
+          await box.fill('')
+          controller.signal.throwIfAborted()
+          await keyboard.type(query, { delay: randomBetween(45, 75) })
+        } else {
+          await box.fill(query)
+        }
         controller.signal.throwIfAborted()
+
         stage = 'submit'
         beforeSubmit?.()
         onSubmitting?.()
-        await box.press('Enter', { timeout: 15_000 })
+        if (typeof boxOps.press === 'function') {
+          await boxOps.press('Enter', { timeout: 15_000 })
+        } else if (typeof keyboard?.press === 'function') {
+          await keyboard.press('Enter')
+        }
         controller.signal.throwIfAborted()
         onSubmitted?.()
         controller.signal.throwIfAborted()
+
         stage = 'post-submit-wait'
-        await abortableDelay(5_000, controller.signal)
-        if (this.config.scroll) {
+        await abortableDelay(3_000, controller.signal)
+
+        if (this.config.scroll && typeof page.evaluate === 'function') {
           stage = 'scroll'
-          await page.evaluate(() => {
-            window.scrollTo({ top: Math.max(1, document.body.scrollHeight / 2), behavior: 'auto' })
-          })
+          await page
+            .evaluate(() => {
+              const maxScroll = Math.max(1, document.body.scrollHeight - window.innerHeight)
+              window.scrollTo({
+                left: 0,
+                top: Math.floor(Math.random() * maxScroll),
+                behavior: 'auto'
+              })
+            })
+            .catch(() => undefined)
           await abortableDelay(2_000, controller.signal)
         }
+
         if (this.config.clickResult) {
           stage = 'click'
-          const result = page.locator('li.b_algo h2 a, #b_results h2 a').first()
+          const existingPages = new Set(
+            typeof this.context.pages === 'function' ? this.context.pages() : [page]
+          )
+          const searchPageUrl =
+            typeof page.url === 'function' ? page.url() : 'https://www.bing.com/'
+
+          const result = page.locator('#b_results .b_algo h2 a, li.b_algo h2 a, #b_results h2 a').first()
           if (await result.isVisible({ timeout: 5_000 }).catch(() => false)) {
             controller.signal.throwIfAborted()
             await result.click({ timeout: 10_000 })
             await abortableDelay(this.config.resultVisitSeconds * 1000, controller.signal)
+
+            const currentPages =
+              typeof this.context.pages === 'function' ? this.context.pages() : [page]
+            let newTabClosed = false
+            for (const p of currentPages) {
+              if (!existingPages.has(p)) {
+                newTabClosed = true
+                await p.close().catch(() => undefined)
+              }
+            }
+            if (!newTabClosed && typeof page.url === 'function' && page.url() !== searchPageUrl) {
+              await page
+                .goto(searchPageUrl, { waitUntil: 'domcontentloaded', timeout: 15_000 })
+                .catch(() => undefined)
+            }
           }
         }
+
         stage = 'search-delay'
         await abortableDelay(
           randomBetween(this.config.delayMinSeconds, this.config.delayMaxSeconds) * 1000,
@@ -718,27 +851,28 @@ export class SearchExecutor {
     })()
 
     let timer: NodeJS.Timeout | undefined
-    let closePromise: Promise<void> | undefined
-    const closePage = (): Promise<void> => {
-      closePromise ??= page.close().catch(() => undefined)
-      return closePromise
-    }
     const timeout = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => {
-        const error = new SearchExecutionError(`单次搜索超时: ${String(timeoutMs)}ms`, stage, 0, 0)
+        const error = new SearchExecutionError(
+          `单次搜索超时: ${String(timeoutMs)}ms`,
+          stage,
+          0,
+          0
+        )
         controller.abort(error)
-        void closePage()
+        void closeSearchPage()
         reject(error)
       }, timeoutMs)
     })
     const abort = (): void => {
       controller.abort(signalError(parentSignal))
-      void closePage()
+      void closeSearchPage()
     }
     parentSignal.addEventListener('abort', abort, { once: true })
+
     try {
       await Promise.race([operation, timeout])
-      if (typeof this.logger.write === 'function')
+      if (typeof this.logger.write === 'function') {
         await this.logger.write({
           level: 'debug',
           event: 'search-query',
@@ -752,35 +886,20 @@ export class SearchExecutor {
           status: 'submitted',
           message: mobile ? 'mobile' : 'desktop'
         }).catch(() => undefined)
+      }
     } catch (error) {
-      await closePage()
+      await closeSearchPage()
       await Promise.race([
         operation.catch(() => undefined),
         new Promise<void>((resolve) => setTimeout(resolve, 1_000))
       ])
       if (error instanceof SearchExecutionError || error instanceof BusinessDateChanged) throw error
       throw new SearchExecutionError(
-        operationError instanceof Error ? operationError.message : '搜索页面操作失败',
-        stage,
-        0,
-        0
+        operationError instanceof Error ? operationError.message : '搜索页面操作失败', stage, 0, 0
       )
     } finally {
       if (timer) clearTimeout(timer)
       parentSignal.removeEventListener('abort', abort)
-      await closePage()
-      this.activePageCount = Math.max(0, this.activePageCount - 1)
-      if (typeof this.logger.write === 'function')
-        await this.logger.write({
-          level: 'debug',
-          event: 'search-page-closed',
-          runId: this.runId,
-          taskId: metadata.taskId,
-          queryIndex: metadata.queryIndex,
-          submittedCount: metadata.submittedCount,
-          activePageCount: this.activePageCount,
-          phase: 'search-page'
-        }).catch(() => undefined)
     }
   }
 }

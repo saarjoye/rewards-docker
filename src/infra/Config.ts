@@ -26,7 +26,8 @@ export const applicationConfigSchema = z.object({
       delayMaxSeconds: z.number().int().min(5).max(300),
       scroll: z.boolean(),
       clickResult: z.boolean(),
-      resultVisitSeconds: z.number().int().min(1).max(120).default(8)
+      resultVisitSeconds: z.number().int().min(1).max(120).default(8),
+      stagnantLimit: z.number().int().min(1).max(100).default(10)
     })
     .refine((value) => value.delayMaxSeconds >= value.delayMinSeconds, {
       message: 'delayMaxSeconds must be greater than or equal to delayMinSeconds'
@@ -62,7 +63,8 @@ export const DEFAULT_CONFIG: ApplicationConfig = applicationConfigSchema.parse({
     delayMaxSeconds: 60,
     scroll: true,
     clickResult: false,
-    resultVisitSeconds: 8
+    resultVisitSeconds: 8,
+    stagnantLimit: 10
   },
   retention: { logsDays: 30, diagnosticsHours: 24, dailyBackups: 7, weeklyBackups: 4 }
 })

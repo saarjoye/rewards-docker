@@ -510,17 +510,30 @@ export class ApplicationRunCoordinator {
     if (!resources.discovery) throw new Error('discovery unavailable')
 
     if (stage === 'claim-bonus-points') {
-      const refreshed = this.applyTaskConfiguration(
-        await new RewardsDiscoveryService().discover({
-          accountId: context.accountId,
-          localDate: context.localDate,
-          client: resources.desktopClient,
-          ...(resources.appObservation === undefined
-            ? {}
-            : { appObservation: resources.appObservation }),
-          signal: context.signal
+      let refreshed = resources.discovery
+      try {
+        refreshed = this.applyTaskConfiguration(
+          await new RewardsDiscoveryService().discover({
+            accountId: context.accountId,
+            localDate: context.localDate,
+            client: resources.desktopClient,
+            ...(resources.appObservation === undefined
+              ? {}
+              : { appObservation: resources.appObservation }),
+            signal: context.signal
+          })
+        )
+      } catch (error) {
+        await this.logger.write({
+          level: 'warn',
+          event: 'claim-rediscovery-unavailable',
+          runId: context.runId,
+          accountAlias: `account-${String(context.runAccountIndex)}`,
+          stage: 'claim-bonus-points',
+          status: 'pending',
+          message: redactText(error instanceof Error ? error.message : 'claim rediscovery failed')
         })
-      )
+      }
       const claim = refreshed.tasks.find((task) => task.type === 'claim-bonus-points')
       if (claim) this.store.upsertTask(claim, context.runId)
       const claimDescriptor = claim ? refreshed.descriptors.get(claim.taskId) : undefined

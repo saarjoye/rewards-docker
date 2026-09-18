@@ -450,6 +450,100 @@ describe('coordinator task configuration refresh', () => {
       'synthetic-run'
     )
   })
+
+  it('logs and continues when claim-stage rediscovery fails', async () => {
+    const claim: TaskRecord = {
+      taskId: 'synthetic-account:2026-09-04:claim-bonus-points',
+      accountId: 'synthetic-account',
+      localDate: '2026-09-04',
+      sourceTaskId: 'claim-bonus-points',
+      type: 'claim-bonus-points',
+      source: 'rsc',
+      displayName: '领取奖励积分',
+      executable: true,
+      required: true,
+      status: 'discovered',
+      progress: { completed: 0, total: 1 },
+      updatedAt: '2026-09-04T00:00:00.000Z'
+    }
+    const discovery: DiscoveryOutput = {
+      snapshot: {
+        rewardsUser: evidence(true),
+        market: evidence('CN'),
+        availablePoints: evidence(100),
+        pcSearch: evidence({ completed: 60, total: 60, remaining: 0 }),
+        mobileSearch: evidence({ completed: 0, total: 0, remaining: 0 }),
+        offers: [],
+        actionIds: {}
+      },
+      tasks: [claim],
+      descriptors: new Map([[claim.taskId, { task: claim, claimablePoints: 5 }]]),
+      dataSources: {
+        rsc: true,
+        dom: true,
+        dashboard: false,
+        flyout: true,
+        'app-dashboard': false
+      }
+    }
+    vi.spyOn(RewardsDiscoveryService.prototype, 'discover').mockRejectedValue(
+      new Error('synthetic rediscovery failure')
+    )
+    const upsertTask = vi.fn()
+    const loggerWrite = vi.fn().mockResolvedValue(undefined)
+    const store = {
+      upsertTask,
+      listTaskState: vi.fn().mockReturnValue([])
+    } as unknown as SqliteStore
+    const config = {
+      ...DEFAULT_CONFIG,
+      tasks: { ...DEFAULT_CONFIG.tasks, claimBonusPoints: false }
+    }
+    const coordinator = new ApplicationRunCoordinator(
+      {} as AccountSecretStore,
+      store,
+      {} as EncryptedSessionStore,
+      { openSlot: vi.fn(), close: vi.fn().mockResolvedValue(undefined) } as unknown as BrowserRuntime,
+      { write: loggerWrite } as unknown as StructuredLogger,
+      config
+    )
+    const desktop = browserSlot('web-desktop').value
+    const callable = coordinator as unknown as {
+      executeStage(
+        stage: 'claim-bonus-points',
+        context: {
+          runId: string
+          accountId: string
+          runAccountIndex: number
+          localDate: string
+          signal: AbortSignal
+        },
+        mode: 'mutating',
+        credentials: { email: string; password: string },
+        resources: Record<string, unknown>
+      ): Promise<{ status: string }>
+    }
+
+    await expect(
+      callable.executeStage(
+        'claim-bonus-points',
+        {
+          runId: 'synthetic-run',
+          accountId: 'synthetic-account',
+          runAccountIndex: 1,
+          localDate: '2026-09-04',
+          signal: new AbortController().signal
+        },
+        'mutating',
+        { email: 'synthetic@example.test', password: 'synthetic-password' },
+        { desktop, desktopClient: {}, discovery }
+      )
+    ).resolves.toEqual({ status: 'completed' })
+    expect(loggerWrite).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'claim-rediscovery-unavailable', status: 'pending' })
+    )
+    expect(upsertTask).toHaveBeenCalledWith(expect.objectContaining({ taskId: claim.taskId }), 'synthetic-run')
+  })
 })
 
 describe('runtime task discovery', () => {
@@ -483,6 +577,33 @@ describe('runtime task discovery', () => {
       status: 'skipped',
       executable: false,
       reason: 'App 数据源标记为隐藏'
+    })
+  })
+
+  it('keeps claim discovery as unknown when claimable-points navigation fails', async () => {
+    const confirmed = observation()
+    const client = {
+      bootstrapRsc: vi.fn().mockResolvedValue({
+        html: ['<html></html>'],
+        offers: [],
+        domOffers: [],
+        availablePoints: evidence(100),
+        actionIds: {}
+      }),
+      readClaimablePoints: vi.fn().mockRejectedValue(new Error('navigation timeout'))
+    } as unknown as DashboardClient
+
+    const result = await new RewardsDiscoveryService().discover({
+      accountId: 'synthetic-account',
+      localDate: '2026-09-04',
+      client,
+      initialObservation: confirmed
+    })
+
+    expect(result.tasks.find((task) => task.type === 'claim-bonus-points')).toMatchObject({
+      status: 'unknown',
+      executable: false,
+      reason: '可领取积分未确认'
     })
   })
 

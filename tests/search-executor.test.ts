@@ -11,6 +11,7 @@ import {
   SearchExecutionError,
   SearchExecutor
 } from '../src/orchestration/SearchExecutor.js'
+import { SearchQueryPool } from '../src/orchestration/SearchQueryPool.js'
 
 afterEach(() => {
   vi.useRealTimers()
@@ -256,5 +257,417 @@ describe('search budgets and cancellation', () => {
     expect(closed).toHaveBeenCalled()
     expect(fill).not.toHaveBeenCalled()
     expect(press).not.toHaveBeenCalled()
+  })
+})
+
+
+describe('wangxun search model: persistent page, periodic refresh, realistic typing, and stagnant detection', () => {
+  it('reuses a single persistent search page across multiple queries in a session', async () => {
+    vi.useFakeTimers()
+    const goto = vi.fn().mockResolvedValue(null)
+    const closed = vi.fn().mockResolvedValue(undefined)
+    const fill = vi.fn().mockResolvedValue(undefined)
+    const press = vi.fn().mockResolvedValue(undefined)
+    const box = {
+      first: () => box,
+      waitFor: vi.fn().mockResolvedValue(undefined),
+      fill,
+      press
+    }
+    const mockPage = {
+      goto,
+      locator: vi.fn().mockReturnValue(box),
+      close: closed,
+      isClosed: vi.fn().mockReturnValue(false)
+    } as unknown as Page
+    const newPage = vi.fn().mockResolvedValue(mockPage)
+
+    let progressCount = 0
+    const fetchDashboard = vi.fn().mockImplementation(() => {
+      progressCount += 3
+      return Promise.resolve({
+        pcSearch: {
+          availability: 'valid',
+          confidence: 1,
+          source: 'bing-flyout',
+          observedAt: new Date().toISOString(),
+          value: { completed: progressCount, total: 6, remaining: Math.max(0, 6 - progressCount) }
+        },
+        mobileSearch: {
+          availability: 'valid',
+          confidence: 1,
+          source: 'bing-flyout',
+          observedAt: new Date().toISOString(),
+          value: { completed: 0, total: 0, remaining: 0 }
+        }
+      })
+    })
+
+    const executor = new SearchExecutor(
+      { newPage } as unknown as BrowserContext,
+      { fetchDashboard } as unknown as DashboardClient,
+      { write: vi.fn().mockResolvedValue(undefined) } as unknown as StructuredLogger,
+      { ...DEFAULT_CONFIG.search, delayMinSeconds: 0, delayMaxSeconds: 0, scroll: false, clickResult: false },
+      'run-reuse',
+      'account-reuse'
+    )
+
+    const runPromise = executor.run({
+      task: { ...task(0), progress: { completed: 0, total: 6 } },
+      mobile: false,
+      signal: new AbortController().signal,
+      onProgress: vi.fn()
+    })
+
+    await vi.runAllTimersAsync()
+    const result = await runPromise
+
+    expect(result.status).toBe('completed')
+    expect(result.progress.completed).toBe(6)
+    expect(newPage).toHaveBeenCalledTimes(1)
+    expect(closed).toHaveBeenCalledTimes(1)
+  })
+
+  it('triggers periodic refresh navigation with PC=U531, FORM=ANNTA1 and cvid on the 10th search', async () => {
+    vi.useFakeTimers()
+    const gotoCalls: string[] = []
+    const goto = vi.fn().mockImplementation((url: string) => {
+      gotoCalls.push(url)
+      return Promise.resolve(null)
+    })
+    const closed = vi.fn().mockResolvedValue(undefined)
+    const fill = vi.fn().mockResolvedValue(undefined)
+    const press = vi.fn().mockResolvedValue(undefined)
+    const box = {
+      first: () => box,
+      waitFor: vi.fn().mockResolvedValue(undefined),
+      fill,
+      press
+    }
+    const mockPage = {
+      goto,
+      locator: vi.fn().mockReturnValue(box),
+      close: closed,
+      isClosed: vi.fn().mockReturnValue(false)
+    } as unknown as Page
+    const newPage = vi.fn().mockResolvedValue(mockPage)
+
+    let progressCount = 0
+    const fetchDashboard = vi.fn().mockImplementation(() => {
+      progressCount += 3
+      return Promise.resolve({
+        pcSearch: {
+          availability: 'valid',
+          confidence: 1,
+          source: 'bing-flyout',
+          observedAt: new Date().toISOString(),
+          value: { completed: progressCount, total: 30, remaining: Math.max(0, 30 - progressCount) }
+        },
+        mobileSearch: {
+          availability: 'valid',
+          confidence: 1,
+          source: 'bing-flyout',
+          observedAt: new Date().toISOString(),
+          value: { completed: 0, total: 0, remaining: 0 }
+        }
+      })
+    })
+
+    const executor = new SearchExecutor(
+      { newPage } as unknown as BrowserContext,
+      { fetchDashboard } as unknown as DashboardClient,
+      { write: vi.fn().mockResolvedValue(undefined) } as unknown as StructuredLogger,
+      { ...DEFAULT_CONFIG.search, delayMinSeconds: 0, delayMaxSeconds: 0, scroll: false, clickResult: false },
+      'run-periodic',
+      'account-periodic'
+    )
+
+    const runPromise = executor.run({
+      task: { ...task(0), progress: { completed: 0, total: 30 } },
+      mobile: false,
+      signal: new AbortController().signal,
+      onProgress: vi.fn()
+    })
+
+    await vi.runAllTimersAsync()
+    const result = await runPromise
+
+    expect(result.status).toBe('completed')
+    expect(result.progress.completed).toBe(30)
+    expect(gotoCalls[0]).toBe('https://www.bing.com/')
+    expect(gotoCalls).toHaveLength(2)
+    const refreshUrl = gotoCalls[1]
+    expect(refreshUrl).toBeDefined()
+    expect(refreshUrl).toMatch(/^https:\/\/www\.bing\.com\/search\?q=.*&PC=U531&FORM=ANNTA1&cvid=[a-f0-9]{32}$/)
+  })
+
+  it('performs realistic typing flow with Home key, triple click, fill clearing, and keyboard typing delay', async () => {
+    vi.useFakeTimers()
+    const evaluated: Array<() => void> = []
+    const evaluate = vi.fn().mockImplementation((fn: () => void) => {
+      evaluated.push(fn)
+      return Promise.resolve()
+    })
+    const keyboardPress = vi.fn().mockResolvedValue(undefined)
+    const keyboardType = vi.fn().mockResolvedValue(undefined)
+    const boxClick = vi.fn().mockResolvedValue(undefined)
+    const boxFill = vi.fn().mockResolvedValue(undefined)
+    const boxPress = vi.fn().mockResolvedValue(undefined)
+
+    const box = {
+      first: () => box,
+      waitFor: vi.fn().mockResolvedValue(undefined),
+      click: boxClick,
+      fill: boxFill,
+      press: boxPress
+    }
+    const mockPage = {
+      goto: vi.fn().mockResolvedValue(null),
+      locator: vi.fn().mockReturnValue(box),
+      evaluate,
+      keyboard: {
+        press: keyboardPress,
+        type: keyboardType
+      },
+      close: vi.fn().mockResolvedValue(undefined),
+      isClosed: vi.fn().mockReturnValue(false)
+    } as unknown as Page
+
+    const fetchDashboard = vi.fn().mockResolvedValue({
+      pcSearch: {
+        availability: 'valid',
+        confidence: 1,
+        source: 'bing-flyout',
+        observedAt: new Date().toISOString(),
+        value: { completed: 3, total: 3, remaining: 0 }
+      },
+      mobileSearch: {
+        availability: 'valid',
+        confidence: 1,
+        source: 'bing-flyout',
+        observedAt: new Date().toISOString(),
+        value: { completed: 0, total: 0, remaining: 0 }
+      }
+    })
+
+    const executor = new SearchExecutor(
+      { newPage: vi.fn().mockResolvedValue(mockPage) } as unknown as BrowserContext,
+      { fetchDashboard } as unknown as DashboardClient,
+      { write: vi.fn().mockResolvedValue(undefined) } as unknown as StructuredLogger,
+      { ...DEFAULT_CONFIG.search, delayMinSeconds: 0, delayMaxSeconds: 0, scroll: false, clickResult: false },
+      'run-typing',
+      'account-typing'
+    )
+
+    const runPromise = executor.run({
+      task: { ...task(0), progress: { completed: 0, total: 3 } },
+      mobile: false,
+      singleQuery: '拟人化打字测试',
+      signal: new AbortController().signal,
+      onProgress: vi.fn()
+    })
+
+    await vi.runAllTimersAsync()
+    const result = await runPromise
+
+    expect(result.status).toBe('completed')
+    expect(keyboardPress).toHaveBeenCalledWith('Home')
+    expect(boxClick).toHaveBeenCalledWith({ clickCount: 3 })
+    expect(boxFill).toHaveBeenCalledWith('')
+    expect(keyboardType).toHaveBeenCalledWith('拟人化打字测试', expect.anything())
+    const delayArg = (keyboardType.mock.calls as unknown as Array<[string, { delay?: number }]>)[0]?.[1]?.delay ?? 0
+    expect(delayArg).toBeGreaterThanOrEqual(45)
+    expect(delayArg).toBeLessThanOrEqual(75)
+    expect(boxPress).toHaveBeenCalledWith('Enter', { timeout: 15_000 })
+  })
+
+  it('safely closes newly opened popup tabs during search result visit', async () => {
+    vi.useFakeTimers()
+    const popupClosed = vi.fn().mockResolvedValue(undefined)
+    const popupPage = {
+      close: popupClosed
+    } as unknown as Page
+
+    const mainPageClosed = vi.fn().mockResolvedValue(undefined)
+    const box = {
+      first: () => box,
+      waitFor: vi.fn().mockResolvedValue(undefined),
+      fill: vi.fn().mockResolvedValue(undefined),
+      press: vi.fn().mockResolvedValue(undefined)
+    }
+    const resultLink = {
+      first: () => resultLink,
+      isVisible: vi.fn().mockResolvedValue(true),
+      click: vi.fn().mockImplementation(() => {
+        openPages.push(popupPage)
+        return Promise.resolve()
+      })
+    }
+
+    const mainPage = {
+      goto: vi.fn().mockResolvedValue(null),
+      locator: vi.fn().mockImplementation((sel: string) => {
+        if (sel.includes('b_algo') || sel.includes('b_results')) return resultLink
+        return box
+      }),
+      url: vi.fn().mockReturnValue('https://www.bing.com/search?q=test'),
+      close: mainPageClosed,
+      isClosed: vi.fn().mockReturnValue(false)
+    } as unknown as Page
+
+    const openPages: Page[] = [mainPage]
+    const context = {
+      newPage: vi.fn().mockResolvedValue(mainPage),
+      pages: () => openPages
+    } as unknown as BrowserContext
+
+    const fetchDashboard = vi.fn().mockResolvedValue({
+      pcSearch: {
+        availability: 'valid',
+        confidence: 1,
+        source: 'bing-flyout',
+        observedAt: new Date().toISOString(),
+        value: { completed: 3, total: 3, remaining: 0 }
+      },
+      mobileSearch: {
+        availability: 'valid',
+        confidence: 1,
+        source: 'bing-flyout',
+        observedAt: new Date().toISOString(),
+        value: { completed: 0, total: 0, remaining: 0 }
+      }
+    })
+
+    const executor = new SearchExecutor(
+      context,
+      { fetchDashboard } as unknown as DashboardClient,
+      { write: vi.fn().mockResolvedValue(undefined) } as unknown as StructuredLogger,
+      {
+        ...DEFAULT_CONFIG.search,
+        delayMinSeconds: 0,
+        delayMaxSeconds: 0,
+        scroll: false,
+        clickResult: true,
+        resultVisitSeconds: 1
+      },
+      'run-tab-cleanup',
+      'account-tab'
+    )
+
+    const runPromise = executor.run({
+      task: { ...task(0), progress: { completed: 0, total: 3 } },
+      mobile: false,
+      singleQuery: '标签页清理测试',
+      signal: new AbortController().signal,
+      onProgress: vi.fn()
+    })
+
+    await vi.runAllTimersAsync()
+    const result = await runPromise
+
+    expect(result.status).toBe('completed')
+    expect(resultLink.click).toHaveBeenCalled()
+    expect(popupClosed).toHaveBeenCalledTimes(1)
+  })
+
+  it('aborts with verification-pending when consecutive stagnant queries hit stagnantLimit (10)', async () => {
+    vi.useFakeTimers()
+    const box = {
+      first: () => box,
+      waitFor: vi.fn().mockResolvedValue(undefined),
+      fill: vi.fn().mockResolvedValue(undefined),
+      press: vi.fn().mockResolvedValue(undefined)
+    }
+    const mockPage = {
+      goto: vi.fn().mockResolvedValue(null),
+      locator: vi.fn().mockReturnValue(box),
+      close: vi.fn().mockResolvedValue(undefined),
+      isClosed: vi.fn().mockReturnValue(false)
+    } as unknown as Page
+
+    const fetchDashboard = vi.fn().mockResolvedValue({
+      pcSearch: {
+        availability: 'valid',
+        confidence: 1,
+        source: 'bing-flyout',
+        observedAt: new Date().toISOString(),
+        value: { completed: 9, total: 60, remaining: 51 }
+      },
+      mobileSearch: {
+        availability: 'valid',
+        confidence: 1,
+        source: 'bing-flyout',
+        observedAt: new Date().toISOString(),
+        value: { completed: 0, total: 0, remaining: 0 }
+      }
+    })
+
+    const write = vi.fn().mockResolvedValue(undefined)
+    const logger = { write } as unknown as StructuredLogger
+
+    const executor = new SearchExecutor(
+      { newPage: vi.fn().mockResolvedValue(mockPage) } as unknown as BrowserContext,
+      { fetchDashboard } as unknown as DashboardClient,
+      logger,
+      {
+        ...DEFAULT_CONFIG.search,
+        delayMinSeconds: 0,
+        delayMaxSeconds: 0,
+        scroll: false,
+        clickResult: false,
+        stagnantLimit: 10
+      },
+      'run-stagnant',
+      'account-stagnant'
+    )
+
+    const runPromise = executor.run({
+      task: task(9),
+      mobile: false,
+      signal: new AbortController().signal,
+      onProgress: vi.fn()
+    })
+
+    await vi.runAllTimersAsync()
+    const result = await runPromise
+
+    expect(result.status).toBe('verification-pending')
+    expect(result.reason).toContain('stagnant-progress: 连续 10 次搜索未获积分，停止本轮搜索')
+    expect(box.press).toHaveBeenCalledTimes(10)
+    expect(write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'search-stagnant-aborted',
+        retryReason: 'stagnant-progress',
+        status: 'verification-pending'
+      })
+    )
+  })
+})
+
+describe('SearchQueryPool', () => {
+  it('loads Chinese query dictionary with high volume', () => {
+    const pool = new SearchQueryPool()
+    expect(pool.size).toBeGreaterThanOrEqual(52)
+    const query = pool.getQuery('acc1', '2026-09-18', 0)
+    expect(typeof query).toBe('string')
+    expect(query.length).toBeGreaterThan(0)
+  })
+
+  it('provides deterministic queries based on account key, date, and offset', () => {
+    const pool = new SearchQueryPool(['词A', '词B', '词C', '词D', '词E'])
+    const q1 = pool.getQuery('user-1', '2026-09-18', 0)
+    const q1Repeat = pool.getQuery('user-1', '2026-09-18', 0)
+    expect(q1).toBe(q1Repeat)
+
+    const q2 = pool.getQuery('user-1', '2026-09-18', 1)
+    const queriesBatch = pool.getQueries('user-1', '2026-09-18', 3, 0)
+    expect(queriesBatch).toHaveLength(3)
+    expect(queriesBatch[0]).toBe(q1)
+    expect(queriesBatch[1]).toBe(q2)
+  })
+
+  it('falls back to default fallback queries when no queries are loaded', () => {
+    const pool = new SearchQueryPool([])
+    expect(pool.size).toBeGreaterThanOrEqual(52)
   })
 })

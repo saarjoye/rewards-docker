@@ -1074,12 +1074,7 @@ export class DashboardClient {
   }
 
   async readClaimablePoints(): Promise<number | undefined> {
-    if (new URL(this.page.url()).pathname !== '/dashboard') {
-      await this.page.goto(REWARDS_URLS.dashboard, {
-        waitUntil: 'domcontentloaded',
-        timeout: 30_000
-      })
-    }
+    if (!(await this.ensureDashboardPage())) return undefined
     return this.page.evaluate(() => {
       const candidates = [...document.querySelectorAll('button')]
       for (const button of candidates) {
@@ -1097,12 +1092,7 @@ export class DashboardClient {
   }
 
   async inspectClaimControls(): Promise<readonly ClaimControlInspection[]> {
-    if (new URL(this.page.url()).pathname !== '/dashboard') {
-      await this.page.goto(REWARDS_URLS.dashboard, {
-        waitUntil: 'domcontentloaded',
-        timeout: 30_000
-      })
-    }
+    if (!(await this.ensureDashboardPage())) return []
     return this.page.evaluate(() =>
       [...document.querySelectorAll('button')]
         .map((button) => {
@@ -1147,12 +1137,7 @@ export class DashboardClient {
   }
 
   async inspectExpandedClaimControls(): Promise<readonly ClaimControlInspection[]> {
-    if (new URL(this.page.url()).pathname !== '/dashboard') {
-      await this.page.goto(REWARDS_URLS.dashboard, {
-        waitUntil: 'domcontentloaded',
-        timeout: 30_000
-      })
-    }
+    if (!(await this.ensureDashboardPage())) return []
     const buttons = this.page.locator('button[aria-expanded]')
     const count = await buttons.count()
     const candidates: number[] = []
@@ -1177,12 +1162,8 @@ export class DashboardClient {
   }
 
   async claimBonusByUiWithResult(): Promise<ClaimUiResult> {
-    if (new URL(this.page.url()).pathname !== '/dashboard') {
-      await this.page.goto(REWARDS_URLS.dashboard, {
-        waitUntil: 'domcontentloaded',
-        timeout: 30_000
-      })
-    }
+    if (!(await this.ensureDashboardPage()))
+      throw new OfferUnavailableError('Dashboard page unavailable before claim')
     let buttons = this.page.locator('button')
     let candidates = await this.positiveClaimButtonIndices(buttons)
     if (candidates.length !== 1) return { clicked: false, acknowledged: false }
@@ -1217,6 +1198,17 @@ export class DashboardClient {
       status: response.status(),
       acknowledged: serverActionAcknowledged(response.ok(), responseText)
     }
+  }
+
+  private async ensureDashboardPage(): Promise<boolean> {
+    if (new URL(this.page.url()).pathname === '/dashboard') return true
+    return this.page
+      .goto(REWARDS_URLS.dashboard, {
+        waitUntil: 'domcontentloaded',
+        timeout: 30_000
+      })
+      .then(() => true)
+      .catch(() => false)
   }
 
   private async positiveClaimButtonIndices(buttons: Locator): Promise<number[]> {

@@ -62,7 +62,8 @@ const searchSettingsSchema = z
     delayMaxSeconds: z.number().int().min(5).max(300),
     scroll: z.boolean(),
     clickResult: z.boolean(),
-    resultVisitSeconds: z.number().int().min(1).max(120)
+    resultVisitSeconds: z.number().int().min(1).max(120),
+    stagnantLimit: z.number().int().min(1).max(100).default(10)
   })
   .refine((value) => value.delayMaxSeconds >= value.delayMinSeconds, {
     message: 'delayMaxSeconds must be greater than or equal to delayMinSeconds'

@@ -4,7 +4,9 @@ Next 单应用沿用 `ghcr.io/saarjoye/mrs-core` 镜像名，替代旧版 Core/W
 
 ## 发布和切换
 
-现有仓库的 `main` 分支通过 `.github/workflows/docker-image.yml` 构建。先执行离线测试、类型检查、ESLint、构建和 Compose 校验，再构建 `linux/amd64` 与 `linux/arm64` 候选镜像。候选镜像使用空数据、禁用外部网络做启动健康检查；成功后才更新 `5.0.0-next.17` 与 `latest`。完整提交固定标签为 `sha-<完整提交号>`。
+现有仓库的 `main` 分支通过 `.github/workflows/docker-image.yml` 构建。先执行离线测试、类型检查、ESLint、构建和 Compose 校验，再构建 `linux/amd64` 与 `linux/arm64` 候选镜像。候选镜像使用空数据、禁用外部网络做启动健康检查；成功后才更新 `5.0.0-next.18` 与 `latest`。完整提交固定标签为 `sha-<完整提交号>`。
+
+next.18 移植 wangxun 拟人化搜索执行模型：实现单页面会话级复用并在退出时安全收口；每 10 次搜索周期性携带 PC=U531、FORM=ANNTA1 及 32 位十六进制 cvid 导航刷新；支持拟人打字延迟与三击清空模拟；视口高度相对平滑随机滚动；点击结果时自动清理弹窗标签页；连续 10 次无涨分自动停滞跳出（stagnant detection）转为 verification-pending；内置 1,117 条本地高质量离线中文词库与确定性轮询。无新增数据库迁移，保留全部历史与数据卷；可保留数据卷回退 next.17。
 
 next.17 新增“搜索设置”页面，保存搜索间隔、随机滚动、结果点击与结果页停留时间，保存后下一次搜索即生效。搜索框未就绪时最多重试一次且不重复提交；未完成的 PC/移动搜索在运行收口时保留进度并转为 verification-pending。无新增数据库迁移，保留全部历史与数据卷；可保留数据卷回退 next.16。
 
