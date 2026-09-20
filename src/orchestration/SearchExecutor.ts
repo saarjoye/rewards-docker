@@ -219,7 +219,7 @@ export class SearchExecutor {
     const maxQueries = Math.min(50, Math.max(10, (total - current.progress.completed) * 2))
     const queryBudget = this.budgetOverrideMs ?? calculateSearchQueryBudgetMs(this.config)
     const roundDeadline =
-      Date.now() + Math.min(60 * 60_000, Math.max(10 * 60_000, queryBudget * maxQueries))
+      Date.now() + Math.min(24 * 60 * 60_000, Math.max(10 * 60_000, queryBudget * maxQueries))
     const retryScopeAllowed =
       (input.executionMode ?? (input.readOnly === true ? 'read-only' : 'mutating')) === 'mutating' &&
       ((input.retryPendingSearch === true &&

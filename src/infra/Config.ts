@@ -22,8 +22,8 @@ export const applicationConfigSchema = z.object({
   tasks: taskFlagsSchema,
   search: z
     .object({
-      delayMinSeconds: z.number().int().min(5).max(300),
-      delayMaxSeconds: z.number().int().min(5).max(300),
+      delayMinSeconds: z.number().int().min(5).max(900),
+      delayMaxSeconds: z.number().int().min(5).max(900),
       scroll: z.boolean(),
       clickResult: z.boolean(),
       resultVisitSeconds: z.number().int().min(1).max(120).default(8),

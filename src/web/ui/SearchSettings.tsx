@@ -76,14 +76,14 @@ export function SearchSettings({
       !Number.isInteger(max) ||
       !Number.isInteger(visit) ||
       min < 5 ||
-      min > 300 ||
+      min > 900 ||
       max < 5 ||
-      max > 300 ||
+      max > 900 ||
       max < min ||
       visit < 1 ||
       visit > 120
     ) {
-      setMessage('参数不合法：延迟需 5–300 秒且最大值≥最小值，结果停留 1–120 秒。')
+      setMessage('参数不合法：延迟需 5–900 秒且最大值≥最小值，结果停留 1–120 秒。')
       return
     }
     savingRef.current = true
@@ -131,7 +131,7 @@ export function SearchSettings({
           <input
             type="number"
             min="5"
-            max="300"
+            max="900"
             required
             value={delayMin}
             disabled={settings === null || saving}
@@ -145,7 +145,7 @@ export function SearchSettings({
           <input
             type="number"
             min="5"
-            max="300"
+            max="900"
             required
             value={delayMax}
             disabled={settings === null || saving}

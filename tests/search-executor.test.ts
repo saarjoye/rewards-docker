@@ -258,6 +258,54 @@ describe('search budgets and cancellation', () => {
     expect(fill).not.toHaveBeenCalled()
     expect(press).not.toHaveBeenCalled()
   })
+
+  it('does not prematurely exhaust budget when query delays require more than 60 minutes', async () => {
+    vi.useFakeTimers()
+    const pageObj = searchBoxPage(vi.fn().mockResolvedValue(undefined))
+    const newPage = vi.fn().mockResolvedValue(pageObj.page)
+    const write = vi.fn().mockResolvedValue(undefined)
+    const logger = { write } as unknown as StructuredLogger
+
+    let currentCompleted = 0
+    const total = 60
+    const fetchDashboard = vi.fn().mockImplementation(() => {
+      currentCompleted = Math.min(total, currentCompleted + 3)
+      const counter = {
+        availability: 'valid' as const,
+        confidence: 1,
+        source: 'bing-flyout' as const,
+        observedAt: new Date().toISOString(),
+        value: { completed: currentCompleted, total, remaining: total - currentCompleted }
+      }
+      return Promise.resolve({ pcSearch: counter, mobileSearch: counter })
+    })
+
+    const executor = new SearchExecutor(
+      { newPage } as unknown as BrowserContext,
+      { fetchDashboard } as unknown as DashboardClient,
+      logger,
+      { ...DEFAULT_CONFIG.search, delayMinSeconds: 360, delayMaxSeconds: 720, scroll: false, clickResult: false },
+      'long-run',
+      'account-long'
+    )
+
+    const pending = executor.run({
+      task: { ...task(0), progress: { completed: 0, total } },
+      mobile: false,
+      signal: new AbortController().signal,
+      onProgress: vi.fn()
+    })
+
+    await vi.runAllTimersAsync()
+    const result = await pending
+
+    expect(result.status).toBe('completed')
+    expect(result.progress.completed).toBe(total)
+    const exhaustedLogs = write.mock.calls.filter(
+      (call) => (call[0] as { event?: string }).event === 'search_query_budget_exhausted'
+    )
+    expect(exhaustedLogs).toHaveLength(0)
+  })
 })
 
 

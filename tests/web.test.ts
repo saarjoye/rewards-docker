@@ -337,6 +337,22 @@ describe('web API', () => {
             url,
             headers: { cookie: loaded.cookie, 'x-csrf-token': loaded.csrfToken },
             payload: {
+              delayMinSeconds: 360,
+              delayMaxSeconds: 901,
+              scroll: false,
+              clickResult: true,
+              resultVisitSeconds: 8
+            }
+          })
+        ).statusCode
+      ).toBe(400)
+      expect(
+        (
+          await loaded.app.inject({
+            method: 'PUT',
+            url,
+            headers: { cookie: loaded.cookie, 'x-csrf-token': loaded.csrfToken },
+            payload: {
               delayMinSeconds: 15,
               delayMaxSeconds: 25,
               scroll: false,
