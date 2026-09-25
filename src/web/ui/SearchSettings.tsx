@@ -8,6 +8,7 @@ export interface SearchSettingsData {
   delayMaxSeconds: number
   scroll: boolean
   clickResult: boolean
+  stagnantLimit: number
   resultVisitSeconds: number
 }
 
@@ -22,6 +23,7 @@ export function SearchSettings({
   const [delayMin, setDelayMin] = useState('')
   const [delayMax, setDelayMax] = useState('')
   const [resultVisit, setResultVisit] = useState('')
+  const [stagnantLimit, setStagnantLimit] = useState('')
   const [scroll, setScroll] = useState(false)
   const [clickResult, setClickResult] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -30,7 +32,8 @@ export function SearchSettings({
 
   const dirty =
     settings !== null &&
-    (Number(delayMin) !== settings.delayMinSeconds ||
+    (Number(stagnantLimit) !== settings.stagnantLimit ||
+      Number(delayMin) !== settings.delayMinSeconds ||
       Number(delayMax) !== settings.delayMaxSeconds ||
       Number(resultVisit) !== settings.resultVisitSeconds ||
       scroll !== settings.scroll ||
@@ -51,6 +54,7 @@ export function SearchSettings({
         const data = (await response.json()) as SearchSettingsData
         if (controller.signal.aborted) return
         setSettings(data)
+        setStagnantLimit(String(data.stagnantLimit))
         setDelayMin(String(data.delayMinSeconds))
         setDelayMax(String(data.delayMaxSeconds))
         setResultVisit(String(data.resultVisitSeconds))
@@ -71,7 +75,11 @@ export function SearchSettings({
     const min = Number(delayMin)
     const max = Number(delayMax)
     const visit = Number(resultVisit)
+    const limit = Number(stagnantLimit)
     if (
+      !Number.isInteger(limit) ||
+      limit < 1 ||
+      limit > 100 ||
       !Number.isInteger(min) ||
       !Number.isInteger(max) ||
       !Number.isInteger(visit) ||
@@ -83,7 +91,7 @@ export function SearchSettings({
       visit < 1 ||
       visit > 120
     ) {
-      setMessage('参数不合法：延迟需 5–900 秒且最大值≥最小值，结果停留 1–120 秒。')
+      setMessage('参数不合法：延迟需 5–900 秒且最大值≥最小值，结果停留 1–120 秒，停滞次数 1–100。')
       return
     }
     savingRef.current = true
@@ -97,13 +105,15 @@ export function SearchSettings({
         delayMaxSeconds: max,
         scroll,
         clickResult,
-        resultVisitSeconds: visit
+        resultVisitSeconds: visit,
+        stagnantLimit: limit
       })
     })
       .then(async (response) => {
         if (!response.ok) throw new Error('save')
         const data = (await response.json()) as SearchSettingsData
         setSettings(data)
+        setStagnantLimit(String(data.stagnantLimit))
         setDelayMin(String(data.delayMinSeconds))
         setDelayMax(String(data.delayMaxSeconds))
         setResultVisit(String(data.resultVisitSeconds))
@@ -126,6 +136,22 @@ export function SearchSettings({
         控制搜索每条之间的随机等待时间（秒）与结果页停留行为。保存后无需重启，下一次搜索即生效。
       </p>
       <form onSubmit={submit}>
+        <p>
+          <label>
+            连续未获积分停止次数
+            <input
+              type="number"
+              min="1"
+              max="100"
+              required
+              value={stagnantLimit}
+              disabled={settings === null || saving}
+              onChange={(event) => {
+                setStagnantLimit(event.target.value)
+              }}
+            />
+          </label>
+        </p>
         <p>
           每条搜索最小延迟（秒）
           <input

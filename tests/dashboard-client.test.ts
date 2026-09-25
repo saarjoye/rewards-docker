@@ -36,14 +36,16 @@ function fixture(responses: APIResponse[]) {
     listeners.set(name, callback)
   )
   const goto = vi.fn().mockResolvedValue(null)
+  const off = vi.fn((name: string) => listeners.delete(name))
   const page = {
     on,
-    off: vi.fn((name: string) => listeners.delete(name)),
+    off,
     content: vi.fn().mockResolvedValue('<html></html>'),
     goto,
     url: vi.fn().mockReturnValue('https://rewards.bing.com/dashboard')
   } as unknown as Page
-  const logger = { write: vi.fn().mockResolvedValue(undefined) } as unknown as StructuredLogger
+  const write = vi.fn().mockResolvedValue(undefined)
+  const logger = { write } as unknown as StructuredLogger
   const client = new DashboardClient(
     { request: { get } } as unknown as BrowserContext,
     page,
@@ -51,7 +53,7 @@ function fixture(responses: APIResponse[]) {
     'run',
     'account-1'
   )
-  return { client, get, page, on, goto }
+  return { client, get, page, on, off, goto, write }
 }
 
 const valid = {
@@ -114,8 +116,7 @@ describe('dashboard acquisition', () => {
 
   it('falls back to a valid flyout after one 200 non-JSON API response', async () => {
     const { client, get } = fixture([
-      textResponse(200, '<html>transient gateway body</html>'),
-      response(401, {}),
+      textResponse(200, '<html>transient gateway body</html>', 'text/html'),
       response(200, valid)
     ])
 
@@ -133,7 +134,7 @@ describe('dashboard acquisition', () => {
     vi.useFakeTimers()
     const { client, get } = fixture([
       response(200, valid),
-      textResponse(200, '<html>transient gateway body</html>', 'text/html'),
+      textResponse(200, '<html>transient gateway body</html>', 'text/plain'),
       response(200, valid, 'text/plain')
     ])
 
@@ -150,9 +151,9 @@ describe('dashboard acquisition', () => {
     vi.useFakeTimers()
     const { client, get } = fixture([
       response(200, valid),
-      textResponse(200, '<html>transient one</html>', 'text/html'),
-      textResponse(200, '<html>transient two</html>', 'text/html'),
-      textResponse(200, '<html>transient three</html>', 'text/html'),
+      textResponse(200, '<html>transient one</html>', 'text/plain'),
+      textResponse(200, '<html>transient two</html>', 'text/plain'),
+      textResponse(200, '<html>transient three</html>', 'text/plain'),
       response(401, {}),
       response(401, {})
     ])
@@ -700,5 +701,90 @@ describe('claim dashboard navigation tolerance', () => {
     const { client, goto } = navFailureClient()
     await expect(client.claimBonusByUiWithResult()).rejects.toBeInstanceOf(OfferUnavailableError)
     expect(goto).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('dashboard authentication responses and fallback budget', () => {
+  it.each([
+    ['text/html; charset=utf-8', 'https://rewards.bing.com/api/getuserinfo'],
+    ['application/json', 'https://login.live.com/Signin?code=synthetic-secret'],
+    ['application/json', 'https://login.microsoftonline.com/tenant/oauth20_authorize'],
+    ['application/json', 'https://rewards.bing.com/Signin']
+  ])('bypasses body parsing for %s at %s', async (contentType, url) => {
+    const html = textResponse(200, '<html>login</html>', contentType)
+    html.url = () => url
+    const read = vi.spyOn(html, 'text')
+    const dispose = vi.spyOn(html, 'dispose')
+    const { client, off, write } = fixture([html, response(200, valid)])
+    await expect(client.fetchDashboard()).resolves.toMatchObject({
+      availablePoints: { value: 42 },
+      readMetadata: { usedFallback: true, attempts: 1 }
+    })
+    expect(read).not.toHaveBeenCalled()
+    expect(dispose).toHaveBeenCalledOnce()
+    expect(off).toHaveBeenCalledWith('response', expect.any(Function))
+    expect(write).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'dashboard-request', level: 'warn' })
+    )
+    expect(JSON.stringify(write.mock.calls)).not.toContain('synthetic-secret')
+    expect(JSON.stringify(write.mock.calls)).not.toContain('synthetic-region')
+  })
+
+  it('retries malformed JSON even without a previously confirmed observation', async () => {
+    vi.useFakeTimers()
+    const { client, get } = fixture([textResponse(200, '{invalid'), response(200, valid)])
+    const pending = client.fetchDashboard()
+    await vi.runAllTimersAsync()
+    expect((await pending).readMetadata).toMatchObject({ usedFallback: false, attempts: 2 })
+    expect(get).toHaveBeenCalledTimes(2)
+  })
+
+  it.each(['html', 'network'])(
+    'gives Flyout at least five seconds after the %s path consumes its deadline',
+    async (kind) => {
+      vi.useFakeTimers()
+      const { client, get, write } = fixture([])
+      get.mockImplementation((url: string) => {
+        if (url.includes('/panelflyout/')) return Promise.resolve(response(200, valid))
+        if (kind === 'network') {
+          vi.setSystemTime(Date.now() + 8_000)
+          return Promise.reject(
+            new Error(
+              'network timeout https://example.test/path?region=synthetic-region password=synthetic-secret'
+            )
+          )
+        }
+        vi.setSystemTime(Date.now() + 1_000)
+        return Promise.resolve(textResponse(200, '<html>login</html>', 'text/html'))
+      })
+      const pending = client.fetchDashboard(undefined, Date.now() + 1_000)
+      await vi.runAllTimersAsync()
+      expect((await pending).readMetadata?.usedFallback).toBe(true)
+      const flyout = get.mock.calls.find(([url]) => String(url).includes('/panelflyout/'))
+      expect(flyout?.[1]).toMatchObject({ timeout: 5_000 })
+      expect(JSON.stringify(write.mock.calls)).not.toContain('synthetic-secret')
+    }
+  )
+
+  it('propagates cancellation during fallback without starting another request', async () => {
+    const controller = new AbortController()
+    const reason = new Error('synthetic cancellation')
+    const { client, get } = fixture([])
+    get.mockImplementation(() => {
+      controller.abort(reason)
+      return Promise.resolve(textResponse(200, '<html>login</html>', 'text/html'))
+    })
+    await expect(client.fetchDashboard(controller.signal)).rejects.toBe(reason)
+    expect(get).toHaveBeenCalledOnce()
+  })
+
+  it('does not let a warning log failure replace the original network recovery', async () => {
+    vi.useFakeTimers()
+    const { client, get, write } = fixture([response(200, valid)])
+    write.mockRejectedValue(new Error('synthetic log failure'))
+    get.mockRejectedValueOnce(new Error('network timeout'))
+    const pending = client.fetchDashboard()
+    await vi.runAllTimersAsync()
+    expect((await pending).availablePoints.value).toBe(42)
   })
 })

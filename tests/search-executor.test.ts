@@ -1,3 +1,4 @@
+import { createSearchExecutor } from './helpers/searchExecutor.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { BrowserContext, Page } from 'patchright'
 
@@ -8,8 +9,7 @@ import { BusinessDateChanged } from '../src/orchestration/BusinessDate.js'
 import type { StructuredLogger } from '../src/infra/StructuredLogger.js'
 import {
   calculateSearchQueryBudgetMs,
-  SearchExecutionError,
-  SearchExecutor
+  SearchExecutionError
 } from '../src/orchestration/SearchExecutor.js'
 import { SearchQueryPool } from '../src/orchestration/SearchQueryPool.js'
 
@@ -117,7 +117,7 @@ describe('search budgets and cancellation', () => {
     }
     const write = vi.fn().mockResolvedValue(undefined)
     const logger = { write } as unknown as StructuredLogger
-    const executor = new SearchExecutor(
+    const executor = createSearchExecutor(
       { newPage } as unknown as BrowserContext,
       { fetchDashboard: vi.fn().mockResolvedValue({ pcSearch: counter, mobileSearch: counter }) } as unknown as DashboardClient,
       logger,
@@ -154,7 +154,7 @@ describe('search budgets and cancellation', () => {
       observedAt: new Date().toISOString(),
       value: { completed: 10, total: 60, remaining: 50 }
     }
-    const executor = new SearchExecutor(
+    const executor = createSearchExecutor(
       { newPage } as unknown as BrowserContext,
       { fetchDashboard: vi.fn().mockResolvedValue({ pcSearch: counter, mobileSearch: counter }) } as unknown as DashboardClient,
       { write: vi.fn().mockResolvedValue(undefined) } as unknown as StructuredLogger,
@@ -171,7 +171,7 @@ describe('search budgets and cancellation', () => {
   it('does not submit if the date changes while the search page is preparing', async () => {
     const { page, press } = delayedSearchBoxPage()
     let checks = 0
-    const executor = new SearchExecutor(
+    const executor = createSearchExecutor(
       { newPage: vi.fn().mockResolvedValue(page) } as unknown as BrowserContext,
       {} as DashboardClient,
       {} as StructuredLogger,
@@ -209,7 +209,7 @@ describe('search budgets and cancellation', () => {
 
   it('closes the active page on timeout and preserves confirmed progress', async () => {
     const { page, closed } = hangingPage()
-    const executor = new SearchExecutor(
+    const executor = createSearchExecutor(
       { newPage: vi.fn().mockResolvedValue(page) } as unknown as BrowserContext,
       {} as DashboardClient,
       { write: vi.fn().mockResolvedValue(undefined) } as unknown as StructuredLogger,
@@ -235,7 +235,7 @@ describe('search budgets and cancellation', () => {
 
   it('does not continue typing or submitting when a closed page operation resolves late', async () => {
     const { page, closed, fill, press } = delayedSearchBoxPage()
-    const executor = new SearchExecutor(
+    const executor = createSearchExecutor(
       { newPage: vi.fn().mockResolvedValue(page) } as unknown as BrowserContext,
       {} as DashboardClient,
       { write: vi.fn().mockResolvedValue(undefined) } as unknown as StructuredLogger,
@@ -280,7 +280,7 @@ describe('search budgets and cancellation', () => {
       return Promise.resolve({ pcSearch: counter, mobileSearch: counter })
     })
 
-    const executor = new SearchExecutor(
+    const executor = createSearchExecutor(
       { newPage } as unknown as BrowserContext,
       { fetchDashboard } as unknown as DashboardClient,
       logger,
@@ -309,7 +309,7 @@ describe('search budgets and cancellation', () => {
 })
 
 
-describe('wangxun search model: persistent page, periodic refresh, realistic typing, and stagnant detection', () => {
+describe('persistent page, single submission, typing, and stagnant detection', () => {
   it('reuses a single persistent search page across multiple queries in a session', async () => {
     vi.useFakeTimers()
     const goto = vi.fn().mockResolvedValue(null)
@@ -351,7 +351,7 @@ describe('wangxun search model: persistent page, periodic refresh, realistic typ
       })
     })
 
-    const executor = new SearchExecutor(
+    const executor = createSearchExecutor(
       { newPage } as unknown as BrowserContext,
       { fetchDashboard } as unknown as DashboardClient,
       { write: vi.fn().mockResolvedValue(undefined) } as unknown as StructuredLogger,
@@ -376,7 +376,7 @@ describe('wangxun search model: persistent page, periodic refresh, realistic typ
     expect(closed).toHaveBeenCalledTimes(1)
   })
 
-  it('triggers periodic refresh navigation with PC=U531, FORM=ANNTA1 and cvid on the 10th search', async () => {
+  it('submits exactly once per query without extra navigation on the 10th search', async () => {
     vi.useFakeTimers()
     const gotoCalls: string[] = []
     const goto = vi.fn().mockImplementation((url: string) => {
@@ -421,7 +421,7 @@ describe('wangxun search model: persistent page, periodic refresh, realistic typ
       })
     })
 
-    const executor = new SearchExecutor(
+    const executor = createSearchExecutor(
       { newPage } as unknown as BrowserContext,
       { fetchDashboard } as unknown as DashboardClient,
       { write: vi.fn().mockResolvedValue(undefined) } as unknown as StructuredLogger,
@@ -443,10 +443,8 @@ describe('wangxun search model: persistent page, periodic refresh, realistic typ
     expect(result.status).toBe('completed')
     expect(result.progress.completed).toBe(30)
     expect(gotoCalls[0]).toBe('https://www.bing.com/')
-    expect(gotoCalls).toHaveLength(2)
-    const refreshUrl = gotoCalls[1]
-    expect(refreshUrl).toBeDefined()
-    expect(refreshUrl).toMatch(/^https:\/\/www\.bing\.com\/search\?q=.*&PC=U531&FORM=ANNTA1&cvid=[a-f0-9]{32}$/)
+    expect(gotoCalls).toEqual(['https://www.bing.com/'])
+    expect(press).toHaveBeenCalledTimes(10)
   })
 
   it('performs realistic typing flow with Home key, triple click, fill clearing, and keyboard typing delay', async () => {
@@ -498,7 +496,7 @@ describe('wangxun search model: persistent page, periodic refresh, realistic typ
       }
     })
 
-    const executor = new SearchExecutor(
+    const executor = createSearchExecutor(
       { newPage: vi.fn().mockResolvedValue(mockPage) } as unknown as BrowserContext,
       { fetchDashboard } as unknown as DashboardClient,
       { write: vi.fn().mockResolvedValue(undefined) } as unknown as StructuredLogger,
@@ -533,6 +531,7 @@ describe('wangxun search model: persistent page, periodic refresh, realistic typ
     vi.useFakeTimers()
     const popupClosed = vi.fn().mockResolvedValue(undefined)
     const popupPage = {
+      on: vi.fn(), off: vi.fn(), opener: () => Promise.resolve(mainPage),
       close: popupClosed
     } as unknown as Page
 
@@ -559,6 +558,7 @@ describe('wangxun search model: persistent page, periodic refresh, realistic typ
         return box
       }),
       url: vi.fn().mockReturnValue('https://www.bing.com/search?q=test'),
+      on: vi.fn(), off: vi.fn(),
       close: mainPageClosed,
       isClosed: vi.fn().mockReturnValue(false)
     } as unknown as Page
@@ -566,6 +566,7 @@ describe('wangxun search model: persistent page, periodic refresh, realistic typ
     const openPages: Page[] = [mainPage]
     const context = {
       newPage: vi.fn().mockResolvedValue(mainPage),
+      on: vi.fn(), off: vi.fn(),
       pages: () => openPages
     } as unknown as BrowserContext
 
@@ -586,7 +587,7 @@ describe('wangxun search model: persistent page, periodic refresh, realistic typ
       }
     })
 
-    const executor = new SearchExecutor(
+    const executor = createSearchExecutor(
       context,
       { fetchDashboard } as unknown as DashboardClient,
       { write: vi.fn().mockResolvedValue(undefined) } as unknown as StructuredLogger,
@@ -653,7 +654,7 @@ describe('wangxun search model: persistent page, periodic refresh, realistic typ
     const write = vi.fn().mockResolvedValue(undefined)
     const logger = { write } as unknown as StructuredLogger
 
-    const executor = new SearchExecutor(
+    const executor = createSearchExecutor(
       { newPage: vi.fn().mockResolvedValue(mockPage) } as unknown as BrowserContext,
       { fetchDashboard } as unknown as DashboardClient,
       logger,

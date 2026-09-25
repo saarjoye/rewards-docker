@@ -265,9 +265,10 @@ export class RunViews {
       )
       return interval.delta
     })
-    const liveBalanceDelta = deltas.length && deltas.every((value) => value !== null)
-      ? deltas.reduce<number>((sum, value) => sum + value, 0)
-      : null
+    const liveBalanceDelta =
+      deltas.length && deltas.every((value) => value !== null)
+        ? deltas.reduce<number>((sum, value) => sum + value, 0)
+        : null
     return {
       ...durable,
       ...outcome,
@@ -297,8 +298,9 @@ export class RunViews {
     return value
   }
 
-  calendar(month: string, activeRunId?: string) {
-    const runCache = new Map<string, ReturnType<RunViews['run']>>()
+  calendar(dateOrMonth: string, activeRunId?: string) {
+    const isDay = /^\d{4}-\d{2}-\d{2}$/.test(dateOrMonth)
+    const param = isDay ? dateOrMonth : `${dateOrMonth}-%`
     const pairs = this.store.database
       .prepare(
         `SELECT account_id AS accountId, business_date AS businessDate, run_id AS runId FROM balance_observations WHERE business_date LIKE ?
@@ -311,7 +313,7 @@ export class RunViews {
       UNION SELECT account_id, date(ended_at, '+8 hours'), run_id FROM account_lifecycle
         WHERE date(ended_at, '+8 hours') LIKE ?`
       )
-      .all(...Array<string>(7).fill(`${month}-%`)) as Array<{
+      .all(...Array<string>(7).fill(param)) as Array<{
       accountId: string
       businessDate: string
       runId: string
@@ -321,33 +323,60 @@ export class RunViews {
       const key = `${pair.businessDate}:${pair.accountId}`
       groups.set(key, [...(groups.get(key) ?? []), pair])
     }
+    const runSummaryCache = new Map<string, ReturnType<RunViews['runSummary']>>()
+    const getSummary = (runId: string) => {
+      if (runSummaryCache.has(runId)) return runSummaryCache.get(runId)
+      const summary = this.runSummary(runId, activeRunId)
+      runSummaryCache.set(runId, summary)
+      return summary
+    }
+    const accountStmt = this.store.database.prepare(
+      'SELECT account_index, account_label FROM account_lifecycle WHERE run_id = ? AND account_id = ? LIMIT 1'
+    )
+    const legacyStmt = this.store.database.prepare(
+      'SELECT run_account_index FROM account_runs WHERE run_id = ? AND account_id = ? LIMIT 1'
+    )
+    const tasksStmt = this.store.database.prepare(
+      'SELECT DISTINCT task_id FROM run_tasks WHERE run_id = ? AND account_id = ? AND business_date = ?'
+    )
     return [...groups.values()]
       .map((group) => {
         const first = group[0]
         if (!first) throw new Error('Empty calendar group')
-        const records = [...new Set(group.map((row) => row.runId))]
-          .map((id) => {
-            if (!runCache.has(id)) runCache.set(id, this.run(id, activeRunId))
-            return runCache.get(id)
-          })
-          .filter((row) => row !== undefined)
-        const account = records
-          .flatMap((row) => row.accounts)
-          .find((row) => row.accountId === first.accountId)
-        const tasks = new Map(
-          records
-            .flatMap((row) => row.tasks)
-            .filter(
-              (row) => row.accountId === first.accountId && row.localDate === first.businessDate
-            )
-            .map((row) => [row.taskId, row])
-        )
+        const runIds = [...new Set(group.map((row) => row.runId))]
+        const records = runIds
+          .map(getSummary)
+          .filter((row): row is NonNullable<typeof row> => row !== undefined)
+        let accountIndex: number | null = null
+        let accountLabel = '标签—'
+        const taskIds = new Set<string>()
+        for (const runId of runIds) {
+          if (accountIndex === null || accountLabel === '标签—') {
+            const account = accountStmt.get(runId, first.accountId) as
+              | { account_index: number; account_label: string }
+              | undefined
+            if (account) {
+              if (accountIndex === null) accountIndex = account.account_index
+              if (accountLabel === '标签—' && account.account_label)
+                accountLabel = account.account_label
+            } else if (accountIndex === null) {
+              const legacy = legacyStmt.get(runId, first.accountId) as
+                | { run_account_index: number }
+                | undefined
+              if (legacy) accountIndex = legacy.run_account_index
+            }
+          }
+          const taskRows = tasksStmt.all(runId, first.accountId, first.businessDate) as {
+            task_id: string
+          }[]
+          for (const task of taskRows) taskIds.add(task.task_id)
+        }
         return {
           ...this.day(first.accountId, first.businessDate),
           accountId: first.accountId,
-          accountIndex: account?.accountIndex ?? null,
-          accountLabel: account?.accountLabel ?? '标签—',
-          taskCount: tasks.size,
+          accountIndex,
+          accountLabel,
+          taskCount: taskIds.size,
           records: records.map((row) => ({
             runId: row.runId,
             status: row.status,
@@ -409,14 +438,16 @@ export class RunViews {
     const revision = this.revision
     const selected = accounts.length
       ? accounts
-      : (this.store.database
-          .prepare(
-            `SELECT DISTINCT account_id AS accountId FROM balance_observations
+      : (
+          this.store.database
+            .prepare(
+              `SELECT DISTINCT account_id AS accountId FROM balance_observations
              WHERE business_date = ?
              UNION SELECT DISTINCT account_id FROM tasks WHERE local_date = ?
              ORDER BY accountId`
-          )
-          .all(date, date) as { accountId: string }[]).map((row) => ({
+            )
+            .all(date, date) as { accountId: string }[]
+        ).map((row) => ({
           accountId: row.accountId,
           displayAlias: row.accountId,
           maskedEmail: row.accountId,

@@ -19,7 +19,8 @@
     "delayMaxSeconds": 60,
     "scroll": true,
     "clickResult": false,
-    "resultVisitSeconds": 8
+    "resultVisitSeconds": 8,
+    "stagnantLimit": 10
   },
   "retention": {
     "logsDays": 30,

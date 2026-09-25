@@ -10,7 +10,7 @@ import type {
 } from 'patchright'
 
 import type { StructuredLogger } from '../infra/StructuredLogger.js'
-import { safePath } from '../security/Redactor.js'
+import { redactText, safePath } from '../security/Redactor.js'
 import {
   extractActionIds,
   parseDashboardPayload,
@@ -244,33 +244,48 @@ export class DashboardClient {
           try {
             lastStatus = response.status()
             const contentType = response.headers()['content-type'] ?? 'unknown'
-            await this.logger.write({
-              level: response.ok() ? 'debug' : 'warn',
-              event: 'dashboard-request',
-              runId: this.runId,
-              accountAlias: this.accountAlias,
-              attempt: attempts,
-              httpStatus: lastStatus,
-              durationMs: Date.now() - requestStarted,
-              path: safePath(response.url()),
-              message: `content-type=${contentType.split(';')[0] ?? 'unknown'}`
-            })
+            const isHtmlResponse = contentType.toLowerCase().includes('text/html')
+            const isRedirectedToAuth =
+              /login\.(live|microsoftonline)\.com|\/oauth20_|\/Signin/i.test(response.url())
+            await this.logger
+              .write({
+                level: response.ok() && !isHtmlResponse && !isRedirectedToAuth ? 'debug' : 'warn',
+                event: 'dashboard-request',
+                runId: this.runId,
+                accountAlias: this.accountAlias,
+                attempt: attempts,
+                httpStatus: lastStatus,
+                durationMs: Date.now() - requestStarted,
+                path: safePath(response.url()),
+                message: `content-type=${contentType.split(';')[0] ?? 'unknown'}`
+              })
+              .catch(() => undefined)
             if (response.ok()) {
-              try {
-                const observation = parseDashboardPayload(
-                  await responseJson(response),
-                  'legacy-getuserinfo'
-                )
-                this.accept(observation)
-                return finish(observation)
-              } catch (error) {
-                lastReason = error instanceof Error ? error.message : 'dashboard parse error'
+              if (isHtmlResponse || isRedirectedToAuth) {
+                lastReason = 'auth redirect or HTML response'
                 allowFlyoutFallback = true
-                const retryTransientBody =
-                  error instanceof DashboardResponseBodyError &&
-                  this.latestObservation !== undefined &&
-                  attempts < DASHBOARD_ATTEMPTS
-                if (!retryTransientBody) break
+                usedFallback = true
+                const flyout = await this.fetchFlyout(
+                  Math.max(deadline, Date.now() + 5_000),
+                  signal
+                )
+                if (flyout) return finish(flyout)
+                if (attempts >= DASHBOARD_ATTEMPTS) break
+              } else {
+                try {
+                  const observation = parseDashboardPayload(
+                    await responseJson(response),
+                    'legacy-getuserinfo'
+                  )
+                  this.accept(observation)
+                  return finish(observation)
+                } catch (error) {
+                  lastReason = error instanceof Error ? error.message : 'dashboard parse error'
+                  allowFlyoutFallback = true
+                  const retryTransientBody =
+                    error instanceof DashboardResponseBodyError && attempts < DASHBOARD_ATTEMPTS
+                  if (!retryTransientBody) break
+                }
               }
             } else {
               lastReason = `dashboard HTTP ${String(lastStatus)}`
@@ -289,7 +304,20 @@ export class DashboardClient {
             await response.dispose()
           }
         } catch (error) {
+          if (signal?.aborted) throw abortReason(signal)
           lastReason = error instanceof Error ? error.message : 'dashboard network error'
+          await this.logger
+            .write({
+              level: 'warn',
+              event: 'dashboard-request',
+              runId: this.runId,
+              accountAlias: this.accountAlias,
+              attempt: attempts,
+              message: redactText(
+                lastReason.replace(/https?:\/\/[^\s"'<>]+/gi, (url) => safePath(url))
+              )
+            })
+            .catch(() => undefined)
           allowFlyoutFallback = networkError(error) || /timeout|timed out/i.test(lastReason)
           const retry = shouldRetry({
             kind: 'read-only',
@@ -348,11 +376,8 @@ export class DashboardClient {
         }
       }
 
-      if (
-        deadline - Date.now() > 3_000 &&
-        (allowFlyoutFallback || lastStatus === undefined || [502, 503, 504].includes(lastStatus))
-      ) {
-        const flyout = await this.fetchFlyout(deadline, signal)
+      if (allowFlyoutFallback || lastStatus === undefined || [502, 503, 504].includes(lastStatus)) {
+        const flyout = await this.fetchFlyout(Math.max(deadline, Date.now() + 5_000), signal)
         if (flyout) return finish(flyout)
       }
 
@@ -687,11 +712,7 @@ export class DashboardClient {
           'offer-network-failed'
         )
     }
-    const waitForLink = async (
-      links: Locator,
-      surface: Surface,
-      attempt: number
-    ) => {
+    const waitForLink = async (links: Locator, surface: Surface, attempt: number) => {
       // Poll dynamic cards, not the entire page's network-idle state.
       for (let poll = 0; poll < 8; poll += 1) {
         check()
@@ -728,10 +749,12 @@ export class DashboardClient {
             current.origin !== expected.origin ||
             current.pathname !== expected.pathname
           )
-            navigationStatus = (await this.page.goto(target, {
-              waitUntil: 'domcontentloaded',
-              timeout: Math.max(1, Math.min(15_000, deadline - Date.now()))
-            }))?.status()
+            navigationStatus = (
+              await this.page.goto(target, {
+                waitUntil: 'domcontentloaded',
+                timeout: Math.max(1, Math.min(15_000, deadline - Date.now()))
+              })
+            )?.status()
           check()
           if (navigationStatus !== undefined && navigationStatus >= 500) {
             surfaceResults.set(surface, 'network-failed')

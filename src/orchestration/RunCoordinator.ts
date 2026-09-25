@@ -17,7 +17,7 @@ import type { AccountSecretStore, AccountSummary } from '../infra/AccountSecretS
 import type { ApplicationConfig } from '../infra/Config.js'
 import type { SqliteStore } from '../infra/SqliteStore.js'
 import type { StructuredLogger } from '../infra/StructuredLogger.js'
-import { redactText } from '../security/Redactor.js'
+import { redactText, safePath } from '../security/Redactor.js'
 import {
   RewardsDiscoveryService,
   type DiscoveryOutput
@@ -103,7 +103,7 @@ export class ApplicationRunCoordinator {
     await Promise.resolve()
     const storeActiveRunId = ApplicationRunCoordinator.activeStoreRuns.get(this.store)
     if (this.active || storeActiveRunId) {
-      throw new RunAlreadyActiveError(this.active?.runId ?? storeActiveRunId as string)
+      throw new RunAlreadyActiveError(this.active?.runId ?? (storeActiveRunId as string))
     }
     if (request.accountMode === 'continue' && request.retryPendingSearch === true) {
       throw new TypeError('retryPendingSearch requires single-account mode')
@@ -372,14 +372,21 @@ export class ApplicationRunCoordinator {
           if (observation.availablePoints.availability === 'valid') {
             resources.finalEvidence = observation.availablePoints
           }
-        } catch {
-          await this.logger.write({
-            level: 'warn',
-            event: 'final-balance-unavailable',
-            runId,
-            accountAlias: `account-${String(account.runAccountIndex)}`,
-            status: 'pending'
-          })
+        } catch (error) {
+          context.signal.throwIfAborted()
+          if (error instanceof BusinessDateChanged) throw error
+          if (resources.desktopClient.latestObservation?.availablePoints.availability === 'valid') {
+            resources.finalEvidence = resources.desktopClient.latestObservation.availablePoints
+          }
+          await this.logger
+            .write({
+              level: 'warn',
+              event: 'final-balance-unavailable',
+              runId,
+              accountAlias: `account-${String(account.runAccountIndex)}`,
+              status: 'pending'
+            })
+            .catch(() => undefined)
         }
       }
       const tasks = this.store.ledger
@@ -548,8 +555,38 @@ export class ApplicationRunCoordinator {
       const hasUnquantifiedCompletion = this.hasUnquantifiedCompletion(context, resources)
       const maximumAttempts = expectedProgressGain > 0 || hasUnquantifiedCompletion ? 4 : 1
       for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
-        const observation = await resources.desktopClient.fetchDashboard(context.signal)
+        let observation: RewardsObservation | undefined
+        try {
+          context.signal.throwIfAborted()
+          observation = await resources.desktopClient.fetchDashboard(context.signal)
+          context.signal.throwIfAborted()
+        } catch (fetchError) {
+          context.signal.throwIfAborted()
+          if (fetchError instanceof BusinessDateChanged) throw fetchError
+          const failureEvent = {
+            level: 'warn' as const,
+            event: 'final-balance-fetch-failed',
+            runId: context.runId,
+            accountAlias: `account-${String(context.runAccountIndex)}`,
+            stage: 'final-verification',
+            status: 'retrying',
+            attempt,
+            maximumAttempts,
+            message: redactText(
+              (fetchError instanceof Error ? fetchError.message : 'fetchDashboard failed').replace(
+                /https?:\/\/[^\s"'<>]+/gi,
+                (url) => safePath(url)
+              )
+            )
+          }
+          await this.logger.write(failureEvent).catch(() => undefined)
+          if (attempt < maximumAttempts) {
+            await abortableDelay(10_000, context.signal)
+            continue
+          }
+        }
         if (
+          observation &&
           observation.availablePoints.availability === 'valid' &&
           observation.availablePoints.value !== undefined
         ) {
@@ -583,13 +620,28 @@ export class ApplicationRunCoordinator {
         }
         if (attempt < maximumAttempts) await abortableDelay(10_000, context.signal)
       }
-      return resources.finalPoints === undefined
-        ? { status: 'partial', message: '最终余额未确认', failureStage: 'final-dashboard' }
-        : {
-            status: 'partial',
-            message: '最终余额尚未反映已确认的搜索进度',
-            failureStage: 'final-dashboard-settlement'
+      if (resources.finalPoints === undefined) {
+        const latest = resources.desktopClient.latestObservation
+        if (
+          latest?.availablePoints.availability === 'valid' &&
+          latest.availablePoints.value !== undefined
+        ) {
+          const progressSettled =
+            resources.initialPoints === undefined ||
+            latest.availablePoints.value >= resources.initialPoints + expectedProgressGain
+          if (progressSettled) {
+            resources.finalPoints = latest.availablePoints.value
+            resources.finalEvidence = latest.availablePoints
+            return { status: 'completed' }
           }
+        }
+        return { status: 'partial', message: '最终余额未确认', failureStage: 'final-dashboard' }
+      }
+      return {
+        status: 'partial',
+        message: '最终余额尚未反映已确认的搜索进度',
+        failureStage: 'final-dashboard-settlement'
+      }
     }
 
     const types = this.enabledTaskTypes(stage)

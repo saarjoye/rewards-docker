@@ -9,6 +9,7 @@ import type { AccountRunSummary, RunStatus, RunSummary } from '../domain/RunStat
 import type { ExecutionMode } from '../domain/RunRequest.js'
 import { RunLedger, migrateRunLedger } from './RunLedger.js'
 import { redactText } from '../security/Redactor.js'
+import { SearchQueryReservations } from './SearchQueryReservations.js'
 
 export interface PointsHistoryRecord {
   accountId: string
@@ -24,6 +25,7 @@ export interface PointsHistoryRecord {
 export class SqliteStore {
   readonly database: DatabaseSync
   readonly ledger: RunLedger
+  readonly searchQueries: SearchQueryReservations
   private readonly listeners = new Set<() => void>()
   subscribe(listener: () => void): () => void {
     this.listeners.add(listener)
@@ -48,7 +50,7 @@ export class SqliteStore {
       'PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;'
     )
     this.migrate()
-    migrateRunLedger(this.database)
+    this.searchQueries = new SearchQueryReservations(this.database)
     this.ledger = new RunLedger(this.database, () => {
       this.changed()
     })
@@ -628,6 +630,18 @@ export class SqliteStore {
 
       INSERT OR IGNORE INTO schema_version(version, applied_at)
       VALUES (1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+    `)
+    // Ledger tables must exist before their business indexes are created.
+    migrateRunLedger(this.database)
+    this.database.exec(`
+      CREATE INDEX IF NOT EXISTS idx_tasks_local_date ON tasks(local_date);
+      CREATE INDEX IF NOT EXISTS idx_run_tasks_business_date ON run_tasks(business_date, account_id);
+      CREATE INDEX IF NOT EXISTS idx_run_tasks_run_id ON run_tasks(run_id, account_id);
+      CREATE INDEX IF NOT EXISTS idx_account_runs_local_date ON account_runs(local_date);
+      CREATE INDEX IF NOT EXISTS idx_point_credits_business_date ON point_credits(business_date);
+      CREATE INDEX IF NOT EXISTS idx_balance_obs_business_date ON balance_observations(business_date);
+      CREATE INDEX IF NOT EXISTS idx_runs_started_at ON runs(started_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_runs_local_date ON runs(local_date);
     `)
   }
 }

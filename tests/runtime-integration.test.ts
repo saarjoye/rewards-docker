@@ -1,3 +1,4 @@
+import { BusinessDateChanged } from '../src/orchestration/BusinessDate.js'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -220,6 +221,94 @@ describe('final balance settlement', () => {
     }
     return { coordinator, loggerWrite, resources, client: { fetchDashboard } }
   }
+
+  it('recovers from a final read error without failing completed tasks', async () => {
+    vi.useFakeTimers()
+    const fetchDashboard = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('Response body is not valid JSON'))
+      .mockResolvedValue({ ...observation(), availablePoints: evidence(160) })
+    const input = setup(fetchDashboard)
+    const pending = invokeFinalVerification(input)
+    await vi.runAllTimersAsync()
+    expect(await pending).toEqual({ status: 'completed' })
+    expect(fetchDashboard).toHaveBeenCalledTimes(2)
+    expect(input.loggerWrite).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'final-balance-fetch-failed',
+        attempt: 1,
+        maximumAttempts: 4
+      })
+    )
+  })
+
+  it.each([160, 159, undefined])(
+    'uses only qualifying cached values after errors: %s',
+    async (value) => {
+      vi.useFakeTimers()
+      const fetchDashboard = vi
+        .fn()
+        .mockRejectedValue(new Error('network timeout password=synthetic-secret'))
+      const input = setup(fetchDashboard)
+      if (value !== undefined)
+        Object.assign(input.client, {
+          latestObservation: { ...observation(), availablePoints: evidence(value) }
+        })
+      const pending = invokeFinalVerification(input)
+      await vi.runAllTimersAsync()
+      expect((await pending).status).toBe(value === 160 ? 'completed' : 'partial')
+      expect(fetchDashboard).toHaveBeenCalledTimes(4)
+      expect(JSON.stringify(input.loggerWrite.mock.calls)).not.toContain('synthetic-secret')
+    }
+  )
+
+  it('does not replace an insufficient live balance with a higher cached value', async () => {
+    vi.useFakeTimers()
+    const fetchDashboard = vi
+      .fn()
+      .mockResolvedValueOnce({ ...observation(), availablePoints: evidence(159) })
+      .mockRejectedValue(new Error('network timeout'))
+    const input = setup(fetchDashboard)
+    Object.assign(input.client, {
+      latestObservation: { ...observation(), availablePoints: evidence(200) }
+    })
+    const pending = invokeFinalVerification(input)
+    await vi.runAllTimersAsync()
+    expect(await pending).toMatchObject({
+      status: 'partial',
+      failureStage: 'final-dashboard-settlement'
+    })
+  })
+
+  it('uses one read when no task gained progress and tolerates failed warning writes', async () => {
+    const fetchDashboard = vi.fn().mockRejectedValue(new Error('network timeout'))
+    const input = setup(fetchDashboard)
+    input.resources.initialTaskProgress.set('synthetic-account:2026-09-04:pc-search', 60)
+    input.resources.initialTaskStatuses.set('synthetic-account:2026-09-04:pc-search', 'completed')
+    input.loggerWrite.mockRejectedValue(new Error('synthetic logging failure'))
+    expect(await invokeFinalVerification(input)).toMatchObject({
+      status: 'partial',
+      failureStage: 'final-dashboard'
+    })
+    expect(fetchDashboard).toHaveBeenCalledOnce()
+  })
+
+  it('propagates cancellation and business-date changes from final reads', async () => {
+    const controller = new AbortController()
+    const reason = new Error('synthetic cancellation')
+    const fetchDashboard = vi.fn().mockImplementation(() => {
+      controller.abort(reason)
+      return Promise.reject(reason)
+    })
+    await expect(
+      invokeFinalVerification({ ...setup(fetchDashboard), signal: controller.signal })
+    ).rejects.toBe(reason)
+    expect(fetchDashboard).toHaveBeenCalledOnce()
+    const changed = new BusinessDateChanged()
+    const next = vi.fn().mockRejectedValue(changed)
+    await expect(invokeFinalVerification(setup(next))).rejects.toBe(changed)
+    expect(next).toHaveBeenCalledOnce()
+  })
 
   it('waits for the balance to reflect confirmed search counter progress', async () => {
     vi.useFakeTimers()
@@ -503,7 +592,10 @@ describe('coordinator task configuration refresh', () => {
       {} as AccountSecretStore,
       store,
       {} as EncryptedSessionStore,
-      { openSlot: vi.fn(), close: vi.fn().mockResolvedValue(undefined) } as unknown as BrowserRuntime,
+      {
+        openSlot: vi.fn(),
+        close: vi.fn().mockResolvedValue(undefined)
+      } as unknown as BrowserRuntime,
       { write: loggerWrite } as unknown as StructuredLogger,
       config
     )
@@ -542,7 +634,10 @@ describe('coordinator task configuration refresh', () => {
     expect(loggerWrite).toHaveBeenCalledWith(
       expect.objectContaining({ event: 'claim-rediscovery-unavailable', status: 'pending' })
     )
-    expect(upsertTask).toHaveBeenCalledWith(expect.objectContaining({ taskId: claim.taskId }), 'synthetic-run')
+    expect(upsertTask).toHaveBeenCalledWith(
+      expect.objectContaining({ taskId: claim.taskId }),
+      'synthetic-run'
+    )
   })
 })
 

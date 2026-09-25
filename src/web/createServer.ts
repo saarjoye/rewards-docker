@@ -63,7 +63,7 @@ const searchSettingsSchema = z
     scroll: z.boolean(),
     clickResult: z.boolean(),
     resultVisitSeconds: z.number().int().min(1).max(120),
-    stagnantLimit: z.number().int().min(1).max(100).default(10)
+    stagnantLimit: z.number().int().min(1).max(100).optional()
   })
   .refine((value) => value.delayMaxSeconds >= value.delayMinSeconds, {
     message: 'delayMaxSeconds must be greater than or equal to delayMinSeconds'
@@ -201,13 +201,18 @@ export async function createServer(dependencies: WebServerDependencies): Promise
     if (!dependencies.config?.search || !dependencies.configPath)
       return reply.code(503).send({ error: 'config-unavailable' })
     const input = searchSettingsSchema.parse(request.body)
-    Object.assign(dependencies.config.search, input)
-    const next = { ...dependencies.config, search: { ...dependencies.config.search } }
+    const search = {
+      ...dependencies.config.search,
+      ...input,
+      stagnantLimit: input.stagnantLimit ?? dependencies.config.search.stagnantLimit
+    }
+    const next = { ...dependencies.config, search }
     try {
       await writeFile(dependencies.configPath, `${JSON.stringify(next, null, 2)}\n`, 'utf8')
     } catch {
       return reply.code(500).send({ error: 'config-write-failed' })
     }
+    Object.assign(dependencies.config.search, search)
     return next.search
   })
   app.get('/api/notifications/wecom', (_request, reply) => {

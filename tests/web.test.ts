@@ -287,6 +287,7 @@ describe('web API', () => {
     roots.push(root)
     const configPath = join(root, 'config.json')
     const config = structuredClone(DEFAULT_CONFIG)
+    config.search.stagnantLimit = 23
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8')
     const loaded = await fixture(undefined, false, { config, configPath })
     try {
@@ -380,8 +381,18 @@ describe('web API', () => {
         delayMaxSeconds: 25,
         scroll: false,
         clickResult: true,
-        resultVisitSeconds: 12
+        resultVisitSeconds: 12,
+        stagnantLimit: 23
       })
+      const valid = { delayMinSeconds: 360, delayMaxSeconds: 720, scroll: true, clickResult: false, resultVisitSeconds: 8 }
+      const headers = { cookie: loaded.cookie, 'x-csrf-token': loaded.csrfToken }
+      for (const stagnantLimit of [0, 101, 1.5]) {
+        expect((await loaded.app.inject({ method: 'PUT', url, headers, payload: { ...valid, stagnantLimit } })).statusCode).toBe(400)
+      }
+      expect((await loaded.app.inject({ method: 'PUT', url, headers, payload: { ...valid, stagnantLimit: 4 } })).json()).toMatchObject({ stagnantLimit: 4 })
+      expect((await loaded.app.inject({ method: 'GET', url, headers })).json()).toMatchObject({ stagnantLimit: 4 })
+      expect((await loaded.app.inject({ method: 'PUT', url, headers, payload: valid })).json()).toMatchObject({ stagnantLimit: 4 })
+      expect((JSON.parse(await readFile(configPath, 'utf8')) as { search: unknown }).search).toMatchObject({ stagnantLimit: 4 })
     } finally {
       await loaded.app.close()
       loaded.store.close()

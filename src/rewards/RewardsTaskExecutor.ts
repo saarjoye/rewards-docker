@@ -158,7 +158,10 @@ export class RewardsTaskExecutor {
             this.logger,
             this.config.search,
             this.runId,
-            this.accountAlias
+            this.accountAlias,
+            undefined,
+            undefined,
+            this.store.searchQueries
           )
           const running = this.persist({ ...original, status: 'running' })
           const completed = await executor.run({

@@ -148,13 +148,14 @@ describe('account result regression', () => {
     }
   })
   it.each([
-    { finalReadSucceeds: false, partialCloseout: false },
-    { finalReadSucceeds: true, partialCloseout: false },
-    { finalReadSucceeds: false, partialCloseout: true },
-    { finalReadSucceeds: true, partialCloseout: true }
+    { finalReadSucceeds: false, partialCloseout: false, cachedCloseout: false },
+    { finalReadSucceeds: true, partialCloseout: false, cachedCloseout: false },
+    { finalReadSucceeds: false, partialCloseout: true, cachedCloseout: false },
+    { finalReadSucceeds: true, partialCloseout: true, cachedCloseout: false },
+    { finalReadSucceeds: false, partialCloseout: true, cachedCloseout: true }
   ])(
     'runs three synthetic accounts (final read=$finalReadSucceeds, partial=$partialCloseout)',
-    async ({ finalReadSucceeds, partialCloseout }) => {
+    async ({ finalReadSucceeds, partialCloseout, cachedCloseout }) => {
       vi.useFakeTimers()
       vi.setSystemTime(new Date('2026-09-09T01:00:00Z'))
       const store = new SqliteStore(':memory:')
@@ -222,7 +223,16 @@ describe('account result regression', () => {
           vi.setSystemTime(Date.now() + 1000)
           if (stage === 'discover') {
             resources.discovery = {}
-            resources.desktopClient = { fetchDashboard: finalRead }
+            resources.desktopClient = {
+              fetchDashboard: finalRead,
+              ...(cachedCloseout
+                ? {
+                    latestObservation: {
+                      availablePoints: balance(5804, new Date(Date.now() + 500).toISOString())
+                    }
+                  }
+                : {})
+            }
             store.ledger.balance(
               context.runId,
               context.accountId,
@@ -259,13 +269,13 @@ describe('account result regression', () => {
         const view = new RunViews(store).run(runId)
         if (!view) throw new Error('Synthetic run view missing')
         expect(view.accounts.map((row) => row.runBalanceDelta)).toEqual(
-          finalReadSucceeds ? [0, 0, 0] : [0, null, null]
+          finalReadSucceeds || cachedCloseout ? [0, 0, 0] : [0, null, null]
         )
         expect(view.accounts.map((row) => row.accountSuccess)).toEqual([false, false, false])
         expect(view.accounts[0]?.confirmedTaskPoints).toBeNull()
         expect(store.getLatestPointsHistory('a1', '2026-09-09')?.gainedPoints).toBe(0)
         expect(store.getLatestPointsHistory('a2', '2026-09-09')?.gainedPoints).toBe(
-          finalReadSucceeds ? 0 : null
+          finalReadSucceeds || cachedCloseout ? 0 : null
         )
         await notifications.tick()
         const messages = send.mock.calls

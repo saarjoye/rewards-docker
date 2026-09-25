@@ -1,6 +1,8 @@
-﻿import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+import { normalizeSearchQuery } from '../domain/SearchQueryAllocation.js'
 
 export const FALLBACK_SEARCH_TERMS: readonly string[] = [
   '中国传统节日',
@@ -67,6 +69,19 @@ export function hashString(str: string): number {
   return Math.abs(hash)
 }
 
+export function cleanSearchQueries(items: unknown[]): string[] {
+  const seen = new Set<string>()
+  return items
+    .filter((item): item is string => {
+      if (typeof item !== 'string') return false
+      const key = normalizeSearchQuery(item)
+      if (!key || seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    .map((item) => item.trim())
+}
+
 export function loadSearchQueries(): string[] {
   if (cachedQueries && cachedQueries.length > 0) {
     return cachedQueries
@@ -91,9 +106,7 @@ export function loadSearchQueries(): string[] {
         const raw = readFileSync(filePath, 'utf8')
         const parsed = JSON.parse(raw) as unknown
         if (Array.isArray(parsed) && parsed.length > 0) {
-          const valid = parsed
-            .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
-            .map((item) => item.trim())
+          const valid = cleanSearchQueries(parsed)
           if (valid.length > 0) {
             cachedQueries = valid
             return cachedQueries
@@ -113,8 +126,8 @@ export class SearchQueryPool {
   private readonly queries: string[]
 
   constructor(customQueries?: string[]) {
-    this.queries =
-      customQueries && customQueries.length > 0 ? customQueries : loadSearchQueries()
+    const valid = customQueries ? cleanSearchQueries(customQueries) : []
+    this.queries = valid.length > 0 ? valid : [...loadSearchQueries()]
   }
 
   get size(): number {

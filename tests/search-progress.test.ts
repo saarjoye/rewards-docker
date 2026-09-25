@@ -1,3 +1,4 @@
+import { createSearchExecutor } from './helpers/searchExecutor.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -8,7 +9,6 @@ import type { TaskRecord } from '../src/domain/Task.js'
 import { DEFAULT_CONFIG } from '../src/infra/Config.js'
 import type { LogEvent, StructuredLogger } from '../src/infra/StructuredLogger.js'
 import { SqliteStore } from '../src/infra/SqliteStore.js'
-import { SearchExecutor } from '../src/orchestration/SearchExecutor.js'
 import { BusinessDateChanged } from '../src/orchestration/BusinessDate.js'
 import { parseDashboardPayload } from '../src/rewards/DashboardParser.js'
 import { RewardsTaskExecutor } from '../src/rewards/RewardsTaskExecutor.js'
@@ -70,7 +70,7 @@ function harness(values = [observation()], inputTask = task()) {
       stagnantLimit: 50
     }
   }
-  const executor = new SearchExecutor(context, client, logger, config.search, 'run', 'synthetic')
+  const executor = createSearchExecutor(context, client, logger, config.search, 'run', 'synthetic')
   const onProgress = vi.fn<(task: TaskRecord) => void>()
   const controller = new AbortController()
   const input = { task: inputTask, mobile: false, signal: controller.signal, onProgress }
