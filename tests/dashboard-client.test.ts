@@ -526,7 +526,18 @@ describe('offer link inspection', () => {
     }
     const buttons = {
       count: vi.fn().mockResolvedValue(1),
-      nth: vi.fn().mockReturnValue(button)
+      nth: vi.fn().mockReturnValue(button),
+      evaluateAll: vi.fn().mockResolvedValue([
+        {
+          index: 0,
+          texts: ['可领取3领取'],
+          contextTexts: [],
+          expanded: null,
+          controls: null,
+          disabled: false,
+          visible: true
+        }
+      ])
     }
     const response = {
       status: vi.fn().mockReturnValue(200),
@@ -579,11 +590,33 @@ describe('offer link inspection', () => {
     }
     const initialButtons = {
       count: vi.fn().mockResolvedValue(1),
-      nth: vi.fn().mockReturnValue(disclosure)
+      nth: vi.fn().mockReturnValue(disclosure),
+      evaluateAll: vi.fn().mockResolvedValue([
+        {
+          index: 0,
+          texts: ['可领取3领取'],
+          contextTexts: [],
+          expanded: 'false',
+          controls: null,
+          disabled: false,
+          visible: true
+        }
+      ])
     }
     const expandedButtons = {
       count: vi.fn().mockResolvedValue(1),
-      nth: vi.fn().mockReturnValue(claim)
+      nth: vi.fn().mockReturnValue(claim),
+      evaluateAll: vi.fn().mockResolvedValue([
+        {
+          index: 0,
+          texts: ['3待领取领取积分'],
+          contextTexts: [],
+          expanded: null,
+          controls: null,
+          disabled: false,
+          visible: true
+        }
+      ])
     }
     const response = {
       status: vi.fn().mockReturnValue(200),
@@ -593,7 +626,7 @@ describe('offer link inspection', () => {
     const page = {
       url: vi.fn().mockReturnValue('https://rewards.bing.com/dashboard'),
       locator: vi.fn((selector: string) =>
-        selector === 'button:not([aria-expanded])' ? expandedButtons : initialButtons
+        selector.includes(':not([aria-expanded])') ? expandedButtons : initialButtons
       ),
       waitForResponse: vi.fn().mockResolvedValue(response),
       waitForTimeout: vi.fn().mockResolvedValue(undefined)
@@ -661,7 +694,7 @@ describe('claim dashboard navigation tolerance', () => {
     const evaluate = vi.fn()
     const locator = vi.fn()
     const page = {
-      url: vi.fn().mockReturnValue('https://rewards.bing.com/earn'),
+      url: vi.fn().mockReturnValue('https://www.bing.com/search'),
       goto,
       evaluate,
       locator

@@ -28,6 +28,12 @@ import {
 import { matchOfferAnchor, type OfferIdentity } from './OfferMatching.js'
 import { officialCredit, type TaskCreditEvidence } from '../rewards/OfficialCredit.js'
 import { BING_ORIGIN, REWARDS_ORIGIN, REWARDS_URLS } from './Urls.js'
+import {
+  claimablePointsFromControls,
+  claimControlPoints,
+  selectClaimAction,
+  type ClaimControlSnapshot
+} from './ClaimControls.js'
 
 const DASHBOARD_ATTEMPTS = 3
 const DASHBOARD_REQUEST_TIMEOUT_MS = 8_000
@@ -1098,20 +1104,9 @@ export class DashboardClient {
 
   async readClaimablePoints(): Promise<number | undefined> {
     if (!(await this.ensureDashboardPage())) return undefined
-    return this.page.evaluate(() => {
-      const candidates = [...document.querySelectorAll('button')]
-      for (const button of candidates) {
-        const text = (button.getAttribute('aria-label') || button.textContent || '')
-          .replace(/\s+/g, ' ')
-          .trim()
-        if (!/claim|领取/i.test(text)) continue
-        const match = text.match(/([\d,]+)/)
-        if (!match?.[1]) continue
-        const points = Number(match[1].replaceAll(',', ''))
-        if (Number.isSafeInteger(points) && points >= 0) return points
-      }
-      return undefined
-    })
+    return claimablePointsFromControls(
+      await this.claimControlSnapshots(this.page.locator('button, [role="button"]'))
+    )
   }
 
   async inspectClaimControls(): Promise<readonly ClaimControlInspection[]> {
@@ -1187,17 +1182,39 @@ export class DashboardClient {
   async claimBonusByUiWithResult(): Promise<ClaimUiResult> {
     if (!(await this.ensureDashboardPage()))
       throw new OfferUnavailableError('Dashboard page unavailable before claim')
-    let buttons = this.page.locator('button')
-    let candidates = await this.positiveClaimButtonIndices(buttons)
-    if (candidates.length !== 1) return { clicked: false, acknowledged: false }
-    const initialButton = buttons.nth(candidates[0] ?? -1)
-    if ((await initialButton.getAttribute('aria-expanded')) !== null) {
-      await initialButton.click({ timeout: 10_000 })
-      await this.page.waitForTimeout(750)
-      buttons = this.page.locator('button:not([aria-expanded])')
-      candidates = await this.positiveClaimButtonIndices(buttons)
-      if (candidates.length !== 1) return { clicked: false, acknowledged: false }
+    let buttons = this.page.locator('button, [role="button"]')
+    const initial = await this.claimControlSnapshots(buttons)
+    const points = claimablePointsFromControls(initial)
+    if (points === undefined || points <= 0) return { clicked: false, acknowledged: false }
+    const disclosures = initial.filter(
+      (control) =>
+        control.visible &&
+        !control.disabled &&
+        control.expanded !== null &&
+        claimControlPoints(control) === points
+    )
+    if (disclosures.length > 1) return { clicked: false, acknowledged: false }
+    const disclosure = disclosures[0]
+    let controls = initial
+    if (disclosure) {
+      if (!['true', 'false'].includes(disclosure.expanded ?? ''))
+        return { clicked: false, acknowledged: false }
+      if (disclosure.expanded === 'false') {
+        await buttons.nth(disclosure.index).click({ timeout: 10_000 })
+        await this.page.waitForTimeout(750)
+      }
+      const selector = 'button:not([aria-expanded]), [role="button"]:not([aria-expanded])'
+      if (disclosure.controls) {
+        if (!/^[A-Za-z0-9_:.-]+$/.test(disclosure.controls))
+          return { clicked: false, acknowledged: false }
+        buttons = this.page.locator(`[id="${disclosure.controls}"]`).locator(selector)
+      } else {
+        buttons = this.page.locator(selector)
+      }
+      controls = await this.claimControlSnapshots(buttons)
     }
+    const action = selectClaimAction(controls, points)
+    if (!action) return { clicked: false, acknowledged: false }
     const responsePromise = this.page
       .waitForResponse(
         (response) => {
@@ -1211,7 +1228,7 @@ export class DashboardClient {
         { timeout: 10_000 }
       )
       .catch(() => undefined)
-    await buttons.nth(candidates[0] ?? -1).click({ timeout: 10_000 })
+    await buttons.nth(action.index).click({ timeout: 10_000 })
     const response = await responsePromise
     await this.page.waitForTimeout(2_000)
     if (!response) return { clicked: true, acknowledged: false }
@@ -1224,29 +1241,61 @@ export class DashboardClient {
   }
 
   private async ensureDashboardPage(): Promise<boolean> {
-    if (new URL(this.page.url()).pathname === '/dashboard') return true
+    const onClaimPage = () => {
+      try {
+        const url = new URL(this.page.url())
+        return url.origin === REWARDS_ORIGIN && ['/dashboard', '/earn'].includes(url.pathname)
+      } catch {
+        return false
+      }
+    }
+    if (onClaimPage()) return true
     return this.page
       .goto(REWARDS_URLS.dashboard, {
         waitUntil: 'domcontentloaded',
         timeout: 30_000
       })
-      .then(() => true)
+      .then(onClaimPage)
       .catch(() => false)
   }
 
-  private async positiveClaimButtonIndices(buttons: Locator): Promise<number[]> {
-    const count = await buttons.count()
-    const candidates: number[] = []
-    for (let index = 0; index < count; index += 1) {
-      const button = buttons.nth(index)
-      const text = ((await button.getAttribute('aria-label')) ?? (await button.textContent()) ?? '')
-        .replace(/\s+/g, ' ')
-        .trim()
-      if (!/claim|领取/i.test(text)) continue
-      const points = Number(text.match(/([\d,]+)/)?.[1]?.replaceAll(',', '') ?? '0')
-      if (Number.isSafeInteger(points) && points > 0) candidates.push(index)
-    }
-    return candidates
+  private async claimControlSnapshots(buttons: Locator): Promise<ClaimControlSnapshot[]> {
+    return buttons.evaluateAll((elements) =>
+      elements.map((element, index) => {
+        const control = element as HTMLElement
+        const contextTexts: string[] = []
+        let parent = control.parentElement
+        for (let depth = 0; parent && depth < 3; depth += 1, parent = parent.parentElement) {
+          if (
+            parent.matches('body, html, main, nav, header') ||
+            parent.querySelectorAll('button, [role="button"]').length !== 1
+          )
+            break
+          const text = parent.textContent.trim()
+          if (text.length > 300) break
+          contextTexts.push(text)
+        }
+        const style = window.getComputedStyle(control)
+        return {
+          index,
+          texts: [
+            control.getAttribute('aria-label') ?? '',
+            control.getAttribute('title') ?? '',
+            control.textContent
+          ],
+          contextTexts,
+          expanded: control.getAttribute('aria-expanded'),
+          controls: control.getAttribute('aria-controls'),
+          disabled:
+            control.matches(':disabled') || control.closest('[aria-disabled="true"]') !== null,
+          visible:
+            control.getClientRects().length > 0 &&
+            style.display !== 'none' &&
+            style.visibility !== 'hidden' &&
+            control.closest('[hidden], [aria-hidden="true"], [inert]') === null
+        }
+      })
+    )
   }
 
   private async fetchHtml(url: string, deadline: number): Promise<string | undefined> {
