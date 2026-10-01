@@ -1,0 +1,63 @@
+# Standalone local-source deployment; do not combine with compose.yaml.
+name: microsoft-rewards-next
+
+services:
+  microsoft-rewards-next:
+    image: microsoft-rewards-next:${IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BROWSER_IMAGE: microsoft-rewards-next-browser:patchright-1.61.1
+        APP_VERSION: ${APP_VERSION:-local}
+    container_name: microsoft-rewards-next
+    restart: unless-stopped
+    init: true
+    shm_size: '512mb'
+    ports:
+      - '${WEB_BIND_IP:-0.0.0.0}:${WEB_PORT:-8788}:3000'
+    environment:
+      TZ: Asia/Shanghai
+      NODE_ENV: production
+      WEB_HOST: 0.0.0.0
+      WEB_PORT: '3000'
+      WEB_ADMIN_USER: ${WEB_ADMIN_USER:-}
+      WEB_ADMIN_PASSWORD: ${WEB_ADMIN_PASSWORD:-}
+      RUN_SCHEDULE: '0 7 * * *'
+      RUN_ON_START: 'false'
+      CONFIG_PATH: /app/data/config.json
+      DATA_DIR: /app/data
+      SESSIONS_DIR: /app/sessions
+      LOGS_DIR: /app/logs
+      REWARDS_HEADLESS: 'true'
+      PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
+      CREDENTIAL_KEY_FILE: /run/secrets/rewards_master_key
+    volumes:
+      - rewards-next-data:/app/data
+      - rewards-next-sessions:/app/sessions
+      - rewards-next-logs:/app/logs
+      - rewards-next-backups:/app/backups
+    secrets:
+      - rewards_master_key
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - require('http').get('http://127.0.0.1:3000/healthz',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  rewards-next-data:
+  rewards-next-sessions:
+  rewards-next-logs:
+  rewards-next-backups:
+
+secrets:
+  rewards_master_key:
+    file: ./secrets/rewards_master_key

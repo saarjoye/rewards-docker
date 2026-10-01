@@ -30,8 +30,71 @@ describe('container browser layering', () => {
     expect(applicationDockerfile).toContain('FROM ${BROWSER_IMAGE} AS build')
     expect(applicationDockerfile).toContain('FROM ${BROWSER_IMAGE} AS runtime')
     expect(applicationDockerfile).not.toContain('patchright install')
-    expect(browserDockerfile).toContain('patchright install --with-deps chromium')
+    expect(applicationDockerfile).toContain('RUN --network=none npm run build')
+    expect(applicationDockerfile).toContain(
+      'npm ci --omit=dev --offline --ignore-scripts --no-audit --no-fund --fetch-retries=0'
+    )
+    expect(applicationDockerfile).not.toContain('npm prune')
+    expect(browserDockerfile).toContain('patchright install-deps chromium')
+    expect(browserDockerfile).toContain('https://deb.debian.org/')
+    expect(browserDockerfile).toContain('rootCertificates')
+    expect(browserDockerfile).toContain(
+      'apt-get install -y --no-install-recommends ca-certificates'
+    )
+    expect(browserDockerfile).toContain('rm -f /etc/apt/apt.conf.d/80-build-ca /tmp/build-ca.pem')
+    expect(browserDockerfile).not.toContain('Verify-Peer "false"')
+    expect(browserDockerfile).not.toContain('Verify-Host "false"')
+    expect(browserDockerfile).not.toContain('NODE_TLS_REJECT_UNAUTHORIZED')
+    expect(
+      browserDockerfile.indexOf('apt-get install -y --no-install-recommends ca-certificates')
+    ).toBeLessThan(browserDockerfile.indexOf('patchright install-deps chromium'))
+    expect(browserDockerfile).toContain('RUN patchright install chromium')
+    expect(browserDockerfile).toContain('Acquire::Retries "2";')
+    expect(browserDockerfile).toContain('rm -f /etc/apt/apt.conf.d/80-build-retries')
+    expect(browserDockerfile).not.toContain('patchright install --with-deps')
+    expect(browserDockerfile.indexOf('patchright install-deps chromium')).toBeLessThan(
+      browserDockerfile.indexOf('RUN patchright install chromium')
+    )
     expect(compose).not.toContain('browser-install:')
     expect(compose).not.toContain('playwright-browsers:')
+  })
+
+  it('keeps the LXC deployment independent, non-privileged and persistent', async () => {
+    const compose = await readFile('compose.lxc.yaml', 'utf8')
+    expect(compose).toContain('name: microsoft-rewards-next')
+    expect(compose).toContain('image: microsoft-rewards-next:${IMAGE_TAG:-local}')
+    expect(compose).toContain('BROWSER_IMAGE: microsoft-rewards-next-browser:patchright-1.61.1')
+    expect(compose).toContain("RUN_ON_START: 'false'")
+    expect(compose).toContain('init: true')
+    expect(compose).toContain("shm_size: '512mb'")
+    expect(compose).toContain('no-new-privileges:true')
+    expect(compose).not.toContain('privileged:')
+    for (const name of [
+      'HTTP_PROXY',
+      'HTTPS_PROXY',
+      'ALL_PROXY',
+      'http_proxy',
+      'https_proxy',
+      'all_proxy'
+    ]) {
+      expect(compose).not.toContain(`${name}:`)
+    }
+    for (const directory of ['data', 'sessions', 'logs', 'backups']) {
+      expect(compose).toContain(`rewards-next-${directory}:/app/${directory}`)
+    }
+    expect(compose).toContain('CREDENTIAL_KEY_FILE: /run/secrets/rewards_master_key')
+    expect(compose).toContain('file: ./secrets/rewards_master_key')
+    expect(compose).toContain('WEB_ADMIN_PASSWORD: ${WEB_ADMIN_PASSWORD:-}')
+  })
+
+  it('excludes the whole SSH configuration directory from Git and Docker context', async () => {
+    const [gitIgnore, dockerIgnore] = await Promise.all([
+      readFile('.gitignore', 'utf8'),
+      readFile('.dockerignore', 'utf8')
+    ])
+    expect(gitIgnore.split(/\r?\n/)).toContain('lxc106/')
+    expect(dockerIgnore.split(/\r?\n/)).toContain('lxc106/')
+    expect(gitIgnore.split(/\r?\n/)).toContain('.bootstrap.env')
+    expect(dockerIgnore.split(/\r?\n/)).toContain('.bootstrap.env')
   })
 })

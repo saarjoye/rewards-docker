@@ -15,3 +15,5 @@ diagnostics
 .env.*
 *.log
 *.sqlite*
+lxc106/
+.bootstrap.env

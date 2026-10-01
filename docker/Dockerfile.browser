@@ -6,8 +6,23 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 
 RUN npm install --global "patchright@${PATCHRIGHT_VERSION}" \
-    && patchright install --with-deps chromium \
-    && npm cache clean --force \
+    && npm cache clean --force
+
+# Bootstrap the OS CA package from Node's bundled trust roots without disabling TLS.
+RUN node -e "require('node:fs').writeFileSync('/tmp/build-ca.pem', require('node:tls').rootCertificates.join('\n') + '\n')" \
+    && sed -i 's|http://deb.debian.org/|https://deb.debian.org/|g' /etc/apt/sources.list.d/debian.sources \
+    && printf 'Acquire::Retries "2";\nAcquire::https::CAInfo "/tmp/build-ca.pem";\n' > /etc/apt/apt.conf.d/80-build-ca \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -f /etc/apt/apt.conf.d/80-build-ca /tmp/build-ca.pem \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN printf 'Acquire::Retries "2";\n' > /etc/apt/apt.conf.d/80-build-retries \
+    && patchright install-deps chromium \
+    && rm -f /etc/apt/apt.conf.d/80-build-retries \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN patchright install chromium \
     && chmod -R a+rX /ms-playwright
 
 LABEL org.opencontainers.image.title="Microsoft Rewards Next browser base" \

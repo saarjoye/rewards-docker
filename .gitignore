@@ -16,3 +16,5 @@ diagnostics/
 *.sqlite-shm
 *.sqlite-wal
 *.log
+lxc106/
+.bootstrap.env

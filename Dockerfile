@@ -8,8 +8,8 @@ COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts
 COPY tsconfig*.json vite.config.ts vitest.config.ts eslint.config.js ./
 COPY src ./src
-RUN npm run build \
-    && npm prune --omit=dev
+RUN --network=none npm run build \
+    && npm ci --omit=dev --offline --ignore-scripts --no-audit --no-fund --fetch-retries=0
 
 FROM ${BROWSER_IMAGE} AS runtime
 ARG APP_VERSION=development

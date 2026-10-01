@@ -57,7 +57,8 @@ next.8 同时让有效隔离任务余额参与共享汇总，查询不新增积�
 
 ## 本地构建
 
-需要本地 Docker 环境；固定浏览器基础层，构建与运行均不配置代理：
+需要本地 Docker 环境；固定浏览器基础层，默认不配置代理。下载受限时可以按下文
+LXC 部署说明仅为构建临时配置代理，应用运行时保持直连：
 
 ```sh
 docker build -f docker/Dockerfile.browser -t microsoft-rewards-next-browser:patchright-1.61.1 .
@@ -79,3 +80,111 @@ next.2 启动以幂等事务新增账号完成事件、积分账本和通知队�
 本轮统计与通知规则见[运行状态、通知与积分证据](run-notifications-points.md)。回退到 next.1 时保留新增表和数据卷；旧应用不展示新通知功能。不要删除表或数据库来回退。
 
 停止 Next 并保留其独立数据卷，使用保存的旧 Compose 和旧版固定镜像恢复旧 Core/Web，不能使用已指向 Next 的 `latest`。不要让旧程序读写 Next 数据库，也不要删除数据库来回退。
+
+## LXC 本地源码独立部署
+
+`compose.lxc.yaml` 是独立的本地源码部署入口，不与默认拉取发布镜像的
+`compose.yaml` 合并。默认管理端口仍为 `8788`，容器使用非 root 的 `node` 用户、
+`init`、512 MB 共享内存和独立持久卷，不使用 `privileged`。
+
+- 先确认 LXC 内 Docker Engine、Compose 与 Buildx 均可用。保留已有可用的 Docker；
+  缺少 Buildx 时只补装对应发行版插件，不为了构建替换正在使用的引擎。
+- 使用新的部署目录，只传应用源码、构建清单及 Docker 配置。不复制源码机的 `.env`、
+  `lxc106/`、账号数据、会话、密钥、日志、备份或 `node_modules/`。
+- 创建部署专用的 `.env`，可设置 `IMAGE_TAG`、`APP_VERSION`、`WEB_BIND_IP` 和
+  `WEB_PORT`。管理员变量仅用于首次引导，并应使用独立强密码，不能复用 SSH 密码。
+- 首次初始化独立主密钥后保留它；不得在升级时重建或覆盖。
+
+首次创建密钥（部署目录中以 root 执行；只适用于尚无主密钥的新安装）：
+
+```sh
+install -d -m 0700 secrets
+test ! -e secrets/rewards_master_key
+(umask 077; head -c 32 /dev/urandom > secrets/rewards_master_key)
+chown 1000:1000 secrets/rewards_master_key
+chmod 0400 secrets/rewards_master_key
+```
+
+浏览器基础层使用 Debian 官方源的 HTTPS 地址，保留 TLS 证书校验。精简 Node 镜像
+的系统 CA 包通过 Node 自带的可信根证书临时引导安装，引导文件和配置随后删除。
+
+浏览器基础层将 npm 安装、系统 CA、浏览器依赖与 Chromium 下载分为独立缓存层。apt 下载失败
+最多重试两次，临时重试配置在依赖安装成功后移除；后续浏览器下载失败不会导致
+已完成的系统依赖重新下载。
+
+应用编译后使用已有 npm 缓存离线重新安装生产依赖，替代目标环境中长时间未完成的
+`npm prune`。最终编译与生产依赖准备层禁止联网，不执行安装脚本，也不修改依赖版本或
+锁文件。该步骤跳过在线审计以保持离线；不能将镜像构建成功视为依赖安全审计通过，
+导入真实账号前应单独检查生产依赖告警，依赖升级需另行确认。
+
+构建浏览器基础层与应用：
+
+```sh
+docker build -f docker/Dockerfile.browser -t microsoft-rewards-next-browser:patchright-1.61.1 .
+docker compose -f compose.lxc.yaml --env-file .env config --quiet
+docker compose -f compose.lxc.yaml --env-file .env build
+```
+
+Docker Hub 不可达而项目 GHCR 可达时，可以复用本项目固定版本的浏览器基础层，
+不需要更换第三方镜像源或修改 Docker daemon 网络配置：
+
+```sh
+docker pull ghcr.io/saarjoye/mrs-core:browser-patchright-1.61.1
+docker tag ghcr.io/saarjoye/mrs-core:browser-patchright-1.61.1 microsoft-rewards-next-browser:patchright-1.61.1
+docker compose -f compose.lxc.yaml --env-file .env build
+```
+
+如果 GHCR 大镜像下载也很慢，可将浏览器构建的 Node 基础层切换为 Docker 官方
+在 AWS Public ECR 发布的同版本镜像。只覆盖已有的 `NODE_IMAGE` 构建参数，
+仍固定 Node 24.11.1 和 Patchright 1.61.1，不修改 daemon 镜像源或运行时代理：
+
+```sh
+docker pull public.ecr.aws/docker/library/node:24.11.1-bookworm-slim
+docker build --build-arg NODE_IMAGE=public.ecr.aws/docker/library/node:24.11.1-bookworm-slim -f docker/Dockerfile.browser -t microsoft-rewards-next-browser:patchright-1.61.1 .
+docker compose -f compose.lxc.yaml --env-file .env build
+```
+
+依赖下载需要 HTTP 代理时，只通过 Docker 预定义的构建参数传递。将下面占位符
+替换为可从 LXC 访问的代理地址；先确认该端口确实提供 HTTP 代理且允许局域网访问。
+大小写参数同时提供，以兼容 npm、浏览器下载和 apt。使用子 Shell 限定代理作用域，
+不写入 Dockerfile 的 `ENV`、Compose 运行环境或 Docker daemon 配置：
+
+```sh
+(
+  export HTTP_PROXY='http://<proxy-host>:<proxy-port>'
+  export HTTPS_PROXY="$HTTP_PROXY"
+  export http_proxy="$HTTP_PROXY"
+  export https_proxy="$HTTP_PROXY"
+  docker build \
+    --build-arg NODE_IMAGE=public.ecr.aws/docker/library/node:24.11.1-bookworm-slim \
+    --build-arg HTTP_PROXY --build-arg HTTPS_PROXY \
+    --build-arg http_proxy --build-arg https_proxy \
+    -f docker/Dockerfile.browser -t microsoft-rewards-next-browser:patchright-1.61.1 .
+  docker compose -f compose.lxc.yaml --env-file .env build \
+    --build-arg HTTP_PROXY --build-arg HTTPS_PROXY \
+    --build-arg http_proxy --build-arg https_proxy
+)
+```
+
+首次管理员引导使用权限为 `0600` 的临时 `.bootstrap.env`，其中只有
+`WEB_ADMIN_USER` 和 `WEB_ADMIN_PASSWORD`，不能提交或显示其内容：
+
+```sh
+docker compose -f compose.lxc.yaml --env-file .env --env-file .bootstrap.env up -d --no-build --wait
+```
+
+管理员初始化成功后，先在 Web UI 的“定时任务”关闭调度，再添加真实账号。
+`RUN_ON_START=false` 只阻止启动时自动执行，不等于关闭每日调度。删除临时引导文件，
+不含管理员密码的 `.env` 保持不变，重新创建容器以移除引导环境变量：
+
+```sh
+rm -- .bootstrap.env
+docker compose -f compose.lxc.yaml --env-file .env up -d --no-build --force-recreate --wait
+docker compose -f compose.lxc.yaml --env-file .env ps
+```
+
+管理员摘要、调度设置和账号数据存于独立数据卷；主密钥单独以 Secret 挂载。
+停止服务使用 `docker compose -f compose.lxc.yaml --env-file .env down`，不要加 `-v`。
+保留 `secrets/rewards_master_key` 和全部持久卷，不与旧服务共享数据或同时操作同一账号。
+管理端口仅限可信内网，跨不可信网络访问时使用 SSH 隧道或另行配置 HTTPS；
+本部署不修改宿主机防火墙，也不创建公网端口转发。
