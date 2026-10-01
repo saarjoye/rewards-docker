@@ -359,7 +359,7 @@ export class RewardsTaskExecutor {
             })
             return { accepted: response.acknowledged, observedAt: new Date().toISOString() }
           }
-          const result = await this.client.claimBonusByUiWithResult()
+          const result = await this.client.claimBonusByUiWithResult(signal)
           if (!result.clicked) throw new MutationNotStartedError('Claim control was not found')
           return { accepted: result.acknowledged, observedAt: new Date().toISOString() }
         }
@@ -537,7 +537,7 @@ export class RewardsTaskExecutor {
     if (descriptor.task.type === 'claim-bonus-points') {
       let claimable: number | undefined
       for (let attempt = 1; attempt <= 4; attempt += 1) {
-        claimable = await this.client.readClaimablePoints()
+        claimable = await this.client.readClaimablePoints(signal)
         try {
           this.guardDate?.()
         } catch {

@@ -171,7 +171,10 @@ describe('login state detection', () => {
   it('keeps an explicit callback error in the error state', async () => {
     await expect(
       controller().detectCurrentState(
-        page({ url: 'https://rewards.bing.com/auth/callback', alert: locator(true, 'Sign in failed') })
+        page({
+          url: 'https://rewards.bing.com/auth/callback',
+          alert: locator(true, 'Sign in failed')
+        })
       )
     ).resolves.toMatchObject({ state: 'error-alert', loginStage: 'login-error-alert' })
   })
@@ -512,5 +515,265 @@ describe('login state detection', () => {
       )
     ).resolves.toBeUndefined()
     expect(secondaryClick).not.toHaveBeenCalled()
+  })
+})
+
+describe('authentication navigation and pending submission regression', () => {
+  it('recognizes a usable form without waiting for DOMContentLoaded', async () => {
+    const candidate = page({ url: 'https://login.live.com/login.srf', email: locator(true) })
+    const loadState = vi
+      .spyOn(candidate, 'waitForLoadState')
+      .mockRejectedValue(new Error('synthetic load timeout'))
+    await expect(controller().detectCurrentState(candidate)).resolves.toMatchObject({
+      state: 'email-input'
+    })
+    expect(loadState).not.toHaveBeenCalled()
+  })
+
+  it('enters the login state machine after commit when DOMContentLoaded would time out', async () => {
+    const login = controller()
+    vi.spyOn(login, 'detectCurrentState').mockResolvedValue(snapshot('logged-in'))
+    let current = 'about:blank'
+    const goto = vi.fn((_url: string, options: { waitUntil: string }) => {
+      if (options.waitUntil === 'domcontentloaded')
+        return Promise.reject(new Error('synthetic navigation timeout'))
+      current = 'https://rewards.bing.com/dashboard'
+      return Promise.resolve(null)
+    })
+    const candidate = { url: () => current, goto } as unknown as Page
+    await expect(
+      login.login(
+        candidate,
+        { email: 'synthetic@example.test', password: 'password-canary' },
+        new AbortController().signal
+      )
+    ).resolves.toBeUndefined()
+    expect(goto).toHaveBeenCalledTimes(1)
+    expect(goto).toHaveBeenCalledWith(
+      'https://rewards.bing.com/auth/login',
+      expect.objectContaining({ waitUntil: 'commit' })
+    )
+  })
+
+  it('does not navigate an already cancelled blank page', async () => {
+    const abort = new AbortController()
+    const reason = new Error('synthetic-cancellation')
+    abort.abort(reason)
+    const goto = vi.fn().mockResolvedValue(null)
+    await expect(
+      controller().login(
+        { url: () => 'about:blank', goto } as unknown as Page,
+        { email: 'synthetic@example.test', password: 'password-canary' },
+        abort.signal
+      )
+    ).rejects.toBe(reason)
+    expect(goto).not.toHaveBeenCalled()
+  })
+
+  it('waits for an already submitted username instead of submitting it again', async () => {
+    const login = controller()
+    vi.spyOn(login, 'detectCurrentState')
+      .mockResolvedValueOnce(snapshot('email-input'))
+      .mockResolvedValueOnce(snapshot('email-input'))
+      .mockResolvedValueOnce(snapshot('logged-in'))
+    const email = locator(true)
+    const methods = { fill: vi.spyOn(email, 'fill'), press: vi.spyOn(email, 'press') }
+    const click = vi.fn().mockResolvedValue(undefined)
+    const candidate = {
+      url: () => 'https://login.live.com/login.srf',
+      locator: (selector: string) =>
+        selector.includes('usernameEntry') ? email : locator(true, '', '', click),
+      waitForTimeout: vi.fn().mockResolvedValue(undefined)
+    } as unknown as Page
+    await expect(
+      login.login(
+        candidate,
+        { email: 'synthetic@example.test', password: 'password-canary' },
+        new AbortController().signal
+      )
+    ).resolves.toBeUndefined()
+    expect(methods.fill).toHaveBeenCalledTimes(1)
+    expect(click).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not restart the sign-in URL after credentials have been submitted', async () => {
+    const login = controller()
+    vi.spyOn(login, 'detectCurrentState')
+      .mockResolvedValueOnce(snapshot('email-input'))
+      .mockResolvedValue(snapshot('unknown'))
+    let now = 0
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now)
+    const goto = vi.fn().mockResolvedValue(null)
+    const candidate = {
+      url: () => 'https://login.live.com/login.srf',
+      goto,
+      locator: () => locator(true),
+      getByRole: () => locator(false),
+      getByText: () => locator(false),
+      waitForTimeout: vi.fn((duration: number) => {
+        now += duration === 700 ? 15_000 : duration
+        return Promise.resolve()
+      })
+    } as unknown as Page
+    try {
+      await expect(
+        login.login(
+          candidate,
+          { email: 'synthetic@example.test', password: 'password-canary' },
+          new AbortController().signal
+        )
+      ).rejects.toMatchObject({ loginStage: 'login-timeout' })
+      expect(goto).not.toHaveBeenCalled()
+    } finally {
+      clock.mockRestore()
+    }
+  })
+})
+
+function credentialPage(
+  input: Locator,
+  primary: Locator,
+  url = 'https://login.live.com/login.srf'
+): Page {
+  return {
+    url: () => url,
+    locator: (selector: string) => (selector.includes('primaryButton') ? primary : input),
+    waitForTimeout: vi.fn().mockResolvedValue(undefined)
+  } as unknown as Page
+}
+
+describe('credential submission safety after navigation recovery', () => {
+  it('does not repeat a pending password submission', async () => {
+    const login = controller()
+    vi.spyOn(login, 'detectCurrentState')
+      .mockResolvedValueOnce(snapshot('password-input'))
+      .mockResolvedValueOnce(snapshot('password-input'))
+      .mockResolvedValueOnce(snapshot('logged-in'))
+    const password = locator(true)
+    const fill = vi.spyOn(password, 'fill')
+    const click = vi.fn().mockResolvedValue(undefined)
+    await login.login(
+      credentialPage(password, locator(true, '', '', click)),
+      { email: 'synthetic@example.test', password: 'password-canary' },
+      new AbortController().signal
+    )
+    expect(fill).toHaveBeenCalledTimes(1)
+    expect(click).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not follow a possibly transmitted click with Enter', async () => {
+    const login = controller()
+    vi.spyOn(login, 'detectCurrentState').mockResolvedValue(snapshot('email-input'))
+    const email = locator(true)
+    const methods = { fill: vi.spyOn(email, 'fill'), press: vi.spyOn(email, 'press') }
+    const click = vi.fn().mockRejectedValue(new Error('synthetic click timeout'))
+    await expect(
+      login.login(
+        credentialPage(email, locator(true, '', '', click)),
+        { email: 'synthetic@example.test', password: 'password-canary' },
+        new AbortController().signal
+      )
+    ).rejects.toMatchObject({ loginStage: 'login-submit-unconfirmed' })
+    expect(click).toHaveBeenCalledTimes(1)
+    expect(methods.press).not.toHaveBeenCalled()
+  })
+
+  it('uses Enter once only when no enabled primary button is available', async () => {
+    const login = controller()
+    vi.spyOn(login, 'detectCurrentState')
+      .mockResolvedValueOnce(snapshot('email-input'))
+      .mockResolvedValueOnce(snapshot('email-input'))
+      .mockResolvedValueOnce(snapshot('logged-in'))
+    const email = locator(true)
+    const methods = { fill: vi.spyOn(email, 'fill'), press: vi.spyOn(email, 'press') }
+    const primary = locator(false)
+    const primaryClick = vi.spyOn(primary, 'click')
+    await login.login(
+      credentialPage(email, primary),
+      { email: 'synthetic@example.test', password: 'password-canary' },
+      new AbortController().signal
+    )
+    expect(methods.press).toHaveBeenCalledExactlyOnceWith('Enter', { timeout: 5_000 })
+    expect(primaryClick).not.toHaveBeenCalled()
+  })
+
+  it.each(['https://untrusted.example/login', 'http://login.live.com/login.srf'])(
+    'does not fill credentials on an untrusted login location %s',
+    async (url) => {
+      const login = controller()
+      vi.spyOn(login, 'detectCurrentState').mockResolvedValue(snapshot('email-input'))
+      const email = locator(true)
+      const methods = { fill: vi.spyOn(email, 'fill'), press: vi.spyOn(email, 'press') }
+      const primary = locator(true)
+      const primaryClick = vi.spyOn(primary, 'click')
+      await expect(
+        login.login(
+          credentialPage(email, primary, url),
+          { email: 'synthetic@example.test', password: 'password-canary' },
+          new AbortController().signal
+        )
+      ).rejects.toMatchObject({ loginStage: 'login-origin-untrusted' })
+      expect(methods.fill).not.toHaveBeenCalled()
+      expect(primaryClick).not.toHaveBeenCalled()
+    }
+  )
+
+  it('does not submit when cancellation occurs while filling the username', async () => {
+    const login = controller()
+    vi.spyOn(login, 'detectCurrentState').mockResolvedValue(snapshot('email-input'))
+    const abort = new AbortController()
+    const reason = new Error('synthetic fill cancellation')
+    const email = locator(true)
+    const methods = { fill: vi.spyOn(email, 'fill'), press: vi.spyOn(email, 'press') }
+    methods.fill.mockImplementation(() => {
+      abort.abort(reason)
+      return Promise.resolve()
+    })
+    const primary = locator(true)
+    const primaryClick = vi.spyOn(primary, 'click')
+    await expect(
+      login.login(
+        credentialPage(email, primary),
+        { email: 'synthetic@example.test', password: 'password-canary' },
+        abort.signal
+      )
+    ).rejects.toBe(reason)
+    expect(primaryClick).not.toHaveBeenCalled()
+    expect(methods.press).not.toHaveBeenCalled()
+  })
+
+  it('allows one bounded recovery navigation before any authentication interaction', async () => {
+    const login = controller()
+    vi.spyOn(login, 'detectCurrentState')
+      .mockResolvedValueOnce(snapshot('unknown'))
+      .mockResolvedValueOnce(snapshot('unknown'))
+      .mockResolvedValueOnce(snapshot('logged-in'))
+    let now = 0
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now)
+    const goto = vi.fn().mockResolvedValue(null)
+    const candidate = {
+      url: () => 'https://login.live.com/login.srf',
+      goto,
+      getByRole: () => locator(false),
+      getByText: () => locator(false),
+      locator: () => locator(false),
+      waitForTimeout: vi.fn((duration: number) => {
+        now += duration === 700 ? 31_000 : duration
+        return Promise.resolve()
+      })
+    } as unknown as Page
+    try {
+      await login.login(
+        candidate,
+        { email: 'synthetic@example.test', password: 'password-canary' },
+        new AbortController().signal
+      )
+      expect(goto).toHaveBeenCalledExactlyOnceWith('https://rewards.bing.com/auth/login', {
+        waitUntil: 'commit',
+        timeout: 30_000
+      })
+    } finally {
+      clock.mockRestore()
+    }
   })
 })

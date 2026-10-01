@@ -7,6 +7,7 @@ import type { AccountCredentials } from '../infra/AccountSecretStore.js'
 import type { StructuredLogger } from '../infra/StructuredLogger.js'
 import { safePath } from '../security/Redactor.js'
 import { LoginController } from './LoginController.js'
+import { navigateForAuthentication } from './AuthNavigation.js'
 import { REWARDS_URLS } from './Urls.js'
 
 const CLIENT_ID = '0000000040170455'
@@ -124,7 +125,7 @@ export class AppOAuthClient {
   ): Promise<string | undefined> {
     const oauthPage = await this.context.newPage()
     try {
-      await oauthPage.goto(authorize.href, { waitUntil: 'domcontentloaded', timeout: 30_000 })
+      await navigateForAuthentication(oauthPage, authorize.href, signal)
       let code = this.extractCode(oauthPage.url())
       if (code) return code
       await this.login.login(oauthPage, credentials, signal)

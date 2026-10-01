@@ -26,6 +26,7 @@ import {
   OfferUnavailableError
 } from '../orchestration/MutationExecutor.js'
 import { matchOfferAnchor, type OfferIdentity } from './OfferMatching.js'
+import { navigateForAuthentication } from './AuthNavigation.js'
 import { officialCredit, type TaskCreditEvidence } from '../rewards/OfficialCredit.js'
 import { BING_ORIGIN, REWARDS_ORIGIN, REWARDS_URLS } from './Urls.js'
 import {
@@ -42,6 +43,8 @@ const DISCOVERY_DEADLINE_MS = 90_000
 const SCRIPT_SCAN_TIMEOUT_MS = 12_000
 const SCRIPT_REQUEST_TIMEOUT_MS = 4_000
 const SCRIPT_SCAN_CONCURRENCY = 6
+const CLAIM_READINESS_RETRIES = 10
+const CLAIM_READINESS_POLL_MS = 500
 
 function readOfferAnchor(node: HTMLElement | SVGElement) {
   const anchor = node as HTMLAnchorElement
@@ -1102,10 +1105,14 @@ export class DashboardClient {
     }
   }
 
-  async readClaimablePoints(): Promise<number | undefined> {
-    if (!(await this.ensureDashboardPage())) return undefined
+  async readClaimablePoints(signal?: AbortSignal): Promise<number | undefined> {
+    if (!(await this.ensureDashboardPage(signal))) return undefined
     return claimablePointsFromControls(
-      await this.claimControlSnapshots(this.page.locator('button, [role="button"]'))
+      await this.waitForClaimControls(
+        this.page.locator('button, [role="button"]'),
+        (controls) => claimablePointsFromControls(controls) !== undefined,
+        signal
+      )
     )
   }
 
@@ -1175,15 +1182,19 @@ export class DashboardClient {
     return this.inspectClaimControls()
   }
 
-  async claimBonusByUi(): Promise<boolean> {
-    return (await this.claimBonusByUiWithResult()).clicked
+  async claimBonusByUi(signal?: AbortSignal): Promise<boolean> {
+    return (await this.claimBonusByUiWithResult(signal)).clicked
   }
 
-  async claimBonusByUiWithResult(): Promise<ClaimUiResult> {
-    if (!(await this.ensureDashboardPage()))
+  async claimBonusByUiWithResult(signal?: AbortSignal): Promise<ClaimUiResult> {
+    if (!(await this.ensureDashboardPage(signal)))
       throw new OfferUnavailableError('Dashboard page unavailable before claim')
     let buttons = this.page.locator('button, [role="button"]')
-    const initial = await this.claimControlSnapshots(buttons)
+    const initial = await this.waitForClaimControls(
+      buttons,
+      (controls) => claimablePointsFromControls(controls) !== undefined,
+      signal
+    )
     const points = claimablePointsFromControls(initial)
     if (points === undefined || points <= 0) return { clicked: false, acknowledged: false }
     const disclosures = initial.filter(
@@ -1195,13 +1206,16 @@ export class DashboardClient {
     )
     if (disclosures.length > 1) return { clicked: false, acknowledged: false }
     const disclosure = disclosures[0]
-    let controls = initial
     if (disclosure) {
       if (!['true', 'false'].includes(disclosure.expanded ?? ''))
         return { clicked: false, acknowledged: false }
       if (disclosure.expanded === 'false') {
+        if (signal?.aborted) throw abortReason(signal)
+        if (!this.isClaimPage())
+          throw new OfferUnavailableError('Claim page changed before expansion')
         await buttons.nth(disclosure.index).click({ timeout: 10_000 })
-        await this.page.waitForTimeout(750)
+        if (signal) await delay(750, signal)
+        else await this.page.waitForTimeout(750)
       }
       const selector = 'button:not([aria-expanded]), [role="button"]:not([aria-expanded])'
       if (disclosure.controls) {
@@ -1211,10 +1225,16 @@ export class DashboardClient {
       } else {
         buttons = this.page.locator(selector)
       }
-      controls = await this.claimControlSnapshots(buttons)
     }
+    const controls = await this.waitForClaimControls(
+      buttons,
+      (snapshots) => selectClaimAction(snapshots, points) !== undefined,
+      signal
+    )
     const action = selectClaimAction(controls, points)
     if (!action) return { clicked: false, acknowledged: false }
+    if (signal?.aborted) throw abortReason(signal)
+    if (!this.isClaimPage()) throw new OfferUnavailableError('Claim page changed before submission')
     const responsePromise = this.page
       .waitForResponse(
         (response) => {
@@ -1240,23 +1260,59 @@ export class DashboardClient {
     }
   }
 
-  private async ensureDashboardPage(): Promise<boolean> {
-    const onClaimPage = () => {
+  private isClaimPage(): boolean {
+    try {
+      const url = new URL(this.page.url())
+      return url.origin === REWARDS_ORIGIN && ['/dashboard', '/earn'].includes(url.pathname)
+    } catch {
+      return false
+    }
+  }
+
+  private async ensureDashboardPage(signal?: AbortSignal): Promise<boolean> {
+    if (signal?.aborted) throw abortReason(signal)
+    if (this.isClaimPage()) return true
+    try {
+      if (signal) await navigateForAuthentication(this.page, REWARDS_URLS.dashboard, signal)
+      else await this.page.goto(REWARDS_URLS.dashboard, { waitUntil: 'commit', timeout: 30_000 })
+      if (signal?.aborted) throw abortReason(signal)
+      return this.isClaimPage()
+    } catch {
+      if (signal?.aborted) throw abortReason(signal)
+      return false
+    }
+  }
+
+  private async waitForClaimControls(
+    buttons: Locator,
+    ready: (controls: readonly ClaimControlSnapshot[]) => boolean,
+    signal?: AbortSignal
+  ): Promise<ClaimControlSnapshot[]> {
+    // Retry read-only snapshots, never a reward submission. Explicit zero remains zero.
+    for (let attempt = 0; attempt <= CLAIM_READINESS_RETRIES; attempt += 1) {
+      if (signal?.aborted) throw abortReason(signal)
+      if (!this.isClaimPage()) return []
+      let controls: ClaimControlSnapshot[] = []
       try {
-        const url = new URL(this.page.url())
-        return url.origin === REWARDS_ORIGIN && ['/dashboard', '/earn'].includes(url.pathname)
-      } catch {
-        return false
+        controls = await this.claimControlSnapshots(buttons)
+      } catch (error) {
+        if (
+          !(error instanceof Error) ||
+          !/execution context was destroyed|cannot find context|frame was detached/i.test(
+            error.message
+          )
+        )
+          throw error
+      }
+      if (signal?.aborted) throw abortReason(signal)
+      if (!this.isClaimPage()) return []
+      if (ready(controls)) return controls
+      if (attempt < CLAIM_READINESS_RETRIES) {
+        if (signal) await delay(CLAIM_READINESS_POLL_MS, signal)
+        else await this.page.waitForTimeout(CLAIM_READINESS_POLL_MS)
       }
     }
-    if (onClaimPage()) return true
-    return this.page
-      .goto(REWARDS_URLS.dashboard, {
-        waitUntil: 'domcontentloaded',
-        timeout: 30_000
-      })
-      .then(onClaimPage)
-      .catch(() => false)
+    return []
   }
 
   private async claimControlSnapshots(buttons: Locator): Promise<ClaimControlSnapshot[]> {

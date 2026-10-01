@@ -5,6 +5,7 @@ import type { AccountCredentials } from '../infra/AccountSecretStore.js'
 import type { StructuredLogger } from '../infra/StructuredLogger.js'
 import { redactText, safePath } from '../security/Redactor.js'
 import { REWARDS_URLS } from './Urls.js'
+import { navigateForAuthentication } from './AuthNavigation.js'
 
 export interface LoginStateSnapshot {
   state: LoginState
@@ -99,7 +100,7 @@ export class LoginController {
   constructor(private readonly logger: StructuredLogger) {}
 
   async detectCurrentState(page: Page): Promise<LoginStateSnapshot> {
-    await page.waitForLoadState('domcontentloaded', { timeout: 3000 }).catch(() => undefined)
+    // Inspect usable controls directly; DOMContentLoaded may be delayed by unrelated scripts.
     const current = location(page)
     const onLoginHost =
       current.host === 'login.live.com' ||
@@ -211,21 +212,26 @@ export class LoginController {
   }
 
   async login(page: Page, credentials: AccountCredentials, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted()
+    const deadline = Date.now() + LOGIN_TIMEOUT_MS
     if (!page.url() || page.url() === 'about:blank') {
-      await page.goto(REWARDS_URLS.login, { waitUntil: 'domcontentloaded', timeout: 30_000 })
+      await navigateForAuthentication(page, REWARDS_URLS.login, signal, deadline - Date.now())
     }
 
-    const deadline = Date.now() + LOGIN_TIMEOUT_MS
+    const submittedStates = new Set<LoginState>()
+    let authenticationInteractionStarted = false
     let previousState: LoginState | undefined
     let unchangedSince = Date.now()
     let unknownRecoveryAttempted = false
     let callbackSince: number | undefined
     while (Date.now() < deadline) {
-      if (signal.aborted) throw signal.reason
+      signal.throwIfAborted()
       let snapshot = await this.detectCurrentState(page)
+      signal.throwIfAborted()
       const observedAt = Date.now()
       if (snapshot.state === 'auth-callback') {
-        if (callbackSince === undefined || previousState !== 'auth-callback') callbackSince = observedAt
+        if (callbackSince === undefined || previousState !== 'auth-callback')
+          callbackSince = observedAt
       } else {
         callbackSince = undefined
       }
@@ -241,6 +247,7 @@ export class LoginController {
           : { durationMs: Math.max(0, observedAt - callbackSince) })
       })
 
+      signal.throwIfAborted()
       if (snapshot.state === 'logged-in') return
       if (snapshot.state === 'auth-callback') {
         const callbackWait = observedAt - (callbackSince ?? observedAt)
@@ -295,12 +302,14 @@ export class LoginController {
           snapshot.host === 'login.live.com' ||
           snapshot.host === 'login.microsoft.com' ||
           snapshot.host === 'login.microsoftonline.com'
-        if (snapshot.state === 'unknown' && onLoginHost && !unknownRecoveryAttempted) {
+        if (
+          snapshot.state === 'unknown' &&
+          onLoginHost &&
+          !unknownRecoveryAttempted &&
+          !authenticationInteractionStarted
+        ) {
           unknownRecoveryAttempted = true
-          await page.goto(REWARDS_URLS.login, {
-            waitUntil: 'domcontentloaded',
-            timeout: 30_000
-          })
+          await navigateForAuthentication(page, REWARDS_URLS.login, signal, deadline - Date.now())
           previousState = undefined
           unchangedSince = Date.now()
           continue
@@ -312,11 +321,21 @@ export class LoginController {
         })
       }
 
-      await this.handleState(page, snapshot.state, credentials)
+      signal.throwIfAborted()
+      if (!submittedStates.has(snapshot.state)) {
+        if (snapshot.state !== 'unknown') authenticationInteractionStarted = true
+        await this.handleState(page, snapshot.state, credentials, () => {
+          signal.throwIfAborted()
+          submittedStates.add(snapshot.state)
+        })
+      }
+      signal.throwIfAborted()
       await page.waitForTimeout(LOGIN_POLL_MS)
     }
 
+    signal.throwIfAborted()
     const currentSnapshot = await this.detectCurrentState(page)
+    signal.throwIfAborted()
     if (currentSnapshot.state === 'logged-in') return
     if (currentSnapshot.state === 'auth-callback') {
       throw this.stateError({
@@ -367,8 +386,20 @@ export class LoginController {
   private async handleState(
     page: Page,
     state: LoginState,
-    credentials: AccountCredentials
+    credentials: AccountCredentials,
+    beforeSubmit: () => void
   ): Promise<void> {
+    if (state === 'email-input' || state === 'password-input') {
+      const current = new URL(page.url())
+      if (
+        current.protocol !== 'https:' ||
+        !['login.live.com', 'login.microsoft.com', 'login.microsoftonline.com'].includes(
+          current.hostname
+        )
+      ) {
+        throw this.interactionError(page, state, 'login-origin-untrusted')
+      }
+    }
     if (state === 'email-input') {
       const email = await firstVisible(page.locator(SELECTORS.email))
       if (!email) return
@@ -377,14 +408,7 @@ export class LoginController {
       } catch {
         return
       }
-      try {
-        await this.clickPrimary(page)
-      } catch {
-        const current = await this.detectCurrentState(page)
-        if (current.state !== state) return
-        if (await this.submitWithEnter(page, email, state)) return
-        throw this.interactionError(page, state, 'login-email-submit')
-      }
+      await this.submitCredentialForm(page, email, state, beforeSubmit)
       return
     }
     if (state === 'password-input') {
@@ -395,14 +419,7 @@ export class LoginController {
       } catch {
         return
       }
-      try {
-        await this.clickPrimary(page)
-      } catch {
-        const current = await this.detectCurrentState(page)
-        if (current.state !== state) return
-        if (await this.submitWithEnter(page, password, state)) return
-        throw this.interactionError(page, state, 'login-password-submit')
-      }
+      await this.submitCredentialForm(page, password, state, beforeSubmit)
       return
     }
     if (state === 'password-choice') {
@@ -410,6 +427,7 @@ export class LoginController {
       throw this.interactionError(page, state, 'login-password-choice')
     }
     if (state === 'kmsi-prompt') {
+      beforeSubmit()
       await this.clickPrimary(page)
       return
     }
@@ -493,17 +511,21 @@ export class LoginController {
     await primary.click({ timeout: 10_000 })
   }
 
-  private async submitWithEnter(
+  private async submitCredentialForm(
     page: Page,
     input: Locator,
-    previousState: LoginState
-  ): Promise<boolean> {
+    previousState: LoginState,
+    beforeSubmit: () => void
+  ): Promise<void> {
+    const primary = await firstEnabledVisible(page.locator(SELECTORS.primary))
+    beforeSubmit()
     try {
-      await input.press('Enter', { timeout: 5_000 })
-      await page.waitForTimeout(700)
-      return (await this.detectCurrentState(page)).state !== previousState
+      if (primary) await primary.click({ timeout: 10_000 })
+      else await input.press('Enter', { timeout: 5_000 })
     } catch {
-      return false
+      if ((await this.detectCurrentState(page)).state !== previousState) return
+      // A timed-out click may have submitted already. Never follow it with an Enter retry.
+      throw this.interactionError(page, previousState, 'login-submit-unconfirmed')
     }
   }
 

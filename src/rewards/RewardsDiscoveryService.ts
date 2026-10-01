@@ -293,7 +293,12 @@ export class RewardsDiscoveryService {
 
     this.addSearchTask(descriptors, input.accountId, input.localDate, 'pc-search', pcSearch)
     this.addSearchTask(descriptors, input.accountId, input.localDate, 'mobile-search', mobileSearch)
-    const claimablePoints = await input.client.readClaimablePoints().catch(() => undefined)
+    const claimablePoints = await input.client
+      .readClaimablePoints(input.signal)
+      .catch((error: unknown) => {
+        if (input.signal?.aborted) throw error
+        return undefined
+      })
     this.addClaimTask(descriptors, input.accountId, input.localDate, claimablePoints)
 
     return {

@@ -367,6 +367,69 @@ function authenticationCoordinator(input: {
 }
 
 describe('coordinator authentication recovery', () => {
+  it.each([
+    ['TimeoutError', 'login-navigation-timeout'],
+    ['Error', 'login-navigation-error']
+  ])(
+    'does not submit login or persist a session after a %s navigation failure',
+    async (name, stage) => {
+      const desktop = browserSlot('web-desktop')
+      const failure = new Error('synthetic authentication navigation failure')
+      failure.name = name
+      desktop.goto.mockRejectedValue(failure)
+      const openSlot = vi.fn().mockResolvedValue(desktop.value)
+      const login = vi.spyOn(LoginController.prototype, 'login').mockResolvedValue(undefined)
+      const verify = vi.spyOn(RewardsDiscoveryService.prototype, 'verifyAuthenticated')
+
+      await expect(
+        invokeAuthenticate(authenticationCoordinator({ openSlot }))
+      ).rejects.toMatchObject({
+        name: 'LoginStateError',
+        loginState: 'unknown',
+        loginStage: stage
+      })
+      expect(desktop.goto).toHaveBeenCalledTimes(1)
+      expect(openSlot).toHaveBeenCalledTimes(1)
+      expect(login).not.toHaveBeenCalled()
+      expect(verify).not.toHaveBeenCalled()
+      expect(desktop.commitVerified).not.toHaveBeenCalled()
+    }
+  )
+
+  it('reaches verified desktop authentication despite a delayed DOMContentLoaded event', async () => {
+    const desktop = browserSlot('web-desktop')
+    desktop.goto.mockImplementation((_target: string, options: { waitUntil: string }) =>
+      options.waitUntil === 'domcontentloaded'
+        ? Promise.reject(new Error('synthetic navigation timeout'))
+        : Promise.resolve(null)
+    )
+    const openSlot = vi.fn().mockResolvedValue(desktop.value)
+    const login = vi.spyOn(LoginController.prototype, 'login').mockResolvedValue(undefined)
+    vi.spyOn(RewardsDiscoveryService.prototype, 'verifyAuthenticated').mockResolvedValue({
+      verification: { valid: true },
+      observation: observation()
+    })
+    const config = {
+      ...DEFAULT_CONFIG,
+      tasks: {
+        ...DEFAULT_CONFIG.tasks,
+        mobileSearch: false,
+        appActivities: false,
+        appCheckIn: false,
+        readToEarn: false
+      }
+    }
+    await expect(
+      invokeAuthenticate(authenticationCoordinator({ openSlot, config }))
+    ).resolves.toEqual({ status: 'completed' })
+    expect(login).toHaveBeenCalledTimes(1)
+    expect(desktop.goto).toHaveBeenCalledWith(
+      REWARDS_URLS.dashboard,
+      expect.objectContaining({ waitUntil: 'commit' })
+    )
+    expect(desktop.commitVerified).toHaveBeenCalledTimes(1)
+  })
+
   it('repairs a mobile Bing session before App OAuth and commits only after verification', async () => {
     const desktop = browserSlot('web-desktop')
     const mobile = browserSlot('web-mobile')
@@ -405,7 +468,7 @@ describe('coordinator authentication recovery', () => {
     expect(mobile.goto).toHaveBeenNthCalledWith(
       2,
       REWARDS_URLS.bingSignIn,
-      expect.objectContaining({ waitUntil: 'domcontentloaded' })
+      expect.objectContaining({ waitUntil: 'commit' })
     )
     expect(desktop.commitVerified).toHaveBeenCalledTimes(1)
     expect(mobile.commitVerified).toHaveBeenCalledTimes(1)

@@ -22,34 +22,33 @@ function fixture(initial: ControlFixture[], expanded = initial) {
   const clicks = initial.map(() => vi.fn().mockResolvedValue(undefined))
   const actionClicks =
     expanded === initial ? clicks : expanded.map(() => vi.fn().mockResolvedValue(undefined))
-  const collection = (controls: ControlFixture[], handlers: typeof clicks) =>
-    ({
-      count: vi.fn().mockResolvedValue(controls.length),
-      nth: vi.fn((index: number) => ({
-        getAttribute: vi.fn((name: string) =>
-          Promise.resolve(
-            name === 'aria-label'
-              ? controls[index]?.texts[0] || null
-              : name === 'aria-expanded'
-                ? (controls[index]?.expanded ?? null)
-                : null
-          )
-        ),
-        textContent: vi.fn().mockResolvedValue(controls[index]?.texts[1] ?? ''),
-        click: handlers[index]
-      })),
-      evaluateAll: vi.fn().mockResolvedValue(
-        controls.map((control, index) => ({
-          index,
-          texts: control.texts,
-          contextTexts: control.contextTexts ?? [],
-          expanded: control.expanded ?? null,
-          controls: control.controls ?? null,
-          disabled: control.disabled ?? false,
-          visible: control.visible ?? true
-        }))
-      )
-    }) as unknown as Locator
+  const collection = (controls: ControlFixture[], handlers: typeof clicks) => ({
+    count: vi.fn().mockResolvedValue(controls.length),
+    nth: vi.fn((index: number) => ({
+      getAttribute: vi.fn((name: string) =>
+        Promise.resolve(
+          name === 'aria-label'
+            ? controls[index]?.texts[0] || null
+            : name === 'aria-expanded'
+              ? (controls[index]?.expanded ?? null)
+              : null
+        )
+      ),
+      textContent: vi.fn().mockResolvedValue(controls[index]?.texts[1] ?? ''),
+      click: handlers[index]
+    })),
+    evaluateAll: vi.fn<() => Promise<ClaimControlSnapshot[]>>().mockResolvedValue(
+      controls.map((control, index) => ({
+        index,
+        texts: control.texts,
+        contextTexts: control.contextTexts ?? [],
+        expanded: control.expanded ?? null,
+        controls: control.controls ?? null,
+        disabled: control.disabled ?? false,
+        visible: control.visible ?? true
+      }))
+    )
+  })
   const initialButtons = collection(initial, clicks)
   const expandedButtons = collection(expanded, actionClicks)
   const panelLocator = { locator: vi.fn().mockReturnValue(expandedButtons) }
@@ -64,12 +63,13 @@ function fixture(initial: ControlFixture[], expanded = initial) {
   const page = {
     url: vi.fn().mockReturnValue('https://rewards.bing.com/dashboard'),
     goto: vi.fn().mockRejectedValue(new Error('synthetic navigation failure')),
-    locator: vi.fn((selector: string) =>
-      selector.startsWith('[id=')
-        ? panelLocator
-        : selector.includes(':not([aria-expanded])')
-          ? expandedButtons
-          : initialButtons
+    locator: vi.fn(
+      (selector: string): Locator =>
+        (selector.startsWith('[id=')
+          ? panelLocator
+          : selector.includes(':not([aria-expanded])')
+            ? expandedButtons
+            : initialButtons) as unknown as Locator
     ),
     evaluate: vi.fn((callback: () => unknown) => {
       vi.stubGlobal('document', {
@@ -96,10 +96,20 @@ function fixture(initial: ControlFixture[], expanded = initial) {
     'synthetic-run',
     'synthetic-account'
   )
-  return { client, page, clicks, actionClicks, panelLocator, response }
+  return {
+    client,
+    page,
+    clicks,
+    actionClicks,
+    panelLocator,
+    response,
+    initialButtons,
+    expandedButtons
+  }
 }
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
@@ -546,4 +556,172 @@ describe('claim snapshot extraction from synthetic DOM trees', () => {
       expect(f.clicks[0]).not.toHaveBeenCalled()
     }
   )
+})
+
+describe('claim controls readiness on slow pages', () => {
+  it('waits for the claim amount to hydrate before reporting it unavailable', async () => {
+    const f = fixture([{ texts: ['领取积分', '30 积分'] }])
+    const read = vi.mocked(f.initialButtons.evaluateAll)
+    read
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([control('领取 30 积分')])
+    await expect(f.client.readClaimablePoints()).resolves.toBe(30)
+    expect(read).toHaveBeenCalledTimes(3)
+    expect(f.page.waitForTimeout).toHaveBeenCalledTimes(2)
+    expect(f.clicks[0]).not.toHaveBeenCalled()
+  })
+
+  it('waits for delayed claim controls and submits the reward only once', async () => {
+    const f = fixture([{ texts: ['领取积分', '30 积分'] }])
+    const read = vi.mocked(f.initialButtons.evaluateAll)
+    read.mockResolvedValueOnce([]).mockResolvedValue([control('领取 30 积分')])
+    await expect(f.client.claimBonusByUiWithResult()).resolves.toMatchObject({
+      clicked: true,
+      acknowledged: true
+    })
+    expect(f.clicks[0]).toHaveBeenCalledTimes(1)
+  })
+
+  it('waits for an expanded action instead of treating a slow panel as empty', async () => {
+    const f = fixture([{ texts: ['领取 30 积分'], expanded: 'false' }], [{ texts: ['领取全部'] }])
+    const read = vi.mocked(f.expandedButtons.evaluateAll)
+    read.mockResolvedValueOnce([]).mockResolvedValue([control('领取全部')])
+    await expect(f.client.claimBonusByUiWithResult()).resolves.toMatchObject({
+      clicked: true,
+      acknowledged: true
+    })
+    expect(f.clicks[0]).toHaveBeenCalledTimes(1)
+    expect(f.actionClicks[0]).toHaveBeenCalledTimes(1)
+  })
+
+  it('uses commit navigation then waits for controls when dashboard DOMContentLoaded is delayed', async () => {
+    const f = fixture([{ texts: ['领取 30 积分'] }])
+    let current = 'https://www.bing.com/search'
+    f.page.url.mockImplementation(() => current)
+    f.page.goto.mockImplementation((_target: string, options: { waitUntil: string }) => {
+      if (options.waitUntil === 'domcontentloaded')
+        return Promise.reject(new Error('synthetic navigation timeout'))
+      current = 'https://rewards.bing.com/dashboard'
+      return Promise.resolve(null)
+    })
+    await expect(f.client.readClaimablePoints()).resolves.toBe(30)
+    expect(f.page.goto).toHaveBeenCalledWith(
+      'https://rewards.bing.com/dashboard',
+      expect.objectContaining({ waitUntil: 'commit' })
+    )
+    expect(f.clicks[0]).not.toHaveBeenCalled()
+  })
+})
+
+describe('claim readiness safety boundaries', () => {
+  it('bounds empty snapshots and does not turn missing evidence into zero', async () => {
+    const f = fixture([])
+    await expect(f.client.readClaimablePoints()).resolves.toBeUndefined()
+    expect(f.initialButtons.evaluateAll).toHaveBeenCalledTimes(11)
+    expect(f.page.waitForTimeout).toHaveBeenCalledTimes(10)
+    expect(f.page.waitForResponse).not.toHaveBeenCalled()
+  })
+
+  it('does not wait for or submit an explicitly zero claim', async () => {
+    const f = fixture([{ texts: ['可领取 0 积分'], disabled: true }])
+    await expect(f.client.readClaimablePoints()).resolves.toBe(0)
+    await expect(f.client.claimBonusByUiWithResult()).resolves.toEqual({
+      clicked: false,
+      acknowledged: false
+    })
+    expect(f.page.waitForTimeout).not.toHaveBeenCalled()
+    expect(f.clicks[0]).not.toHaveBeenCalled()
+  })
+
+  it('retries a read-only snapshot after an execution context transition', async () => {
+    const f = fixture([{ texts: ['领取 30 积分'] }])
+    vi.mocked(f.initialButtons.evaluateAll).mockRejectedValueOnce(
+      new Error('Execution context was destroyed, most likely because of a navigation')
+    )
+    await expect(f.client.readClaimablePoints()).resolves.toBe(30)
+    expect(f.initialButtons.evaluateAll).toHaveBeenCalledTimes(2)
+    expect(f.clicks[0]).not.toHaveBeenCalled()
+  })
+
+  it('does not hide a non-transient snapshot error', async () => {
+    const f = fixture([{ texts: ['领取 30 积分'] }])
+    const reason = new Error('synthetic snapshot programming error')
+    vi.mocked(f.initialButtons.evaluateAll).mockRejectedValue(reason)
+    await expect(f.client.readClaimablePoints()).rejects.toBe(reason)
+    expect(f.initialButtons.evaluateAll).toHaveBeenCalledTimes(1)
+    expect(f.clicks[0]).not.toHaveBeenCalled()
+  })
+
+  it('stops waiting when the page leaves the official Rewards origin', async () => {
+    const f = fixture([{ texts: ['领取 30 积分'] }])
+    vi.mocked(f.initialButtons.evaluateAll).mockResolvedValueOnce([])
+    f.page.waitForTimeout.mockImplementation(() => {
+      f.page.url.mockReturnValue('https://untrusted.example/dashboard')
+      return Promise.resolve()
+    })
+    await expect(f.client.claimBonusByUiWithResult()).resolves.toEqual({
+      clicked: false,
+      acknowledged: false
+    })
+    expect(f.clicks[0]).not.toHaveBeenCalled()
+    expect(f.page.waitForResponse).not.toHaveBeenCalled()
+  })
+
+  it('rejects an origin change that occurs while reading a usable snapshot', async () => {
+    const f = fixture([{ texts: ['领取 30 积分'] }])
+    vi.mocked(f.initialButtons.evaluateAll).mockImplementation(() => {
+      f.page.url.mockReturnValue('https://untrusted.example/dashboard')
+      return Promise.resolve([control('领取 30 积分')])
+    })
+    await expect(f.client.claimBonusByUiWithResult()).resolves.toEqual({
+      clicked: false,
+      acknowledged: false
+    })
+    expect(f.clicks[0]).not.toHaveBeenCalled()
+  })
+
+  it('cancels a pending readiness wait without sending a claim', async () => {
+    vi.useFakeTimers()
+    const f = fixture([{ texts: ['领取 30 积分'] }])
+    vi.mocked(f.initialButtons.evaluateAll).mockResolvedValue([])
+    const abort = new AbortController()
+    const reason = new Error('synthetic claim cancelled')
+    const running = f.client.claimBonusByUiWithResult(abort.signal)
+    const rejected = expect(running).rejects.toBe(reason)
+    await vi.advanceTimersByTimeAsync(0)
+    abort.abort(reason)
+    await rejected
+    expect(f.initialButtons.evaluateAll).toHaveBeenCalledTimes(1)
+    expect(f.clicks[0]).not.toHaveBeenCalled()
+    expect(f.page.waitForResponse).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('does not navigate or inspect an already cancelled claim', async () => {
+    const f = fixture([{ texts: ['领取 30 积分'] }])
+    const abort = new AbortController()
+    const reason = new Error('synthetic claim pre-cancelled')
+    abort.abort(reason)
+    await expect(f.client.claimBonusByUiWithResult(abort.signal)).rejects.toBe(reason)
+    expect(f.page.goto).not.toHaveBeenCalled()
+    expect(f.page.locator).not.toHaveBeenCalled()
+    expect(f.clicks[0]).not.toHaveBeenCalled()
+  })
+})
+
+describe('claim action hydration', () => {
+  it('waits for a temporarily disabled action to become usable before submitting once', async () => {
+    const f = fixture([{ texts: ['领取 30 积分'], disabled: true }])
+    f.initialButtons.evaluateAll
+      .mockResolvedValueOnce([control('领取 30 积分', { disabled: true })])
+      .mockResolvedValueOnce([control('领取 30 积分', { disabled: true })])
+      .mockResolvedValue([control('领取 30 积分')])
+    await expect(f.client.claimBonusByUiWithResult()).resolves.toMatchObject({
+      clicked: true,
+      acknowledged: true
+    })
+    expect(f.initialButtons.evaluateAll).toHaveBeenCalledTimes(3)
+    expect(f.clicks[0]).toHaveBeenCalledTimes(1)
+  })
 })

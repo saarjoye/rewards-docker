@@ -5,6 +5,7 @@ import { BrowserRuntime } from '../browser/BrowserRuntime.js'
 import { DashboardClient } from '../browser/DashboardClient.js'
 import { AppOAuthClient, type AppToken } from '../browser/AppOAuthClient.js'
 import { LoginController } from '../browser/LoginController.js'
+import { navigateForAuthentication } from '../browser/AuthNavigation.js'
 import { REWARDS_URLS } from '../browser/Urls.js'
 import { LoginStateError, requiresUserAction } from '../auth/LoginState.js'
 import type { EncryptedSessionStore } from '../auth/EncryptedSessionStore.js'
@@ -896,10 +897,7 @@ export class ApplicationRunCoordinator {
         )
       }
     )
-    await resources.desktop.page.goto(REWARDS_URLS.dashboard, {
-      waitUntil: 'domcontentloaded',
-      timeout: 30_000
-    })
+    await navigateForAuthentication(resources.desktop.page, REWARDS_URLS.dashboard, context.signal)
     await login.login(resources.desktop.page, credentials, context.signal)
     const desktopObservation = await this.verifyBrowserSession(
       resources.desktop,
@@ -936,10 +934,7 @@ export class ApplicationRunCoordinator {
           )
         }
       )
-      await resources.mobile.page.goto(REWARDS_URLS.dashboard, {
-        waitUntil: 'domcontentloaded',
-        timeout: 30_000
-      })
+      await navigateForAuthentication(resources.mobile.page, REWARDS_URLS.dashboard, context.signal)
       await login.login(resources.mobile.page, credentials, context.signal)
       await this.verifyBrowserSession(
         resources.mobile,
@@ -989,10 +984,7 @@ export class ApplicationRunCoordinator {
     const discovery = new RewardsDiscoveryService()
     let verified = await discovery.verifyAuthenticated(client, signal)
     if (!verified.verification.valid) {
-      await slot.page.goto(REWARDS_URLS.bingSignIn, {
-        waitUntil: 'domcontentloaded',
-        timeout: 30_000
-      })
+      await navigateForAuthentication(slot.page, REWARDS_URLS.bingSignIn, signal)
       await login.login(slot.page, credentials, signal)
       verified = await discovery.verifyAuthenticated(client, signal)
     }
