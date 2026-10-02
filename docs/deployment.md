@@ -4,7 +4,50 @@ Next 单应用沿用 `ghcr.io/saarjoye/mrs-core` 镜像名，替代旧版 Core/W
 
 ## 发布和切换
 
-现有仓库的 `main` 分支通过 `.github/workflows/docker-image.yml` 构建。先执行离线测试、类型检查、ESLint、构建和 Compose 校验，再构建 `linux/amd64` 与 `linux/arm64` 候选镜像。候选镜像使用空数据、禁用外部网络做启动健康检查；成功后才更新 `5.0.0-next.20` 与 `latest`。完整提交固定标签为 `sha-<完整提交号>`。
+现有仓库的 `main` 分支通过 `.github/workflows/docker-image.yml` 构建。先执行离线测试、类型检查、ESLint、构建和 Compose 校验，再构建 `linux/amd64` 与 `linux/arm64` 候选镜像。候选镜像使用空数据、禁用外部网络做启动健康检查；成功后才更新 `5.0.0-next.21` 与 `latest`。完整提交固定标签为 `sha-<完整提交号>`。
+
+## next.21 升级与兼容修复
+
+本版包含：
+
+- 首页领取控件的中英文识别、局部金额证据和慢加载只读等待；未知积分不记为零，
+  禁用控件或非官方来源不点击，提交后未确认不重发。
+- 认证入口的有界 commit 导航、主文档失败分类、超时与取消清理；普通密码和已有
+  Session 恢复路径保留。新版通行密钥页只做被动识别与严格官方方式返回，不包含
+  自动取消 WebAuthn、伪造认证或自动处理 MFA 的实验。
+- 任务卡片按官方身份及目的地约束匹配，区分找不到、来源/类型冲突和仍未完成；
+  已提交的 pending 任务只能只读复核。
+- 同一官方任务的多来源观察选择整条权威记录，避免混合来源、类型和进度；SQLite
+  只在同一不可变任务身份内刷新派生分类，保留历史、任务键和 mutation 账本。
+
+应用镜像为 `ghcr.io/saarjoye/mrs-core:5.0.0-next.21`。只有 GitHub Actions 的
+候选验证与提升步骤成功后，该版本及 `latest` 才可用于升级；代码推送成功不等于
+镜像已发布。多架构构建仍使用锁定的依赖和 Patchright 1.61.1 浏览器层。
+
+### 已有 Docker 服务更新
+
+1. 在管理页停止当前任务并确认完全空闲，避开定时触发窗口；按原部署方式做一致性
+   备份，记录旧镜像标签或 digest。不要直接用强制重启代替任务正常停止。
+2. 保留原 Compose 文件、项目名、服务名、端口、全部数据卷、主密钥和环境配置。
+   如需固定版本，只把原服务的 `image` 改为上述 next.21 镜像；不要用示例文件覆盖
+   现有部署。已有调度继续保留，`RUN_ON_START` 应为 `false`。
+3. 在原 Compose 项目目录使用原来的 `-p` / `-f` / `--env-file` 参数拉取并重建
+   应用服务。下面仅适用于已经使用本仓库 `compose.yaml` 及默认服务名的部署：
+
+   ```sh
+   docker compose pull microsoft-rewards-next
+   docker compose up -d --no-deps --no-build --pull never microsoft-rewards-next
+   docker compose ps microsoft-rewards-next
+   ```
+
+4. 检查容器健康、管理页版本、账号、历史、数据卷与定时设置。升级本身不自动启动
+   真实账号任务；新一轮积分和正值领取仍须按授权范围核对。
+
+不要执行 `docker compose down -v`、清理持久卷或重新生成密钥。需要回退时，先
+确认空闲，再把原服务的 `image` 恢复为记录的旧镜像，并用相同项目/配置参数重建；
+不得通过覆盖数据库或重复提交 pending 任务来“恢复”积分。
+
+## 既有版本说明
 
 next.20 修复最终结算读取 HTML 登录页导致账号失败的问题：识别鉴权跳转、保留 Flyout 最低 5 秒预算，结算重试耗尽后按已有有效余额证据完成或降级为 partial。日历改用轻量运行摘要与任务统计，并新增 8 个业务索引；迁移按基础表、账本表、索引顺序执行，支持空数据库与原数据卷升级。
 
