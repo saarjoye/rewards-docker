@@ -1,9 +1,13 @@
+import { REWARDS_ORIGIN, REWARDS_URLS } from './Urls.js'
+
 export interface ClaimControlSnapshot {
   index: number
   texts: readonly string[]
   contextTexts: readonly string[]
   expanded: string | null
   controls: string | null
+  href?: string | null
+  popup?: string | null
   disabled: boolean
   visible: boolean
 }
@@ -23,9 +27,23 @@ function controlText(control: ClaimControlSnapshot): string {
   return control.texts.join(' ').trim()
 }
 
+function supportedClaimLink(href: string | null | undefined): boolean {
+  if (href === null || href === undefined) return true
+  try {
+    const url = new URL(href, REWARDS_URLS.dashboard)
+    return url.origin === REWARDS_ORIGIN && ['/dashboard', '/earn'].includes(url.pathname)
+  } catch {
+    return false
+  }
+}
+
 function isClaimControl(control: ClaimControlSnapshot): boolean {
   const text = controlText(control)
-  return claimKeyword.test(text) && !/\bredeem\b|兑换|兌換/i.test(text)
+  return (
+    supportedClaimLink(control.href) &&
+    claimKeyword.test(text) &&
+    !/\bredeem\b|兑换|兌換/i.test(text)
+  )
 }
 
 function uniqueAmount(text: string): number | undefined {
@@ -69,7 +87,9 @@ export function claimControlPoints(control: ClaimControlSnapshot): number | unde
 export function claimablePointsFromControls(
   controls: readonly ClaimControlSnapshot[]
 ): number | undefined {
-  const visible = controls.filter((control) => control.visible && isClaimControl(control))
+  const visible = controls.filter(
+    (control) => control.visible && isClaimControl(control) && !isCapOnlyControl(control)
+  )
   const summaries = visible.filter(
     (control) => control.expanded !== null || allKeyword.test(controlText(control))
   )
@@ -85,6 +105,15 @@ export function claimablePointsFromControls(
       : undefined
 }
 
+function isCapOnlyControl(control: ClaimControlSnapshot): boolean {
+  const text = controlText(control)
+  if (!nonClaimAmountLabel.test(text) || claimControlPoints(control) !== undefined) return false
+  const combined = [text, ...control.contextTexts].join(' ')
+  const labeled = new RegExp(claimableAmountLabel + String.raw`\s*[:：]?\s*[+\-\u2212]?\s*\d`, 'i')
+  const trailing = /\d\s*(?:待领取|待領取|\bpoints\s+to\s+claim\b)/i
+  return !labeled.test(combined) && !trailing.test(combined)
+}
+
 export function selectClaimAction(
   controls: readonly ClaimControlSnapshot[],
   expectedPoints: number
@@ -95,6 +124,8 @@ export function selectClaimAction(
       !control.visible ||
       control.disabled ||
       control.expanded !== null ||
+      control.href != null ||
+      control.popup === 'dialog' ||
       !isClaimControl(control)
     )
       return false

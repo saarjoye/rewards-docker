@@ -6,6 +6,7 @@ import type {
   ElementHandle,
   Locator,
   Page,
+  Request,
   Response
 } from 'patchright'
 
@@ -1133,7 +1134,7 @@ export class DashboardClient {
     if (!(await this.ensureDashboardPage(signal, options.refresh))) return undefined
     return claimablePointsFromControls(
       await this.waitForClaimControls(
-        this.page.locator('button, [role="button"]'),
+        this.page.locator('button, [role="button"], a[href]'),
         (controls) => claimablePointsFromControls(controls) !== undefined,
         signal
       )
@@ -1213,14 +1214,51 @@ export class DashboardClient {
   async claimBonusByUiWithResult(signal?: AbortSignal): Promise<ClaimUiResult> {
     if (!(await this.ensureDashboardPage(signal)))
       throw new OfferUnavailableError('Dashboard page unavailable before claim')
-    let buttons = this.page.locator('button, [role="button"]')
-    const initial = await this.waitForClaimControls(
+    let buttons = this.page.locator('button, [role="button"], a[href]')
+    let initial = await this.waitForClaimControls(
       buttons,
       (controls) => claimablePointsFromControls(controls) !== undefined,
       signal
     )
     const points = claimablePointsFromControls(initial)
     if (points === undefined || points <= 0) return { clicked: false, acknowledged: false }
+    let dialogText: string | undefined
+    let claimDialog: Locator | undefined
+    const openers = initial.filter(
+      (control) =>
+        control.visible &&
+        !control.disabled &&
+        (control.href != null || control.popup === 'dialog') &&
+        claimControlPoints(control) === points
+    )
+    if (openers.length > 1) return { clicked: false, acknowledged: false }
+    if (openers[0]) {
+      if (signal?.aborted) throw abortReason(signal)
+      if (!this.isClaimPage())
+        throw new OfferUnavailableError('Claim page changed before opening drawer')
+      const requestState = { officialPostStarted: false }
+      const observeRequest = (request: Request): void => {
+        if (request.method() !== 'POST') return
+        try {
+          if (new URL(request.url()).origin === REWARDS_ORIGIN)
+            requestState.officialPostStarted = true
+        } catch {
+          // A malformed request URL is not evidence of an official claim.
+        }
+      }
+      this.page.on('request', observeRequest)
+      try {
+        await buttons.nth(openers[0].index).click({ timeout: 10_000 })
+        claimDialog = await this.waitForClaimDialog(points, signal)
+        if (requestState.officialPostStarted) return { clicked: true, acknowledged: false }
+      } finally {
+        this.page.off('request', observeRequest)
+      }
+      if (!claimDialog) return { clicked: false, acknowledged: false }
+      buttons = claimDialog.locator('button, [role="button"]')
+      dialogText = (await claimDialog.textContent()) ?? ''
+      initial = []
+    }
     const disclosures = initial.filter(
       (control) =>
         control.visible &&
@@ -1250,15 +1288,33 @@ export class DashboardClient {
         buttons = this.page.locator(selector)
       }
     }
+    const chooseAction = (
+      snapshots: readonly ClaimControlSnapshot[]
+    ): ClaimControlSnapshot | undefined =>
+      selectClaimAction(
+        dialogText === undefined
+          ? snapshots
+          : snapshots.map((control) => ({
+              ...control,
+              contextTexts: [...control.contextTexts, dialogText]
+            })),
+        points
+      )
     const controls = await this.waitForClaimControls(
       buttons,
-      (snapshots) => selectClaimAction(snapshots, points) !== undefined,
+      (snapshots) => chooseAction(snapshots) !== undefined,
       signal
     )
-    const action = selectClaimAction(controls, points)
+    const action = chooseAction(controls)
     if (!action) return { clicked: false, acknowledged: false }
     if (signal?.aborted) throw abortReason(signal)
     if (!this.isClaimPage()) throw new OfferUnavailableError('Claim page changed before submission')
+    if (
+      claimDialog &&
+      (!(await claimDialog.isVisible()) ||
+        this.claimDialogPoints((await claimDialog.textContent()) ?? '') !== points)
+    )
+      return { clicked: false, acknowledged: false }
     const responsePromise = this.page
       .waitForResponse(
         (response) => {
@@ -1291,6 +1347,46 @@ export class DashboardClient {
     } catch {
       return false
     }
+  }
+
+  private async waitForClaimDialog(
+    expectedPoints: number,
+    signal?: AbortSignal
+  ): Promise<Locator | undefined> {
+    const dialogs = this.page.locator('[role="dialog"], dialog, [aria-modal="true"]')
+    for (let attempt = 0; attempt <= CLAIM_READINESS_RETRIES; attempt += 1) {
+      if (signal?.aborted) throw abortReason(signal)
+      if (!this.isClaimPage()) return undefined
+      const matches: Locator[] = []
+      const count = Math.min(await dialogs.count(), 10)
+      for (let index = 0; index < count; index += 1) {
+        const dialog = dialogs.nth(index)
+        if (!(await dialog.isVisible())) continue
+        const text = (await dialog.textContent()) ?? ''
+        const points = this.claimDialogPoints(text)
+        if (points === expectedPoints) matches.push(dialog)
+      }
+      if (matches.length === 1) return matches[0]
+      if (matches.length > 1) return undefined
+      if (attempt < CLAIM_READINESS_RETRIES) {
+        if (signal) await delay(CLAIM_READINESS_POLL_MS, signal)
+        else await this.page.waitForTimeout(CLAIM_READINESS_POLL_MS)
+      }
+    }
+    return undefined
+  }
+
+  private claimDialogPoints(text: string): number | undefined {
+    if (!/领取积分|領取積分|\bclaim points\b/i.test(text.slice(0, 100))) return undefined
+    return claimControlPoints({
+      index: 0,
+      texts: ['领取积分'],
+      contextTexts: [text],
+      expanded: null,
+      controls: null,
+      disabled: false,
+      visible: true
+    })
   }
 
   private async ensureDashboardPage(signal?: AbortSignal, refresh = false): Promise<boolean> {
@@ -1348,7 +1444,7 @@ export class DashboardClient {
         for (let depth = 0; parent && depth < 3; depth += 1, parent = parent.parentElement) {
           if (
             parent.matches('body, html, main, nav, header') ||
-            parent.querySelectorAll('button, [role="button"]').length !== 1
+            parent.querySelectorAll('button, [role="button"], a[href]').length !== 1
           )
             break
           const text = parent.textContent.trim()
@@ -1366,6 +1462,8 @@ export class DashboardClient {
           contextTexts,
           expanded: control.getAttribute('aria-expanded'),
           controls: control.getAttribute('aria-controls'),
+          href: control.getAttribute('href'),
+          popup: control.getAttribute('aria-haspopup'),
           disabled:
             control.matches(':disabled') || control.closest('[aria-disabled="true"]') !== null,
           visible:

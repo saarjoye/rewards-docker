@@ -14,11 +14,14 @@ interface ControlFixture {
   contextTexts?: string[]
   expanded?: string | null
   controls?: string | null
+  href?: string | null
+  popup?: string | null
   disabled?: boolean
   visible?: boolean
 }
 
 function fixture(initial: ControlFixture[], expanded = initial) {
+  const requestListeners = new Set<(request: { method: () => string; url: () => string }) => void>()
   const clicks = initial.map(() => vi.fn().mockResolvedValue(undefined))
   const actionClicks =
     expanded === initial ? clicks : expanded.map(() => vi.fn().mockResolvedValue(undefined))
@@ -44,6 +47,8 @@ function fixture(initial: ControlFixture[], expanded = initial) {
         contextTexts: control.contextTexts ?? [],
         expanded: control.expanded ?? null,
         controls: control.controls ?? null,
+        href: control.href ?? null,
+        popup: control.popup ?? null,
         disabled: control.disabled ?? false,
         visible: control.visible ?? true
       }))
@@ -87,7 +92,17 @@ function fixture(initial: ControlFixture[], expanded = initial) {
       }
     }),
     waitForResponse: vi.fn().mockResolvedValue(response),
-    waitForTimeout: vi.fn().mockResolvedValue(undefined)
+    waitForTimeout: vi.fn().mockResolvedValue(undefined),
+    on: vi.fn(
+      (event: string, listener: (request: { method: () => string; url: () => string }) => void) => {
+        if (event === 'request') requestListeners.add(listener)
+      }
+    ),
+    off: vi.fn(
+      (event: string, listener: (request: { method: () => string; url: () => string }) => void) => {
+        if (event === 'request') requestListeners.delete(listener)
+      }
+    )
   }
   const client = new DashboardClient(
     {} as BrowserContext,
@@ -104,7 +119,8 @@ function fixture(initial: ControlFixture[], expanded = initial) {
     panelLocator,
     response,
     initialButtons,
-    expandedButtons
+    expandedButtons,
+    requestListeners
   }
 }
 
@@ -270,6 +286,121 @@ describe('claim controls with separated amount and action labels', () => {
   })
 })
 
+describe('homepage claim drawer', () => {
+  function drawerFixture(dialogText = '领取积分 432 待领取 领取积分 活动 积分 420 12') {
+    const f = fixture(
+      [{ texts: ['', '领取'], contextTexts: ['可领取 432 领取'], href: '#' }],
+      [{ texts: ['', '领取积分'] }]
+    )
+    const drawer = {
+      textContent: vi.fn().mockResolvedValue(dialogText),
+      locator: vi.fn().mockReturnValue(f.expandedButtons),
+      isVisible: vi.fn().mockResolvedValue(true)
+    }
+    const dialogs = {
+      count: vi.fn().mockResolvedValue(1),
+      nth: vi.fn().mockReturnValue(drawer)
+    }
+    const locate = vi.mocked(f.page.locator).getMockImplementation()
+    if (!locate) throw new Error('synthetic locator unavailable')
+    vi.mocked(f.page.locator).mockImplementation((selector: string) =>
+      selector === '[role="dialog"], dialog, [aria-modal="true"]'
+        ? (dialogs as unknown as Locator)
+        : locate(selector)
+    )
+    return { ...f, drawer, dialogs }
+  }
+
+  it('opens the homepage link and submits the matching drawer action once', async () => {
+    const f = drawerFixture()
+    await expect(f.client.readClaimablePoints()).resolves.toBe(432)
+    await expect(f.client.claimBonusByUiWithResult()).resolves.toMatchObject({
+      clicked: true,
+      acknowledged: true
+    })
+    expect(f.clicks[0]).toHaveBeenCalledTimes(1)
+    expect(f.actionClicks[0]).toHaveBeenCalledTimes(1)
+    expect(f.page.waitForResponse).toHaveBeenCalledTimes(1)
+  })
+
+  it('also opens a dialog-marked button while preserving the direct-button path', async () => {
+    const f = drawerFixture()
+    f.initialButtons.evaluateAll.mockResolvedValue([
+      {
+        index: 0,
+        texts: ['', '领取'],
+        contextTexts: ['可领取 432 领取'],
+        expanded: null,
+        controls: null,
+        href: null,
+        popup: 'dialog',
+        disabled: false,
+        visible: true
+      }
+    ])
+    await expect(f.client.claimBonusByUiWithResult()).resolves.toMatchObject({
+      clicked: true,
+      acknowledged: true
+    })
+    expect(f.clicks[0]).toHaveBeenCalledTimes(1)
+    expect(f.actionClicks[0]).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not submit when the drawer amount disagrees with the homepage', async () => {
+    const f = drawerFixture('领取积分 99 待领取 领取积分')
+    await expect(f.client.claimBonusByUiWithResult()).resolves.toEqual({
+      clicked: false,
+      acknowledged: false
+    })
+    expect(f.clicks[0]).toHaveBeenCalledTimes(1)
+    expect(f.actionClicks[0]).not.toHaveBeenCalled()
+    expect(f.page.waitForResponse).not.toHaveBeenCalled()
+  })
+
+  it('does not submit when no claim drawer appears', async () => {
+    const f = drawerFixture()
+    f.dialogs.count.mockResolvedValue(0)
+    await expect(f.client.claimBonusByUiWithResult()).resolves.toEqual({
+      clicked: false,
+      acknowledged: false
+    })
+    expect(f.clicks[0]).toHaveBeenCalledTimes(1)
+    expect(f.actionClicks[0]).not.toHaveBeenCalled()
+    expect(f.page.waitForResponse).not.toHaveBeenCalled()
+  })
+
+  it('does not click the drawer action if opening it already sent an official POST', async () => {
+    const f = drawerFixture()
+    f.clicks[0]?.mockImplementation(() => {
+      for (const listener of f.requestListeners)
+        listener({ method: () => 'POST', url: () => 'https://rewards.bing.com/dashboard' })
+      return Promise.resolve(undefined)
+    })
+    await expect(f.client.claimBonusByUiWithResult()).resolves.toEqual({
+      clicked: true,
+      acknowledged: false
+    })
+    expect(f.clicks[0]).toHaveBeenCalledTimes(1)
+    expect(f.actionClicks[0]).not.toHaveBeenCalled()
+    expect(f.requestListeners.size).toBe(0)
+  })
+
+  it('rechecks the drawer amount immediately before submission', async () => {
+    const f = drawerFixture()
+    f.drawer.textContent
+      .mockResolvedValueOnce('领取积分 432 待领取 领取积分')
+      .mockResolvedValueOnce('领取积分 432 待领取 领取积分')
+      .mockResolvedValue('领取积分 99 待领取 领取积分')
+    await expect(f.client.claimBonusByUiWithResult()).resolves.toEqual({
+      clicked: false,
+      acknowledged: false
+    })
+    expect(f.clicks[0]).toHaveBeenCalledTimes(1)
+    expect(f.actionClicks[0]).not.toHaveBeenCalled()
+    expect(f.page.waitForResponse).not.toHaveBeenCalled()
+  })
+})
+
 function control(text: string, patch: Partial<ClaimControlSnapshot> = {}): ClaimControlSnapshot {
   return {
     index: 0,
@@ -285,6 +416,30 @@ function control(text: string, patch: Partial<ClaimControlSnapshot> = {}): Claim
 
 describe('Bing Star cap must not hide the homepage claim summary', () => {
   const starCap = '积分上限2,100积分必应 Star 奖励上个月赚取的积分: 待领取'
+
+  it('does not let a cap-only disclosure hide a separate homepage claim link', () => {
+    expect(
+      claimablePointsFromControls([
+        control('领取', {
+          href: '#',
+          contextTexts: ['可领取 432 领取']
+        }),
+        control(starCap, { index: 1, expanded: 'false' })
+      ])
+    ).toBe(432)
+  })
+
+  it('keeps a malformed amount on a capped disclosure ambiguous', () => {
+    expect(
+      claimablePointsFromControls([
+        control('领取', {
+          href: '#',
+          contextTexts: ['可领取 432 领取']
+        }),
+        control('积分上限2,100积分 可领取积分1.5', { index: 1, expanded: 'false' })
+      ])
+    ).toBeUndefined()
+  })
 
   it('reads the real homepage amount instead of treating the Star cap as a competing amount', async () => {
     const f = fixture([
@@ -491,6 +646,7 @@ class SyntheticElement {
       const value = part.trim()
       if (value === ':disabled')
         return this.tagName === 'button' && this.getAttribute('disabled') !== null
+      if (value === 'a[href]') return this.tagName === 'a' && this.getAttribute('href') !== null
       const attribute = value.match(/^\[([a-z-]+)(?:="([^"]+)")?\]$/)
       if (attribute) {
         const actual = this.getAttribute(attribute[1] ?? '')
@@ -513,16 +669,22 @@ class SyntheticElement {
 }
 
 function domFixture(root: SyntheticElement) {
-  const elements = root.querySelectorAll('button, [role="button"]')
-  const clicks = elements.map(() => vi.fn().mockResolvedValue(undefined))
+  const allControls = root.querySelectorAll('button, [role="button"], a[href]')
+  const clicks = allControls.map(() => vi.fn().mockResolvedValue(undefined))
   const f = fixture([])
-  const buttons = {
-    evaluateAll: vi.fn((callback: (nodes: HTMLElement[]) => unknown) =>
-      Promise.resolve(callback(elements as unknown as HTMLElement[]))
-    ),
-    nth: vi.fn((index: number) => ({ click: clicks[index] }))
-  } as unknown as Locator
-  vi.mocked(f.page.locator).mockReturnValue(buttons)
+  vi.mocked(f.page.locator).mockImplementation((selector: string) => {
+    const elements = root.querySelectorAll(selector)
+    return {
+      evaluateAll: vi.fn((callback: (nodes: HTMLElement[]) => unknown) =>
+        Promise.resolve(callback(elements as unknown as HTMLElement[]))
+      ),
+      nth: vi.fn((index: number) => {
+        const element = elements[index]
+        if (!element) throw new Error('synthetic control unavailable')
+        return { click: clicks[allControls.indexOf(element)] }
+      })
+    } as unknown as Locator
+  })
   vi.stubGlobal('window', { getComputedStyle: (element: SyntheticElement) => element.style })
   return { ...f, clicks }
 }
@@ -537,6 +699,42 @@ function element(
 
 // These are deterministic DOM-like fixtures, not a live browser or an authenticated page.
 describe('claim snapshot extraction from synthetic DOM trees', () => {
+  it('reads a separated claim amount from a same-site link without treating that link as submission', async () => {
+    const root = element('main').append(
+      element('section').append(
+        element('span', '可用积分'),
+        element('strong', '19,832'),
+        element('a', '兑换', { href: '/redeem' })
+      ),
+      element('section').append(
+        element('span', '可领取'),
+        element('strong', '432'),
+        element('a', '领取', { href: '/earn' })
+      )
+    )
+    const f = domFixture(root)
+    await expect(f.client.readClaimablePoints()).resolves.toBe(432)
+    expect(f.clicks.every((click) => click.mock.calls.length === 0)).toBe(true)
+  })
+
+  it('ignores claim-like links to external or redeem destinations', async () => {
+    const root = element('main').append(
+      element('section').append(
+        element('span', '可领取'),
+        element('strong', '432'),
+        element('a', '领取', { href: 'https://example.test/earn' })
+      ),
+      element('section').append(
+        element('span', '可领取'),
+        element('strong', '99'),
+        element('a', '领取', { href: '/redeem' })
+      )
+    )
+    const f = domFixture(root)
+    await expect(f.client.readClaimablePoints()).resolves.toBeUndefined()
+    expect(f.clicks.every((click) => click.mock.calls.length === 0)).toBe(true)
+  })
+
   it('extracts a neighboring labeled amount for a role-button without normalizing its separator away', async () => {
     const root = element('main').append(
       element('section').append(
