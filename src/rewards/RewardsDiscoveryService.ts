@@ -2,6 +2,7 @@ import { verifyLogin, type LoginVerificationResult } from '../auth/LoginVerifica
 import { createEvidence, selectTrustedEvidence, type FieldEvidence } from '../domain/Evidence.js'
 import { createTaskId, type TaskRecord } from '../domain/Task.js'
 import { DashboardClient } from '../browser/DashboardClient.js'
+import { sameOfferUrl } from '../browser/OfferMatching.js'
 import { TaskRegistry } from './TaskRegistry.js'
 import type {
   RewardOffer,
@@ -33,28 +34,43 @@ function unknownEvidence<T>(field: string): FieldEvidence<T> {
   })
 }
 
-function mergeOffers(groups: readonly (readonly RewardOffer[])[]): RewardOffer[] {
+/** Groups are ordered by authority; verification and action metadata stay in one observation. */
+function mergeOffers(
+  groups: readonly (readonly RewardOffer[])[],
+  domOffers: readonly RewardOffer[]
+): RewardOffer[] {
   const offers = new Map<string, RewardOffer>()
   for (const group of groups) {
     for (const incoming of group) {
-      const current = offers.get(incoming.sourceTaskId)
-      if (!current) {
-        offers.set(incoming.sourceTaskId, incoming)
-        continue
-      }
-      offers.set(incoming.sourceTaskId, {
-        ...current,
-        ...incoming,
-        source: current.source === 'rsc' ? current.source : incoming.source,
-        displayName: current.displayName || incoming.displayName,
-        executable: current.executable || incoming.executable,
-        ...(current.destinationUrl ? { destinationUrl: current.destinationUrl } : {}),
-        ...(current.hash ? { hash: current.hash } : {}),
-        ...(current.attributes ? { attributes: current.attributes } : {})
-      })
+      if (!offers.has(incoming.sourceTaskId)) offers.set(incoming.sourceTaskId, incoming)
     }
   }
-  return [...offers.values()]
+  return [...offers.values()].map((offer) => {
+    if (
+      offer.source !== 'rsc' ||
+      offer.identityStable === false ||
+      !offer.executable ||
+      offer.destinationUrl
+    )
+      return offer
+
+    // Keep the existing DOM destination fallback, but never let it enable a
+    // disabled task, overwrite progress/type, or provide Server Action metadata.
+    const matches = domOffers.filter((candidate) => candidate.sourceTaskId === offer.sourceTaskId)
+    const dom = matches[0]
+    if (
+      matches.length !== 1 ||
+      !dom ||
+      dom.source !== offer.source ||
+      dom.type !== offer.type ||
+      dom.identityStable !== true ||
+      !dom.destinationUrl ||
+      !sameOfferUrl(dom.destinationUrl, dom.destinationUrl)
+    )
+      return offer
+
+    return { ...offer, destinationUrl: dom.destinationUrl }
+  })
 }
 
 const APP_DASHBOARD_TASK_TYPES = new Set<RewardOffer['type']>([
@@ -212,7 +228,17 @@ export class RewardsDiscoveryService {
         observations.map((item) => item.mobileSearch),
         'mobileSearch'
       )
-    const offers = mergeOffers([bootstrap.offers, domOffers, ...observations.map(taskOffers)])
+    // Flight owns RSC verification. Without Flight, prefer the independently
+    // re-observable flyout over DOM rows, which also label themselves as RSC.
+    const offers = mergeOffers(
+      [
+        bootstrap.offers,
+        ...(flyout ? [taskOffers(flyout)] : []),
+        ...observations.filter((item) => item !== flyout).map(taskOffers),
+        domOffers
+      ],
+      domOffers
+    )
     const snapshot: RewardsDiscoverySnapshot = {
       rewardsUser,
       market,

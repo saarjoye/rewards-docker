@@ -241,7 +241,7 @@ export class SqliteStore {
   }
 
   private upsertCurrentTask(task: TaskRecord): void {
-    this.database
+    const result = this.database
       .prepare(
         `
         INSERT INTO tasks(
@@ -249,6 +249,8 @@ export class SqliteStore {
           executable, required, status, completed, total, reason, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(task_id) DO UPDATE SET
+          type = excluded.type,
+          source = excluded.source,
           display_name = excluded.display_name,
           executable = excluded.executable,
           required = excluded.required,
@@ -257,6 +259,9 @@ export class SqliteStore {
           total = excluded.total,
           reason = excluded.reason,
           updated_at = excluded.updated_at
+        WHERE tasks.account_id = excluded.account_id
+          AND tasks.local_date = excluded.local_date
+          AND tasks.source_task_id = excluded.source_task_id
       `
       )
       .run(
@@ -275,6 +280,8 @@ export class SqliteStore {
         task.reason === undefined ? null : redactText(task.reason),
         task.updatedAt
       )
+    // Classification is rediscovered; the account/day/official ID binding is immutable.
+    if (result.changes === 0) throw new Error('Task identity mismatch')
   }
 
   getTask(taskId: string): TaskRecord | undefined {
