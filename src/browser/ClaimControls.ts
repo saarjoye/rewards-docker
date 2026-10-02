@@ -10,6 +10,10 @@ export interface ClaimControlSnapshot {
 
 const claimKeyword = /\bclaim(?:able)?\b|\bcollect\b|领取|領取/i
 const allKeyword = /\b(?:all|everything)\b|全部|所有/i
+// A Star card may mention an unclaimed reward while showing only its maximum capacity.
+// The cap is not evidence of an amount that can actually be claimed.
+const nonClaimAmountLabel =
+  /(?:积分|積分|点数|點數)上限|上限(?:积分|積分|点数|點數)|\b(?:points?\s+(?:cap|limit)|(?:max(?:imum)?|cap|limit)\s+points?)\b/i
 const claimableAmountLabel = String.raw`(?:可(?:领取|領取)(?:积分|積分|点数|點數)?|待(?:领取|領取)(?:积分|積分|点数|點數)?|\bclaimable(?:\s+points)?\b|\bunclaimed(?:\s+points)?\b|\bpending\s+points\b|\bpoints\s+to\s+claim\b|\bavailable\s+to\s+claim\b)`
 // Capture the whole token before validating so malformed amounts cannot become partial integers.
 const amountToken = String.raw`[+\-\u2212]?\s*\d+(?:[.,，\u00a0\u202f]\s*\d+)*`
@@ -41,10 +45,12 @@ function uniqueAmount(text: string): number | undefined {
 export function claimControlPoints(control: ClaimControlSnapshot): number | undefined {
   if (!isClaimControl(control)) return undefined
   const text = controlText(control)
-  const direct = uniqueAmount(text)
-  if (/\d/.test(text) && direct === undefined) return undefined
+  const hasNonClaimAmount = nonClaimAmountLabel.test(text)
+  const direct = hasNonClaimAmount ? undefined : uniqueAmount(text)
+  if (!hasNonClaimAmount && /\d/.test(text) && direct === undefined) return undefined
   const contexts: number[] = []
-  for (const context of control.contextTexts) {
+  const labeledTexts = hasNonClaimAmount ? [text, ...control.contextTexts] : control.contextTexts
+  for (const context of labeledTexts) {
     const prefix = new RegExp(`${claimableAmountLabel}\\s*[:：]?\\s*(${amountToken})`, 'gi')
     const suffix = new RegExp(
       String.raw`(?<![\d.,，\u00a0\u202f+\-\u2212])(${amountToken})\s*(?:待领取|待領取|\bpoints\s+to\s+claim\b)`,

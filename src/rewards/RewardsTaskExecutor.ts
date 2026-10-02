@@ -570,7 +570,11 @@ export class RewardsTaskExecutor {
     if (descriptor.task.type === 'claim-bonus-points') {
       let claimable: number | undefined
       for (let attempt = 1; attempt <= 4; attempt += 1) {
-        claimable = await this.client.readClaimablePoints(signal)
+        throwIfAborted(signal)
+        // A raw Server Action receipt does not refresh the rendered claim amount.
+        // Observe a fresh official document on every attempt; never resend the claim.
+        claimable = await this.client.readClaimablePoints(signal, { refresh: true })
+        throwIfAborted(signal)
         try {
           this.guardDate?.()
         } catch {

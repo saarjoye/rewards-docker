@@ -1126,8 +1126,11 @@ export class DashboardClient {
     }
   }
 
-  async readClaimablePoints(signal?: AbortSignal): Promise<number | undefined> {
-    if (!(await this.ensureDashboardPage(signal))) return undefined
+  async readClaimablePoints(
+    signal?: AbortSignal,
+    options: { refresh?: boolean } = {}
+  ): Promise<number | undefined> {
+    if (!(await this.ensureDashboardPage(signal, options.refresh))) return undefined
     return claimablePointsFromControls(
       await this.waitForClaimControls(
         this.page.locator('button, [role="button"]'),
@@ -1290,9 +1293,9 @@ export class DashboardClient {
     }
   }
 
-  private async ensureDashboardPage(signal?: AbortSignal): Promise<boolean> {
+  private async ensureDashboardPage(signal?: AbortSignal, refresh = false): Promise<boolean> {
     if (signal?.aborted) throw abortReason(signal)
-    if (this.isClaimPage()) return true
+    if (!refresh && this.isClaimPage()) return true
     try {
       if (signal) await navigateForAuthentication(this.page, REWARDS_URLS.dashboard, signal)
       else await this.page.goto(REWARDS_URLS.dashboard, { waitUntil: 'commit', timeout: 30_000 })

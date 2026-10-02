@@ -283,6 +283,58 @@ function control(text: string, patch: Partial<ClaimControlSnapshot> = {}): Claim
   }
 }
 
+describe('Bing Star cap must not hide the homepage claim summary', () => {
+  const starCap = '积分上限2,100积分必应 Star 奖励上个月赚取的积分: 待领取'
+
+  it('reads the real homepage amount instead of treating the Star cap as a competing amount', async () => {
+    const f = fixture([
+      { texts: ['可领取30领取'], expanded: 'false' },
+      { texts: [starCap], expanded: 'false' }
+    ])
+    await expect(f.client.readClaimablePoints()).resolves.toBe(30)
+  })
+
+  it('expands only the real summary and submits its unique action once', async () => {
+    const f = fixture(
+      [
+        { texts: ['可领取30领取'], expanded: 'false' },
+        { texts: [starCap], expanded: 'false' }
+      ],
+      [{ texts: ['30待领取领取积分'] }]
+    )
+    await expect(f.client.claimBonusByUiWithResult()).resolves.toMatchObject({
+      clicked: true,
+      acknowledged: true
+    })
+    expect(f.clicks[0]).toHaveBeenCalledTimes(1)
+    expect(f.clicks[1]).not.toHaveBeenCalled()
+    expect(f.actionClicks[0]).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    starCap,
+    '積分上限2,100積分必應 Star 獎勵 待領取',
+    'Points cap 2,100 points Bing Star rewards Claim last month rewards',
+    'Maximum points 2,100 Claim rewards',
+    '积分上限0积分 Star 待领取'
+  ])('leaves a cap-only card unknown: %s', (text) => {
+    expect(claimControlPoints(control(text))).toBeUndefined()
+    expect(claimablePointsFromControls([control(text, { expanded: 'false' })])).toBeUndefined()
+    expect(selectClaimAction([control(text)], 2100)).toBeUndefined()
+  })
+
+  it.each([
+    ['积分上限2,100积分 可领取积分30', 30],
+    ['积分上限2,100积分 可领取积分0', 0],
+    ['Points cap 2,100 points Claimable points: 30', 30],
+    ['积分上限2,100积分 可领取积分30 待领取积分20', undefined],
+    ['积分上限2,100积分 可领取积分1.5', undefined],
+    ['积分上限2,100积分 可领取积分-30', undefined]
+  ])('uses only explicit claim amount evidence within a capped card: %s', (text, expected) => {
+    expect(claimControlPoints(control(text))).toBe(expected)
+  })
+})
+
 describe('claim amount evidence and conservative action selection', () => {
   it.each([
     ['Claim 1,234 points', 1234],
