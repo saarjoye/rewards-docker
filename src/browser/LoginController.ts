@@ -36,6 +36,8 @@ const SELECTORS = {
   otp: '[data-testid="codeEntry"], input[name="otc"], form[name="OneTimeCodeViewForm"]',
   captcha: 'iframe[src*="captcha"], [data-testid*="captcha"], #hipEnforcementContainer',
   passkey: '[data-testid="biometricVideo"], [data-testid="registrationImg"]',
+  passkeyImage: '[data-testid="fidoImage"]',
+  passkeyBack: '#back-button[data-testid="leftArrowIcon"]',
   accountLocked: '#serviceAbuseLandingTitle, [data-testid="serviceAbuseLandingTitle"]',
   alert: 'div[role="alert"], [data-testid="error"]',
   identity: '[data-testid="identityBanner"], #id_n'
@@ -123,7 +125,10 @@ export class LoginController {
       }
     }
     if (
-      (current.host === 'login.microsoft.com' && current.path.includes('/fido/')) ||
+      (current.host === 'login.microsoft.com' && /\/fido(?:\/|$)/i.test(current.path)) ||
+      (onLoginHost &&
+        current.url.startsWith('https://') &&
+        (await visible(page.locator(SELECTORS.passkeyImage)))) ||
       (await visible(page.locator(SELECTORS.passkey)))
     ) {
       return { state: 'passkey-error', loginStage: 'login-passkey-error', ...current }
@@ -460,6 +465,42 @@ export class LoginController {
         const secondary = await firstVisible(page.locator(SELECTORS.secondary))
         if (secondary) {
           await secondary.click({ timeout: 5000 })
+          return
+        }
+        const current = location(page)
+        const modernPasskey =
+          current.url.startsWith('https://') &&
+          ['login.live.com', 'login.microsoft.com', 'login.microsoftonline.com'].includes(
+            current.host
+          ) &&
+          (/\/fido\/?$/i.test(current.path) ||
+            (await visible(page.locator(SELECTORS.passkeyImage))))
+        if (modernPasskey) {
+          // This UI was reached by a username POST. Use its offered back control, not
+          // browser history, which may replay that POST or restart the credential flow.
+          const back = await firstEnabledVisible(page.locator(SELECTORS.passkeyBack))
+          if (!back) {
+            throw this.stateError({
+              ...current,
+              state,
+              loginStage: 'login-passkey-error',
+              errorMessage: '登录需要人工完成通行密钥验证，或选择页面提供的其他登录方式'
+            })
+          }
+          beforeSubmit()
+          try {
+            await back.click({ timeout: 5_000 })
+          } catch {
+            if ((await this.detectCurrentState(page)).state !== state) return
+            // An in-flight click must not fall back to history or be clicked again.
+            throw this.stateError({
+              ...location(page),
+              state,
+              loginStage: 'login-passkey-choice-unconfirmed',
+              errorMessage:
+                '通行密钥页面的登录方式切换未确认，需要人工完成验证或选择其他登录方式；未重试'
+            })
+          }
           return
         }
       }
