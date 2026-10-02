@@ -14,6 +14,7 @@ export interface OfferAnchor {
   ariaLabel?: string
   title?: string
   text?: string
+  cardLabel?: string
 }
 
 const bingHosts = new Set(['bing.com', 'www.bing.com', 'cn.bing.com'])
@@ -67,17 +68,50 @@ export function matchOfferAnchor(
 ) {
   const expected = safeUrl(destination)
   if (!expected) return { index: -1, method: 'unsafe' }
-  const exact = anchors.flatMap((anchor, index) =>
-    anchor.visible !== false && sameOfferUrl(anchor.href, destination) ? [index] : []
-  )
-  if (exact.length)
-    return {
-      index: exact.length === 1 ? (exact[0] ?? -1) : -1,
-      method: exact.length === 1 ? 'url' : 'ambiguous'
-    }
   const normalize = (value?: string) => value?.replace(/\s+/g, ' ').trim()
+  const expectedIds = [identity.sourceTaskId, identity.taskId, identity.offerId].filter(Boolean)
+  const label = normalize(identity.displayName)
+  const evidence = (anchor: OfferAnchor) => {
+    const ids = [anchor.offerId, anchor.taskId].filter(Boolean)
+    const id = ids.some((value) => expectedIds.includes(value))
+    const conflicting = expectedIds.length > 0 && ids.length > 0 && !id
+    const named = Boolean(
+      label &&
+      [anchor.ariaLabel, anchor.title, anchor.text, anchor.cardLabel].map(normalize).includes(label)
+    )
+    const destinationMatches =
+      !anchor.destinationUrl || sameOfferUrl(anchor.destinationUrl, destination)
+    return { id, named, eligible: anchor.visible !== false && !conflicting && destinationMatches }
+  }
+  const exact = anchors.flatMap((anchor, index) => {
+    const proof = evidence(anchor)
+    return proof.eligible && sameOfferUrl(anchor.href, destination) ? [{ index, ...proof }] : []
+  })
+  if (exact.length === 1) {
+    const repeated =
+      anchors.filter((anchor) => anchor.visible !== false && sameOfferUrl(anchor.href, destination))
+        .length > 1
+    const candidate = exact[0]
+    if (repeated && !candidate?.id && !candidate?.named) return { index: -1, method: 'ambiguous' }
+    return {
+      index: candidate?.index ?? -1,
+      method: repeated ? (candidate?.id ? 'url-identity' : 'url-name') : 'url'
+    }
+  }
+  if (exact.length > 1) {
+    const identified = exact.filter((candidate) => candidate.id)
+    if (identified.length === 1)
+      return { index: identified[0]?.index ?? -1, method: 'url-identity' }
+    if (identified.length > 1) return { index: -1, method: 'ambiguous' }
+    const named = exact.filter((candidate) => candidate.named)
+    return {
+      index: named.length === 1 ? (named[0]?.index ?? -1) : -1,
+      method: named.length === 1 ? 'url-name' : 'ambiguous'
+    }
+  }
   const fallback = anchors.flatMap((anchor, index) => {
-    if (anchor.visible === false) return []
+    const proof = evidence(anchor)
+    if (!proof.eligible) return []
     const actual = safeUrl(anchor.href)
     if (
       !actual ||
@@ -85,20 +119,15 @@ export function matchOfferAnchor(
       !['rewards.bing.com', 'rewards.microsoft.com'].includes(actual.hostname)
     )
       return []
-    // A wrapper needs an explicit matching destination. IDs/titles cannot override search semantics.
+    // Official wrappers still require an explicit matching destination. Identity cannot replace it.
     if (!anchor.destinationUrl || !sameOfferUrl(anchor.destinationUrl, destination)) return []
-    const id = [identity.sourceTaskId, identity.taskId, identity.offerId].some(
-      (value) => Boolean(value) && [anchor.offerId, anchor.taskId].includes(value)
-    )
-    const label = normalize(identity.displayName)
-    const named =
-      label &&
-      [normalize(anchor.ariaLabel), normalize(anchor.title), normalize(anchor.text)].includes(label)
-    return id || named ? [index] : []
+    return proof.id || proof.named ? [{ index, ...proof }] : []
   })
+  const identified = fallback.filter((candidate) => candidate.id)
+  const preferred = identified.length ? identified : fallback
   return {
-    index: fallback.length === 1 ? (fallback[0] ?? -1) : -1,
+    index: preferred.length === 1 ? (preferred[0]?.index ?? -1) : -1,
     method:
-      fallback.length === 1 ? 'identity-destination' : fallback.length ? 'ambiguous' : 'missing'
+      preferred.length === 1 ? 'identity-destination' : preferred.length ? 'ambiguous' : 'missing'
   }
 }

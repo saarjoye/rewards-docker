@@ -40,6 +40,8 @@ export interface LogEvent {
   queryIndex?: number
   phase?: string
   activePageCount?: number
+  reusedBrowser?: boolean
+  restoredSession?: boolean
 }
 
 export class StructuredLogger {

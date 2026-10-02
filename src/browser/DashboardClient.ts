@@ -48,22 +48,33 @@ const CLAIM_READINESS_POLL_MS = 500
 
 function readOfferAnchor(node: HTMLElement | SVGElement) {
   const anchor = node as HTMLAnchorElement
-  const owner = anchor.closest('[data-offer-id], [data-task-id], [data-destination-url]')
+  const owner = anchor.closest('[data-offer-id], [data-task-id], article, [role="listitem"]')
   return {
     href: anchor.href,
     visible:
       anchor.isConnected &&
       anchor.getClientRects().length > 0 &&
       window.getComputedStyle(anchor).visibility !== 'hidden',
-    offerId: anchor.getAttribute('data-offer-id') ?? owner?.getAttribute('data-offer-id') ?? '',
-    taskId: anchor.getAttribute('data-task-id') ?? owner?.getAttribute('data-task-id') ?? '',
+    offerId:
+      anchor.getAttribute('data-offer-id') ??
+      anchor.closest('[data-offer-id]')?.getAttribute('data-offer-id') ??
+      '',
+    taskId:
+      anchor.getAttribute('data-task-id') ??
+      anchor.closest('[data-task-id]')?.getAttribute('data-task-id') ??
+      '',
     destinationUrl:
       anchor.getAttribute('data-destination-url') ??
-      owner?.getAttribute('data-destination-url') ??
+      anchor.closest('[data-destination-url]')?.getAttribute('data-destination-url') ??
       '',
     ariaLabel: anchor.getAttribute('aria-label') ?? '',
     title: anchor.getAttribute('title') ?? '',
-    text: anchor.innerText.slice(0, 200)
+    text: anchor.innerText.slice(0, 200),
+    cardLabel: (
+      owner?.getAttribute('aria-label') ??
+      owner?.querySelector('[data-task-title], h2, h3')?.textContent ??
+      ''
+    ).slice(0, 200)
   }
 }
 
@@ -1029,22 +1040,32 @@ export class DashboardClient {
     const candidates = await (links ?? this.page.locator('a[href]')).evaluateAll((anchors) =>
       anchors.map((candidate) => {
         const anchor = candidate as HTMLAnchorElement
-        const owner = anchor.closest('[data-offer-id], [data-task-id], [data-destination-url]')
+        const owner = anchor.closest('[data-offer-id], [data-task-id], article, [role="listitem"]')
         return {
           href: anchor.href,
           visible:
             anchor.getClientRects().length > 0 &&
             window.getComputedStyle(anchor).visibility !== 'hidden',
           offerId:
-            anchor.getAttribute('data-offer-id') ?? owner?.getAttribute('data-offer-id') ?? '',
-          taskId: anchor.getAttribute('data-task-id') ?? owner?.getAttribute('data-task-id') ?? '',
+            anchor.getAttribute('data-offer-id') ??
+            anchor.closest('[data-offer-id]')?.getAttribute('data-offer-id') ??
+            '',
+          taskId:
+            anchor.getAttribute('data-task-id') ??
+            anchor.closest('[data-task-id]')?.getAttribute('data-task-id') ??
+            '',
           destinationUrl:
             anchor.getAttribute('data-destination-url') ??
-            owner?.getAttribute('data-destination-url') ??
+            anchor.closest('[data-destination-url]')?.getAttribute('data-destination-url') ??
             '',
           ariaLabel: anchor.getAttribute('aria-label') ?? '',
           title: anchor.getAttribute('title') ?? '',
-          text: anchor.innerText.slice(0, 200)
+          text: anchor.innerText.slice(0, 200),
+          cardLabel: (
+            owner?.getAttribute('aria-label') ??
+            owner?.querySelector('[data-task-title], h2, h3')?.textContent ??
+            ''
+          ).slice(0, 200)
         }
       })
     )

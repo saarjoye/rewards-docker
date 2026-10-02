@@ -16,12 +16,24 @@ export type LoginState =
   | 'logged-in'
   | 'unknown'
 
+export type AuthenticationNavigationFailure =
+  | 'timeout'
+  | 'dns'
+  | 'tls'
+  | 'connection'
+  | 'redirect'
+  | 'network'
+  | 'browser'
+  | 'unknown'
+
 export class LoginStateError extends Error {
   readonly loginState: LoginState
   readonly loginStage: string
   readonly url: string
   readonly host: string
   readonly path: string
+  readonly navigationFailure?: AuthenticationNavigationFailure
+  readonly navigationCommitted?: boolean
 
   constructor(input: {
     loginState: LoginState
@@ -30,6 +42,8 @@ export class LoginStateError extends Error {
     url: string
     host: string
     path: string
+    navigationFailure?: AuthenticationNavigationFailure
+    navigationCommitted?: boolean
   }) {
     super(input.message)
     this.name = 'LoginStateError'
@@ -38,6 +52,9 @@ export class LoginStateError extends Error {
     this.url = input.url
     this.host = input.host
     this.path = input.path
+    if (input.navigationFailure !== undefined) this.navigationFailure = input.navigationFailure
+    if (input.navigationCommitted !== undefined)
+      this.navigationCommitted = input.navigationCommitted
   }
 }
 

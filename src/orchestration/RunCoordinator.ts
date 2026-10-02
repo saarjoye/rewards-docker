@@ -897,6 +897,14 @@ export class ApplicationRunCoordinator {
         )
       }
     )
+    await this.logger.write({
+      level: 'info',
+      event: 'authentication-entry',
+      runId: context.runId,
+      accountAlias: `account-${String(context.runAccountIndex)}`,
+      stage: 'web-desktop',
+      ...resources.desktop.authenticationContext
+    })
     await navigateForAuthentication(resources.desktop.page, REWARDS_URLS.dashboard, context.signal)
     await login.login(resources.desktop.page, credentials, context.signal)
     const desktopObservation = await this.verifyBrowserSession(
@@ -934,6 +942,14 @@ export class ApplicationRunCoordinator {
           )
         }
       )
+      await this.logger.write({
+        level: 'info',
+        event: 'authentication-entry',
+        runId: context.runId,
+        accountAlias: `account-${String(context.runAccountIndex)}`,
+        stage: 'web-mobile',
+        ...resources.mobile.authenticationContext
+      })
       await navigateForAuthentication(resources.mobile.page, REWARDS_URLS.dashboard, context.signal)
       await login.login(resources.mobile.page, credentials, context.signal)
       await this.verifyBrowserSession(

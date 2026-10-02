@@ -1,5 +1,11 @@
 import type { TaskRecord } from '../domain/Task.js'
-import type { TaskActionContext, TaskAdapter, VerificationResult } from '../rewards/TaskAdapter.js'
+import type {
+  TaskActionContext,
+  TaskAdapter,
+  TaskVerificationFailureCode,
+  VerificationResult
+} from '../rewards/TaskAdapter.js'
+import { verificationReadFailure } from '../rewards/TaskVerification.js'
 import { redactText } from '../security/Redactor.js'
 
 export type MutationLedgerState =
@@ -40,6 +46,7 @@ export type OfferFailureCode =
   | 'offer-network-failed'
   | 'offer-browser-failed'
   | 'offer-invalid-destination'
+  | TaskVerificationFailureCode
 
 export class MutationNotStartedError extends Error {
   constructor(
@@ -125,6 +132,16 @@ export class MutationExecutor {
     }
   }
 
+  /** Existing pending actions are observed without even entering the submission path. */
+  async verifyPending(
+    task: TaskRecord,
+    adapter: TaskAdapter,
+    signal: AbortSignal
+  ): Promise<MutationOutcome> {
+    signal.throwIfAborted()
+    return this.verifyOnly({ accountId: task.accountId, task, signal }, adapter)
+  }
+
   private async verifyOnly(
     context: TaskActionContext,
     adapter: TaskAdapter
@@ -136,17 +153,16 @@ export class MutationExecutor {
       return {
         status,
         verification,
-        ...(verification.confirmed ? {} : { errorCode: 'task-verification-failed' as const })
+        ...(verification.confirmed
+          ? {}
+          : { errorCode: verification.failureCode ?? ('task-verification-failed' as const) })
       }
     } catch (error) {
       this.ledger.updateMutation(context.task.taskId, 'verification-pending')
-      return {
-        status: 'verification-pending',
-        errorCode: 'task-verification-failed',
-        message: redactText(
-          error instanceof Error ? error.message : 'Read-only verification failed'
-        )
-      }
+      const errorCode = context.signal.aborted
+        ? 'task-verification-failed'
+        : verificationReadFailure(error)
+      return { status: 'verification-pending', errorCode, message: errorCode }
     }
   }
 }

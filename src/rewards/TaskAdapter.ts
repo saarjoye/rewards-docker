@@ -16,11 +16,20 @@ export interface MutationReceipt {
   credit?: TaskCreditEvidence
 }
 
+export type TaskVerificationFailureCode =
+  | 'task-still-incomplete'
+  | 'task-not-found-during-verification'
+  | 'task-verification-timeout'
+  | 'task-verification-unavailable'
+  | 'task-verification-source-mismatch'
+  | 'task-verification-date-changed'
+
 export interface VerificationResult {
   confirmed: boolean
   progress: { completed: number; total: number | null }
   points?: FieldEvidence<number>
   reason?: string
+  failureCode?: TaskVerificationFailureCode
   credit?: TaskCreditEvidence
 }
 

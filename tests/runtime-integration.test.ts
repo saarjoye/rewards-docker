@@ -1529,7 +1529,7 @@ describe('claim mutation idempotency', () => {
     }
   )
 
-  it('reconciles known web mutations from one discovery snapshot without resubmitting or refetching', async () => {
+  it('reconciles confirmed web mutations from discovery and only observes pending mutations without resubmitting', async () => {
     const root = await mkdtemp(join(tmpdir(), 'rewards-next-batch-reconcile-'))
     roots.push(root)
     const store = new SqliteStore(join(root, 'state.sqlite'))
@@ -1579,7 +1579,12 @@ describe('claim mutation idempotency', () => {
         expect(store.beginMutation(task.taskId)).toBe(true)
         store.updateMutation(task.taskId, 'verification-pending')
       }
-      const bootstrapRsc = vi.fn()
+      const bootstrapRsc = vi.fn<DashboardClient['bootstrapRsc']>().mockResolvedValue({
+        html: [],
+        offers: [completedOffer, pendingOffer],
+        availablePoints: evidence(100),
+        actionIds: {}
+      })
       const reportServerAction = vi.fn()
       const navigateOffer = vi.fn()
       const discovery: DiscoveryOutput = {
@@ -1619,19 +1624,32 @@ describe('claim mutation idempotency', () => {
         executor.executeTypes({
           discovery,
           types: ['more-promotion'],
-          mode: 'mutating',
+          mode: 'read-only',
           signal: new AbortController().signal
         })
       ).resolves.toMatchObject({ status: 'partial' })
+      expect(bootstrapRsc).not.toHaveBeenCalled()
+
+      vi.useFakeTimers()
+      const result = executor.executeTypes({
+        discovery,
+        types: ['more-promotion'],
+        mode: 'mutating',
+        signal: new AbortController().signal
+      })
+      await vi.runAllTimersAsync()
+      await expect(result).resolves.toMatchObject({ status: 'partial' })
 
       expect(store.getMutationState(completedTask.taskId)).toBe('verified')
       expect(store.getMutationState(pendingTask.taskId)).toBe('verification-pending')
       expect(store.getTask(completedTask.taskId)).toMatchObject({ status: 'completed' })
       expect(store.getTask(pendingTask.taskId)).toMatchObject({
         status: 'verification-pending',
-        progress: { completed: 0, total: 10 }
+        progress: { completed: 0, total: 10 },
+        reason: 'task-still-incomplete'
       })
-      expect(bootstrapRsc).not.toHaveBeenCalled()
+      expect(bootstrapRsc).toHaveBeenCalledTimes(3)
+      expect(new Set(bootstrapRsc.mock.calls.map((call) => call[1])).size).toBe(1)
       expect(reportServerAction).not.toHaveBeenCalled()
       expect(navigateOffer).not.toHaveBeenCalled()
     } finally {

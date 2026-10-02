@@ -14,6 +14,7 @@ export interface AccountBrowserSlot {
   slot: AuthSlot
   context: BrowserContext
   page: Page
+  authenticationContext?: { reusedBrowser: boolean; restoredSession: boolean }
   close(): Promise<void>
   commitVerified(): Promise<void>
 }
@@ -38,6 +39,7 @@ export class BrowserRuntime {
     accountId: string,
     slot: Exclude<AuthSlot, 'app-oauth'>
   ): Promise<AccountBrowserSlot> {
+    const reusedBrowser = this.browser?.isConnected() === true
     const browser = await this.getBrowser()
     const stored = await this.options.sessions.read<BrowserStorageState>(accountId, slot)
     const mobile = slot === 'web-mobile'
@@ -65,6 +67,7 @@ export class BrowserRuntime {
       slot,
       context,
       page,
+      authenticationContext: { reusedBrowser, restoredSession: Boolean(stored) },
       close: async () => context.close(),
       commitVerified: async () => {
         const session: StoredSession<BrowserStorageState> = {

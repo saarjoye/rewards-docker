@@ -12,12 +12,18 @@ import type { StructuredLogger } from '../infra/StructuredLogger.js'
 import {
   MutationExecutor,
   MutationNotStartedError,
-  type ReadableMutationLedger
+  type ReadableMutationLedger,
+  type MutationOutcome
 } from '../orchestration/MutationExecutor.js'
 import { SearchExecutionError, SearchExecutor } from '../orchestration/SearchExecutor.js'
 import { BusinessDateChanged } from '../orchestration/BusinessDate.js'
 import type { TaskCreditEvidence } from './OfficialCredit.js'
 import type { TaskAdapter, VerificationResult } from './TaskAdapter.js'
+import {
+  verificationFailure,
+  verificationReadFailure,
+  verifyOfficialOffer
+} from './TaskVerification.js'
 import type { DiscoveryOutput, TaskExecutionDescriptor } from './RewardsDiscoveryService.js'
 import type { RewardOffer, RewardsDiscoverySnapshot } from './RewardsModel.js'
 import { webOfferExecutionPath } from './OfferExecution.js'
@@ -132,13 +138,35 @@ export class RewardsTaskExecutor {
         tasks: reconciled.map(({ task }) => task)
       }
     }
-    let partial = reconciled.some(({ pending, handled }) => pending && handled)
+    let partial = false
 
     for (const reconciliation of reconciled) {
       this.guardDate?.()
       const original = reconciliation.task
       throwIfAborted(input.signal)
-      if (reconciliation.handled) continue
+      if (reconciliation.handled) {
+        if (!reconciliation.pending) continue
+        // Search recovery and per-article reading have their own ledgers and verification.
+        if (['pc-search', 'mobile-search', 'read-to-earn'].includes(original.type)) {
+          partial = true
+          continue
+        }
+        const descriptor = input.discovery.descriptors.get(original.taskId)
+        const state = this.mutationLedger.getMutationState(original.taskId)
+        if (!descriptor || !state || state === 'verified') {
+          partial = true
+          continue
+        }
+        const outcome = await this.mutation.verifyPending(
+          original,
+          this.adapterFor(descriptor, input.discovery.snapshot),
+          input.signal
+        )
+        throwIfAborted(input.signal)
+        this.persistMutationOutcome(original, outcome)
+        if (outcome.status !== 'verified') partial = true
+        continue
+      }
       if (original.status === 'completed' || original.status === 'skipped') continue
       if (!original.executable) {
         partial = true
@@ -277,38 +305,43 @@ export class RewardsTaskExecutor {
         this.adapterFor(descriptor, input.discovery.snapshot),
         input.signal
       )
+      const updated = this.persistMutationOutcome(running, outcome)
       if (outcome.status === 'failed') {
-        const failed = this.persist({
-          ...running,
-          status: 'failed',
-          reason: outcome.errorCode ?? outcome.message ?? 'Execution failed'
-        })
-        await this.logTask(failed)
+        await this.logTask(updated)
         if (original.required) return { status: 'failed', tasks: selected }
-        partial = true
-        continue
       }
-      if (outcome.status === 'verification-pending') {
-        partial = true
-        this.persist({
-          ...running,
-          status: 'verification-pending',
-          reason:
-            outcome.errorCode ?? outcome.message ?? outcome.verification?.reason ?? '只读复核未通过'
-        })
-      } else {
-        this.persist({
-          ...running,
-          status: 'completed',
-          progress: outcome.verification?.progress ?? {
-            completed: running.progress.total ?? 1,
-            total: running.progress.total ?? 1
-          }
-        })
-      }
+      if (outcome.status !== 'verified') partial = true
     }
 
-    return { status: partial ? 'partial' : 'completed', tasks: reconciled.map(({ task }) => task) }
+    return {
+      status: partial ? 'partial' : 'completed',
+      tasks: reconciled.map(({ task }) => {
+        // Search observations live in run snapshots, not in the compact tasks table.
+        if (task.type === 'pc-search' || task.type === 'mobile-search')
+          return this.store.ledger.latestSearchTask(task.taskId) ?? task
+        return this.store.getTask(task.taskId) ?? task
+      })
+    }
+  }
+
+  private persistMutationOutcome(task: TaskRecord, outcome: MutationOutcome): TaskRecord {
+    if (outcome.status !== 'verified')
+      return this.persist({
+        ...task,
+        status: outcome.status,
+        reason:
+          outcome.errorCode ?? outcome.message ?? outcome.verification?.reason ?? '只读复核未通过'
+      })
+    const completed = { ...task }
+    delete completed.reason
+    return this.persist({
+      ...completed,
+      status: 'completed',
+      progress: outcome.verification?.progress ?? {
+        completed: task.progress.total ?? 1,
+        total: task.progress.total ?? 1
+      }
+    })
   }
 
   private reconcileKnownMutation(task: TaskRecord): LedgerReconciliation {
@@ -532,7 +565,7 @@ export class RewardsTaskExecutor {
     try {
       this.guardDate?.()
     } catch {
-      return { confirmed: false, progress: descriptor.task.progress, reason: '跨日后原任务待确认' }
+      return verificationFailure(descriptor.task, 'task-verification-date-changed')
     }
     if (descriptor.task.type === 'claim-bonus-points') {
       let claimable: number | undefined
@@ -541,11 +574,7 @@ export class RewardsTaskExecutor {
         try {
           this.guardDate?.()
         } catch {
-          return {
-            confirmed: false,
-            progress: descriptor.task.progress,
-            reason: '跨日后原领取任务待确认'
-          }
+          return verificationFailure(descriptor.task, 'task-verification-date-changed')
         }
         if (claimable === 0) break
         if (attempt < 4) await abortableDelay(5_000, signal)
@@ -560,55 +589,73 @@ export class RewardsTaskExecutor {
       (descriptor.task.type === 'app-check-in' || descriptor.task.type === 'app-activity') &&
       this.appToken
     ) {
+      throwIfAborted(signal)
       const observation = await this.client.fetchAppDashboard(this.appToken)
-      const offer = observation.offers.find(
-        (item) => item.sourceTaskId === descriptor.task.sourceTaskId
-      )
+      throwIfAborted(signal)
+      try {
+        this.guardDate?.()
+      } catch {
+        return verificationFailure(descriptor.task, 'task-verification-date-changed')
+      }
       return {
-        ...this.offerVerification(descriptor.task, offer),
+        ...verifyOfficialOffer(descriptor.task, observation.offers, 'app-dashboard'),
         points: observation.availablePoints
       }
     }
-    if (descriptor.offer?.source === 'bing-flyout') {
-      const observation = await this.client.fetchFlyout(Date.now() + 15_000, signal)
-      const offer = observation?.offers.find(
-        (item) => item.sourceTaskId === descriptor.task.sourceTaskId
-      )
-      return {
-        ...this.offerVerification(descriptor.task, offer),
-        ...(observation ? { points: observation.availablePoints } : {})
-      }
-    }
-    const bootstrap = await this.client.bootstrapRsc()
-    const offer = bootstrap.offers.find(
-      (item) => item.sourceTaskId === descriptor.task.sourceTaskId
-    )
-    return { ...this.offerVerification(descriptor.task, offer), points: bootstrap.availablePoints }
-  }
 
-  private offerVerification(task: TaskRecord, offer: RewardOffer | undefined): VerificationResult {
-    try {
-      this.guardDate?.()
-    } catch {
-      return { confirmed: false, progress: task.progress, reason: '跨日后原任务待确认' }
-    }
-    if (!offer) {
-      return {
-        confirmed: false,
-        progress: task.progress,
-        reason: '只读复核未找到原任务，不能推断已完成'
+    const flyout = descriptor.offer?.source === 'bing-flyout'
+    // Preserve the existing RSC discovery budget, but share it across all observations.
+    const deadline = Date.now() + (flyout ? 15_000 : 90_000)
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      throwIfAborted(signal)
+      try {
+        this.guardDate?.()
+      } catch {
+        return verificationFailure(descriptor.task, 'task-verification-date-changed')
       }
+      if (Date.now() >= deadline)
+        return verificationFailure(descriptor.task, 'task-verification-timeout')
+      let result: VerificationResult
+      try {
+        if (flyout) {
+          const observation = await this.client.fetchFlyout(deadline, signal)
+          throwIfAborted(signal)
+          if (!observation)
+            return verificationFailure(descriptor.task, 'task-verification-unavailable')
+          result = {
+            ...verifyOfficialOffer(descriptor.task, observation.offers, 'bing-flyout'),
+            points: observation.availablePoints
+          }
+        } else {
+          const bootstrap = await this.client.bootstrapRsc(signal, deadline)
+          result = {
+            ...verifyOfficialOffer(descriptor.task, bootstrap.offers, 'rsc'),
+            points: bootstrap.availablePoints
+          }
+        }
+      } catch (error) {
+        throwIfAborted(signal)
+        return verificationFailure(descriptor.task, verificationReadFailure(error))
+      }
+      throwIfAborted(signal)
+      try {
+        this.guardDate?.()
+      } catch {
+        return verificationFailure(descriptor.task, 'task-verification-date-changed')
+      }
+      if (
+        result.confirmed ||
+        attempt === 3 ||
+        !['task-still-incomplete', 'task-not-found-during-verification'].includes(
+          result.failureCode ?? ''
+        )
+      )
+        return result
+      if (deadline - Date.now() <= 500) return result
+      // Observe official state again; never resend the mutation or infer awarded points.
+      await abortableDelay(500, signal)
     }
-    return {
-      confirmed: offer.complete,
-      progress: { completed: offer.completed, total: offer.total },
-      credit: {
-        evidenceSource: 'official-progress',
-        verificationStatus: 'pending',
-        ...(offer.expectedPoints === undefined ? {} : { expectedPoints: offer.expectedPoints })
-      },
-      ...(offer.complete ? {} : { reason: '任务仍未完成' })
-    }
+    return verificationFailure(descriptor.task, 'task-verification-timeout')
   }
 
   private async executeReadToEarn(

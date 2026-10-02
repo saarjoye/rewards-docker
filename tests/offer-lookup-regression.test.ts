@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { BrowserContext, Page } from 'patchright'
 import { DashboardClient } from '../src/browser/DashboardClient.js'
 import type { StructuredLogger } from '../src/infra/StructuredLogger.js'
@@ -11,6 +11,8 @@ import { SqliteStore } from '../src/infra/SqliteStore.js'
 import { RunViews } from '../src/web/RunViews.js'
 import { publicText, taskFailure } from '../src/domain/Presentation.js'
 import type { TaskRecord } from '../src/domain/Task.js'
+
+afterEach(() => vi.unstubAllGlobals())
 
 const target = 'https://www.bing.com/search?q=synthetic&filters=offer'
 const task: TaskRecord = {
@@ -64,6 +66,48 @@ function fixture() {
 }
 
 describe('bounded pre-activation lookup', () => {
+  it('extracts task identity through a nested destination wrapper and selects the unique card', async () => {
+    const f = fixture()
+    vi.stubGlobal('window', { getComputedStyle: () => ({ visibility: 'visible' }) })
+    const node = (offerId: string) => {
+      const owner = {
+        getAttribute: (name: string) => (name === 'data-offer-id' ? offerId : null),
+        querySelector: () => ({ textContent: 'Synthetic' })
+      }
+      const destination = { getAttribute: () => target }
+      return {
+        href: target,
+        innerText: 'Open',
+        isConnected: true,
+        getClientRects: () => [{}],
+        getAttribute: () => null,
+        closest: (selector: string) => (selector === '[data-destination-url]' ? destination : owner)
+      } as unknown as HTMLElement
+    }
+    const nodes = [node('another-offer'), node('offer')]
+    f.links.evaluateAll.mockImplementation((read: (nodes: HTMLElement[]) => unknown) =>
+      Promise.resolve(read(nodes))
+    )
+    f.anchor.evaluate.mockImplementation((read: (node: HTMLElement) => unknown) =>
+      Promise.resolve(read(nodes[1] as HTMLElement))
+    )
+    await f.client.navigateOffer(target, { sourceTaskId: 'offer', displayName: 'Synthetic' })
+    expect(f.links.nth).toHaveBeenCalledWith(1)
+    expect(f.click).toHaveBeenCalledTimes(1)
+  })
+
+  it('never activates duplicate cards that have the same task ID and destination', async () => {
+    const f = fixture()
+    f.links.evaluateAll.mockResolvedValue([
+      { href: target, offerId: 'offer' },
+      { href: target, offerId: 'offer' }
+    ])
+    await expect(f.client.navigateOffer(target, { sourceTaskId: 'offer' })).rejects.toMatchObject({
+      errorCode: 'offer-not-found-before-activation'
+    })
+    expect(f.click).not.toHaveBeenCalled()
+  })
+
   it('waits for late cards and activates exactly once', async () => {
     const f = fixture()
     f.links.evaluateAll.mockResolvedValueOnce([]).mockResolvedValueOnce([])
@@ -86,14 +130,17 @@ describe('bounded pre-activation lookup', () => {
       .map(([event]) => event as Record<string, unknown>)
       .filter((event) => event.event === 'offer-link-lookup')
     expect(lookupLogs.length).toBeGreaterThan(0)
-    expect(lookupLogs.every((event) =>
-      ['earn', 'dashboard', 'bing-flyout'].includes(String(event.surface)) &&
-      typeof event.attempt === 'number' &&
-      typeof event.result === 'string' &&
-      'networkErrorType' in event &&
-      'httpStatus' in event &&
-      event.activationStarted === false
-    )).toBe(true)
+    expect(
+      lookupLogs.every(
+        (event) =>
+          ['earn', 'dashboard', 'bing-flyout'].includes(String(event.surface)) &&
+          typeof event.attempt === 'number' &&
+          typeof event.result === 'string' &&
+          'networkErrorType' in event &&
+          'httpStatus' in event &&
+          event.activationStarted === false
+      )
+    ).toBe(true)
   })
   it('does not let an isolated Bing flyout failure override loaded earn/dashboard surfaces', async () => {
     const f = fixture()
