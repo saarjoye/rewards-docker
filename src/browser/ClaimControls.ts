@@ -10,6 +10,7 @@ export interface ClaimControlSnapshot {
   popup?: string | null
   disabled: boolean
   visible: boolean
+  inDisclosurePanel: boolean
 }
 
 const claimKeyword = /\bclaim(?:able)?\b|\bcollect\b|领取|領取/i
@@ -88,7 +89,11 @@ export function claimablePointsFromControls(
   controls: readonly ClaimControlSnapshot[]
 ): number | undefined {
   const visible = controls.filter(
-    (control) => control.visible && isClaimControl(control) && !isCapOnlyControl(control)
+    (control) =>
+      !control.inDisclosurePanel &&
+      control.visible &&
+      isClaimControl(control) &&
+      !isCapOnlyControl(control)
   )
   const summaries = visible.filter(
     (control) => control.expanded !== null || allKeyword.test(controlText(control))

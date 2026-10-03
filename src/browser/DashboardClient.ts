@@ -1385,7 +1385,8 @@ export class DashboardClient {
       expanded: null,
       controls: null,
       disabled: false,
-      visible: true
+      visible: true,
+      inDisclosurePanel: false
     })
   }
 
@@ -1466,6 +1467,7 @@ export class DashboardClient {
           popup: control.getAttribute('aria-haspopup'),
           disabled:
             control.matches(':disabled') || control.closest('[aria-disabled="true"]') !== null,
+          inDisclosurePanel: control.closest('.react-aria-DisclosurePanel') !== null,
           visible:
             control.getClientRects().length > 0 &&
             style.display !== 'none' &&

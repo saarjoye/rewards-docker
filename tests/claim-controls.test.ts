@@ -18,6 +18,7 @@ interface ControlFixture {
   popup?: string | null
   disabled?: boolean
   visible?: boolean
+  inDisclosurePanel?: boolean
 }
 
 function fixture(initial: ControlFixture[], expanded = initial) {
@@ -50,7 +51,8 @@ function fixture(initial: ControlFixture[], expanded = initial) {
         href: control.href ?? null,
         popup: control.popup ?? null,
         disabled: control.disabled ?? false,
-        visible: control.visible ?? true
+        visible: control.visible ?? true,
+        inDisclosurePanel: control.inDisclosurePanel ?? false
       }))
     )
   })
@@ -323,6 +325,21 @@ describe('homepage claim drawer', () => {
     expect(f.page.waitForResponse).toHaveBeenCalledTimes(1)
   })
 
+  it('submits the homepage drawer once when an activity panel offers 90 points', async () => {
+    const f = drawerFixture()
+    f.initialButtons.evaluateAll.mockResolvedValue([
+      control('领取', { href: '#', contextTexts: ['可领取 432 领取'] }),
+      control('领取 90 积分', { index: 1, inDisclosurePanel: true })
+    ])
+    await expect(f.client.claimBonusByUiWithResult()).resolves.toMatchObject({
+      clicked: true,
+      acknowledged: true
+    })
+    expect(f.clicks[0]).toHaveBeenCalledTimes(1)
+    expect(f.actionClicks[0]).toHaveBeenCalledTimes(1)
+    expect(f.page.waitForResponse).toHaveBeenCalledTimes(1)
+  })
+
   it('also opens a dialog-marked button while preserving the direct-button path', async () => {
     const f = drawerFixture()
     f.initialButtons.evaluateAll.mockResolvedValue([
@@ -335,7 +352,8 @@ describe('homepage claim drawer', () => {
         href: null,
         popup: 'dialog',
         disabled: false,
-        visible: true
+        visible: true,
+        inDisclosurePanel: false
       }
     ])
     await expect(f.client.claimBonusByUiWithResult()).resolves.toMatchObject({
@@ -410,9 +428,32 @@ function control(text: string, patch: Partial<ClaimControlSnapshot> = {}): Claim
     controls: null,
     disabled: false,
     visible: true,
+    inDisclosurePanel: false,
     ...patch
   }
 }
+
+describe('homepage claim total excludes activity disclosure controls', () => {
+  it.each([
+    ['可领取 17 积分', 17],
+    ['可领取 432 积分', 432],
+    ['可领取 1,234 积分', 1234],
+    ['可领取 0 积分', 0]
+  ])('keeps the homepage amount %s separate from an activity claim', (summary, expected) => {
+    expect(
+      claimablePointsFromControls([
+        control(summary, { href: '/earn' }),
+        control('领取 90 积分', { index: 1, inDisclosurePanel: true })
+      ])
+    ).toBe(expected)
+  })
+
+  it('does not mistake an activity-only claim for the homepage total', () => {
+    expect(
+      claimablePointsFromControls([control('领取 90 积分', { inDisclosurePanel: true })])
+    ).toBeUndefined()
+  })
+})
 
 describe('Bing Star cap must not hide the homepage claim summary', () => {
   const starCap = '积分上限2,100积分必应 Star 奖励上个月赚取的积分: 待领取'
@@ -644,6 +685,8 @@ class SyntheticElement {
   matches(selector: string): boolean {
     return selector.split(',').some((part) => {
       const value = part.trim()
+      if (value.startsWith('.'))
+        return this.getAttribute('class')?.split(/\s+/).includes(value.slice(1)) ?? false
       if (value === ':disabled')
         return this.tagName === 'button' && this.getAttribute('disabled') !== null
       if (value === 'a[href]') return this.tagName === 'a' && this.getAttribute('href') !== null
@@ -699,6 +742,38 @@ function element(
 
 // These are deterministic DOM-like fixtures, not a live browser or an authenticated page.
 describe('claim snapshot extraction from synthetic DOM trees', () => {
+  it.each([
+    ['17', 17],
+    ['432', 432],
+    ['1,234', 1234],
+    ['0', 0]
+  ])('reads homepage %s while ignoring a 90-point activity panel', async (amount, expected) => {
+    const root = element('main').append(
+      element('section').append(
+        element('span', '可领取'),
+        element('strong', amount),
+        element('a', '领取', { href: '/earn' })
+      ),
+      element('div', '', { class: 'react-aria-DisclosurePanel' }).append(
+        element('button', '领取 90 积分')
+      )
+    )
+    const f = domFixture(root)
+    await expect(f.client.readClaimablePoints()).resolves.toBe(expected)
+    expect(f.clicks.every((click) => click.mock.calls.length === 0)).toBe(true)
+  })
+
+  it('leaves the homepage total unknown when only an activity panel can claim', async () => {
+    const root = element('main').append(
+      element('div', '', { class: 'react-aria-DisclosurePanel' }).append(
+        element('button', '领取 90 积分')
+      )
+    )
+    const f = domFixture(root)
+    await expect(f.client.readClaimablePoints()).resolves.toBeUndefined()
+    expect(f.clicks[0]).not.toHaveBeenCalled()
+  })
+
   it('reads a separated claim amount from a same-site link without treating that link as submission', async () => {
     const root = element('main').append(
       element('section').append(
