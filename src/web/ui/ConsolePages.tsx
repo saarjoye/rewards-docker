@@ -4,7 +4,7 @@ import { DatePicker } from 'tdesign-react/es/date-picker/index.js'
 import { Empty } from 'tdesign-react/es/empty/index.js'
 import { Pagination } from 'tdesign-react/es/pagination/index.js'
 import { Switch } from 'tdesign-react/es/switch/index.js'
-import { AddIcon } from 'tdesign-icons-react'
+import { AddIcon, DeleteIcon } from 'tdesign-icons-react'
 import type { AccountSummary, StatePayload } from './App'
 import { Button, DataTable, Field, PageHeader, SelectField, StatusTag } from './UiKit'
 import { taskFailure } from '../../domain/Presentation'
@@ -378,7 +378,8 @@ export function AccountsPage({
   running,
   add,
   edit,
-  toggle
+  toggle,
+  remove
 }: {
   accounts: AccountSummary[]
   busy: boolean
@@ -386,6 +387,7 @@ export function AccountsPage({
   add: () => void
   edit: (account: AccountSummary) => void
   toggle: (account: AccountSummary) => void
+  remove: (account: AccountSummary) => void
 }): ReactElement {
   const [query, setQuery] = useState('')
   const rows = accounts.filter((row) =>
@@ -414,7 +416,7 @@ export function AccountsPage({
             {accounts.filter((row) => row.enabled).length}/{accounts.length} 个已启用
           </span>
         </div>
-        {running && <p className="muted">运行期间暂不能更改账号启停状态，名称仍可编辑。</p>}
+        {running && <p className="muted">运行期间暂不能更改账号启停状态或删除，名称仍可编辑。</p>}
         <DataTable
           rows={rows}
           rowKey={(row) => row.accountId}
@@ -451,15 +453,28 @@ export function AccountsPage({
               key: 'edit',
               title: '操作',
               cell: (row) => (
-                <Button
-                  variant="text"
-                  disabled={busy}
-                  onClick={() => {
-                    edit(row)
-                  }}
-                >
-                  编辑名称
-                </Button>
+                <div className="account-actions">
+                  <Button
+                    variant="text"
+                    disabled={busy}
+                    onClick={() => {
+                      edit(row)
+                    }}
+                  >
+                    编辑名称
+                  </Button>
+                  <Button
+                    variant="text"
+                    theme="danger"
+                    icon={<DeleteIcon />}
+                    title="删除账号"
+                    aria-label={`删除账号 ${String(row.runAccountIndex)}`}
+                    disabled={busy || running}
+                    onClick={() => {
+                      remove(row)
+                    }}
+                  />
+                </div>
               )
             }
           ]}

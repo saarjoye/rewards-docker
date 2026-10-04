@@ -1,4 +1,5 @@
 import { BusinessDateChanged } from '../src/orchestration/BusinessDate.js'
+import { EventEmitter } from 'node:events'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -83,12 +84,17 @@ function observation(offers: readonly RewardOffer[] = []): RewardsObservation {
 function browserSlot(slot: 'web-desktop' | 'web-mobile'): {
   value: AccountBrowserSlot
   goto: ReturnType<typeof vi.fn>
+  pageClose: ReturnType<typeof vi.fn>
   commitVerified: ReturnType<typeof vi.fn>
+  close: ReturnType<typeof vi.fn>
 } {
   const goto = vi.fn().mockResolvedValue(null)
+  const pageClose = vi.fn().mockResolvedValue(undefined)
   const commitVerified = vi.fn().mockResolvedValue(undefined)
+  const close = vi.fn().mockResolvedValue(undefined)
   const page = {
     goto,
+    close: pageClose,
     url: vi.fn().mockReturnValue('https://rewards.bing.com/dashboard')
   } as unknown as Page
   return {
@@ -96,11 +102,13 @@ function browserSlot(slot: 'web-desktop' | 'web-mobile'): {
       slot,
       context: {} as BrowserContext,
       page,
-      close: vi.fn().mockResolvedValue(undefined),
+      close,
       commitVerified
     },
     goto,
-    commitVerified
+    pageClose,
+    commitVerified,
+    close
   }
 }
 
@@ -367,34 +375,106 @@ function authenticationCoordinator(input: {
 }
 
 describe('coordinator authentication recovery', () => {
-  it.each([
-    ['TimeoutError', 'login-navigation-timeout'],
-    ['Error', 'login-navigation-error']
-  ])(
-    'does not submit login or persist a session after a %s navigation failure',
-    async (name, stage) => {
-      const desktop = browserSlot('web-desktop')
-      const failure = new Error('synthetic authentication navigation failure')
-      failure.name = name
-      desktop.goto.mockRejectedValue(failure)
-      const openSlot = vi.fn().mockResolvedValue(desktop.value)
-      const login = vi.spyOn(LoginController.prototype, 'login').mockResolvedValue(undefined)
-      const verify = vi.spyOn(RewardsDiscoveryService.prototype, 'verifyAuthenticated')
-
-      await expect(
-        invokeAuthenticate(authenticationCoordinator({ openSlot }))
-      ).rejects.toMatchObject({
-        name: 'LoginStateError',
-        loginState: 'unknown',
-        loginStage: stage
-      })
-      expect(desktop.goto).toHaveBeenCalledTimes(1)
-      expect(openSlot).toHaveBeenCalledTimes(1)
-      expect(login).not.toHaveBeenCalled()
-      expect(verify).not.toHaveBeenCalled()
-      expect(desktop.commitVerified).not.toHaveBeenCalled()
+  it('recovers a pre-commit timeout in a new browser slot before login or task execution', async () => {
+    const first = browserSlot('web-desktop')
+    const second = browserSlot('web-desktop')
+    const timeout = new Error('synthetic authentication navigation timeout')
+    timeout.name = 'TimeoutError'
+    first.goto.mockRejectedValue(timeout)
+    const openSlot = vi.fn().mockResolvedValueOnce(first.value).mockResolvedValueOnce(second.value)
+    const login = vi.spyOn(LoginController.prototype, 'login').mockResolvedValue(undefined)
+    const verify = vi
+      .spyOn(RewardsDiscoveryService.prototype, 'verifyAuthenticated')
+      .mockResolvedValue({ verification: { valid: true }, observation: observation() })
+    const config = {
+      ...DEFAULT_CONFIG,
+      tasks: {
+        ...DEFAULT_CONFIG.tasks,
+        mobileSearch: false,
+        appActivities: false,
+        appCheckIn: false,
+        readToEarn: false
+      }
     }
-  )
+
+    await expect(
+      invokeAuthenticate(authenticationCoordinator({ openSlot, config }))
+    ).resolves.toEqual({ status: 'completed' })
+    expect(openSlot).toHaveBeenCalledTimes(2)
+    expect(first.pageClose).toHaveBeenCalledTimes(1)
+    expect(first.close).toHaveBeenCalledTimes(1)
+    expect(first.commitVerified).not.toHaveBeenCalled()
+    expect(second.goto).toHaveBeenCalledExactlyOnceWith(
+      REWARDS_URLS.dashboard,
+      expect.objectContaining({ waitUntil: 'commit' })
+    )
+    expect(login).toHaveBeenCalledTimes(1)
+    expect(verify).toHaveBeenCalledTimes(1)
+    expect(second.commitVerified).toHaveBeenCalledTimes(1)
+  })
+
+  it('stops after a second pre-commit timeout without submitting login or persisting a session', async () => {
+    const first = browserSlot('web-desktop')
+    const second = browserSlot('web-desktop')
+    const timeout = new Error('synthetic authentication navigation timeout')
+    timeout.name = 'TimeoutError'
+    first.goto.mockRejectedValue(timeout)
+    second.goto.mockRejectedValue(timeout)
+    const openSlot = vi.fn().mockResolvedValueOnce(first.value).mockResolvedValueOnce(second.value)
+    const login = vi.spyOn(LoginController.prototype, 'login').mockResolvedValue(undefined)
+    const verify = vi.spyOn(RewardsDiscoveryService.prototype, 'verifyAuthenticated')
+
+    await expect(invokeAuthenticate(authenticationCoordinator({ openSlot }))).rejects.toMatchObject(
+      { name: 'LoginStateError', loginStage: 'login-navigation-timeout' }
+    )
+    expect(openSlot).toHaveBeenCalledTimes(2)
+    expect(first.pageClose).toHaveBeenCalledTimes(1)
+    expect(second.pageClose).toHaveBeenCalledTimes(1)
+    expect(first.close).toHaveBeenCalledTimes(1)
+    expect(second.close).toHaveBeenCalledTimes(1)
+    expect(login).not.toHaveBeenCalled()
+    expect(verify).not.toHaveBeenCalled()
+    expect(first.commitVerified).not.toHaveBeenCalled()
+    expect(second.commitVerified).not.toHaveBeenCalled()
+  })
+
+  it('does not retry an unknown navigation error', async () => {
+    const desktop = browserSlot('web-desktop')
+    desktop.goto.mockRejectedValue(new Error('synthetic authentication navigation failure'))
+    const openSlot = vi.fn().mockResolvedValue(desktop.value)
+    const login = vi.spyOn(LoginController.prototype, 'login').mockResolvedValue(undefined)
+
+    await expect(invokeAuthenticate(authenticationCoordinator({ openSlot }))).rejects.toMatchObject(
+      { name: 'LoginStateError', loginStage: 'login-navigation-error' }
+    )
+    expect(openSlot).toHaveBeenCalledTimes(1)
+    expect(login).not.toHaveBeenCalled()
+    expect(desktop.commitVerified).not.toHaveBeenCalled()
+  })
+
+  it('does not retry after the main document has committed', async () => {
+    const desktop = browserSlot('web-desktop')
+    const events = new EventEmitter()
+    const frame = {}
+    Object.assign(desktop.value.page, {
+      mainFrame: () => frame,
+      on: events.on.bind(events),
+      off: events.off.bind(events),
+      close: vi.fn().mockResolvedValue(undefined)
+    })
+    const timeout = new Error('synthetic authentication navigation timeout')
+    timeout.name = 'TimeoutError'
+    desktop.goto.mockImplementation(() => {
+      events.emit('framenavigated', frame)
+      return Promise.reject(timeout)
+    })
+    const openSlot = vi.fn().mockResolvedValue(desktop.value)
+    await expect(invokeAuthenticate(authenticationCoordinator({ openSlot }))).rejects.toMatchObject(
+      { loginStage: 'login-navigation-timeout', navigationCommitted: true }
+    )
+    expect(openSlot).toHaveBeenCalledTimes(1)
+    expect(desktop.commitVerified).not.toHaveBeenCalled()
+  })
 
   it('reaches verified desktop authentication despite a delayed DOMContentLoaded event', async () => {
     const desktop = browserSlot('web-desktop')

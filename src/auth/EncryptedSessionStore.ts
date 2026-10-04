@@ -1,7 +1,8 @@
+import { rmdirSync, unlinkSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
-import type { AuthSlot } from './AuthSlot.js'
+import { AUTH_SLOTS, type AuthSlot } from './AuthSlot.js'
 import { writeFileAtomic } from '../infra/AtomicFile.js'
 import { decryptBytes, encryptBytes, type EncryptedEnvelope } from '../security/CryptoVault.js'
 
@@ -41,8 +42,28 @@ export class EncryptedSessionStore {
     )
   }
 
+  removeAll(accountId: string): void {
+    for (const slot of AUTH_SLOTS) {
+      try {
+        unlinkSync(this.sessionPath(accountId, slot))
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      }
+    }
+    try {
+      rmdirSync(this.accountDirectory(accountId))
+    } catch (error) {
+      if (!['ENOENT', 'ENOTEMPTY'].includes((error as NodeJS.ErrnoException).code ?? ''))
+        throw error
+    }
+  }
+
   private sessionPath(accountId: string, slot: AuthSlot): string {
+    return join(this.accountDirectory(accountId), `${slot}.json.enc`)
+  }
+
+  private accountDirectory(accountId: string): string {
     const safeAccountId = accountId.replace(/[^A-Za-z0-9_-]/g, '_')
-    return join(this.rootDirectory, safeAccountId, `${slot}.json.enc`)
+    return join(this.rootDirectory, safeAccountId)
   }
 }

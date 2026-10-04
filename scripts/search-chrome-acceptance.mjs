@@ -13,6 +13,7 @@ import { RewardsTaskExecutor } from '../dist/server/rewards/RewardsTaskExecutor.
 import { SqliteStore } from '../dist/server/infra/SqliteStore.js'
 import { AdminAuthStore } from '../dist/server/infra/AdminAuthStore.js'
 import { AccountSecretStore } from '../dist/server/infra/AccountSecretStore.js'
+import { EncryptedSessionStore } from '../dist/server/auth/EncryptedSessionStore.js'
 import { DEFAULT_CONFIG } from '../dist/server/infra/Config.js'
 import { createServer } from '../dist/server/web/createServer.js'
 import { localDateKey } from '../dist/server/domain/DateKey.js'
@@ -23,6 +24,10 @@ const store = new SqliteStore(':memory:')
 const adminAuth = new AdminAuthStore(store.database)
 adminAuth.initialize('synthetic-admin', 'synthetic-password')
 const accounts = new AccountSecretStore(store.database, Buffer.alloc(32, 7))
+const sessions = new EncryptedSessionStore(
+  resolve('.codex-output/search-chrome/sessions'),
+  Buffer.alloc(32, 7)
+)
 accounts.create({
   email: 'fixture@example.test',
   password: 'synthetic-only',
@@ -34,6 +39,7 @@ const app = await createServer({
   store,
   adminAuth,
   accounts,
+  sessions,
   secureCookies: false,
   webRoot: resolve('dist/web'),
   runCoordinator: coordinator

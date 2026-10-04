@@ -59,6 +59,33 @@ describe('encrypted persistence', () => {
     ).not.toContain('canary')
   })
 
+  it("removes only the selected account's encrypted authentication slots", async () => {
+    const directory = await temporaryDirectory()
+    const sessions = new EncryptedSessionStore(directory, Buffer.alloc(32, 7))
+    for (const slot of ['web-desktop', 'web-mobile', 'app-oauth'] as const) {
+      await sessions.commitVerified(
+        { accountId: 'removed', slot, validatedAt: '2026-09-03T00:00:00Z', payload: { slot } },
+        true
+      )
+    }
+    await sessions.commitVerified(
+      {
+        accountId: 'retained',
+        slot: 'web-desktop',
+        validatedAt: '2026-09-03T00:00:00Z',
+        payload: { canary: true }
+      },
+      true
+    )
+
+    sessions.removeAll('removed')
+    sessions.removeAll('removed')
+    for (const slot of ['web-desktop', 'web-mobile', 'app-oauth'] as const) {
+      expect(await sessions.read('removed', slot)).toBeUndefined()
+    }
+    expect(await sessions.read('retained', 'web-desktop')).toBeDefined()
+  })
+
   it('keeps account credentials encrypted and preserves one-based order', async () => {
     const directory = await temporaryDirectory()
     const store = new SqliteStore(join(directory, 'state.sqlite'))
@@ -82,6 +109,53 @@ describe('encrypted persistence', () => {
         .get(firstId) as { encrypted_credentials: string }
       expect(encrypted.encrypted_credentials).not.toContain('first@example.test')
       expect(encrypted.encrypted_credentials).not.toContain('synthetic-password')
+    } finally {
+      store.close()
+    }
+  })
+
+  it('adds account deletion markers to an existing database without changing its records', async () => {
+    const directory = await temporaryDirectory()
+    const path = join(directory, 'state.sqlite')
+    const original = new SqliteStore(path)
+    const accountId = new AccountSecretStore(original.database, Buffer.alloc(32, 8)).create({
+      email: 'existing@example.test',
+      password: 'synthetic-password'
+    })
+    original.database.exec(
+      'DROP TABLE deleted_accounts; DELETE FROM schema_version WHERE version = 6'
+    )
+    original.close()
+
+    const upgraded = new SqliteStore(path)
+    try {
+      expect(
+        upgraded.database.prepare('SELECT version FROM schema_version WHERE version = 6').get()
+      ).toMatchObject({ version: 6 })
+      expect(new AccountSecretStore(upgraded.database, Buffer.alloc(32, 8)).has(accountId)).toBe(
+        true
+      )
+      expect(
+        upgraded.database.prepare('SELECT COUNT(*) AS count FROM deleted_accounts').get()
+      ).toMatchObject({ count: 0 })
+    } finally {
+      upgraded.close()
+    }
+  })
+
+  it('rolls back account removal when the deletion marker cannot be stored', async () => {
+    const directory = await temporaryDirectory()
+    const store = new SqliteStore(join(directory, 'state.sqlite'))
+    try {
+      const accounts = new AccountSecretStore(store.database, Buffer.alloc(32, 8))
+      const accountId = accounts.create({
+        email: 'retained@example.test',
+        password: 'synthetic-password'
+      })
+      store.database.exec(`CREATE TRIGGER reject_deleted_account
+        BEFORE INSERT ON deleted_accounts BEGIN SELECT RAISE(ABORT, 'synthetic-marker-failure'); END`)
+      expect(() => accounts.remove(accountId)).toThrow('synthetic-marker-failure')
+      expect(accounts.has(accountId)).toBe(true)
     } finally {
       store.close()
     }

@@ -310,6 +310,15 @@ small.observation {
 .t-table td small {
   display: block;
 }
+.account-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 32px;
+}
+.account-actions .t-button {
+  flex: 0 0 auto;
+}
 .mobile-data {
   display: none;
 }

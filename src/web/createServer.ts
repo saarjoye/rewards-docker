@@ -10,6 +10,7 @@ import { z } from 'zod'
 import { localDateKey } from '../domain/DateKey.js'
 import type { RunRequest } from '../domain/RunRequest.js'
 import { summarizeTasks } from '../domain/Task.js'
+import type { EncryptedSessionStore } from '../auth/EncryptedSessionStore.js'
 import type { AccountSecretStore } from '../infra/AccountSecretStore.js'
 import type { AdminAuthStore } from '../infra/AdminAuthStore.js'
 import type { ApplicationConfig } from '../infra/Config.js'
@@ -44,17 +45,21 @@ const accountUpdateSchema = z
   })
   .refine((value) => Object.keys(value).length > 0, { message: 'At least one field is required' })
 const runRequestSchema = z.discriminatedUnion('accountMode', [
-  z.object({
-    accountMode: z.literal('continue'),
-    runAccountIndex: z.undefined().optional(),
-    executionMode: z.enum(['read-only', 'mutating']).default('read-only')
-  }).strict(),
-  z.object({
-    accountMode: z.literal('account'),
-    runAccountIndex: z.number().int().min(1),
-    executionMode: z.enum(['read-only', 'mutating']).default('read-only'),
-    retryPendingSearch: z.boolean().default(false)
-  }).strict()
+  z
+    .object({
+      accountMode: z.literal('continue'),
+      runAccountIndex: z.undefined().optional(),
+      executionMode: z.enum(['read-only', 'mutating']).default('read-only')
+    })
+    .strict(),
+  z
+    .object({
+      accountMode: z.literal('account'),
+      runAccountIndex: z.number().int().min(1),
+      executionMode: z.enum(['read-only', 'mutating']).default('read-only'),
+      retryPendingSearch: z.boolean().default(false)
+    })
+    .strict()
 ])
 const searchSettingsSchema = z
   .object({
@@ -78,6 +83,7 @@ export interface RunCoordinator {
 export interface WebServerDependencies {
   adminAuth: AdminAuthStore
   accounts: AccountSecretStore
+  sessions: EncryptedSessionStore
   store: SqliteStore
   webRoot?: string
   secureCookies: boolean
@@ -97,10 +103,7 @@ export async function createServer(dependencies: WebServerDependencies): Promise
   const app = Fastify({ logger: false, bodyLimit: 64 * 1024 })
   const streams = new Set<() => void>()
   let stateRevision = 0
-  const stateCache = new Map<
-    string,
-    { expiresAt: number; revision: number; value: unknown }
-  >()
+  const stateCache = new Map<string, { expiresAt: number; revision: number; value: unknown }>()
   const unsubscribeState = dependencies.store.subscribe(() => {
     stateRevision += 1
     stateCache.clear()
@@ -311,10 +314,12 @@ export async function createServer(dependencies: WebServerDependencies): Promise
     )}`
     const now = Date.now()
     const cached = stateCache.get(key)
-    if (cached && cached.revision === stateRevision && cached.expiresAt > now)
-      return cached.value
+    if (cached && cached.revision === stateRevision && cached.expiresAt > now) return cached.value
     const revision = stateRevision
-    const tasks = dependencies.store.listTaskState(date)
+    const accountIds = new Set(accounts.map((account) => account.accountId))
+    const tasks = dependencies.store
+      .listTaskState(date)
+      .filter((task) => accountIds.has(task.accountId))
     const taskSummary = summarizeTasks(tasks)
     const value = {
       version: appVersion(),
@@ -329,8 +334,7 @@ export async function createServer(dependencies: WebServerDependencies): Promise
         .map((run) => views.runSummary(run.runId, activeRunId ?? undefined)),
       today: views.today(accounts)
     }
-    if (revision === stateRevision)
-      stateCache.set(key, { expiresAt: now + 3_000, revision, value })
+    if (revision === stateRevision) stateCache.set(key, { expiresAt: now + 3_000, revision, value })
     return value
   })
 
@@ -341,6 +345,7 @@ export async function createServer(dependencies: WebServerDependencies): Promise
       password: body.password,
       ...(body.displayAlias === undefined ? {} : { displayAlias: body.displayAlias })
     })
+    dependencies.store.notifyAccountsChanged()
     const account = dependencies.accounts.list().find((item) => item.accountId === accountId)
     return reply.code(201).send({ account })
   })
@@ -359,8 +364,23 @@ export async function createServer(dependencies: WebServerDependencies): Promise
     if (!dependencies.accounts.update(accountId, update)) {
       return reply.code(404).send({ error: 'account-not-found' })
     }
+    dependencies.store.notifyAccountsChanged()
     const account = dependencies.accounts.list().find((item) => item.accountId === accountId)
     return { account }
+  })
+
+  app.delete('/api/accounts/:accountId', async (request, reply) => {
+    const { accountId } = z.object({ accountId: z.uuid() }).parse(request.params)
+    if (dependencies.runCoordinator?.activeRunId) {
+      return reply.code(409).send({ error: 'run-already-active' })
+    }
+    if (!dependencies.accounts.has(accountId)) {
+      return reply.code(404).send({ error: 'account-not-found' })
+    }
+    dependencies.sessions.removeAll(accountId)
+    dependencies.accounts.remove(accountId)
+    dependencies.store.notifyAccountsChanged()
+    return reply.code(204).send()
   })
 
   app.post('/api/runs', async (request, reply) => {

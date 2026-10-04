@@ -58,6 +58,7 @@ if (!adminAuth.isInitialized()) {
 const app = await createServer({
   adminAuth,
   accounts,
+  sessions,
   store,
   runCoordinator: coordinator,
   notifications,

@@ -441,10 +441,14 @@ export class RunViews {
       : (
           this.store.database
             .prepare(
-              `SELECT DISTINCT account_id AS accountId FROM balance_observations
-             WHERE business_date = ?
-             UNION SELECT DISTINCT account_id FROM tasks WHERE local_date = ?
-             ORDER BY accountId`
+              `SELECT account_id AS accountId FROM (
+                SELECT account_id FROM balance_observations WHERE business_date = ?
+                UNION SELECT account_id FROM tasks WHERE local_date = ?
+              ) historical
+              WHERE NOT EXISTS (
+                SELECT 1 FROM deleted_accounts deleted WHERE deleted.account_id = historical.account_id
+              )
+              ORDER BY accountId`
             )
             .all(date, date) as { accountId: string }[]
         ).map((row) => ({

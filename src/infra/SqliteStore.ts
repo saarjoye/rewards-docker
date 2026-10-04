@@ -33,6 +33,9 @@ export class SqliteStore {
       this.listeners.delete(listener)
     }
   }
+  notifyAccountsChanged(): void {
+    this.changed()
+  }
   private changed(): void {
     for (const listener of this.listeners) {
       try {
@@ -641,6 +644,12 @@ export class SqliteStore {
     // Ledger tables must exist before their business indexes are created.
     migrateRunLedger(this.database)
     this.database.exec(`
+      CREATE TABLE IF NOT EXISTS deleted_accounts (
+        account_id TEXT PRIMARY KEY,
+        deleted_at TEXT NOT NULL
+      );
+      INSERT OR IGNORE INTO schema_version(version, applied_at)
+      VALUES (6, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
       CREATE INDEX IF NOT EXISTS idx_tasks_local_date ON tasks(local_date);
       CREATE INDEX IF NOT EXISTS idx_run_tasks_business_date ON run_tasks(business_date, account_id);
       CREATE INDEX IF NOT EXISTS idx_run_tasks_run_id ON run_tasks(run_id, account_id);

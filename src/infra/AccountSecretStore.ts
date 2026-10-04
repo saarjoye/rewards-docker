@@ -80,6 +80,32 @@ export class AccountSecretStore {
     return row ? this.decryptCredentials(row.encrypted_credentials) : undefined
   }
 
+  has(accountId: string): boolean {
+    return (
+      this.database.prepare('SELECT 1 FROM accounts WHERE account_id = ?').get(accountId) !==
+      undefined
+    )
+  }
+
+  remove(accountId: string): boolean {
+    this.database.exec('SAVEPOINT account_removal')
+    try {
+      const removed =
+        this.database.prepare('DELETE FROM accounts WHERE account_id = ?').run(accountId)
+          .changes === 1
+      if (removed) {
+        this.database
+          .prepare('INSERT INTO deleted_accounts(account_id, deleted_at) VALUES (?, ?)')
+          .run(accountId, new Date().toISOString())
+      }
+      this.database.exec('RELEASE account_removal')
+      return removed
+    } catch (error) {
+      this.database.exec('ROLLBACK TO account_removal; RELEASE account_removal')
+      throw error
+    }
+  }
+
   update(
     accountId: string,
     input: { password?: string; displayAlias?: string; enabled?: boolean },

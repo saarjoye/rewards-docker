@@ -189,7 +189,14 @@ function LoginView({ onLogin }: { onLogin: (token: string) => void }): ReactElem
 export function App(): ReactElement {
   const [restoring, setRestoring] = useState(true)
   const [page, setPage] = useState<
-    'overview' | 'tasks' | 'history' | 'calendar' | 'accounts' | 'notifications' | 'schedule' | 'search'
+    | 'overview'
+    | 'tasks'
+    | 'history'
+    | 'calendar'
+    | 'accounts'
+    | 'notifications'
+    | 'schedule'
+    | 'search'
   >(() => {
     const hash = window.location.hash.slice(1)
     if (hash.startsWith('run/')) return 'history'
@@ -208,6 +215,7 @@ export function App(): ReactElement {
   taskDateRef.current = taskDate
   const [submitting, setSubmitting] = useState(false)
   const [editingAccount, setEditingAccount] = useState('')
+  const [deletingAccount, setDeletingAccount] = useState<AccountSummary | null>(null)
   const [alias, setAlias] = useState('')
   const [csrfToken, setCsrfToken] = useState<string>()
   const [state, setState] = useState<StatePayload>()
@@ -359,6 +367,51 @@ export function App(): ReactElement {
       await loadState()
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '账号更新失败')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function deleteAccount(): Promise<void> {
+    if (!deletingAccount || submitting || state?.activeRunId) return
+    const accountId = deletingAccount.accountId
+    setSubmitting(true)
+    setError('')
+    try {
+      await requestJson(`/api/accounts/${accountId}`, { method: 'DELETE' }, csrfToken)
+      setDeletingAccount(null)
+      setAccountMode('continue')
+      setRunAccountIndex(1)
+      setRetryPendingSearch(false)
+      try {
+        const latest = await requestJson<StatePayload>(
+          `/api/state${taskDateRef.current ? `?date=${taskDateRef.current}` : ''}`
+        )
+        setState(latest)
+      } catch {
+        setError('账号已删除，但列表刷新失败，请刷新核对')
+      }
+    } catch (caught) {
+      if (caught instanceof Error && caught.message === 'run-already-active') {
+        setError('运行期间不能删除账号')
+      } else {
+        try {
+          const latest = await requestJson<StatePayload>(
+            `/api/state${taskDateRef.current ? `?date=${taskDateRef.current}` : ''}`
+          )
+          setState(latest)
+          if (latest.accounts.some((account) => account.accountId === accountId)) {
+            setError('删除未成功，账号仍保留')
+          } else {
+            setDeletingAccount(null)
+            setAccountMode('continue')
+            setRunAccountIndex(1)
+            setRetryPendingSearch(false)
+          }
+        } catch {
+          setError('删除结果未确认，请刷新账号列表核对')
+        }
+      }
     } finally {
       setSubmitting(false)
     }
@@ -577,6 +630,10 @@ export function App(): ReactElement {
                 setAlias(account.displayAlias)
               }}
               toggle={(account) => void toggleAccount(account)}
+              remove={(account) => {
+                rememberTrigger()
+                setDeletingAccount(account)
+              }}
             />
           )}
           {page === 'notifications' && (
@@ -641,6 +698,26 @@ export function App(): ReactElement {
           required
           disabled={submitting}
         />
+      </Dialog>
+      <Dialog
+        header="删除账号？"
+        visible={deletingAccount !== null}
+        onClose={() => {
+          if (!submitting) {
+            setDeletingAccount(null)
+            restoreTrigger()
+          }
+        }}
+        confirmBtn={{
+          content: '永久删除',
+          theme: 'danger',
+          loading: submitting,
+          disabled: Boolean(state?.activeRunId)
+        }}
+        onConfirm={() => void deleteAccount()}
+      >
+        将删除 {deletingAccount?.displayAlias}（{deletingAccount?.maskedEmail}
+        ）的账号配置与加密会话。此操作无法撤销；已有运行及积分历史保留。
       </Dialog>
       <Drawer
         header={state?.activeRunId ? '运行控制' : '新建运行'}

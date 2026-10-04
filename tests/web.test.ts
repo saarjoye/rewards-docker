@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { localDateKey } from '../src/domain/DateKey.js'
+import { EncryptedSessionStore } from '../src/auth/EncryptedSessionStore.js'
 import { AccountSecretStore } from '../src/infra/AccountSecretStore.js'
 import { AdminAuthStore } from '../src/infra/AdminAuthStore.js'
 import { DEFAULT_CONFIG, type ApplicationConfig } from '../src/infra/Config.js'
@@ -34,6 +35,7 @@ async function fixture(
   const adminAuth = new AdminAuthStore(store.database)
   adminAuth.initialize('admin', 'synthetic-admin-password')
   const accounts = new AccountSecretStore(store.database, Buffer.alloc(32, 9))
+  const sessions = new EncryptedSessionStore(join(root, 'sessions'), Buffer.alloc(32, 9))
   const notificationFetch = vi.fn<typeof fetch>().mockImplementation(async (url) => {
     await Promise.resolve()
     return new Response(
@@ -47,6 +49,7 @@ async function fixture(
   const dependencies = {
     adminAuth,
     accounts,
+    sessions,
     store,
     webRoot,
     secureCookies: false,
@@ -69,7 +72,16 @@ async function fixture(
   const cookie = setCookie.split(';')[0]
   if (!cookie) throw new Error('Synthetic login returned an empty cookie')
   const csrfToken = login.json<{ csrfToken: string }>().csrfToken
-  return { app, store, cookie, csrfToken, notificationFetch, config: extras?.config }
+  return {
+    app,
+    store,
+    accounts,
+    sessions,
+    cookie,
+    csrfToken,
+    notificationFetch,
+    config: extras?.config
+  }
 }
 
 describe('web API', () => {
@@ -122,7 +134,11 @@ describe('web API', () => {
           selectedAccountIndexes: [1],
           startedAt: new Date(Date.UTC(2026, 8, 9, 0, index)).toISOString()
         })
-      const response = await app.inject({ method: 'GET', url: '/api/runs?page=1', headers: { cookie } })
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/runs?page=1',
+        headers: { cookie }
+      })
       expect(response.statusCode).toBe(200)
       const body = response.json<{
         runs: Array<Record<string, unknown>>
@@ -196,8 +212,14 @@ describe('web API', () => {
         updatedAt: '2026-09-09T00:01:00Z'
       })
       store.updateRun(runId, 'completed', '2026-09-09T00:01:00Z')
-      const response = await app.inject({ method: 'GET', url: '/api/runs?page=1', headers: { cookie } })
-      expect(response.json<{ runs: Array<{ status: string; accountsPartial: number }> }>().runs[0]).toMatchObject({
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/runs?page=1',
+        headers: { cookie }
+      })
+      expect(
+        response.json<{ runs: Array<{ status: string; accountsPartial: number }> }>().runs[0]
+      ).toMatchObject({
         status: 'partial',
         accountsPartial: 1
       })
@@ -292,7 +314,9 @@ describe('web API', () => {
     const loaded = await fixture(undefined, false, { config, configPath })
     try {
       const url = '/api/settings/search'
-      expect((await loaded.app.inject({ method: 'GET', url, headers: { cookie: loaded.cookie } })).json()).toMatchObject({
+      expect(
+        (await loaded.app.inject({ method: 'GET', url, headers: { cookie: loaded.cookie } })).json()
+      ).toMatchObject({
         delayMinSeconds: 30,
         delayMaxSeconds: 60,
         scroll: true,
@@ -376,7 +400,9 @@ describe('web API', () => {
         clickResult: true,
         resultVisitSeconds: 12
       })
-      expect((JSON.parse(await readFile(configPath, 'utf8')) as { search: unknown }).search).toMatchObject({
+      expect(
+        (JSON.parse(await readFile(configPath, 'utf8')) as { search: unknown }).search
+      ).toMatchObject({
         delayMinSeconds: 15,
         delayMaxSeconds: 25,
         scroll: false,
@@ -384,15 +410,45 @@ describe('web API', () => {
         resultVisitSeconds: 12,
         stagnantLimit: 23
       })
-      const valid = { delayMinSeconds: 360, delayMaxSeconds: 720, scroll: true, clickResult: false, resultVisitSeconds: 8 }
+      const valid = {
+        delayMinSeconds: 360,
+        delayMaxSeconds: 720,
+        scroll: true,
+        clickResult: false,
+        resultVisitSeconds: 8
+      }
       const headers = { cookie: loaded.cookie, 'x-csrf-token': loaded.csrfToken }
       for (const stagnantLimit of [0, 101, 1.5]) {
-        expect((await loaded.app.inject({ method: 'PUT', url, headers, payload: { ...valid, stagnantLimit } })).statusCode).toBe(400)
+        expect(
+          (
+            await loaded.app.inject({
+              method: 'PUT',
+              url,
+              headers,
+              payload: { ...valid, stagnantLimit }
+            })
+          ).statusCode
+        ).toBe(400)
       }
-      expect((await loaded.app.inject({ method: 'PUT', url, headers, payload: { ...valid, stagnantLimit: 4 } })).json()).toMatchObject({ stagnantLimit: 4 })
-      expect((await loaded.app.inject({ method: 'GET', url, headers })).json()).toMatchObject({ stagnantLimit: 4 })
-      expect((await loaded.app.inject({ method: 'PUT', url, headers, payload: valid })).json()).toMatchObject({ stagnantLimit: 4 })
-      expect((JSON.parse(await readFile(configPath, 'utf8')) as { search: unknown }).search).toMatchObject({ stagnantLimit: 4 })
+      expect(
+        (
+          await loaded.app.inject({
+            method: 'PUT',
+            url,
+            headers,
+            payload: { ...valid, stagnantLimit: 4 }
+          })
+        ).json()
+      ).toMatchObject({ stagnantLimit: 4 })
+      expect((await loaded.app.inject({ method: 'GET', url, headers })).json()).toMatchObject({
+        stagnantLimit: 4
+      })
+      expect(
+        (await loaded.app.inject({ method: 'PUT', url, headers, payload: valid })).json()
+      ).toMatchObject({ stagnantLimit: 4 })
+      expect(
+        (JSON.parse(await readFile(configPath, 'utf8')) as { search: unknown }).search
+      ).toMatchObject({ stagnantLimit: 4 })
     } finally {
       await loaded.app.close()
       loaded.store.close()
@@ -872,6 +928,168 @@ describe('web API', () => {
         required: true,
         progress: { completed: 1, total: 1 }
       })
+    } finally {
+      await app.close()
+      store.close()
+    }
+  })
+
+  it('removes account credentials and sessions while preserving historical records', async () => {
+    const { app, store, accounts, sessions, cookie, csrfToken } = await fixture()
+    const accountId = accounts.create({
+      email: 'deleted@example.test',
+      password: 'synthetic-deleted-password'
+    })
+    const remainingId = accounts.create({
+      email: 'remaining@example.test',
+      password: 'synthetic-remaining-password'
+    })
+    const date = localDateKey()
+    const runId = randomUUID()
+    try {
+      for (const slot of ['web-desktop', 'web-mobile', 'app-oauth'] as const) {
+        await sessions.commitVerified(
+          { accountId, slot, validatedAt: '2026-09-09T00:00:00Z', payload: { canary: slot } },
+          true
+        )
+      }
+      store.createRun({
+        runId,
+        localDate: date,
+        executionMode: 'read-only',
+        selectedAccountIndexes: [1],
+        startedAt: '2026-09-09T00:00:00Z'
+      })
+      store.upsertAccountRun({
+        runId,
+        accountId,
+        runAccountIndex: 1,
+        localDate: date,
+        status: 'failed',
+        stage: 'login-navigation-timeout',
+        updatedAt: '2026-09-09T00:01:00Z'
+      })
+      store.upsertTask({
+        taskId: `${accountId}:${date}:claim`,
+        accountId,
+        localDate: date,
+        sourceTaskId: 'claim',
+        type: 'claim-bonus-points',
+        source: 'rsc',
+        displayName: '领取奖励积分',
+        executable: true,
+        required: true,
+        status: 'completed',
+        progress: { completed: 1, total: 1 },
+        updatedAt: '2026-09-09T00:01:00Z'
+      })
+
+      const response = await app.inject({
+        method: 'DELETE',
+        url: `/api/accounts/${accountId}`,
+        headers: { cookie, 'x-csrf-token': csrfToken }
+      })
+      expect(response.statusCode).toBe(204)
+      expect(accounts.has(accountId)).toBe(false)
+      expect(accounts.getCredentials(accountId)).toBeUndefined()
+      const marker = store.database
+        .prepare('SELECT deleted_at FROM deleted_accounts WHERE account_id = ?')
+        .get(accountId) as { deleted_at: string } | undefined
+      expect(typeof marker?.deleted_at).toBe('string')
+      expect(accounts.list()).toMatchObject([{ accountId: remainingId, runAccountIndex: 1 }])
+      for (const slot of ['web-desktop', 'web-mobile', 'app-oauth'] as const) {
+        expect(await sessions.read(accountId, slot)).toBeUndefined()
+      }
+      expect(store.listTaskState(date)).toHaveLength(1)
+      expect(
+        store.database.prepare('SELECT status FROM account_runs WHERE run_id = ?').get(runId)
+      ).toMatchObject({ status: 'failed' })
+      const state = await app.inject({
+        method: 'GET',
+        url: `/api/state?date=${date}`,
+        headers: { cookie }
+      })
+      expect(state.json<{ accounts: unknown[]; tasks: unknown[] }>().accounts).toHaveLength(1)
+      expect(state.json<{ accounts: unknown[]; tasks: unknown[] }>().tasks).toHaveLength(0)
+      expect(
+        (
+          await app.inject({
+            method: 'DELETE',
+            url: `/api/accounts/${accountId}`,
+            headers: { cookie, 'x-csrf-token': csrfToken }
+          })
+        ).statusCode
+      ).toBe(404)
+      expect(
+        (
+          await app.inject({
+            method: 'DELETE',
+            url: `/api/accounts/${remainingId}`,
+            headers: { cookie, 'x-csrf-token': csrfToken }
+          })
+        ).statusCode
+      ).toBe(204)
+      const empty = await app.inject({ method: 'GET', url: '/api/state', headers: { cookie } })
+      expect(empty.json<{ accounts: unknown[]; today: unknown[] }>().accounts).toEqual([])
+      expect(empty.json<{ accounts: unknown[]; today: unknown[] }>().today).toEqual([])
+      expect(empty.body).not.toContain(accountId)
+    } finally {
+      await app.close()
+      store.close()
+    }
+  })
+
+  it('rejects account deletion without CSRF or while a run is active', async () => {
+    let activeRunId: string | undefined = 'synthetic-active-run'
+    const coordinator = {
+      get activeRunId() {
+        return activeRunId
+      },
+      start: vi.fn<RunCoordinator['start']>()
+    }
+    const { app, store, accounts, sessions, cookie, csrfToken } = await fixture(coordinator)
+    const accountId = accounts.create({
+      email: 'protected@example.test',
+      password: 'synthetic-protected-password'
+    })
+    try {
+      await sessions.commitVerified(
+        {
+          accountId,
+          slot: 'web-desktop',
+          validatedAt: '2026-09-09T00:00:00Z',
+          payload: { canary: true }
+        },
+        true
+      )
+      expect(
+        (
+          await app.inject({
+            method: 'DELETE',
+            url: `/api/accounts/${accountId}`,
+            headers: { cookie }
+          })
+        ).statusCode
+      ).toBe(403)
+      const active = await app.inject({
+        method: 'DELETE',
+        url: `/api/accounts/${accountId}`,
+        headers: { cookie, 'x-csrf-token': csrfToken }
+      })
+      expect(active.statusCode).toBe(409)
+      expect(active.json()).toEqual({ error: 'run-already-active' })
+      expect(accounts.has(accountId)).toBe(true)
+      expect(await sessions.read(accountId, 'web-desktop')).toBeDefined()
+      activeRunId = undefined
+      expect(
+        (
+          await app.inject({
+            method: 'DELETE',
+            url: `/api/accounts/${accountId}`,
+            headers: { cookie, 'x-csrf-token': csrfToken }
+          })
+        ).statusCode
+      ).toBe(204)
     } finally {
       await app.close()
       store.close()

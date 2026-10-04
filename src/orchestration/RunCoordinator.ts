@@ -881,7 +881,7 @@ export class ApplicationRunCoordinator {
     resources: AccountResources
   ): Promise<StageResult> {
     const login = new LoginController(this.logger)
-    resources.desktop = await this.browser.openSlot(context.accountId, 'web-desktop')
+    resources.desktop = await this.openAuthenticationEntry(context, 'web-desktop')
     resources.desktopClient = new DashboardClient(
       resources.desktop.context,
       resources.desktop.page,
@@ -897,15 +897,6 @@ export class ApplicationRunCoordinator {
         )
       }
     )
-    await this.logger.write({
-      level: 'info',
-      event: 'authentication-entry',
-      runId: context.runId,
-      accountAlias: `account-${String(context.runAccountIndex)}`,
-      stage: 'web-desktop',
-      ...resources.desktop.authenticationContext
-    })
-    await navigateForAuthentication(resources.desktop.page, REWARDS_URLS.dashboard, context.signal)
     await login.login(resources.desktop.page, credentials, context.signal)
     const desktopObservation = await this.verifyBrowserSession(
       resources.desktop,
@@ -926,7 +917,7 @@ export class ApplicationRunCoordinator {
     if (!needsMobile) return { status: 'completed' }
 
     try {
-      resources.mobile = await this.browser.openSlot(context.accountId, 'web-mobile')
+      resources.mobile = await this.openAuthenticationEntry(context, 'web-mobile')
       resources.mobileClient = new DashboardClient(
         resources.mobile.context,
         resources.mobile.page,
@@ -942,15 +933,6 @@ export class ApplicationRunCoordinator {
           )
         }
       )
-      await this.logger.write({
-        level: 'info',
-        event: 'authentication-entry',
-        runId: context.runId,
-        accountAlias: `account-${String(context.runAccountIndex)}`,
-        stage: 'web-mobile',
-        ...resources.mobile.authenticationContext
-      })
-      await navigateForAuthentication(resources.mobile.page, REWARDS_URLS.dashboard, context.signal)
       await login.login(resources.mobile.page, credentials, context.signal)
       await this.verifyBrowserSession(
         resources.mobile,
@@ -988,6 +970,51 @@ export class ApplicationRunCoordinator {
         message: error instanceof Error ? error.message : '移动认证未确认'
       }
     }
+  }
+
+  private async openAuthenticationEntry(
+    context: AccountPipelineContext,
+    slotName: 'web-desktop' | 'web-mobile'
+  ): Promise<AccountBrowserSlot> {
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      context.signal.throwIfAborted()
+      const slot = await this.browser.openSlot(context.accountId, slotName)
+      try {
+        await this.logger.write({
+          level: 'info',
+          event: 'authentication-entry',
+          runId: context.runId,
+          accountAlias: `account-${String(context.runAccountIndex)}`,
+          stage: slotName,
+          attempt,
+          ...slot.authenticationContext
+        })
+        await navigateForAuthentication(slot.page, REWARDS_URLS.dashboard, context.signal)
+        return slot
+      } catch (error) {
+        await slot.close().catch(() => undefined)
+        if (
+          attempt === 2 ||
+          context.signal.aborted ||
+          !(error instanceof LoginStateError) ||
+          error.loginStage !== 'login-navigation-timeout' ||
+          error.navigationFailure !== 'timeout' ||
+          error.navigationCommitted !== false
+        )
+          throw error
+        await this.logger.write({
+          level: 'warn',
+          event: 'authentication-navigation-retry',
+          runId: context.runId,
+          accountAlias: `account-${String(context.runAccountIndex)}`,
+          stage: slotName,
+          attempt: attempt + 1,
+          retryReason: 'uncommitted-timeout'
+        })
+        await abortableDelay(1_500, context.signal)
+      }
+    }
+    throw new Error('Authentication navigation attempts exhausted')
   }
 
   private async verifyBrowserSession(
