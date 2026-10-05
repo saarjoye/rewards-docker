@@ -1,6 +1,6 @@
 import { verifyLogin, type LoginVerificationResult } from '../auth/LoginVerification.js'
 import { createEvidence, selectTrustedEvidence, type FieldEvidence } from '../domain/Evidence.js'
-import { createTaskId, type TaskRecord } from '../domain/Task.js'
+import { createTaskId, type QuestTaskContext, type TaskRecord } from '../domain/Task.js'
 import { DashboardClient } from '../browser/DashboardClient.js'
 import { sameOfferUrl } from '../browser/OfferMatching.js'
 import { TaskRegistry } from './TaskRegistry.js'
@@ -15,6 +15,7 @@ export interface TaskExecutionDescriptor {
   task: TaskRecord
   offer?: RewardOffer
   claimablePoints?: number
+  quest?: QuestTaskContext
 }
 
 export interface DiscoveryOutput {
@@ -185,6 +186,8 @@ export class RewardsDiscoveryService {
     client: DashboardClient
     initialObservation?: RewardsObservation
     appObservation?: RewardsObservation
+    punchCards?: boolean
+    knownQuestTasks?: readonly TaskRecord[]
     signal?: AbortSignal
   }): Promise<DiscoveryOutput> {
     const deadline = Date.now() + 90_000
@@ -230,7 +233,7 @@ export class RewardsDiscoveryService {
       )
     // Flight owns RSC verification. Without Flight, prefer the independently
     // re-observable flyout over DOM rows, which also label themselves as RSC.
-    const offers = mergeOffers(
+    let offers = mergeOffers(
       [
         bootstrap.offers,
         ...(flyout ? [taskOffers(flyout)] : []),
@@ -239,6 +242,34 @@ export class RewardsDiscoveryService {
       ],
       domOffers
     )
+    if (input.punchCards) {
+      const parents = new Set(
+        offers
+          .filter((offer) => offer.type === 'punch-card' && /_pcparent_/i.test(offer.sourceTaskId))
+          .map((offer) => offer.sourceTaskId)
+      )
+      offers = offers.map((offer) =>
+        parents.has(offer.sourceTaskId) ? { ...offer, isGroup: true, executable: false } : offer
+      )
+      for (const task of input.knownQuestTasks ?? []) {
+        if (task.accountId === input.accountId && task.localDate === input.localDate && task.quest)
+          parents.add(task.quest.parentOfferId)
+      }
+      for (const parentOfferId of parents) {
+        input.signal?.throwIfAborted()
+        if (Date.now() >= deadline) break
+        try {
+          const detail = await input.client.readQuest(parentOfferId, input.signal, deadline)
+          input.signal?.throwIfAborted()
+          if (detail.parentOfferId !== parentOfferId) continue
+          const ids = new Set(detail.offers.map((offer) => offer.sourceTaskId))
+          offers = [...offers.filter((offer) => !ids.has(offer.sourceTaskId)), ...detail.offers]
+        } catch (error) {
+          if (input.signal?.aborted) throw error
+          // Failure of one detail page must not interrupt normal card discovery.
+        }
+      }
+    }
     const snapshot: RewardsDiscoverySnapshot = {
       rewardsUser,
       market,
@@ -277,13 +308,65 @@ export class RewardsDiscoveryService {
         ...(offer.total === 0 && offer.isPromotional === true
           ? { status: 'skipped', reason: '推广卡片明确标记为零积分' }
           : {}),
+        ...(offer.quest ? { quest: offer.quest } : {}),
         ...(!offer.complete && !offer.executable
           ? offer.source === 'app-dashboard' && offer.attributes?.hidden?.toLowerCase() === 'true'
             ? { status: 'skipped', reason: 'App 数据源标记为隐藏' }
             : { status: 'unknown', reason: '任务存在，但缺少可验证的执行元数据' }
           : {})
       }
-      descriptors.set(task.taskId, { task, offer })
+      if (!offer.complete && offer.isGroup) {
+        task.status = 'skipped'
+        task.reason = '任务包入口：全部子任务完成后由官方确认整包奖励'
+      } else if (!offer.complete && offer.quest && offer.locked) {
+        task.status = 'skipped'
+        task.reason = '任务包子任务尚未解锁：上一项完成后至少等待 24 小时，以官方状态为准'
+      } else if (!offer.complete && offer.restrictionReason) {
+        task.status = 'unknown'
+        task.reason = offer.restrictionReason
+      }
+      descriptors.set(task.taskId, {
+        task,
+        offer,
+        ...(offer.quest ? { quest: offer.quest } : {})
+      })
+    }
+
+    // A completed Link can disappear. Keep the saved public identity for read-only recovery.
+    if (input.punchCards) {
+      for (const known of input.knownQuestTasks ?? []) {
+        if (
+          known.accountId !== input.accountId ||
+          known.localDate !== input.localDate ||
+          known.type !== 'punch-card' ||
+          !known.quest ||
+          !['running', 'submitted', 'verification-pending', 'completed'].includes(known.status)
+        )
+          continue
+        const current = descriptors.get(known.taskId)
+        if (!current) {
+          descriptors.set(known.taskId, {
+            task: { ...known, executable: false },
+            quest: known.quest
+          })
+        } else if (known.status !== 'completed') {
+          const sameIdentity =
+            current.quest?.parentOfferId === known.quest.parentOfferId &&
+            current.quest.title === known.quest.title &&
+            current.quest.ariaLabel === known.quest.ariaLabel
+          descriptors.set(known.taskId, {
+            ...current,
+            quest: known.quest,
+            task: {
+              ...current.task,
+              quest: known.quest,
+              ...(!(sameIdentity && current.task.status === 'completed')
+                ? { executable: false, status: 'verification-pending' as const }
+                : {})
+            }
+          })
+        }
+      }
     }
 
     for (const type of [

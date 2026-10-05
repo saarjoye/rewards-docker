@@ -22,7 +22,8 @@ import type { TaskAdapter, VerificationResult } from './TaskAdapter.js'
 import {
   verificationFailure,
   verificationReadFailure,
-  verifyOfficialOffer
+  verifyOfficialOffer,
+  verifyOfficialQuestTask
 } from './TaskVerification.js'
 import type { DiscoveryOutput, TaskExecutionDescriptor } from './RewardsDiscoveryService.js'
 import type { RewardOffer, RewardsDiscoverySnapshot } from './RewardsModel.js'
@@ -403,6 +404,10 @@ export class RewardsTaskExecutor {
           return { accepted: true, observedAt: new Date().toISOString() }
         }
         if (!offer) return { accepted: false, observedAt: new Date().toISOString() }
+        if (descriptor.quest) {
+          await this.client.navigateQuestOffer(offer, descriptor.quest, signal, this.guardDate)
+          return { accepted: true, observedAt: new Date().toISOString() }
+        }
         const actionId = findAction(snapshot, 'reportActivity')
         const executionPath = webOfferExecutionPath(offer, actionId !== undefined)
         if (executionPath === 'report-activity' && actionId) {
@@ -621,7 +626,14 @@ export class RewardsTaskExecutor {
         return verificationFailure(descriptor.task, 'task-verification-timeout')
       let result: VerificationResult
       try {
-        if (flyout) {
+        if (descriptor.quest) {
+          const observation = await this.client.readQuest(
+            descriptor.quest.parentOfferId,
+            signal,
+            deadline
+          )
+          result = verifyOfficialQuestTask(descriptor.task, descriptor.quest, observation)
+        } else if (flyout) {
           const observation = await this.client.fetchFlyout(deadline, signal)
           throwIfAborted(signal)
           if (!observation)

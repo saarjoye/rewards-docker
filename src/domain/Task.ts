@@ -69,7 +69,15 @@ export interface SearchEvent {
   retryReason?: string
 }
 
+/** Public identity for read-only recovery; never contains action hashes or target URLs. */
+export interface QuestTaskContext {
+  parentOfferId: string
+  title: string
+  ariaLabel: string
+}
+
 export interface TaskRecord {
+  quest?: QuestTaskContext
   searchObservation?: {
     runId: string
     submittedCount: number

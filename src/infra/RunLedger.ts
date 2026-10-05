@@ -335,6 +335,15 @@ export class RunLedger {
       status: task.status,
       progress: { ...task.progress },
       ...(task.searchObservation ? { searchObservation: { ...task.searchObservation } } : {}),
+      ...(task.quest
+        ? {
+            quest: {
+              parentOfferId: task.quest.parentOfferId,
+              title: redactText(task.quest.title),
+              ariaLabel: redactText(task.quest.ariaLabel)
+            }
+          }
+        : {}),
       updatedAt: task.updatedAt,
       ...(task.identityStable === undefined ? {} : { identityStable: task.identityStable }),
       ...(task.reason === undefined ? {} : { reason: redactText(task.reason) }),
@@ -367,6 +376,22 @@ export class RunLedger {
       )
       .get(taskId) as { payload_json: string } | undefined
     return row ? (JSON.parse(row.payload_json) as TaskRecord) : undefined
+  }
+
+  latestQuestTasks(accountId: string, businessDate: string): TaskRecord[] {
+    const rows = this.database
+      .prepare(
+        `SELECT payload_json FROM run_tasks
+       WHERE account_id = ? AND business_date = ? AND json_type(payload_json, '$.quest') = 'object'
+       ORDER BY julianday(updated_at) DESC, rowid DESC`
+      )
+      .all(accountId, businessDate) as Array<{ payload_json: string }>
+    const byId = new Map<string, TaskRecord>()
+    for (const row of rows) {
+      const task = JSON.parse(row.payload_json) as TaskRecord
+      if (!byId.has(task.taskId)) byId.set(task.taskId, task)
+    }
+    return [...byId.values()]
   }
 
   tasks(runId: string): TaskRecord[] {

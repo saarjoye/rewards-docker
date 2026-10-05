@@ -463,6 +463,10 @@ export class ApplicationRunCoordinator {
         accountId: context.accountId,
         localDate: context.localDate,
         client: resources.desktopClient,
+        punchCards: this.config.tasks.punchCards,
+        knownQuestTasks: this.config.tasks.punchCards
+          ? this.store.ledger.latestQuestTasks(context.accountId, context.localDate)
+          : [],
         ...(resources.verifiedObservation === undefined
           ? {}
           : { initialObservation: resources.verifiedObservation }),
@@ -525,6 +529,10 @@ export class ApplicationRunCoordinator {
             accountId: context.accountId,
             localDate: context.localDate,
             client: resources.desktopClient,
+            punchCards: this.config.tasks.punchCards,
+            knownQuestTasks: this.config.tasks.punchCards
+              ? this.store.ledger.latestQuestTasks(context.accountId, context.localDate)
+              : [],
             ...(resources.appObservation === undefined
               ? {}
               : { appObservation: resources.appObservation }),

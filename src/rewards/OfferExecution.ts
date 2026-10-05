@@ -43,6 +43,12 @@ export function webOfferExecutionPath(
   offer: RewardOffer,
   reportActivityAvailable: boolean
 ): WebOfferExecutionPath {
+  if (offer.quest) {
+    return offer.executable && !offer.locked && !offer.complete && hasSafeNavigationTarget(offer)
+      ? 'navigate-only'
+      : 'unsupported'
+  }
+  if (offer.isGroup) return 'unsupported'
   const signature = interactionSignature(offer)
   const pathname = interactionPath(offer)
   if (/poll/.test(signature) || /\/poll(?:\/|$)/.test(pathname)) return 'interactive-poll'

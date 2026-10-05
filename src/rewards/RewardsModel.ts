@@ -1,4 +1,4 @@
-import type { CanonicalTaskType } from '../domain/Task.js'
+import type { CanonicalTaskType, QuestTaskContext } from '../domain/Task.js'
 import type { FieldEvidence } from '../domain/Evidence.js'
 
 export interface SearchQuota {
@@ -7,7 +7,23 @@ export interface SearchQuota {
   remaining: number
 }
 
+export interface QuestRow {
+  title: string
+  state: 'completed' | 'locked' | 'open' | 'unknown'
+  actionCount: number
+}
+
+export interface QuestObservation {
+  parentOfferId: string
+  offers: readonly RewardOffer[]
+  rows: readonly QuestRow[]
+}
+
 export interface RewardOffer {
+  quest?: QuestTaskContext
+  locked?: boolean
+  isGroup?: boolean
+  restrictionReason?: string
   sourceTaskId: string
   type: CanonicalTaskType
   source: 'rsc' | 'bing-flyout' | 'app-dashboard' | 'legacy-getuserinfo'

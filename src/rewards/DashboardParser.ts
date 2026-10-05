@@ -548,7 +548,11 @@ function decodeFlightChunks(html: string): string {
   return combined
 }
 
-function extractAnchoredObjects(text: string, anchor: string): RecordValue[] {
+function extractAnchoredObjects(
+  text: string,
+  anchor: string,
+  includeNested = false
+): RecordValue[] {
   const found: RecordValue[] = []
   let cursor = 0
   while (cursor < text.length) {
@@ -589,7 +593,7 @@ function extractAnchoredObjects(text: string, anchor: string): RecordValue[] {
           ) as unknown
           if (isRecord(parsed) && Object.hasOwn(parsed, anchor.replaceAll('"', ''))) {
             found.push(parsed)
-            cursor = Math.max(cursor, end + 1)
+            if (!includeNested) cursor = Math.max(cursor, end + 1)
             break
           }
         } catch {
@@ -702,7 +706,29 @@ export function parseRewardsHtml(
   const offers = uniqueOffers(
     extractAnchoredObjects(normalized, '"offerId"').flatMap((item) => {
       const offer = normalizeOffer(item, 'rsc', classifyRscOffer(item))
-      return offer ? [offer] : []
+      if (!offer) return []
+      if (!/_pcparent_/i.test(offer.sourceTaskId)) return [offer]
+      // Only one documented child layer; ordinary card normalization stays unchanged.
+      const children = [item.childPromotions, item.children].flatMap((value) =>
+        Array.isArray(value)
+          ? value.flatMap((raw) => {
+              const child = asRecord(raw)
+              const normalized = child
+                ? normalizeOffer(child, 'rsc', 'punch-card', offer.sourceTaskId)
+                : undefined
+              return normalized
+                ? [
+                    {
+                      ...normalized,
+                      executable: false,
+                      restrictionReason: '任务包子任务需从官方详情页确认执行条件'
+                    }
+                  ]
+                : []
+            })
+          : []
+      )
+      return [{ ...offer, isGroup: true, executable: false }, ...children]
     })
   ).filter((offer) => matchesDailyBusinessDate(offer, businessDate))
   const pointsMatches = [...normalized.matchAll(/"availablePoints"\s*:\s*(\d+)/g)]
@@ -728,6 +754,79 @@ export function parseRewardsHtml(
       ? {}
       : { routerStateTree: buildRewardsRouterStateTree(routeSegment) })
   }
+}
+
+/** Only the observed URL-reward Link shape is eligible for the quest UI path. */
+export function parseRewardsQuestHtml(html: string, parentOfferId: string): readonly RewardOffer[] {
+  const parent = /^(.*?)_pcparent_(.+)$/i.exec(parentOfferId)
+  if (!parent) return []
+  const normalized = decodeFlightChunks(html) || html.replaceAll('\\"', '"')
+  const byId = new Map<string, RewardOffer>()
+  for (const item of extractAnchoredObjects(normalized, '"offerId"', true)) {
+    const id = stringValue(item.offerId)
+    const child = id ? /^(.*?)_pcchild\d+_urlreward_(.+)$/i.exec(id) : null
+    if (
+      !id ||
+      !child ||
+      child[1] !== parent[1] ||
+      child[2] !== parent[2] ||
+      typeof item.isCompleted !== 'boolean' ||
+      typeof item.isLocked !== 'boolean'
+    )
+      continue
+    const ariaLabel = stringValue(item.ariaLabel)?.trim()
+    const linkText = stringValue(item.linkText)?.trim()
+    const href = stringValue(item.href)
+    if (!ariaLabel || !linkText || !href || !ariaLabel.startsWith(linkText + ', ')) continue
+    const title = ariaLabel.slice(linkText.length + 2).trim()
+    if (!title) continue
+    const offer = normalizeOffer(
+      { ...item, title, destinationUrl: href },
+      'rsc',
+      'punch-card',
+      parentOfferId
+    )
+    if (!offer) continue
+    // A child completion flag is not evidence of the package's reward points.
+    delete offer.expectedPoints
+    let safeClick = false
+    try {
+      const target = new URL(href)
+      safeClick =
+        target.protocol === 'https:' &&
+        !target.username &&
+        !target.password &&
+        !target.port &&
+        ['www.bing.com', 'bing.com', 'cn.bing.com'].includes(target.hostname) &&
+        target.pathname === '/search' &&
+        Boolean(target.searchParams.get('q')) &&
+        !/RewardsApp|Install|Exclusive|quiz|poll|check.?in|read.?to.?earn/i.test(id) &&
+        (item.edgeAction === null || item.edgeAction === undefined) &&
+        item.isDisabled !== true
+    } catch {
+      /* Unsupported targets remain observable but cannot be activated. */
+    }
+    const candidate: RewardOffer = {
+      ...offer,
+      quest: { parentOfferId, title, ariaLabel },
+      locked: item.isLocked,
+      complete: item.isCompleted,
+      completed: item.isCompleted ? 1 : 0,
+      total: 1,
+      executable: safeClick && !item.isLocked && !item.isCompleted,
+      ...(!safeClick ? { restrictionReason: '任务包子任务要求尚未验证的操作，暂不执行' } : {})
+    }
+    // Conflicting duplicate official metadata must never enable a click.
+    const previous = byId.get(id)
+    if (previous && JSON.stringify(previous) !== JSON.stringify(candidate)) {
+      byId.set(id, {
+        ...previous,
+        executable: false,
+        restrictionReason: '任务包子任务元数据存在歧义'
+      })
+    } else if (!previous) byId.set(id, candidate)
+  }
+  return [...byId.values()]
 }
 
 export function extractActionIds(scripts: readonly string[]): Readonly<Record<string, string>> {

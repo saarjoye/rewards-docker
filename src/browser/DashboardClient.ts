@@ -11,6 +11,8 @@ import type {
 } from 'patchright'
 
 import type { StructuredLogger } from '../infra/StructuredLogger.js'
+import type { QuestTaskContext } from '../domain/Task.js'
+import { QuestClient } from './QuestClient.js'
 import { redactText, safePath } from '../security/Redactor.js'
 import {
   extractActionIds,
@@ -449,6 +451,32 @@ export class DashboardClient {
     } finally {
       await response.dispose()
     }
+  }
+
+  async readQuest(
+    parentOfferId: string,
+    signal?: AbortSignal,
+    deadline = Date.now() + DISCOVERY_DEADLINE_MS
+  ) {
+    return new QuestClient(this.context, this.logger, this.runId, this.accountAlias).read(
+      parentOfferId,
+      signal,
+      deadline
+    )
+  }
+
+  async navigateQuestOffer(
+    offer: RewardOffer,
+    quest: QuestTaskContext,
+    signal: AbortSignal,
+    beforeActivate?: () => void
+  ): Promise<void> {
+    return new QuestClient(this.context, this.logger, this.runId, this.accountAlias).activate(
+      offer,
+      quest,
+      signal,
+      beforeActivate
+    )
   }
 
   async bootstrapRsc(
