@@ -503,3 +503,187 @@ describe('persistent enterprise notifications', () => {
     }
   })
 })
+
+it('restores per-task notification amounts, start/end balances and elapsed time without guessing credits', async () => {
+  const { store, service, send, runId, complete } = fixture()
+  try {
+    for (const [phase, value, observedAt] of [
+      ['start', 1000, '2026-09-09T00:00:01Z'],
+      ['end', 1110, '2026-09-09T00:00:04Z']
+    ] as const) {
+      store.ledger.balance(runId, 'synthetic', phase, {
+        value,
+        observedAt,
+        availability: 'valid',
+        confidence: 1,
+        source: 'rsc'
+      })
+    }
+    for (const [taskId, name, expected, earned] of [
+      ['daily', '每日任务', 100, 100],
+      ['zero', '已确认零分任务', 0, 0],
+      ['pending', '更多推广', 5, null]
+    ] as const) {
+      store.upsertTask(
+        {
+          taskId,
+          accountId: 'synthetic',
+          localDate: '2026-09-09',
+          sourceTaskId: taskId,
+          source: 'rsc',
+          type: 'daily-set',
+          displayName: name,
+          executable: true,
+          required: true,
+          status: 'completed',
+          progress: { completed: 1, total: 1 },
+          updatedAt: '2026-09-09T00:00:03Z',
+          expectedPoints: expected
+        },
+        runId
+      )
+      if (earned !== null)
+        store.ledger.credits.record({
+          runId,
+          accountId: 'synthetic',
+          taskId,
+          source: 'rsc',
+          observedAt: '2026-09-09T00:00:03Z',
+          businessDate: '2026-09-09',
+          taskInstanceId: taskId,
+          officialCreditId: `${taskId}-receipt`,
+          evidenceSource: 'official-credit',
+          verificationStatus: 'confirmed',
+          earnedPoints: earned,
+          expectedPoints: expected,
+          submitted: true
+        })
+    }
+    complete()
+    await service.tick()
+    const body = send.mock.calls.find(
+      ([url]) => typeof url === 'string' && url.includes('message/send')
+    )?.[1]?.body
+    if (typeof body !== 'string') throw new Error('Expected synthetic notification body')
+    const message = (JSON.parse(body) as { text: { content: string } }).text.content
+    expect(message).toContain('任务前总积分：1000 分')
+    expect(message).toContain('任务后总积分：1110 分')
+    expect(message).toContain('本次总增加：+110 分')
+    expect(message).toContain('耗时：0分钟1秒')
+    expect(message).toContain('任务明细：')
+    expect(message).toContain('每日任务：已确认 +100 分 | 已完成')
+    expect(message).toContain('已确认零分任务：已确认 0 分 | 已完成')
+    expect(message).toContain('更多推广：预计 +5 分，到账未确认 | 已完成')
+    expect(message).not.toContain('更多推广：已确认')
+    expect(message).toContain('未归属余额变化：+10 分')
+    expect(Buffer.byteLength(message, 'utf8')).toBeLessThanOrEqual(2048)
+    expect(store.ledger.credits.rowsForRun(runId)).toHaveLength(2)
+  } finally {
+    store.close()
+  }
+})
+
+it('bounds long task notifications and points to the complete web list without dropping the summary', async () => {
+  const { store, service, send, runId, complete } = fixture()
+  try {
+    for (let index = 0; index < 80; index += 1) {
+      store.upsertTask(
+        {
+          taskId: `synthetic-${String(index)}`,
+          accountId: 'synthetic',
+          localDate: '2026-09-09',
+          sourceTaskId: `offer-${String(index)}`,
+          source: 'rsc',
+          type: 'daily-set',
+          displayName: `合成每日任务 ${String(index)}`,
+          executable: true,
+          required: true,
+          status: 'completed',
+          progress: { completed: 1, total: 1 },
+          expectedPoints: 5,
+          updatedAt: '2026-09-09T00:00:01Z'
+        },
+        runId
+      )
+    }
+    complete()
+    await service.tick()
+    const body = send.mock.calls.find(
+      ([url]) => typeof url === 'string' && url.includes('message/send')
+    )?.[1]?.body
+    if (typeof body !== 'string') throw new Error('Expected synthetic notification body')
+    const message = (JSON.parse(body) as { text: { content: string } }).text.content
+    expect(Buffer.byteLength(message, 'utf8')).toBeLessThanOrEqual(2048)
+    expect(message).toContain('其余 ')
+    expect(message).toContain('请查看网页任务积分明细')
+    expect(message).toContain('账号任务完成')
+    expect(message).toContain('本次总增加：—')
+    expect(message).toContain(`运行：${runId.slice(0, 8)}`)
+    expect(message).not.toContain('�')
+    expect(message).not.toContain('已确认 0 分')
+  } finally {
+    store.close()
+  }
+})
+
+it.each([true, false])(
+  'bounds an unusually long failure summary and preserves its run reference (tasks=%s)',
+  async (hasTasks) => {
+    const { store, service, send, runId } = fixture()
+    try {
+      if (hasTasks)
+        store.upsertTask(
+          {
+            taskId: 'synthetic-failure',
+            accountId: 'synthetic',
+            localDate: '2026-09-09',
+            sourceTaskId: 'synthetic-failure',
+            source: 'rsc',
+            type: 'daily-set',
+            displayName: '合成失败任务',
+            progress: { completed: 0, total: 1 },
+            executable: true,
+            required: true,
+            status: 'failed',
+            updatedAt: '2026-09-09T00:00:02Z'
+          },
+          runId
+        )
+      store.upsertAccountRun({
+        runId,
+        accountId: 'synthetic',
+        runAccountIndex: 1,
+        localDate: '2026-09-09',
+        status: 'failed',
+        stage: 'synthetic-stage',
+        message: '合成异常说明😀'.repeat(1000),
+        updatedAt: '2026-09-09T00:00:02Z'
+      })
+      store.ledger.lifecycle({
+        runId,
+        accountId: 'synthetic',
+        accountIndex: 1,
+        accountLabel: 'Synthetic',
+        startedAt: '2026-09-09T00:00:01Z',
+        endedAt: '2026-09-09T00:00:02Z',
+        executionState: 'failed',
+        updatedAt: '2026-09-09T00:00:02Z'
+      })
+      await service.tick()
+      const body = send.mock.calls.find(
+        ([url]) => typeof url === 'string' && url.includes('message/send')
+      )?.[1]?.body
+      if (typeof body !== 'string') throw new Error('Expected synthetic notification body')
+      const message = (JSON.parse(body) as { text: { content: string } }).text.content
+      expect(Buffer.byteLength(message, 'utf8')).toBeLessThanOrEqual(2048)
+      expect(message).toContain('账号任务失败')
+      expect(message).toContain('本次总增加：—')
+      expect(message).toContain('摘要过长')
+      expect(message).toContain('运行：' + runId.slice(0, 8))
+      expect(message).toContain(hasTasks ? '其余 1 项' : '暂无保存的任务明细')
+      expect(message).not.toContain('�')
+    } finally {
+      store.close()
+    }
+  }
+)

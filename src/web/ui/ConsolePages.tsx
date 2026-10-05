@@ -9,6 +9,7 @@ import type { AccountSummary, StatePayload } from './App'
 import { Button, DataTable, Field, PageHeader, SelectField, StatusTag } from './UiKit'
 import { taskFailure } from '../../domain/Presentation'
 import { PointSummary } from './PointSummary'
+import { TaskPointTable } from './TaskPointTable'
 import { RunResultSummary } from './RunResultSummary'
 import { runStatusLabel, executionModeLabel } from '../../domain/RunOutcome'
 import { clockTime, duration, points, publicText, stateLabel } from './display'
@@ -98,6 +99,7 @@ export function Overview({
                 <details>
                   <summary>查看积分依据</summary>
                   <PointSummary value={day} />
+                  <TaskPointTable tasks={day.taskPointDetails ?? []} />
                 </details>
               </article>
             ))}

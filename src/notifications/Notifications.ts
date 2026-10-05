@@ -5,6 +5,8 @@ import { decryptBytes, encryptBytes, type EncryptedEnvelope } from '../security/
 import { redactText } from '../security/Redactor.js'
 import { RunViews } from '../web/RunViews.js'
 import { localDateKey } from '../domain/DateKey.js'
+import { balanceInterval } from '../infra/BalanceInterval.js'
+import { taskPointNotificationLine, type TaskPointDetail } from '../domain/TaskPointDetail.js'
 import { stateLabel, publicText } from '../domain/Presentation.js'
 import {
   accountStatusLabel,
@@ -501,14 +503,32 @@ export class Notifications {
       this.store.ledger.tasks(event.runId).filter((task) => task.accountId === event.accountId)
     )
     const views = new RunViews(this.store)
-    const stats = views.accountDate(event.runId, event.accountId, localDateKey(new Date(event.endedAt)))
+    const stats = views.accountDate(
+      event.runId,
+      event.accountId,
+      localDateKey(new Date(event.endedAt))
+    )
+    const details = views.taskPointDetails(event.accountId, undefined, event.runId)
+    const interval = balanceInterval(this.store.ledger.balances(event.runId, event.accountId), true)
     views.dispose()
-    return [
+    const balance = (value: number | null) => (value === null ? '—' : `${String(value)} 分`)
+    const elapsed = event.startedAt
+      ? Date.parse(event.endedAt) - Date.parse(event.startedAt)
+      : Number.NaN
+    const duration =
+      Number.isFinite(elapsed) && elapsed >= 0
+        ? `${String(Math.floor(elapsed / 60_000))}分钟${String(Math.floor(elapsed / 1000) % 60)}秒`
+        : '—'
+    const summary = [
       `Microsoft Rewards ${completionTitle(event.executionState)}`,
       `账号：${redactText(event.accountLabel)}`,
       `账号状态：${accountStatusLabel(event.executionState)}`,
       `开始时间：${time(event.startedAt)}`,
       `结束时间：${time(event.endedAt)}`,
+      `任务前总积分：${balance(interval.conflicting ? null : interval.openingBalance)}`,
+      `任务后总积分：${balance(interval.conflicting ? null : interval.closingBalance)}`,
+      `本次总增加：${points(interval.verificationStatus === 'confirmed' ? interval.delta : null)}`,
+      `耗时：${duration}`,
       `本轮实时余额变化：${points(stats.liveBalanceDelta)}`,
       `最终余额变化：${points(stats.confirmedBalanceDelta)}`,
       `实时总分：${stats.latestBalance === null ? '—' : `${String(stats.latestBalance)} 分`}`,
@@ -532,6 +552,7 @@ export class Notifications {
         : []),
       `运行：${event.runId.slice(0, 8)}`
     ].join('\n')
+    return accountMessageWithTasks(summary, details)
   }
 }
 
@@ -559,4 +580,48 @@ function safeFailure(error: unknown): string {
 // Do not attach the original provider error: it can contain a credential-bearing URL.
 function publicFailure(error: unknown): Error {
   return new Error(safeFailure(error))
+}
+
+/** Keep task details within a small message budget; the web view retains every row. */
+function accountMessageWithTasks(summary: string, tasks: readonly TaskPointDetail[]): string {
+  const budget = 2048
+  const heading = '\n\n任务明细：'
+  const note = '\n已完成表示任务状态；上报/预计积分尚未确认到账。'
+  const lines = tasks.map((task) => redactText(taskPointNotificationLine(task)))
+  const suffix = (visible: readonly string[]) => {
+    if (!lines.length) return heading + '\n暂无保存的任务明细'
+    const omitted = lines.length - visible.length
+    const tail = omitted ? '\n其余 ' + String(omitted) + ' 项请查看网页任务积分明细' : ''
+    return heading + (visible.length ? '\n' + visible.join('\n') : '') + tail + note
+  }
+  const safeSummary = publicText(redactText(summary))
+  // The final line is the run reference. Preserve it even if a diagnostic fills the budget.
+  const divider = safeSummary.lastIndexOf('\n')
+  const reference = safeSummary.slice(divider)
+  const summaryBody = safeSummary.slice(0, divider)
+  const summaryLimit = Math.max(0, budget - Buffer.byteLength(reference + suffix([]), 'utf8'))
+  const marker = '\n摘要过长，其余内容请查看网页'
+  const boundedSummary =
+    Buffer.byteLength(summaryBody, 'utf8') <= summaryLimit
+      ? summaryBody
+      : utf8Prefix(summaryBody, summaryLimit - Buffer.byteLength(marker, 'utf8')) + marker
+  const prefix = boundedSummary + reference
+  const visible: string[] = []
+  for (const line of lines) {
+    const candidate = prefix + suffix([...visible, line])
+    if (Buffer.byteLength(candidate, 'utf8') > budget) break
+    visible.push(line)
+  }
+  return prefix + suffix(visible)
+}
+
+function utf8Prefix(text: string, limit: number): string {
+  let prefix = ''
+  let bytes = 0
+  for (const character of text) {
+    bytes += Buffer.byteLength(character, 'utf8')
+    if (bytes > limit) break
+    prefix += character
+  }
+  return prefix
 }

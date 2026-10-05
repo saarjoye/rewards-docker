@@ -1,4 +1,10 @@
 import { useState } from 'react'
+import {
+  taskPointDetail,
+  type TaskPointDetail,
+  type TaskPointInput
+} from '../../domain/TaskPointDetail'
+import { TaskPointTable } from './TaskPointTable'
 import type { ReactElement } from 'react'
 import { clockTime, stateLabel, publicText } from './display'
 import { taskFailure } from '../../domain/Presentation'
@@ -19,7 +25,8 @@ export interface EvidenceRow {
   confirmedPoints?: number | null
   creditKey?: string | null
 }
-export interface TaskSummary {
+export interface TaskSummary extends TaskPointInput {
+  taskPoints?: TaskPointDetail
   searchObservation?: TaskRecord['searchObservation']
   taskId: string
   displayName: string
@@ -68,7 +75,8 @@ const detailText = (value: string) =>
 
 export function TaskEvidencePanel({
   tasks,
-  evidence = []
+  evidence = [],
+  creditEvidence = []
 }: {
   tasks: readonly TaskSummary[]
   evidence?: readonly EvidenceRow[]
@@ -84,6 +92,13 @@ export function TaskEvidencePanel({
       })
     groups.get(row.taskId)?.rows.push(row)
   }
+  for (const row of creditEvidence) {
+    if (!groups.has(row.taskId))
+      groups.set(row.taskId, {
+        task: { taskId: row.taskId, displayName: '任务名称：—', status: 'unknown' },
+        rows: []
+      })
+  }
   for (const { task, rows } of groups.values()) {
     if (task.taskEvidence) rows.splice(0, rows.length, ...task.taskEvidence)
     const rank = (kind: string) => ({ verification: 3, response: 2, execution: 1 })[kind] ?? 0
@@ -91,6 +106,11 @@ export function TaskEvidencePanel({
   }
   return (
     <div className="task-evidence-panel">
+      <TaskPointTable
+        tasks={[...groups.values()].map(
+          ({ task }) => task.taskPoints ?? taskPointDetail(task, creditEvidence)
+        )}
+      />
       <div className="evidence-heading">
         <h3>
           任务与证据{' '}

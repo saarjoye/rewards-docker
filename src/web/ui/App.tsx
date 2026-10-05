@@ -1,3 +1,4 @@
+import type { TaskPointDetail } from '../../domain/TaskPointDetail'
 import {
   lazy,
   Suspense,
@@ -94,6 +95,7 @@ export interface StatePayload {
       accountTotalPoints?: number | null
       accountTotalPointsAt?: string | null
       verificationStatus: string
+      taskPointDetails?: TaskPointDetail[]
     }
   >
 }

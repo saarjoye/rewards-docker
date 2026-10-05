@@ -10,6 +10,13 @@ import {
   taskBoundAccountState
 } from '../domain/RunOutcome.js'
 import { taskFailure } from '../domain/Presentation.js'
+import {
+  taskPointDetail,
+  pointAmount,
+  type TaskPointDetail,
+  type TaskPointInput
+} from '../domain/TaskPointDetail.js'
+import type { TaskRecord } from '../domain/Task.js'
 
 export class RunViews {
   private static readonly todayTtlMs = 3_000
@@ -43,6 +50,113 @@ export class RunViews {
     return liveAccounting(this.store.ledger, accountId, businessDate, runId)
   }
 
+  taskPointDetails(accountId: string, businessDate?: string, runId?: string): TaskPointDetail[] {
+    const where = ['account_id = ?']
+    const parameters = [accountId]
+    if (businessDate) {
+      where.push('business_date = ?')
+      parameters.push(businessDate)
+    }
+    if (runId) {
+      where.push('run_id = ?')
+      parameters.push(runId)
+    }
+    const snapshots = this.store.database
+      .prepare(
+        `SELECT run_id AS runId, payload_json FROM run_tasks WHERE ${where.join(' AND ')} ORDER BY updated_at DESC, run_id`
+      )
+      .all(...parameters) as { runId: string; payload_json: string }[]
+    const groups = new Map<string, { task: TaskPointInput; runIds: Set<string> }>()
+    const key = (taskId: string, date: string) => JSON.stringify([date, taskId])
+    for (const snapshot of snapshots) {
+      const task = JSON.parse(snapshot.payload_json) as TaskRecord
+      const identity = key(task.taskId, task.localDate)
+      const group = groups.get(identity) ?? { task, runIds: new Set<string>() }
+      group.runIds.add(snapshot.runId)
+      groups.set(identity, group)
+    }
+    if (businessDate && !runId) {
+      for (const task of this.store.listTaskState(businessDate)) {
+        const identity = key(task.taskId, task.localDate)
+        if (task.accountId === accountId && !groups.has(identity))
+          groups.set(identity, { task, runIds: new Set<string>() })
+      }
+    }
+    const credits = this.store.ledger.credits.rows(accountId, businessDate, runId)
+    const creditEvidence = credits.map((row) => ({
+      taskId: row.taskId,
+      businessDate: row.businessDate,
+      creditKey: row.creditKey,
+      evidenceSource: row.evidenceSource,
+      confirmedPoints: this.store.ledger.credits.confirmed(row),
+      reportedPoints: row.reportedPoints,
+      expectedPoints: row.expectedPoints,
+      conflict: row.conflict
+    }))
+    for (const credit of credits) {
+      const identity = key(credit.taskId, credit.businessDate)
+      const group = groups.get(identity) ?? {
+        task: {
+          taskId: credit.taskId,
+          localDate: credit.businessDate,
+          displayName: '任务名称：—',
+          status: 'unknown'
+        },
+        runIds: new Set<string>()
+      }
+      group.runIds.add(credit.runId)
+      groups.set(identity, group)
+    }
+    const balances = this.store.ledger.balances(runId, accountId, businessDate)
+    return [...groups.values()].map(({ task, runIds }) => {
+      const confirmed = new Map<string, { points: number; source: string | null }>()
+      let conflicting = false
+      for (const ownerRunId of runIds) {
+        const hasReceipt = credits.some(
+          (row, index) =>
+            row.runId === ownerRunId &&
+            row.taskId === task.taskId &&
+            row.businessDate === task.localDate &&
+            creditEvidence[index]?.confirmedPoints != null
+        )
+        const hasBoundBalance = balances.some(
+          (row) =>
+            row.runId === ownerRunId &&
+            row.taskId === task.taskId &&
+            row.businessDate === task.localDate
+        )
+        if (!hasReceipt && !hasBoundBalance) continue
+        const points = this.store.ledger.credits.taskPoints(
+          ownerRunId,
+          accountId,
+          task.taskId,
+          task.localDate ?? ''
+        )
+        if (points.taskEarnedPoints !== null && points.taskCreditKey) {
+          const previous = confirmed.get(points.taskCreditKey)
+          conflicting ||= previous !== undefined && previous.points !== points.taskEarnedPoints
+          confirmed.set(points.taskCreditKey, {
+            points: points.taskEarnedPoints,
+            source: points.taskEarnedPointsSource
+          })
+        }
+      }
+      const sources = new Set([...confirmed.values()].map((row) => row.source))
+      const amount = confirmed.size
+        ? pointAmount([...confirmed.values()].reduce((sum, row) => sum + row.points, 0))
+        : null
+      return taskPointDetail(
+        {
+          ...task,
+          taskEarnedPoints: conflicting ? null : amount,
+          taskEarnedPointsSource: sources.size === 1 ? ([...sources][0] ?? null) : null,
+          taskPointsConflict: conflicting
+        },
+        creditEvidence
+      )
+    })
+  }
+
   task(runId: string, task: ReturnType<SqliteStore['ledger']['tasks']>[number]) {
     const balances = this.store.ledger.balances(runId, task.accountId, task.localDate)
     const priority = (source: string) =>
@@ -66,6 +180,25 @@ export class RunViews {
           localDateKey(new Date(row.observedAt)) === task.localDate
       )
       .sort((a, b) => ranks[b.kind] - ranks[a.kind] || b.observedAt.localeCompare(a.observedAt))
+    const points = this.store.ledger.credits.taskPoints(
+      runId,
+      task.accountId,
+      task.taskId,
+      task.localDate
+    )
+    const credits = this.store.ledger.credits
+      .rows(task.accountId, task.localDate, runId)
+      .filter((row) => row.taskId === task.taskId)
+      .map((row) => ({
+        taskId: row.taskId,
+        businessDate: row.businessDate,
+        creditKey: row.creditKey,
+        evidenceSource: row.evidenceSource,
+        confirmedPoints: this.store.ledger.credits.confirmed(row),
+        reportedPoints: row.reportedPoints,
+        expectedPoints: row.expectedPoints,
+        conflict: row.conflict
+      }))
     return {
       ...task,
       taskStatus: task.status,
@@ -74,7 +207,8 @@ export class RunViews {
       accountRealtimeBalance: balance?.balance ?? null,
       accountRealtimeBalanceSource: balance?.source ?? null,
       accountRealtimeBalanceAt: balance?.observedAt ?? null,
-      ...this.store.ledger.credits.taskPoints(runId, task.accountId, task.taskId, task.localDate),
+      ...points,
+      taskPoints: taskPointDetail({ ...task, ...points }, credits),
       latestTaskEvidence: evidence[0] ?? null,
       taskEvidence: evidence
     }
@@ -419,6 +553,7 @@ export class RunViews {
       accountTotalPoints: number | null
       accountTotalPointsAt: string | null
       accountTotalPointsSource: string | null
+      taskPointDetails: TaskPointDetail[]
     }
   > {
     const date = localDateKey()
@@ -485,7 +620,8 @@ export class RunViews {
         accountLabel: account.displayAlias || account.maskedEmail,
         accountTotalPoints: valid ? (latest[0]?.balance ?? null) : null,
         accountTotalPointsAt: valid ? (latest[0]?.observedAt ?? null) : null,
-        accountTotalPointsSource: valid ? (latest[0]?.source ?? null) : null
+        accountTotalPointsSource: valid ? (latest[0]?.source ?? null) : null,
+        taskPointDetails: this.taskPointDetails(account.accountId, date)
       }
     })
     if (revision === this.revision)

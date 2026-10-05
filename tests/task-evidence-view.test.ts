@@ -68,3 +68,34 @@ it('shows legacy tasks without evidence and orphan evidence without inventing ta
   expect(html).toContain('任务名称：—')
   expect(html).toContain('5088 分')
 })
+
+it('shows all task amounts before individual evidence disclosures', () => {
+  const html = renderToStaticMarkup(
+    createElement(TaskEvidencePanel, {
+      tasks: [
+        { ...task, displayName: '每日任务', taskEarnedPoints: 97, expectedPoints: 100 },
+        { ...task, taskId: 'pending-task', displayName: '更多推广', expectedPoints: 5 }
+      ],
+      creditEvidence: [
+        {
+          taskId: 'pending-task',
+          businessDate: '2026-09-08',
+          creditKey: 'pending-credit',
+          evidenceSource: 'task-report',
+          confirmedPoints: null,
+          reportedPoints: 5,
+          expectedPoints: 5
+        }
+      ]
+    })
+  )
+  expect(html).toContain('任务积分明细')
+  const table = html.slice(0, html.indexOf('<details class="task-evidence"'))
+  expect(table).toContain('每日任务')
+  expect(table).toContain('更多推广')
+  expect(table).toContain('已确认 +97 分')
+  expect(table).toContain('预计 +100 分')
+  expect(table).toContain('上报 +5 分')
+  expect(table).toContain('到账未确认')
+  expect(table).not.toContain('已确认 +5 分')
+})
