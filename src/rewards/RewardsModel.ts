@@ -34,6 +34,7 @@ export interface RewardOffer {
   executable: boolean
   expectedPoints?: number
   identityStable?: boolean
+  requiresOfficialClick?: boolean
   destinationUrl?: string
   hash?: string
   parentOfferId?: string

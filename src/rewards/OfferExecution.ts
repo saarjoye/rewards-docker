@@ -59,6 +59,12 @@ export function webOfferExecutionPath(
     return 'interactive-quiz'
   }
 
+  if (offer.requiresOfficialClick) {
+    return offer.executable && !offer.locked && hasSafeNavigationTarget(offer)
+      ? 'navigate-only'
+      : 'unsupported'
+  }
+
   // A hash obtained from the flyout is not proof that it is valid for the
   // current Next.js Server Action. Prefer the official card in that case.
   if (offer.source === 'rsc' && offer.hash && reportActivityAvailable) {

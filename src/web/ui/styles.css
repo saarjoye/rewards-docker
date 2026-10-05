@@ -459,6 +459,16 @@ details summary:focus-visible,
 .evidence-table small {
   display: block;
 }
+.task-points-breakdown {
+  margin-bottom: 16px;
+}
+.task-points-summary strong {
+  font-size: 14px;
+}
+.task-points-details,
+.point-accounting-details {
+  margin-top: 12px;
+}
 .evidence-values {
   margin: 0;
 }

@@ -95,7 +95,18 @@ describe('task points in account views', () => {
           openRun: () => undefined
         })
       )
+      expect(html).toContain('查看任务明细')
       expect(html).toContain('查看积分依据')
+      expect(html.indexOf('task-points-summary')).toBeLessThan(
+        html.indexOf('point-accounting-details')
+      )
+      const summary = html.slice(
+        html.indexOf('task-points-summary'),
+        html.indexOf('<details class="task-points-details"')
+      )
+      expect(summary).toContain('每日任务')
+      expect(summary).toContain('+97 分')
+      expect(summary).not.toContain('预计 +100 分')
       expect(html).toContain('任务积分明细')
       expect(html).toContain('合成每日任务')
       expect(html).toContain('已确认 +97 分')

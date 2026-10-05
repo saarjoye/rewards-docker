@@ -39,24 +39,25 @@ function fixture() {
     selectedAccountIndexes: [1, 2],
     startedAt: new Date(now).toISOString()
   })
-  const complete = () => {
-    store.upsertTask(
-      {
-        taskId: 'completed-fixture',
-        accountId: 'synthetic',
-        localDate: '2026-09-09',
-        sourceTaskId: 'fixture',
-        source: 'rsc',
-        type: 'daily-set',
-        displayName: 'Synthetic completed task',
-        executable: true,
-        required: true,
-        status: 'completed',
-        progress: { completed: 1, total: 1 },
-        updatedAt: new Date(now).toISOString()
-      },
-      runId
-    )
+  const complete = (addFixtureTask = true) => {
+    if (addFixtureTask)
+      store.upsertTask(
+        {
+          taskId: 'completed-fixture',
+          accountId: 'synthetic',
+          localDate: '2026-09-09',
+          sourceTaskId: 'fixture',
+          source: 'rsc',
+          type: 'daily-set',
+          displayName: 'Synthetic completed task',
+          executable: true,
+          required: true,
+          status: 'completed',
+          progress: { completed: 1, total: 1 },
+          updatedAt: new Date(now).toISOString()
+        },
+        runId
+      )
     store.ledger.lifecycle({
       runId,
       accountId: 'synthetic',
@@ -87,14 +88,14 @@ describe('persistent enterprise notifications', () => {
     { opening: 0, latest: 0, total: '0 分', delta: '0 分' },
     { opening: null, latest: null, total: '—', delta: '—' }
   ])(
-    'shows the latest total separately from the run change: $total',
+    'shows clear opening and closing balances separately from confirmed gains: $total',
     async ({ opening, latest, total, delta }) => {
       const { store, service, send, runId, complete } = fixture()
       try {
         if (opening !== null) {
           for (const [phase, value, observedAt] of [
             ['start', opening, '2026-09-09T00:00:01Z'],
-            ['live', latest, '2026-09-09T00:00:02Z']
+            ['end', latest, '2026-09-09T00:00:02Z']
           ] as const) {
             store.ledger.balance(runId, 'synthetic', phase, {
               value,
@@ -110,8 +111,10 @@ describe('persistent enterprise notifications', () => {
         const body = send.mock.calls.find(
           ([url]) => typeof url === 'string' && url.includes('message/send')
         )?.[1]?.body
-        expect(body).toContain(`实时总分：${total}`)
-        expect(body).toContain(`本轮实时余额变化：${delta}`)
+        expect(body).toContain(`任务后总积分：${total}`)
+        expect(body).toContain(`本次总增加：${delta}`)
+        expect(body).not.toContain('实时总分：')
+        expect(body).not.toContain('已匹配到账积分：')
         expect(body).not.toContain('余额确认：')
         expect(body).not.toContain('待确认')
       } finally {
@@ -449,7 +452,7 @@ describe('persistent enterprise notifications', () => {
       const messages = () =>
         send.mock.calls.filter(([url]) => typeof url === 'string' && url.includes('message/send'))
       expect(messages()).toHaveLength(1)
-      expect(messages()[0]?.[1]?.body).toContain('已匹配到账积分：—')
+      expect(messages()[0]?.[1]?.body).toContain('本次总增加：—')
       expect(messages()[0]?.[1]?.body).not.toContain('待确认')
       store.updateRun(runId, 'interrupted')
       await service.tick()
@@ -519,10 +522,10 @@ it('restores per-task notification amounts, start/end balances and elapsed time 
         source: 'rsc'
       })
     }
-    for (const [taskId, name, expected, earned] of [
-      ['daily', '每日任务', 100, 100],
-      ['zero', '已确认零分任务', 0, 0],
-      ['pending', '更多推广', 5, null]
+    for (const [taskId, name, type, expected, earned] of [
+      ['daily', '每日任务', 'daily-set', 100, 100],
+      ['zero', '已确认零分任务', 'unknown', 0, 0],
+      ['pending', '更多推广', 'more-promotion', 5, null]
     ] as const) {
       store.upsertTask(
         {
@@ -531,7 +534,7 @@ it('restores per-task notification amounts, start/end balances and elapsed time 
           localDate: '2026-09-09',
           sourceTaskId: taskId,
           source: 'rsc',
-          type: 'daily-set',
+          type,
           displayName: name,
           executable: true,
           required: true,
@@ -559,7 +562,7 @@ it('restores per-task notification amounts, start/end balances and elapsed time 
           submitted: true
         })
     }
-    complete()
+    complete(false)
     await service.tick()
     const body = send.mock.calls.find(
       ([url]) => typeof url === 'string' && url.includes('message/send')
@@ -571,11 +574,12 @@ it('restores per-task notification amounts, start/end balances and elapsed time 
     expect(message).toContain('本次总增加：+110 分')
     expect(message).toContain('耗时：0分钟1秒')
     expect(message).toContain('任务明细：')
-    expect(message).toContain('每日任务：已确认 +100 分 | 已完成')
-    expect(message).toContain('已确认零分任务：已确认 0 分 | 已完成')
-    expect(message).toContain('更多推广：预计 +5 分，到账未确认 | 已完成')
+    expect(message).toContain('每日任务：+100 分 | 已完成')
+    expect(message).toContain('已确认零分任务：+0 分 | 已完成')
+    expect(message).toContain('更多推广：预计 +5 分（未确认） | 已完成')
     expect(message).not.toContain('更多推广：已确认')
-    expect(message).toContain('未归属余额变化：+10 分')
+    expect(message).not.toContain('未归属余额变化：')
+    expect(message).not.toContain('数据状态：')
     expect(Buffer.byteLength(message, 'utf8')).toBeLessThanOrEqual(2048)
     expect(store.ledger.credits.rowsForRun(runId)).toHaveLength(2)
   } finally {
@@ -594,7 +598,7 @@ it('bounds long task notifications and points to the complete web list without d
           localDate: '2026-09-09',
           sourceTaskId: `offer-${String(index)}`,
           source: 'rsc',
-          type: 'daily-set',
+          type: 'unknown',
           displayName: `合成每日任务 ${String(index)}`,
           executable: true,
           required: true,
@@ -680,10 +684,155 @@ it.each([true, false])(
       expect(message).toContain('本次总增加：—')
       expect(message).toContain('摘要过长')
       expect(message).toContain('运行：' + runId.slice(0, 8))
-      expect(message).toContain(hasTasks ? '其余 1 项' : '暂无保存的任务明细')
+      expect(message).toContain(hasTasks ? '每日任务：得分未确认 | 失败' : '暂无保存的任务明细')
       expect(message).not.toContain('�')
     } finally {
       store.close()
     }
   }
 )
+
+it('keeps every recorded module and search progress visible in a concise completion notification', async () => {
+  const { store, service, send, runId, complete } = fixture()
+  try {
+    for (const [phase, value, observedAt] of [
+      ['start', 1000, '2026-09-09T00:00:01Z'],
+      ['end', 1725, '2026-09-09T00:00:04Z']
+    ] as const) {
+      store.ledger.balance(runId, 'synthetic', phase, {
+        value,
+        observedAt,
+        availability: 'valid',
+        confidence: 1,
+        source: 'rsc'
+      })
+    }
+    for (const [taskId, type, amount] of [
+      ['claim', 'claim-bonus-points', 480],
+      ['app', 'app-activity', 0],
+      ['daily-1', 'daily-set', 30],
+      ['daily-2', 'daily-set', 30],
+      ['daily-3', 'daily-set', 40],
+      ['special', 'special-promotion', 0],
+      ['more', 'more-promotion', 5],
+      ['check-in', 'app-check-in', 50],
+      ['read', 'read-to-earn', 30],
+      ['punch', 'punch-card', 0],
+      ['mobile', 'mobile-search', 0],
+      ['pc', 'pc-search', 60]
+    ] as const) {
+      store.upsertTask(
+        {
+          taskId,
+          type,
+          accountId: 'synthetic',
+          localDate: '2026-09-09',
+          sourceTaskId: taskId,
+          source: 'rsc',
+          displayName: `合成卡片 ${taskId}`,
+          executable: true,
+          required: true,
+          status: 'completed',
+          progress: {
+            completed: type === 'pc-search' ? 60 : 1,
+            total: type === 'pc-search' ? 60 : null
+          },
+          updatedAt: '2026-09-09T00:00:03Z',
+          expectedPoints: amount
+        },
+        runId
+      )
+      store.ledger.credits.record({
+        runId,
+        accountId: 'synthetic',
+        taskId,
+        source: 'rsc',
+        observedAt: '2026-09-09T00:00:03Z',
+        businessDate: '2026-09-09',
+        taskInstanceId: taskId,
+        officialCreditId: `${taskId}-receipt`,
+        evidenceSource: 'official-credit',
+        verificationStatus: 'confirmed',
+        earnedPoints: amount,
+        expectedPoints: amount,
+        submitted: true
+      })
+    }
+    const tasksBefore = store.ledger.tasks(runId)
+    const creditsBefore = store.ledger.credits.rowsForRun(runId)
+    complete(false)
+    await service.tick()
+    const body = send.mock.calls.find(
+      ([url]) => typeof url === 'string' && url.includes('message/send')
+    )?.[1]?.body
+    if (typeof body !== 'string') throw new Error('Expected synthetic notification body')
+    const message = (JSON.parse(body) as { text: { content: string } }).text.content
+    for (const line of [
+      '- 领取奖励积分：+480 分 | 已完成',
+      '- App 活动：+0 分 | 已完成',
+      '- 每日任务：+100 分 | 已完成（3项）',
+      '- 特殊活动：+0 分 | 已完成',
+      '- 更多推广：+5 分 | 已完成',
+      '- 每日签到：+50 分 | 已完成',
+      '- 阅读赚取：+30 分 | 已完成',
+      '- 打卡活动：+0 分 | 已完成',
+      '- 移动搜索：+0 分 | 已完成',
+      '- PC 搜索：+60 分 | 进度 60/60 | 已完成'
+    ])
+      expect(message).toContain(line)
+    expect(message).toContain('任务前总积分：1000 分')
+    expect(message).toContain('任务后总积分：1725 分')
+    expect(message).toContain('本次总增加：+725 分')
+    expect(message).toContain('时间：2026/9/9 08:00:02')
+    expect(message).toContain('账号任务完成')
+    expect(message).not.toContain('其余 ')
+    expect(message).not.toContain('已确认')
+    expect(message).not.toContain('已匹配到账积分')
+    expect(Buffer.byteLength(message, 'utf8')).toBeLessThanOrEqual(2048)
+    expect(store.ledger.tasks(runId)).toEqual(tasksBefore)
+    expect(store.ledger.credits.rowsForRun(runId)).toEqual(creditsBefore)
+  } finally {
+    store.close()
+  }
+})
+
+it('summarizes many daily cards in one line without hiding an unfinished task', async () => {
+  const { store, service, send, runId, complete } = fixture()
+  try {
+    for (let index = 0; index < 80; index += 1) {
+      store.upsertTask(
+        {
+          taskId: `daily-${String(index)}`,
+          accountId: 'synthetic',
+          localDate: '2026-09-09',
+          sourceTaskId: `offer-${String(index)}`,
+          source: 'rsc',
+          type: 'daily-set',
+          displayName: `合成卡片 ${String(index)}`,
+          executable: true,
+          required: true,
+          status: index === 79 ? 'verification-pending' : 'completed',
+          progress: { completed: 0, total: 1 },
+          expectedPoints: 5,
+          updatedAt: '2026-09-09T00:00:01Z'
+        },
+        runId
+      )
+    }
+    complete(false)
+    await service.tick()
+    const body = send.mock.calls.find(
+      ([url]) => typeof url === 'string' && url.includes('message/send')
+    )?.[1]?.body
+    if (typeof body !== 'string') throw new Error('Expected synthetic notification body')
+    const message = (JSON.parse(body) as { text: { content: string } }).text.content
+    expect(message).toContain('账号部分完成')
+    expect(message).toContain('- 每日任务：预计 +400 分（未确认） | 已完成 79/80 项，待复核 1 项')
+    expect(message).not.toContain('其余 ')
+    expect(message).not.toContain('合成卡片')
+    expect(message).toContain('本次总增加：—')
+    expect(Buffer.byteLength(message, 'utf8')).toBeLessThanOrEqual(2048)
+  } finally {
+    store.close()
+  }
+})

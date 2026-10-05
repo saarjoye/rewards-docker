@@ -4,16 +4,11 @@ import type { SqliteStore } from '../infra/SqliteStore.js'
 import { decryptBytes, encryptBytes, type EncryptedEnvelope } from '../security/CryptoVault.js'
 import { redactText } from '../security/Redactor.js'
 import { RunViews } from '../web/RunViews.js'
-import { localDateKey } from '../domain/DateKey.js'
 import { balanceInterval } from '../infra/BalanceInterval.js'
-import { taskPointNotificationLine, type TaskPointDetail } from '../domain/TaskPointDetail.js'
-import { stateLabel, publicText } from '../domain/Presentation.js'
-import {
-  accountStatusLabel,
-  executionModeLabel,
-  runStatusLabel,
-  taskBoundAccountState
-} from '../domain/RunOutcome.js'
+import type { TaskPointDetail } from '../domain/TaskPointDetail.js'
+import { taskPointSummaries, taskPointSummaryLine } from '../domain/TaskPointSummary.js'
+import { publicText } from '../domain/Presentation.js'
+import { executionModeLabel, runStatusLabel, taskBoundAccountState } from '../domain/RunOutcome.js'
 
 const officialApiBase = 'https://qyapi.weixin.qq.com'
 const apiBaseUrl = z
@@ -503,11 +498,6 @@ export class Notifications {
       this.store.ledger.tasks(event.runId).filter((task) => task.accountId === event.accountId)
     )
     const views = new RunViews(this.store)
-    const stats = views.accountDate(
-      event.runId,
-      event.accountId,
-      localDateKey(new Date(event.endedAt))
-    )
     const details = views.taskPointDetails(event.accountId, undefined, event.runId)
     const interval = balanceInterval(this.store.ledger.balances(event.runId, event.accountId), true)
     views.dispose()
@@ -521,34 +511,17 @@ export class Notifications {
         : '—'
     const summary = [
       `Microsoft Rewards ${completionTitle(event.executionState)}`,
+      `时间：${time(event.endedAt)}`,
       `账号：${redactText(event.accountLabel)}`,
-      `账号状态：${accountStatusLabel(event.executionState)}`,
-      `开始时间：${time(event.startedAt)}`,
-      `结束时间：${time(event.endedAt)}`,
       `任务前总积分：${balance(interval.conflicting ? null : interval.openingBalance)}`,
       `任务后总积分：${balance(interval.conflicting ? null : interval.closingBalance)}`,
       `本次总增加：${points(interval.verificationStatus === 'confirmed' ? interval.delta : null)}`,
       `耗时：${duration}`,
-      `本轮实时余额变化：${points(stats.liveBalanceDelta)}`,
-      `最终余额变化：${points(stats.confirmedBalanceDelta)}`,
-      `实时总分：${stats.latestBalance === null ? '—' : `${String(stats.latestBalance)} 分`}`,
-      `已完成任务：${String(event.completedTasks ?? '—')}`,
-      `未完成任务：${String(event.unconfirmedTasks ?? '—')}`,
       ...(['failed', 'partial', 'action-required', 'interrupted'].includes(event.executionState)
         ? [
             `结束阶段：${redactText(event.failureStage ?? '—')}`,
             `原因：${redactText(event.failureReason ?? '详情请查看任务账本')}`
           ]
-        : []),
-      `已匹配到账积分：${points(stats.confirmedTaskPoints)}`,
-      `任务上报积分：${points(stats.reportedTaskPoints)}`,
-      `任务预计积分：${points(stats.pendingTaskPoints)}`,
-      `未归属余额变化：${points(stats.unmatchedBalancePoints)}`,
-      `上报超额：${points(stats.overreportedTaskPoints)}`,
-      `数据状态：${stateLabel(stats.attributionStatus)}`,
-      `统计日期：${stats.businessDate} · Asia/Shanghai`,
-      ...(stats.confirmedTaskPoints === null && event.executionState === 'completed'
-        ? ['账号执行已结束，任务到账：—']
         : []),
       `运行：${event.runId.slice(0, 8)}`
     ].join('\n')
@@ -586,8 +559,8 @@ function publicFailure(error: unknown): Error {
 function accountMessageWithTasks(summary: string, tasks: readonly TaskPointDetail[]): string {
   const budget = 2048
   const heading = '\n\n任务明细：'
-  const note = '\n已完成表示任务状态；上报/预计积分尚未确认到账。'
-  const lines = tasks.map((task) => redactText(taskPointNotificationLine(task)))
+  const note = '\n总增加以余额变化为准；未确认金额不作为到账。'
+  const lines = taskPointSummaries(tasks).map((task) => redactText(taskPointSummaryLine(task)))
   const suffix = (visible: readonly string[]) => {
     if (!lines.length) return heading + '\n暂无保存的任务明细'
     const omitted = lines.length - visible.length

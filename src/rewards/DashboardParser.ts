@@ -492,7 +492,25 @@ function uniqueOffers(offers: readonly RewardOffer[]): RewardOffer[] {
   for (const offer of offers) {
     const key = `${offer.source}:${offer.sourceTaskId}`
     const current = byKey.get(key)
-    if (!current || (!current.executable && offer.executable)) byKey.set(key, offer)
+    if (current?.requiresOfficialClick) {
+      if (offer.requiresOfficialClick && JSON.stringify(current) !== JSON.stringify(offer)) {
+        byKey.set(key, {
+          ...current,
+          complete: false,
+          completed: 0,
+          total: null,
+          executable: false,
+          identityStable: false,
+          restrictionReason: '日常点击任务出现重复或冲突的官方记录'
+        })
+      }
+    } else if (
+      offer.requiresOfficialClick ||
+      !current ||
+      (!current.executable && offer.executable)
+    ) {
+      byKey.set(key, offer)
+    }
   }
   return [...byKey.values()]
 }
@@ -615,6 +633,77 @@ function classifyRscOffer(item: RecordValue): RewardOffer['type'] {
   return 'more-promotion'
 }
 
+/** State-bearing daily URL-reward Links must be activated through the official card. */
+function normalizeDailyLinkOffer(item: RecordValue): RewardOffer | undefined {
+  const id = stringValue(item.offerId)
+  const attributes = attributeStrings(item.attributes)
+  const isUrlReward =
+    Boolean(id && /(?:^|_)urlreward(?:_|$)/i.test(id)) ||
+    [item.type, item.promotionType, attributes?.type, attributes?.promotionType].some(
+      (value) => stringValue(value)?.toLowerCase() === 'urlreward'
+    )
+  if (!id || !isUrlReward || !Object.hasOwn(item, 'href') || classifyRscOffer(item) !== 'daily-set')
+    return undefined
+  const ariaLabel = stringValue(item.ariaLabel)?.trim()
+  const linkText = stringValue(item.linkText)?.trim()
+  const title =
+    ariaLabel && linkText && ariaLabel.startsWith(linkText + ', ')
+      ? ariaLabel.slice(linkText.length + 2).trim()
+      : undefined
+  const href = stringValue(item.href)
+  const hasState = typeof item.isCompleted === 'boolean' && typeof item.isLocked === 'boolean'
+  const offer = normalizeOffer(
+    { ...item, ...(title ? { title } : {}), ...(href ? { destinationUrl: href } : {}) },
+    'rsc',
+    'daily-set'
+  )
+  if (!offer) return undefined
+  const signature = [
+    id,
+    item.type,
+    item.promotionType,
+    item.promotionSubtype,
+    offer.attributes?.type,
+    offer.attributes?.promotionType,
+    offer.attributes?.promotionSubtype
+  ].join(' ')
+  let safeTarget = false
+  try {
+    const target = new URL(href ?? '')
+    safeTarget =
+      target.protocol === 'https:' &&
+      !target.username &&
+      !target.password &&
+      !target.port &&
+      ['www.bing.com', 'bing.com', 'cn.bing.com'].includes(target.hostname) &&
+      target.pathname === '/search' &&
+      Boolean(target.searchParams.get('q'))
+  } catch {
+    // Unsupported destinations stay visible without enabling a mutation.
+  }
+  const supported =
+    Boolean(title) &&
+    hasState &&
+    safeTarget &&
+    !/quiz|poll|puzzle|jigsaw|referr?|invite|install|RewardsApp|check.?in|read.?to.?earn/i.test(
+      signature
+    ) &&
+    (item.edgeAction === null || item.edgeAction === undefined) &&
+    item.isDisabled !== true
+  const complete = hasState && item.isCompleted === true
+  return {
+    ...offer,
+    requiresOfficialClick: true,
+    identityStable: supported,
+    complete,
+    completed: complete ? 1 : 0,
+    total: hasState ? 1 : null,
+    locked: item.isLocked !== false,
+    executable: supported && !complete && item.isLocked === false,
+    ...(!supported ? { restrictionReason: '日常点击任务缺少明确状态或受支持的官方点击条件' } : {})
+  }
+}
+
 export type RewardsRouteSegment = 'earn' | 'dashboard'
 
 export function buildRewardsRouterStateTree(segment: RewardsRouteSegment): string {
@@ -703,8 +792,12 @@ export function parseRewardsHtml(
   const observedAt = new Date().toISOString()
   const flight = decodeFlightChunks(html)
   const normalized = flight || html.replaceAll('\\"', '"')
-  const offers = uniqueOffers(
-    extractAnchoredObjects(normalized, '"offerId"').flatMap((item) => {
+  const dailyLinks = extractAnchoredObjects(normalized, '"href"', true).flatMap((item) => {
+    const offer = normalizeDailyLinkOffer(item)
+    return offer ? [offer] : []
+  })
+  const offers = uniqueOffers([
+    ...extractAnchoredObjects(normalized, '"offerId"').flatMap((item) => {
       const offer = normalizeOffer(item, 'rsc', classifyRscOffer(item))
       if (!offer) return []
       if (!/_pcparent_/i.test(offer.sourceTaskId)) return [offer]
@@ -729,8 +822,9 @@ export function parseRewardsHtml(
           : []
       )
       return [{ ...offer, isGroup: true, executable: false }, ...children]
-    })
-  ).filter((offer) => matchesDailyBusinessDate(offer, businessDate))
+    }),
+    ...dailyLinks
+  ]).filter((offer) => matchesDailyBusinessDate(offer, businessDate))
   const pointsMatches = [...normalized.matchAll(/"availablePoints"\s*:\s*(\d+)/g)]
   const points = safeNonNegativeInteger(pointsMatches.at(-1)?.[1])
   const deploymentId =

@@ -113,7 +113,7 @@ describe('task point presentation', () => {
     expect(expected.expectedPoints).toBeNull()
     expect(expected.reportedPoints).toBeNull()
   })
-  it('renders pending, skipped, zero, legacy and quest tasks without nested disclosures or unsafe markup', () => {
+  it('shows concise amounts and states before detailed evidence while escaping task text', () => {
     const tasks = [
       taskPointDetail({ ...task, displayName: '<script>unsafe</script>', taskEarnedPoints: 0 }),
       taskPointDetail({
@@ -140,6 +140,13 @@ describe('task point presentation', () => {
     expect(html).toContain('任务包子任务')
     expect(html).toContain('得分未确认')
     expect(html).not.toContain('<script>')
-    expect(html).not.toContain('<details')
+    const summary = html.slice(0, html.indexOf('<details'))
+    expect(summary).toContain('+0 分')
+    expect(summary).toContain('预计 +5 分（未确认）')
+    expect(summary).toContain('待复核')
+    expect(summary).toContain('下一项需等待24小时')
+    expect(summary).toContain('得分未确认')
+    expect(summary).not.toContain('已确认 0 分')
+    expect(html).toContain('查看具体任务与积分依据')
   })
 })

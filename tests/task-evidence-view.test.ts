@@ -69,7 +69,7 @@ it('shows legacy tasks without evidence and orphan evidence without inventing ta
   expect(html).toContain('5088 分')
 })
 
-it('shows all task amounts before individual evidence disclosures', () => {
+it('shows concise task amounts first and retains reports and estimates in details', () => {
   const html = renderToStaticMarkup(
     createElement(TaskEvidencePanel, {
       tasks: [
@@ -90,12 +90,20 @@ it('shows all task amounts before individual evidence disclosures', () => {
     })
   )
   expect(html).toContain('任务积分明细')
-  const table = html.slice(0, html.indexOf('<details class="task-evidence"'))
-  expect(table).toContain('每日任务')
-  expect(table).toContain('更多推广')
-  expect(table).toContain('已确认 +97 分')
-  expect(table).toContain('预计 +100 分')
-  expect(table).toContain('上报 +5 分')
-  expect(table).toContain('到账未确认')
-  expect(table).not.toContain('已确认 +5 分')
+  const summary = html.slice(0, html.indexOf('<details'))
+  expect(summary).toContain('每日任务')
+  expect(summary).toContain('更多推广')
+  expect(summary).toContain('+97 分')
+  expect(summary).toContain('上报 +5 分（未确认）')
+  expect(summary).not.toContain('预计 +100 分')
+  expect(summary).not.toContain('已确认 +97 分')
+  const details = html.slice(
+    html.indexOf('<details'),
+    html.indexOf('<details class="task-evidence"')
+  )
+  expect(details).toContain('已确认 +97 分')
+  expect(details).toContain('预计 +100 分')
+  expect(details).toContain('上报 +5 分')
+  expect(details).toContain('到账未确认')
+  expect(html).not.toContain('已确认 +5 分')
 })

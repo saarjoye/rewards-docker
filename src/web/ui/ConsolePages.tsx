@@ -97,9 +97,12 @@ export function Overview({
                 />
                 <p className="muted">余额更新：{clockTime(day.accountTotalPointsAt)}</p>
                 <details>
-                  <summary>查看积分依据</summary>
-                  <PointSummary value={day} />
+                  <summary>查看任务明细</summary>
                   <TaskPointTable tasks={day.taskPointDetails ?? []} />
+                  <details className="point-accounting-details">
+                    <summary>查看积分依据</summary>
+                    <PointSummary value={day} />
+                  </details>
                 </details>
               </article>
             ))}
