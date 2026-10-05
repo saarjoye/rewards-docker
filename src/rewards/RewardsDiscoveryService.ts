@@ -252,7 +252,7 @@ export class RewardsDiscoveryService {
         parents.has(offer.sourceTaskId) ? { ...offer, isGroup: true, executable: false } : offer
       )
       for (const task of input.knownQuestTasks ?? []) {
-        if (task.accountId === input.accountId && task.localDate === input.localDate && task.quest)
+        if (task.accountId === input.accountId && task.localDate <= input.localDate && task.quest)
           parents.add(task.quest.parentOfferId)
       }
       for (const parentOfferId of parents) {
@@ -332,40 +332,51 @@ export class RewardsDiscoveryService {
       })
     }
 
-    // A completed Link can disappear. Keep the saved public identity for read-only recovery.
+    // Keep submitted child identities across dates: a new daily ID must never resend an action.
     if (input.punchCards) {
       for (const known of input.knownQuestTasks ?? []) {
         if (
           known.accountId !== input.accountId ||
-          known.localDate !== input.localDate ||
+          known.localDate > input.localDate ||
           known.type !== 'punch-card' ||
           !known.quest ||
           !['running', 'submitted', 'verification-pending', 'completed'].includes(known.status)
         )
           continue
-        const current = descriptors.get(known.taskId)
+        const current = descriptors.get(
+          createTaskId(input.accountId, input.localDate, known.sourceTaskId)
+        )
         if (!current) {
-          descriptors.set(known.taskId, {
-            task: { ...known, executable: false },
-            quest: known.quest
-          })
-        } else if (known.status !== 'completed') {
-          const sameIdentity =
-            current.quest?.parentOfferId === known.quest.parentOfferId &&
-            current.quest.title === known.quest.title &&
-            current.quest.ariaLabel === known.quest.ariaLabel
-          descriptors.set(known.taskId, {
-            ...current,
-            quest: known.quest,
-            task: {
-              ...current.task,
-              quest: known.quest,
-              ...(!(sameIdentity && current.task.status === 'completed')
-                ? { executable: false, status: 'verification-pending' as const }
-                : {})
-            }
-          })
+          // Completed Links may disappear. Older completions only locate the package, not today's tasks.
+          if (known.localDate === input.localDate || known.status !== 'completed') {
+            descriptors.set(known.taskId, {
+              task: { ...known, executable: false },
+              quest: known.quest
+            })
+          }
+          continue
         }
+        const sameIdentity =
+          current.quest?.parentOfferId === known.quest.parentOfferId &&
+          current.quest.title === known.quest.title &&
+          current.quest.ariaLabel === known.quest.ariaLabel
+        const confirmed = sameIdentity && current.task.status === 'completed'
+        descriptors.delete(current.task.taskId)
+        descriptors.set(known.taskId, {
+          ...current,
+          quest: known.quest,
+          task: {
+            ...known,
+            executable: false,
+            updatedAt: current.task.updatedAt,
+            ...(confirmed
+              ? { status: 'completed' as const, progress: current.task.progress }
+              : {
+                  status: 'verification-pending' as const,
+                  reason: '已有任务包动作尚未被官方确认，保留原日期身份并仅只读复核'
+                })
+          }
+        })
       }
     }
 

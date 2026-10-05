@@ -394,6 +394,47 @@ export class RunLedger {
     return [...byId.values()]
   }
 
+  continuingQuestTasks(accountId: string, businessDate: string): TaskRecord[] {
+    const rows = this.database
+      .prepare(
+        `WITH latest_children AS (
+          SELECT task.payload_json, task.business_date, mutation.state AS mutation_state,
+            ROW_NUMBER() OVER (
+              PARTITION BY json_extract(task.payload_json, '$.quest.parentOfferId'),
+                json_extract(task.payload_json, '$.sourceTaskId')
+              ORDER BY (mutation.task_id IS NOT NULL) DESC,
+                julianday(task.updated_at) DESC, task.rowid DESC
+            ) AS position
+          FROM run_tasks task LEFT JOIN mutation_ledger mutation ON mutation.task_id = task.task_id
+          WHERE task.account_id = ? AND task.business_date <= ?
+            AND json_type(task.payload_json, '$.quest') = 'object'
+            AND json_extract(task.payload_json, '$.type') = 'punch-card'
+        ), completed_parents AS (
+          SELECT DISTINCT json_extract(payload_json, '$.sourceTaskId') AS parent_id
+          FROM run_tasks
+          WHERE account_id = ? AND business_date <= ?
+            AND json_extract(payload_json, '$.type') = 'punch-card'
+            AND json_extract(payload_json, '$.status') = 'completed'
+            AND json_type(payload_json, '$.quest') IS NULL
+        )
+        SELECT child.payload_json, child.mutation_state FROM latest_children child
+        LEFT JOIN completed_parents parent
+          ON parent.parent_id = json_extract(child.payload_json, '$.quest.parentOfferId')
+        WHERE child.position = 1 AND (child.business_date = ? OR parent.parent_id IS NULL)`
+      )
+      .all(accountId, businessDate, accountId, businessDate, businessDate) as Array<{
+      payload_json: string
+      mutation_state: string | null
+    }>
+    return rows.map((row) => {
+      const task = JSON.parse(row.payload_json) as TaskRecord
+      // A newer locked snapshot cannot replace an identity already in the mutation ledger.
+      return row.mutation_state && task.status !== 'completed'
+        ? { ...task, executable: false, status: 'verification-pending' as const }
+        : task
+    })
+  }
+
   tasks(runId: string): TaskRecord[] {
     const rows = this.database
       .prepare(

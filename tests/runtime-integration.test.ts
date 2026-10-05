@@ -633,7 +633,7 @@ describe('coordinator task configuration refresh', () => {
     const upsertTask = vi.fn()
     const store = {
       upsertTask,
-      ledger: { latestQuestTasks: vi.fn().mockReturnValue([]) },
+      ledger: { continuingQuestTasks: vi.fn().mockReturnValue([]) },
       listTaskState: vi.fn().mockReturnValue([])
     } as unknown as SqliteStore
     const config = {
@@ -726,7 +726,7 @@ describe('coordinator task configuration refresh', () => {
     const loggerWrite = vi.fn().mockResolvedValue(undefined)
     const store = {
       upsertTask,
-      ledger: { latestQuestTasks: vi.fn().mockReturnValue([]) },
+      ledger: { continuingQuestTasks: vi.fn().mockReturnValue([]) },
       listTaskState: vi.fn().mockReturnValue([])
     } as unknown as SqliteStore
     const config = {

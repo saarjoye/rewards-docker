@@ -465,7 +465,7 @@ export class ApplicationRunCoordinator {
         client: resources.desktopClient,
         punchCards: this.config.tasks.punchCards,
         knownQuestTasks: this.config.tasks.punchCards
-          ? this.store.ledger.latestQuestTasks(context.accountId, context.localDate)
+          ? this.store.ledger.continuingQuestTasks(context.accountId, context.localDate)
           : [],
         ...(resources.verifiedObservation === undefined
           ? {}
@@ -531,7 +531,7 @@ export class ApplicationRunCoordinator {
             client: resources.desktopClient,
             punchCards: this.config.tasks.punchCards,
             knownQuestTasks: this.config.tasks.punchCards
-              ? this.store.ledger.latestQuestTasks(context.accountId, context.localDate)
+              ? this.store.ledger.continuingQuestTasks(context.accountId, context.localDate)
               : [],
             ...(resources.appObservation === undefined
               ? {}
