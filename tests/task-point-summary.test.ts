@@ -20,7 +20,7 @@ describe('readable task module summaries', () => {
     expect(summaries[0]?.tasks).toHaveLength(2)
     const summary = summaries[0]
     if (!summary) throw new Error('Expected synthetic task summary')
-    expect(taskPointSummaryLine(summary)).toBe('- 每日任务：+100 分 | 已完成（2项）')
+    expect(taskPointSummaryLine(summary)).toBe('- 每日任务：100 分')
   })
 
   it('orders recorded modules without inventing missing tasks', () => {
@@ -85,7 +85,8 @@ describe('readable task module summaries', () => {
     ])
     const summary = rows[0]
     if (!summary) throw new Error('Expected synthetic task summary')
-    expect(taskPointSummaryLine(summary)).toBe('- PC 搜索：+60 分 | 进度 60/60 | 已完成')
+    expect(taskPointSummaryLine(summary)).toBe('- PC 搜索：60 分')
+    expect(summary.progress).toEqual({ completed: 60, total: 60 })
     expect(
       taskPointSummaries([{ ...task('search', 60), type: 'pc-search' }])[0]?.progress
     ).toBeNull()
@@ -109,11 +110,11 @@ describe('readable task module summaries', () => {
     ).toBe('得分未确认')
   })
 
-  it('keeps notification names and reasons on one line without splitting composed emoji', () => {
+  it('keeps notification names on one line without splitting composed emoji', () => {
     const emoji = '👨‍👩‍👧‍👦'
     const summary = taskPointSummaries([
       {
-        ...task('emoji'),
+        ...task('emoji', 5),
         type: 'unknown',
         displayName: emoji.repeat(61),
         status: 'failed',
@@ -122,8 +123,25 @@ describe('readable task module summaries', () => {
     ])[0]
     if (!summary) throw new Error('Expected synthetic task summary')
     const line = taskPointSummaryLine(summary)
-    expect(line).toBe(`- ${emoji.repeat(59)}…：得分未确认 | 失败：合成原因 下一行`)
+    expect(line).toBe(`- ${emoji.repeat(59)}…：5 分`)
     expect(line).not.toContain('\n')
+  })
+
+  it('only formats earned points and preserves confirmed zero', () => {
+    const line = (rows: Parameters<typeof taskPointSummaries>[0]) => {
+      const summary = taskPointSummaries(rows)[0]
+      if (!summary) throw new Error('Expected synthetic task summary')
+      return taskPointSummaryLine(summary)
+    }
+    expect(line([task('zero', 0)])).toBe('- 每日任务：0 分')
+    expect(line([task('missing')])).toBeNull()
+    expect(line([{ ...task('estimate'), expectedPoints: 5 }])).toBeNull()
+    expect(line([{ ...task('report'), reportedPoints: 5 }])).toBeNull()
+    expect(line([task('earned', 10), { ...task('estimate'), expectedPoints: 5 }])).toBe(
+      '- 每日任务：10 分'
+    )
+    expect(line([{ ...task('conflict', 10), pointsStatus: 'conflict' }])).toBeNull()
+    expect(line([task('huge', Number.MAX_SAFE_INTEGER), task('one', 1)])).toBeNull()
   })
 
   it('keeps unknown task names separate and does not modify the input', () => {

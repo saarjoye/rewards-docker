@@ -18,6 +18,21 @@ const config = {
 const response = (body: object) => new Response(JSON.stringify(body), { status: 200 })
 const requestUrl = (input: Parameters<typeof fetch>[0]) =>
   new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url)
+function confirmedCredit(store: SqliteStore, runId: string, taskId: string, points: number) {
+  store.ledger.credits.record({
+    runId,
+    accountId: 'synthetic',
+    taskId,
+    source: 'rsc',
+    observedAt: '2026-09-09T00:00:02Z',
+    businessDate: '2026-09-09',
+    officialCreditId: `${taskId}-receipt`,
+    evidenceSource: 'official-credit',
+    verificationStatus: 'confirmed',
+    earnedPoints: points
+  })
+}
+
 function fixture() {
   const store = new SqliteStore(':memory:')
   const send = vi.fn<typeof fetch>().mockImplementation(async (url) => {
@@ -574,10 +589,12 @@ it('restores per-task notification amounts, start/end balances and elapsed time 
     expect(message).toContain('本次总增加：+110 分')
     expect(message).toContain('耗时：0分钟1秒')
     expect(message).toContain('任务明细：')
-    expect(message).toContain('每日任务：+100 分 | 已完成')
-    expect(message).toContain('已确认零分任务：+0 分 | 已完成')
-    expect(message).toContain('更多推广：预计 +5 分（未确认） | 已完成')
-    expect(message).not.toContain('更多推广：已确认')
+    expect(message).toContain('- 每日任务：100 分')
+    expect(message).toContain('- 已确认零分任务：0 分')
+    expect(message).not.toContain('更多推广：')
+    expect(message).not.toContain('未确认')
+    expect(message).not.toContain('预计')
+    expect(message).not.toContain(' | ')
     expect(message).not.toContain('未归属余额变化：')
     expect(message).not.toContain('数据状态：')
     expect(Buffer.byteLength(message, 'utf8')).toBeLessThanOrEqual(2048)
@@ -609,6 +626,7 @@ it('bounds long task notifications and points to the complete web list without d
         },
         runId
       )
+      confirmedCredit(store, runId, `synthetic-${String(index)}`, 5)
     }
     complete()
     await service.tick()
@@ -653,6 +671,7 @@ it.each([true, false])(
           },
           runId
         )
+      if (hasTasks) confirmedCredit(store, runId, 'synthetic-failure', 0)
       store.upsertAccountRun({
         runId,
         accountId: 'synthetic',
@@ -684,7 +703,9 @@ it.each([true, false])(
       expect(message).toContain('本次总增加：—')
       expect(message).toContain('摘要过长')
       expect(message).toContain('运行：' + runId.slice(0, 8))
-      expect(message).toContain(hasTasks ? '每日任务：得分未确认 | 失败' : '暂无保存的任务明细')
+      if (hasTasks) expect(message).toContain('- 每日任务：0 分')
+      else expect(message).not.toContain('任务明细：')
+      expect(message).not.toContain('未确认')
       expect(message).not.toContain('�')
     } finally {
       store.close()
@@ -692,7 +713,7 @@ it.each([true, false])(
   }
 )
 
-it('keeps every recorded module and search progress visible in a concise completion notification', async () => {
+it('shows every recorded module score without statuses or search progress', async () => {
   const { store, service, send, runId, complete } = fixture()
   try {
     for (const [phase, value, observedAt] of [
@@ -768,16 +789,16 @@ it('keeps every recorded module and search progress visible in a concise complet
     if (typeof body !== 'string') throw new Error('Expected synthetic notification body')
     const message = (JSON.parse(body) as { text: { content: string } }).text.content
     for (const line of [
-      '- 领取奖励积分：+480 分 | 已完成',
-      '- App 活动：+0 分 | 已完成',
-      '- 每日任务：+100 分 | 已完成（3项）',
-      '- 特殊活动：+0 分 | 已完成',
-      '- 更多推广：+5 分 | 已完成',
-      '- 每日签到：+50 分 | 已完成',
-      '- 阅读赚取：+30 分 | 已完成',
-      '- 打卡活动：+0 分 | 已完成',
-      '- 移动搜索：+0 分 | 已完成',
-      '- PC 搜索：+60 分 | 进度 60/60 | 已完成'
+      '- 领取奖励积分：480 分',
+      '- App 活动：0 分',
+      '- 每日任务：100 分',
+      '- 特殊活动：0 分',
+      '- 更多推广：5 分',
+      '- 每日签到：50 分',
+      '- 阅读赚取：30 分',
+      '- 打卡活动：0 分',
+      '- 移动搜索：0 分',
+      '- PC 搜索：60 分'
     ])
       expect(message).toContain(line)
     expect(message).toContain('任务前总积分：1000 分')
@@ -796,7 +817,7 @@ it('keeps every recorded module and search progress visible in a concise complet
   }
 })
 
-it('summarizes many daily cards in one line without hiding an unfinished task', async () => {
+it('summarizes only earned daily scores without changing an unfinished task', async () => {
   const { store, service, send, runId, complete } = fixture()
   try {
     for (let index = 0; index < 80; index += 1) {
@@ -818,7 +839,9 @@ it('summarizes many daily cards in one line without hiding an unfinished task', 
         },
         runId
       )
+      if (index < 79) confirmedCredit(store, runId, `daily-${String(index)}`, 5)
     }
+    const tasksBefore = store.ledger.tasks(runId)
     complete(false)
     await service.tick()
     const body = send.mock.calls.find(
@@ -827,11 +850,87 @@ it('summarizes many daily cards in one line without hiding an unfinished task', 
     if (typeof body !== 'string') throw new Error('Expected synthetic notification body')
     const message = (JSON.parse(body) as { text: { content: string } }).text.content
     expect(message).toContain('账号部分完成')
-    expect(message).toContain('- 每日任务：预计 +400 分（未确认） | 已完成 79/80 项，待复核 1 项')
+    expect(message.split('任务明细：\n')[1]).toBe('- 每日任务：395 分')
+    expect(store.ledger.tasks(runId)).toEqual(tasksBefore)
+    expect(store.ledger.tasks(runId).find((task) => task.taskId === 'daily-79')?.status).toBe(
+      'verification-pending'
+    )
     expect(message).not.toContain('其余 ')
     expect(message).not.toContain('合成卡片')
     expect(message).toContain('本次总增加：—')
     expect(Buffer.byteLength(message, 'utf8')).toBeLessThanOrEqual(2048)
+  } finally {
+    store.close()
+  }
+})
+
+it('recovers category scores from isolated task balance windows without crediting estimates', async () => {
+  const { store, service, send, runId, complete } = fixture()
+  try {
+    for (const [taskId, type, status] of [
+      ['app', 'app-activity', 'completed'],
+      ['daily-a', 'daily-set', 'completed'],
+      ['daily-b', 'daily-set', 'completed'],
+      ['estimate', 'more-promotion', 'verification-pending'],
+      ['disabled', 'mobile-search', 'skipped']
+    ] as const) {
+      store.upsertTask(
+        {
+          taskId,
+          accountId: 'synthetic',
+          localDate: '2026-09-09',
+          sourceTaskId: taskId,
+          source: 'rsc',
+          type,
+          displayName: taskId,
+          executable: true,
+          required: true,
+          status,
+          progress: { completed: 1, total: 1 },
+          expectedPoints: 99,
+          updatedAt: '2026-09-09T00:00:01.400Z'
+        },
+        runId
+      )
+    }
+    for (const [phase, taskId, balance, millis] of [
+      ['start', undefined, 100, '000'],
+      ['task-before', 'app', 100, '100'],
+      ['task-after', 'app', 110, '200'],
+      ['task-before', 'daily-a', 110, '200'],
+      ['task-after', 'daily-a', 120, '300'],
+      ['task-before', 'daily-b', 110, '200'],
+      ['task-after', 'daily-b', 130, '400'],
+      ['end', undefined, 130, '500']
+    ] as const)
+      store.ledger.balance(
+        runId,
+        'synthetic',
+        phase,
+        {
+          value: balance,
+          availability: 'valid',
+          confidence: 1,
+          source: 'rsc',
+          observedAt: `2026-09-09T00:00:01.${millis}Z`
+        },
+        taskId
+      )
+    const tasksBefore = store.ledger.tasks(runId)
+    const balancesBefore = store.ledger.balances(runId)
+    complete(false)
+    await service.tick()
+    const body = send.mock.calls.find(
+      ([url]) => typeof url === 'string' && url.includes('message/send')
+    )?.[1]?.body
+    if (typeof body !== 'string') throw new Error('Expected synthetic notification body')
+    const message = (JSON.parse(body) as { text: { content: string } }).text.content
+    expect(message.split('任务明细：\n')[1]).toBe('- App 活动：10 分\n- 每日任务：20 分')
+    expect(message).toContain('本次总增加：+30 分')
+    expect(message).not.toContain('99 分')
+    expect(store.ledger.tasks(runId)).toEqual(tasksBefore)
+    expect(store.ledger.balances(runId)).toEqual(balancesBefore)
+    expect(store.ledger.credits.rowsForRun(runId)).toEqual([])
   } finally {
     store.close()
   }

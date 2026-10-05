@@ -5,8 +5,12 @@ import { decryptBytes, encryptBytes, type EncryptedEnvelope } from '../security/
 import { redactText } from '../security/Redactor.js'
 import { RunViews } from '../web/RunViews.js'
 import { balanceInterval } from '../infra/BalanceInterval.js'
-import type { TaskPointDetail } from '../domain/TaskPointDetail.js'
-import { taskPointSummaries, taskPointSummaryLine } from '../domain/TaskPointSummary.js'
+import {
+  taskPointSummaries,
+  taskPointSummaryLine,
+  type TaskPointSummary
+} from '../domain/TaskPointSummary.js'
+import { taskCategoryPoints } from '../domain/TaskCategoryPoints.js'
 import { publicText } from '../domain/Presentation.js'
 import { executionModeLabel, runStatusLabel, taskBoundAccountState } from '../domain/RunOutcome.js'
 
@@ -501,6 +505,21 @@ export class Notifications {
     const details = views.taskPointDetails(event.accountId, undefined, event.runId)
     const interval = balanceInterval(this.store.ledger.balances(event.runId, event.accountId), true)
     views.dispose()
+    const summaries = taskPointSummaries(details)
+    const dates = [
+      ...new Set(details.map((task) => task.businessDate).filter((date) => date !== null))
+    ]
+    const categoryPoints = taskCategoryPoints(
+      summaries,
+      { runId: event.runId, accountId: event.accountId },
+      dates.flatMap((date) => this.store.ledger.balances(undefined, event.accountId, date)),
+      dates
+        .flatMap((date) => this.store.ledger.credits.rows(event.accountId, date))
+        .map((row) => ({
+          ...row,
+          confirmedPoints: this.store.ledger.credits.confirmed(row)
+        }))
+    )
     const balance = (value: number | null) => (value === null ? '—' : `${String(value)} 分`)
     const elapsed = event.startedAt
       ? Date.parse(event.endedAt) - Date.parse(event.startedAt)
@@ -525,7 +544,7 @@ export class Notifications {
         : []),
       `运行：${event.runId.slice(0, 8)}`
     ].join('\n')
-    return accountMessageWithTasks(summary, details)
+    return accountMessageWithTasks(summary, summaries, categoryPoints)
   }
 }
 
@@ -556,16 +575,22 @@ function publicFailure(error: unknown): Error {
 }
 
 /** Keep task details within a small message budget; the web view retains every row. */
-function accountMessageWithTasks(summary: string, tasks: readonly TaskPointDetail[]): string {
+function accountMessageWithTasks(
+  summary: string,
+  tasks: readonly TaskPointSummary[],
+  categoryPoints: ReadonlyMap<string, number>
+): string {
   const budget = 2048
   const heading = '\n\n任务明细：'
-  const note = '\n总增加以余额变化为准；未确认金额不作为到账。'
-  const lines = taskPointSummaries(tasks).map((task) => redactText(taskPointSummaryLine(task)))
+  const lines = tasks
+    .map((task) => taskPointSummaryLine(task, categoryPoints.get(task.key) ?? null))
+    .filter((line) => line !== null)
+    .map(redactText)
   const suffix = (visible: readonly string[]) => {
-    if (!lines.length) return heading + '\n暂无保存的任务明细'
+    if (!lines.length) return ''
     const omitted = lines.length - visible.length
     const tail = omitted ? '\n其余 ' + String(omitted) + ' 项请查看网页任务积分明细' : ''
-    return heading + (visible.length ? '\n' + visible.join('\n') : '') + tail + note
+    return heading + (visible.length ? '\n' + visible.join('\n') : '') + tail
   }
   const safeSummary = publicText(redactText(summary))
   // The final line is the run reference. Preserve it even if a diagnostic fills the budget.

@@ -20,6 +20,7 @@ export interface TaskPointSummary {
   key: string
   displayName: string
   tasks: readonly TaskPointDetail[]
+  confirmedPoints: number | null
   amountLabel: string
   statusLabel: string
   progress: TaskProgress | null
@@ -134,6 +135,11 @@ export function taskPointSummaries(tasks: readonly TaskPointDetail[]): TaskPoint
         key,
         displayName: first.type === 'unknown' ? first.displayName : moduleNames[first.type],
         tasks: group,
+        confirmedPoints: group.some((task) => task.pointsStatus === 'conflict')
+          ? null
+          : safeSum(
+              group.map((task) => pointAmount(task.confirmedPoints)).filter((n) => n !== null)
+            ),
         amountLabel: amountLabel(group),
         statusLabel: statusLabel(group),
         progress: searchProgress(group),
@@ -149,7 +155,12 @@ export function taskPointSummaries(tasks: readonly TaskPointDetail[]): TaskPoint
 
 const notificationSegments = new Intl.Segmenter('zh-CN', { granularity: 'grapheme' })
 
-export function taskPointSummaryLine(summary: TaskPointSummary): string {
+export function taskPointSummaryLine(
+  summary: TaskPointSummary,
+  earnedPoints: number | null = summary.confirmedPoints
+): string | null {
+  const amount = pointAmount(earnedPoints)
+  if (amount === null || summary.tasks.some((task) => task.pointsStatus === 'conflict')) return null
   const compact = (text: string) => {
     const characters = Array.from(
       notificationSegments.segment(publicText(text).replace(/\s+/g, ' ').trim()),
@@ -157,9 +168,5 @@ export function taskPointSummaryLine(summary: TaskPointSummary): string {
     )
     return characters.length > 60 ? characters.slice(0, 59).join('') + '…' : characters.join('')
   }
-  const progress = summary.progress
-    ? ` | 进度 ${String(summary.progress.completed)}/${String(summary.progress.total)}`
-    : ''
-  const reason = summary.reason ? `：${compact(summary.reason)}` : ''
-  return `- ${compact(summary.displayName)}：${summary.amountLabel}${progress} | ${summary.statusLabel}${reason}`
+  return `- ${compact(summary.displayName)}：${String(amount)} 分`
 }
