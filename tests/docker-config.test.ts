@@ -3,20 +3,20 @@ import { readFile } from 'node:fs/promises'
 import { describe, expect, it } from 'vitest'
 
 describe('container browser layering', () => {
-  it('aligns the next.27 release metadata without changing the image channel', async () => {
+  it('aligns the next.28 release metadata without changing the image channel', async () => {
     const [workflow, deployment, readme] = await Promise.all([
       readFile('.github/workflows/docker-image.yml', 'utf8'),
       readFile('docs/deployment.md', 'utf8'),
       readFile('README.md', 'utf8')
     ])
-    expect(workflow).toMatch(/^\s*CORE_TAG: 5\.0\.0-next\.27\s*$/m)
-    expect(workflow).not.toContain('CORE_TAG: 5.0.0-next.26')
+    expect(workflow).toMatch(/^\s*CORE_TAG: 5\.0\.0-next\.28\s*$/m)
+    expect(workflow).not.toContain('CORE_TAG: 5.0.0-next.27')
     expect(workflow).toContain('APP_VERSION=${{ env.CORE_TAG }}')
     expect(workflow).toContain('--tag "$CORE_IMAGE:$CORE_TAG"')
     expect(workflow).toContain('--tag "$CORE_IMAGE:latest"')
-    expect(deployment).toContain('成功后才更新 `5.0.0-next.27` 与 `latest`。')
+    expect(deployment).toContain('成功后才更新 `5.0.0-next.28` 与 `latest`。')
     for (const documentation of [deployment, readme]) {
-      expect(documentation).toContain('ghcr.io/saarjoye/mrs-core:5.0.0-next.27')
+      expect(documentation).toContain('ghcr.io/saarjoye/mrs-core:5.0.0-next.28')
     }
   })
 
