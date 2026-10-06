@@ -459,7 +459,9 @@ export class ApplicationRunCoordinator {
         try {
           context.signal.throwIfAborted()
           resources.appObservation = await resources.mobileClient.fetchAppDashboard(
-            resources.appToken.accessToken
+            resources.appToken.accessToken,
+            undefined,
+            context.signal
           )
           context.signal.throwIfAborted()
           resources.guardDate?.()
@@ -998,7 +1000,9 @@ export class ApplicationRunCoordinator {
         (await oauth.acquire(context.accountId, credentials, context.signal))
       context.signal.throwIfAborted()
       resources.appObservation = await resources.mobileClient.fetchAppDashboard(
-        resources.appToken.accessToken
+        resources.appToken.accessToken,
+        undefined,
+        context.signal
       )
       context.signal.throwIfAborted()
       resources.guardDate?.()

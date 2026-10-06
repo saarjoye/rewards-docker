@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
 import type { APIResponse, BrowserContext, Page } from 'patchright'
 
 import type { EncryptedSessionStore } from '../src/auth/EncryptedSessionStore.js'
+import { AppPlatformClient } from '../src/browser/AppPlatformClient.js'
 import { AppOAuthClient } from '../src/browser/AppOAuthClient.js'
 import type { AccountBrowserSlot, BrowserRuntime } from '../src/browser/BrowserRuntime.js'
 import { DashboardClient } from '../src/browser/DashboardClient.js'
@@ -79,8 +80,14 @@ async function fixture(appResponse: APIResponse | Error) {
   const store = new SqliteStore(join(root, 'state.sqlite'))
   stores.push(store)
   const get = vi.fn()
-  if (appResponse instanceof Error) get.mockRejectedValue(appResponse)
-  else get.mockResolvedValue(appResponse)
+  const fallback = vi.spyOn(AppPlatformClient.prototype, 'getDashboard')
+  if (appResponse instanceof Error) {
+    get.mockRejectedValue(appResponse)
+    fallback.mockRejectedValue(appResponse)
+  } else {
+    get.mockResolvedValue(appResponse)
+    fallback.mockImplementation(() => Promise.resolve(response(appResponse.status(), '{}')))
+  }
   const desktopCommit = vi.fn().mockResolvedValue(undefined)
   const mobileCommit = vi.fn().mockResolvedValue(undefined)
   const slot = (name: AccountBrowserSlot['slot']): AccountBrowserSlot => ({

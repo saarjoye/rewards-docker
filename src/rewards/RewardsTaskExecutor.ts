@@ -400,7 +400,7 @@ export class RewardsTaskExecutor {
         if (descriptor.task.type === 'app-check-in' || descriptor.task.type === 'app-activity') {
           if (!this.appToken) return { accepted: false, observedAt: new Date().toISOString() }
           const payload = this.appPayload(descriptor.task.type, offer)
-          await this.submitAppEvidence(descriptor.task, payload)
+          await this.submitAppEvidence(descriptor.task, payload, signal)
           return { accepted: true, observedAt: new Date().toISOString() }
         }
         if (!offer) return { accepted: false, observedAt: new Date().toISOString() }
@@ -515,7 +515,8 @@ export class RewardsTaskExecutor {
 
   private async submitAppEvidence(
     task: TaskRecord,
-    payload: Readonly<Record<string, unknown>>
+    payload: Readonly<Record<string, unknown>>,
+    signal: AbortSignal
   ): Promise<void> {
     if (!this.appToken) throw new Error('App authentication unavailable')
     this.store.ledger.captureTaskBalance(this.runId, task.accountId, 'task-before', task.taskId)
@@ -526,7 +527,8 @@ export class RewardsTaskExecutor {
       undefined,
       (value) => {
         credit = value
-      }
+      },
+      signal
     )
     this.store.ledger.recordTaskEvidence({
       runId: this.runId,
@@ -599,7 +601,7 @@ export class RewardsTaskExecutor {
       this.appToken
     ) {
       throwIfAborted(signal)
-      const observation = await this.client.fetchAppDashboard(this.appToken)
+      const observation = await this.client.fetchAppDashboard(this.appToken, undefined, signal)
       throwIfAborted(signal)
       try {
         this.guardDate?.()
@@ -699,7 +701,7 @@ export class RewardsTaskExecutor {
       const ledgerId = `${descriptor.task.taskId}:article:${String(index + 1)}`
       const previousState = this.mutationLedger.getMutationState(ledgerId)
       if (previousState) {
-        const verified = await this.readAppOffer(descriptor)
+        const verified = await this.readAppOffer(descriptor, signal)
         if (!verified || (!verified.complete && verified.completed <= completed)) {
           this.persist({
             ...descriptor.task,
@@ -724,15 +726,19 @@ export class RewardsTaskExecutor {
       }
       if (!this.mutationLedger.beginMutation(ledgerId)) return 'partial'
       try {
-        await this.submitAppEvidence(descriptor.task, {
-          amount: 1,
-          id: randomBytes(32).toString('hex'),
-          type: 101,
-          attributes: { offerid: descriptor.offer?.sourceTaskId ?? 'ENUS_readarticle3_30points' },
-          country: 'CN'
-        })
+        await this.submitAppEvidence(
+          descriptor.task,
+          {
+            amount: 1,
+            id: randomBytes(32).toString('hex'),
+            type: 101,
+            attributes: { offerid: descriptor.offer?.sourceTaskId ?? 'ENUS_readarticle3_30points' },
+            country: 'CN'
+          },
+          signal
+        )
         this.mutationLedger.updateMutation(ledgerId, 'submitted')
-        const verified = await this.readAppOffer(descriptor)
+        const verified = await this.readAppOffer(descriptor, signal)
         if (!verified || (!verified.complete && verified.completed <= completed)) {
           this.mutationLedger.updateMutation(ledgerId, 'verification-pending')
           this.persist({
@@ -763,7 +769,7 @@ export class RewardsTaskExecutor {
         return 'partial'
       }
       if (index < maximumSubmissions - 1) {
-        await new Promise((resolve) => setTimeout(resolve, 5_000))
+        await abortableDelay(5_000, signal)
       }
     }
     this.persist({
@@ -776,10 +782,11 @@ export class RewardsTaskExecutor {
   }
 
   private async readAppOffer(
-    descriptor: TaskExecutionDescriptor
+    descriptor: TaskExecutionDescriptor,
+    signal: AbortSignal
   ): Promise<RewardOffer | undefined> {
     if (!this.appToken) return undefined
-    const observation = await this.client.fetchAppDashboard(this.appToken)
+    const observation = await this.client.fetchAppDashboard(this.appToken, undefined, signal)
     try {
       this.guardDate?.()
     } catch {

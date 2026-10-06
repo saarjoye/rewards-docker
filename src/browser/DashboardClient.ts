@@ -13,6 +13,12 @@ import type {
 import type { StructuredLogger } from '../infra/StructuredLogger.js'
 import type { QuestTaskContext } from '../domain/Task.js'
 import { QuestClient } from './QuestClient.js'
+import {
+  AppPlatformClient,
+  AppPlatformRequestError,
+  type AppPlatformResponse,
+  type AppPlatformTransport
+} from './AppPlatformClient.js'
 import { redactText, safePath } from '../security/Redactor.js'
 import {
   extractActionIds,
@@ -118,18 +124,25 @@ function abortReason(signal: AbortSignal | undefined): Error {
 }
 
 async function delay(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) throw abortReason(signal)
   if (milliseconds <= 0) return
   await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(resolve, milliseconds)
+    const complete = (): void => {
+      signal?.removeEventListener('abort', abort)
+      resolve()
+    }
+    const timer = setTimeout(complete, milliseconds)
     const abort = (): void => {
       clearTimeout(timer)
+      signal?.removeEventListener('abort', abort)
       reject(abortReason(signal))
     }
     signal?.addEventListener('abort', abort, { once: true })
+    if (signal?.aborted) abort()
   })
 }
 
-async function responseJson(response: APIResponse): Promise<unknown> {
+async function responseJson(response: Pick<APIResponse, 'text'>): Promise<unknown> {
   const text = await response.text()
   try {
     return JSON.parse(text) as unknown
@@ -203,6 +216,8 @@ function serverActionAcknowledged(statusOk: boolean, responseText: string): bool
 
 export class DashboardClient {
   private readonly confirmedObservations: RewardsObservation[] = []
+  private useAppPlatform = false
+  private appContextClosed = false
 
   constructor(
     private readonly context: BrowserContext,
@@ -210,8 +225,16 @@ export class DashboardClient {
     private readonly logger: StructuredLogger,
     private readonly runId: string,
     private readonly accountAlias: string,
-    private readonly onObservation?: (observation: RewardsObservation) => void
-  ) {}
+    private readonly onObservation?: (observation: RewardsObservation) => void,
+    private readonly appPlatform: AppPlatformTransport = new AppPlatformClient()
+  ) {
+    if (typeof this.context.on === 'function') {
+      this.context.on('close', () => {
+        this.appContextClosed = true
+        this.appPlatform.close()
+      })
+    }
+  }
 
   get latestObservation(): RewardsObservation | undefined {
     return this.confirmedObservations.at(-1)
@@ -543,24 +566,171 @@ export class DashboardClient {
 
   async fetchAppDashboard(
     accessToken: string,
-    onStructure?: (structure: CreditStructure) => void
+    onStructure?: (structure: CreditStructure) => void,
+    signal?: AbortSignal
   ): Promise<RewardsObservation> {
-    const response = await this.context.request.get(REWARDS_URLS.appDashboard, {
-      timeout: 15_000,
-      headers: this.appHeaders(accessToken)
-    })
-    try {
-      if (!response.ok()) {
-        throw new DashboardFetchError('App Dashboard 请求失败', response.status(), 1, 0)
+    const started = Date.now()
+    const deadline = started + 45_000
+    let useHttp2 = this.useAppPlatform
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      this.assertAppReady(signal)
+      const source = useHttp2 ? 'http2' : 'browser-api'
+      let response: AppPlatformResponse | undefined
+      let retry = false
+      let status: number | undefined
+      const requestStarted = Date.now()
+      try {
+        const timeout = Math.min(15_000, deadline - Date.now())
+        if (timeout <= 0) throw new AppPlatformRequestError('timeout')
+        response = useHttp2
+          ? await this.appPlatform.getDashboard(this.appHeaders(accessToken), timeout, signal)
+          : await this.appApiRequest('GET', accessToken, timeout, signal)
+        this.assertAppReady(signal)
+        if (!response.ok()) {
+          status = response.status()
+          retry = [401, 403, 408, 502, 503, 504].includes(status)
+          throw new DashboardFetchError(
+            'App Dashboard 请求失败',
+            status,
+            attempt,
+            Date.now() - started,
+            source === 'http2'
+          )
+        }
+        const payload = await responseJson(response)
+        this.assertAppReady(signal)
+        if (onStructure) onStructure(inspectCreditStructure(payload))
+        const parsed = parseDashboardPayload(payload, 'app-dashboard')
+        const observation: RewardsObservation = {
+          ...parsed,
+          readMetadata: {
+            startedAt: new Date(started).toISOString(),
+            durationMs: Date.now() - started,
+            usedFallback: source === 'http2',
+            attempts: attempt
+          }
+        }
+        if (useHttp2 && observation.availablePoints.availability === 'valid') {
+          this.useAppPlatform = true
+        }
+        this.accept(observation)
+        await this.logAppRequest('app-dashboard-request', source, attempt, 200, requestStarted)
+        return observation
+      } catch (error) {
+        this.assertAppReady(signal)
+        await this.logAppRequest(
+          'app-dashboard-request',
+          source,
+          attempt,
+          status,
+          requestStarted,
+          error
+        )
+        retry ||= networkError(error)
+        if (!retry || attempt === 3 || Date.now() >= deadline) throw error
+        // An HTTP rejection does not imply a broken HTTP/2 connection.
+        // Reuse it for the bounded read retry; retire only failed network connections.
+        if (networkError(error)) this.appPlatform.reset()
+        useHttp2 = true
+        await delay(Math.min(1_000, deadline - Date.now()), signal)
+      } finally {
+        try {
+          await response?.dispose()
+        } catch {
+          // Cleanup failure must not replace the request result.
+        }
       }
-      const payload = await responseJson(response)
-      if (onStructure) onStructure(inspectCreditStructure(payload))
-      const observation = parseDashboardPayload(payload, 'app-dashboard')
-      this.accept(observation)
-      return observation
-    } finally {
-      await response.dispose()
     }
+    throw new DashboardFetchError('App Dashboard 请求失败', undefined, 3, Date.now() - started)
+  }
+
+  private assertAppReady(signal?: AbortSignal): void {
+    if (signal?.aborted) throw abortReason(signal)
+    if (this.appContextClosed) throw new AppPlatformRequestError('closed')
+  }
+
+  private async logAppRequest(
+    event: string,
+    source: string,
+    attempt: number,
+    status: number | undefined,
+    started: number,
+    error?: unknown
+  ): Promise<void> {
+    try {
+      await this.logger.write({
+        level: error ? 'warn' : 'debug',
+        event,
+        runId: this.runId,
+        accountAlias: this.accountAlias,
+        source,
+        attempt,
+        httpStatus: status ?? null,
+        durationMs: Date.now() - started,
+        usedFallback: source === 'http2',
+        networkErrorType: networkErrorType(error),
+        ...(error ? { message: status ? `HTTP ${String(status)}` : 'App request failed' } : {})
+      })
+    } catch {
+      // Diagnostics must not change the result of a read or a reward submission.
+    }
+  }
+
+  private async appApiRequest(
+    method: 'GET' | 'POST',
+    accessToken: string,
+    timeout: number,
+    signal?: AbortSignal,
+    payload?: Readonly<Record<string, unknown>>
+  ): Promise<AppPlatformResponse> {
+    this.assertAppReady(signal)
+    const request =
+      method === 'GET'
+        ? this.context.request.get(REWARDS_URLS.appDashboard, {
+            timeout,
+            headers: this.appHeaders(accessToken),
+            maxRedirects: 0,
+            maxRetries: 0
+          })
+        : this.context.request.post(REWARDS_URLS.appActivities, {
+            timeout,
+            headers: {
+              ...this.appActivityHeaders(accessToken, payload ?? {}),
+              'Content-Type': 'application/json'
+            },
+            data: payload,
+            maxRedirects: 0,
+            maxRetries: 0
+          })
+    if (!signal) return request
+    return new Promise<AppPlatformResponse>((resolve, reject) => {
+      let finished = false
+      const onAbort = (): void => {
+        if (finished) return
+        finished = true
+        signal.removeEventListener('abort', onAbort)
+        reject(abortReason(signal))
+      }
+      signal.addEventListener('abort', onAbort, { once: true })
+      void request.then(
+        (response) => {
+          signal.removeEventListener('abort', onAbort)
+          if (finished) {
+            void response.dispose().catch(() => undefined)
+            return
+          }
+          finished = true
+          resolve(response)
+        },
+        (error: unknown) => {
+          signal.removeEventListener('abort', onAbort)
+          if (finished) return
+          finished = true
+          reject(error instanceof Error ? error : new Error('App request failed'))
+        }
+      )
+      if (signal.aborted) onAbort()
+    })
   }
 
   async reportServerAction(input: {
@@ -658,19 +828,30 @@ export class DashboardClient {
     accessToken: string,
     payload: Readonly<Record<string, unknown>>,
     onStructure?: (structure: CreditStructure) => void,
-    onCredit?: (credit: TaskCreditEvidence) => void
+    onCredit?: (credit: TaskCreditEvidence) => void,
+    signal?: AbortSignal
   ): Promise<number | undefined> {
-    const response = await this.context.request.post(REWARDS_URLS.appActivities, {
-      timeout: 20_000,
-      headers: {
-        ...this.appActivityHeaders(accessToken, payload),
-        'Content-Type': 'application/json'
-      },
-      data: payload
-    })
+    this.assertAppReady(signal)
+    const started = Date.now()
+    const source = this.useAppPlatform ? 'http2' : 'browser-api'
+    let response: AppPlatformResponse | undefined
     try {
+      // A mutation uses the selected channel once. Never switch channels or replay a POST.
+      response = this.useAppPlatform
+        ? await this.appPlatform.submitActivity(
+            {
+              ...this.appActivityHeaders(accessToken, payload),
+              'Content-Type': 'application/json'
+            },
+            payload,
+            20_000,
+            signal
+          )
+        : await this.appApiRequest('POST', accessToken, 20_000, signal, payload)
+      this.assertAppReady(signal)
       if (!response.ok()) throw new Error(`App activity HTTP ${String(response.status())}`)
       const body = await responseJson(response)
+      this.assertAppReady(signal)
       const offerId =
         isRecord(payload.attributes) && typeof payload.attributes.offerid === 'string'
           ? payload.attributes.offerid
@@ -683,8 +864,22 @@ export class DashboardClient {
       return typeof balance === 'number' && Number.isSafeInteger(balance) && balance >= 0
         ? balance
         : undefined
+    } catch (error) {
+      await this.logAppRequest(
+        'app-activity-request',
+        source,
+        1,
+        response?.status(),
+        started,
+        error
+      )
+      throw error
     } finally {
-      await response.dispose()
+      try {
+        await response?.dispose()
+      } catch {
+        // Cleanup failure must not replace the submission result.
+      }
     }
   }
 
