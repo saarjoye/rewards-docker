@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 
 import type { AccountBrowserSlot } from '../browser/BrowserRuntime.js'
 import { BrowserRuntime } from '../browser/BrowserRuntime.js'
-import { DashboardClient } from '../browser/DashboardClient.js'
+import { DashboardClient, DashboardFetchError } from '../browser/DashboardClient.js'
 import { AppOAuthClient, type AppToken } from '../browser/AppOAuthClient.js'
 import { LoginController } from '../browser/LoginController.js'
 import { navigateForAuthentication } from '../browser/AuthNavigation.js'
@@ -454,11 +454,38 @@ export class ApplicationRunCoordinator {
     if (stage === 'authenticate') return this.authenticate(context, credentials, resources)
     if (!resources.desktop || !resources.desktopClient) throw new Error('desktop-login unavailable')
     if (stage === 'discover') {
+      let appDashboardUnavailable = false
       if (!resources.appObservation && resources.appToken && resources.mobileClient) {
-        resources.appObservation = await resources.mobileClient.fetchAppDashboard(
-          resources.appToken.accessToken
-        )
+        try {
+          context.signal.throwIfAborted()
+          resources.appObservation = await resources.mobileClient.fetchAppDashboard(
+            resources.appToken.accessToken
+          )
+          context.signal.throwIfAborted()
+          resources.guardDate?.()
+        } catch (error) {
+          context.signal.throwIfAborted()
+          if (error instanceof BusinessDateChanged) throw error
+          resources.guardDate?.()
+          appDashboardUnavailable = true
+          await this.logger
+            .write({
+              level: 'warn',
+              event: 'app-dashboard-unavailable',
+              runId: context.runId,
+              accountAlias: `account-${String(context.runAccountIndex)}`,
+              stage: 'discover',
+              status: 'partial',
+              ...(error instanceof DashboardFetchError && error.status !== undefined
+                ? { httpStatus: error.status }
+                : {}),
+              message: redactText(error instanceof Error ? error.message : 'App Dashboard 请求失败')
+            })
+            .catch(() => undefined)
+        }
       }
+      context.signal.throwIfAborted()
+      resources.guardDate?.()
       resources.discovery = await new RewardsDiscoveryService().discover({
         accountId: context.accountId,
         localDate: context.localDate,
@@ -517,7 +544,13 @@ export class ApplicationRunCoordinator {
       resources.initialTaskStatuses = new Map(
         resources.discovery.tasks.map((task) => [task.taskId, task.status])
       )
-      return { status: 'completed' }
+      return appDashboardUnavailable
+        ? {
+            status: 'partial',
+            failureStage: 'app-dashboard',
+            message: 'App Dashboard 不可用，已继续发现网页任务'
+          }
+        : { status: 'completed' }
     }
     if (!resources.discovery) throw new Error('discovery unavailable')
 
@@ -963,12 +996,18 @@ export class ApplicationRunCoordinator {
       resources.appToken =
         (await oauth.readStored(context.accountId)) ??
         (await oauth.acquire(context.accountId, credentials, context.signal))
+      context.signal.throwIfAborted()
       resources.appObservation = await resources.mobileClient.fetchAppDashboard(
         resources.appToken.accessToken
       )
+      context.signal.throwIfAborted()
+      resources.guardDate?.()
       await oauth.commitVerified(context.accountId, resources.appToken)
       return { status: 'completed' }
     } catch (error) {
+      context.signal.throwIfAborted()
+      if (error instanceof BusinessDateChanged) throw error
+      resources.guardDate?.()
       return {
         status:
           error instanceof LoginStateError && requiresUserAction(error.loginState)
