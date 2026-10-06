@@ -955,13 +955,14 @@ export class ApplicationRunCoordinator {
     else delete resources.verifiedObservation
     await resources.desktop.commitVerified()
 
-    const needsMobile =
-      this.config.tasks.mobileSearch ||
+    const needsApp =
       this.config.tasks.appActivities ||
       this.config.tasks.appCheckIn ||
       this.config.tasks.readToEarn
+    const needsMobile = this.config.tasks.mobileSearch || needsApp
     if (!needsMobile) return { status: 'completed' }
 
+    let appFailureStage: 'app-oauth' | 'app-dashboard' = 'app-oauth'
     try {
       resources.mobile = await this.openAuthenticationEntry(context, 'web-mobile')
       resources.mobileClient = new DashboardClient(
@@ -988,6 +989,7 @@ export class ApplicationRunCoordinator {
         context.signal
       )
       await resources.mobile.commitVerified()
+      if (!needsApp) return { status: 'completed' }
 
       const oauth = new AppOAuthClient(
         resources.mobile.context,
@@ -1006,6 +1008,7 @@ export class ApplicationRunCoordinator {
       )
       resources.appToken = await resources.appAuthorization.initialize(context.signal)
       context.signal.throwIfAborted()
+      appFailureStage = 'app-dashboard'
       resources.appObservation = await resources.mobileClient.fetchAppDashboard(
         resources.appAuthorization.accessToken ?? resources.appToken.accessToken,
         undefined,
@@ -1024,7 +1027,7 @@ export class ApplicationRunCoordinator {
           error instanceof LoginStateError && requiresUserAction(error.loginState)
             ? 'action-required'
             : 'partial',
-        failureStage: error instanceof LoginStateError ? error.loginStage : 'app-oauth',
+        failureStage: error instanceof LoginStateError ? error.loginStage : appFailureStage,
         message: error instanceof Error ? error.message : '移动认证未确认'
       }
     }

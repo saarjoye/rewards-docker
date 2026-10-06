@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events'
 import type { BrowserContext, Page } from 'patchright'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { DashboardClient, DashboardFetchError } from '../src/browser/DashboardClient.js'
 import { AppAuthorizationSession } from '../src/browser/AppAuthorizationSession.js'
@@ -43,22 +43,39 @@ function setup() {
   return { client, context, get, post, transport, logger, observed }
 }
 
+async function finishRetries<T>(pending: Promise<T>): Promise<T> {
+  const settled = pending.then(
+    (value) => ({ value }),
+    (error: unknown) => ({ error })
+  )
+  await vi.runAllTimersAsync()
+  const result = await settled
+  if ('error' in result) throw result.error
+  return result.value
+}
+
 const token = 'synthetic-token-private-canary'
+beforeEach(() => {
+  vi.useFakeTimers()
+})
 afterEach(() => {
   vi.useRealTimers()
 })
 
 describe('App request recovery', () => {
-  it('shares the 401 limit across successful reads and later stages without replaying submissions', async () => {
+  it('resets consecutive 401 failures only after valid reads and blocks after persistent rejection', async () => {
     const { client, get, post, transport } = setup()
     get.mockResolvedValue(response(401))
-    await client.fetchAppDashboard(token)
+    await finishRetries(client.fetchAppDashboard(token))
     transport.getDashboard.mockResolvedValueOnce(response(401)).mockResolvedValueOnce(response())
-    await client.fetchAppDashboard(token)
+    await finishRetries(client.fetchAppDashboard(token))
     transport.getDashboard.mockResolvedValue(response(401))
-    await expect(client.fetchAppDashboard(token)).rejects.toMatchObject({ status: 401 })
+    await expect(finishRetries(client.fetchAppDashboard(token))).rejects.toMatchObject({
+      status: 401,
+      attempts: 3
+    })
     const reads = transport.getDashboard.mock.calls.length
-    await expect(client.fetchAppDashboard(token)).rejects.toMatchObject({ status: 401 })
+    await expect(finishRetries(client.fetchAppDashboard(token))).rejects.toMatchObject({ status: 401 })
     await expect(client.submitAppActivity(token, { type: 103 })).rejects.toMatchObject({
       status: 401
     })
@@ -67,7 +84,7 @@ describe('App request recovery', () => {
     expect(post).not.toHaveBeenCalled()
     expect(transport.submitActivity).not.toHaveBeenCalled()
     const other = setup()
-    expect((await other.client.fetchAppDashboard('other-token')).availablePoints.value).toBe(42)
+    expect((await finishRetries(other.client.fetchAppDashboard('other-token'))).availablePoints.value).toBe(42)
   })
 
   it('uses one refreshed token for recovery and later calls, and persists it only after valid balance', async () => {
@@ -89,7 +106,7 @@ describe('App request recovery', () => {
     await authorization.initialize(signal)
     get.mockResolvedValue(response(401))
     transport.getDashboard.mockResolvedValueOnce(response(401)).mockResolvedValueOnce(response())
-    await client.fetchAppDashboard(token, undefined, signal, authorization)
+    await finishRetries(client.fetchAppDashboard(token, undefined, signal, authorization))
     expect(oauth.acquire).toHaveBeenCalledTimes(1)
     expect(
       transport.getDashboard.mock.calls.every(
@@ -97,7 +114,7 @@ describe('App request recovery', () => {
       )
     ).toBe(true)
     expect(oauth.commitVerified).toHaveBeenCalledTimes(1)
-    await client.fetchAppDashboard(token, undefined, signal, authorization)
+    await finishRetries(client.fetchAppDashboard(token, undefined, signal, authorization))
     expect(transport.getDashboard.mock.calls.at(-1)?.[0].Authorization).toBe(
       'Bearer synthetic-refreshed'
     )
@@ -162,7 +179,7 @@ describe('App request recovery', () => {
     const { client, get, transport } = setup()
     const reply = response()
     get.mockResolvedValue(reply)
-    const result = await client.fetchAppDashboard(token)
+    const result = await finishRetries(client.fetchAppDashboard(token))
     expect(result.availablePoints.value).toBe(42)
     expect(result.readMetadata).toMatchObject({ attempts: 1, usedFallback: false })
     expect(client.latestObservation).toBe(result)
@@ -177,11 +194,11 @@ describe('App request recovery', () => {
       const { client, get, post, transport } = setup()
       const failed = response(status)
       get.mockResolvedValue(failed)
-      const first = await client.fetchAppDashboard(token)
+      const first = await finishRetries(client.fetchAppDashboard(token))
       expect(first.readMetadata).toMatchObject({ attempts: 2, usedFallback: true })
       expect(failed.text).not.toHaveBeenCalled()
       expect(failed.dispose).toHaveBeenCalledTimes(1)
-      await client.fetchAppDashboard(token)
+      await finishRetries(client.fetchAppDashboard(token))
       await client.submitAppActivity(token, { type: 103, amount: 1 })
       expect(get).toHaveBeenCalledTimes(1)
       expect(post).not.toHaveBeenCalled()
@@ -196,7 +213,7 @@ describe('App request recovery', () => {
     const replies = [response(401), response(401), response(401)] as const
     get.mockResolvedValue(replies[0])
     transport.getDashboard.mockResolvedValueOnce(replies[1]).mockResolvedValueOnce(replies[2])
-    await expect(client.fetchAppDashboard(token)).rejects.toMatchObject({
+    await expect(finishRetries(client.fetchAppDashboard(token))).rejects.toMatchObject({
       name: 'DashboardFetchError',
       status: 401,
       attempts: 3,
@@ -218,8 +235,99 @@ describe('App request recovery', () => {
     const { client, get, transport } = setup()
     get.mockResolvedValue(response(401))
     transport.getDashboard.mockResolvedValueOnce(response(401)).mockResolvedValueOnce(response())
-    expect((await client.fetchAppDashboard(token)).readMetadata).toMatchObject({ attempts: 3 })
+    expect((await finishRetries(client.fetchAppDashboard(token))).readMetadata).toMatchObject({ attempts: 3 })
     expect(transport.reset).not.toHaveBeenCalled()
+  })
+
+  it('allows a transient rejection to settle at 30 seconds and releases responses before waiting', async () => {
+    const { client, get, post, transport } = setup()
+    const started = Date.now()
+    const requestTimes: number[] = []
+    const first = response(401)
+    const second = response(401)
+    get.mockImplementation(() => {
+      requestTimes.push(Date.now() - started)
+      return Promise.resolve(first)
+    })
+    transport.getDashboard.mockImplementation(() => {
+      requestTimes.push(Date.now() - started)
+      return Promise.resolve(Date.now() - started < 30_000 ? second : response())
+    })
+    const pending = client.fetchAppDashboard(token)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(first.dispose).toHaveBeenCalledTimes(1)
+    expect(transport.getDashboard).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(second.dispose).toHaveBeenCalledTimes(1)
+    expect(requestTimes).toEqual([0, 10_000])
+    await vi.advanceTimersByTimeAsync(19_999)
+    expect(requestTimes).toHaveLength(2)
+    await vi.advanceTimersByTimeAsync(1)
+    expect((await pending).readMetadata).toMatchObject({ attempts: 3, durationMs: 30_000 })
+    expect(requestTimes).toEqual([0, 10_000, 30_000])
+    expect(post).not.toHaveBeenCalled()
+    expect(transport.submitActivity).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('keeps the overall deadline when authorization consumes most of the recovery budget', async () => {
+    const { client, get, transport } = setup()
+    get.mockResolvedValue(response(401))
+    transport.getDashboard.mockResolvedValue(response(401))
+    const authorization = {
+      accessToken: token,
+      refresh: vi.fn<() => Promise<string | undefined>>()
+        .mockImplementationOnce(() => new Promise<string>((resolve) => {
+          setTimeout(() => { resolve('synthetic-refreshed') }, 25_000)
+        }))
+        .mockResolvedValue(undefined),
+      confirm: vi.fn()
+    }
+    const failed = expect(
+      client.fetchAppDashboard(token, undefined, undefined, authorization)
+    ).rejects.toThrow('timeout')
+    await vi.advanceTimersByTimeAsync(45_000)
+    await failed
+    expect(get).toHaveBeenCalledTimes(1)
+    expect(transport.getDashboard).toHaveBeenCalledTimes(1)
+    expect(authorization.confirm).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('does not reset authorization failures after an unusable balance', async () => {
+    const { client, get, transport } = setup()
+    get.mockResolvedValue(response(401))
+    transport.getDashboard.mockResolvedValueOnce(response(200, { response: {} }))
+    expect((await finishRetries(client.fetchAppDashboard(token))).availablePoints.availability).not.toBe('valid')
+    transport.getDashboard.mockResolvedValue(response(401))
+    await expect(finishRetries(client.fetchAppDashboard(token))).rejects.toMatchObject({
+      status: 401, attempts: 2
+    })
+    expect(get).toHaveBeenCalledTimes(2)
+    expect(transport.getDashboard).toHaveBeenCalledTimes(2)
+  })
+
+  it('cancels the second authorization wait without a late read or mutation', async () => {
+    const { client, get, post, transport } = setup()
+    const first = response(401)
+    const second = response(401)
+    get.mockResolvedValue(first)
+    transport.getDashboard.mockResolvedValue(second)
+    const controller = new AbortController()
+    const reason = new Error('cancel-second-auth-backoff')
+    const failed = expect(
+      client.fetchAppDashboard(token, undefined, controller.signal)
+    ).rejects.toBe(reason)
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(first.dispose).toHaveBeenCalledTimes(1)
+    expect(second.dispose).toHaveBeenCalledTimes(1)
+    controller.abort(reason)
+    await failed
+    await vi.advanceTimersByTimeAsync(45_000)
+    expect(transport.getDashboard).toHaveBeenCalledTimes(1)
+    expect(post).not.toHaveBeenCalled()
+    expect(transport.submitActivity).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
   })
 
   it('replaces a failed network connection before the final read', async () => {
@@ -228,7 +336,7 @@ describe('App request recovery', () => {
     transport.getDashboard
       .mockRejectedValueOnce(new Error('network synthetic disconnect'))
       .mockResolvedValueOnce(response())
-    const result = await client.fetchAppDashboard(token)
+    const result = await finishRetries(client.fetchAppDashboard(token))
     expect(result.readMetadata?.attempts).toBe(3)
     expect(transport.reset).toHaveBeenCalledTimes(1)
   })
@@ -240,14 +348,14 @@ describe('App request recovery', () => {
       vi.setSystemTime(Date.now() + 45_000)
       return Promise.reject(new Error('network synthetic failure'))
     })
-    await expect(client.fetchAppDashboard(token)).rejects.toThrow()
+    await expect(finishRetries(client.fetchAppDashboard(token))).rejects.toThrow()
     expect(transport.getDashboard).not.toHaveBeenCalled()
   })
 
   it('recovers a network read failure without leaking the raw error or token', async () => {
     const { client, get, logger } = setup()
     get.mockRejectedValue(new Error(`network failure https://private.invalid/?token=${token}`))
-    await client.fetchAppDashboard(token)
+    await finishRetries(client.fetchAppDashboard(token))
     const logs = JSON.stringify(logger.write.mock.calls)
     expect(logs).toContain('app-dashboard-request')
     expect(logs).not.toContain(token)
@@ -257,7 +365,7 @@ describe('App request recovery', () => {
   it.each([400, 429, 302])('does not probe again after HTTP %s', async (status) => {
     const { client, get, transport } = setup()
     get.mockResolvedValue(response(status))
-    await expect(client.fetchAppDashboard(token)).rejects.toBeInstanceOf(DashboardFetchError)
+    await expect(finishRetries(client.fetchAppDashboard(token))).rejects.toBeInstanceOf(DashboardFetchError)
     expect(transport.getDashboard).not.toHaveBeenCalled()
   })
 
@@ -265,7 +373,7 @@ describe('App request recovery', () => {
     const { client, get, transport, observed } = setup()
     const reply = response(200, 'invalid-json')
     get.mockResolvedValue(reply)
-    await expect(client.fetchAppDashboard(token)).rejects.toThrow('Response body is not valid JSON')
+    await expect(finishRetries(client.fetchAppDashboard(token))).rejects.toThrow('Response body is not valid JSON')
     expect(reply.dispose).toHaveBeenCalledTimes(1)
     expect(observed).not.toHaveBeenCalled()
     expect(transport.getDashboard).not.toHaveBeenCalled()
@@ -275,7 +383,7 @@ describe('App request recovery', () => {
     const { client, get, transport, post } = setup()
     get.mockResolvedValue(response(401))
     transport.getDashboard.mockResolvedValue(response(200, { response: {} }))
-    const result = await client.fetchAppDashboard(token)
+    const result = await finishRetries(client.fetchAppDashboard(token))
     expect(result.availablePoints.availability).not.toBe('valid')
     expect(client.latestObservation).toBeUndefined()
     await client.submitAppActivity(token, { type: 103 })
@@ -287,7 +395,7 @@ describe('App request recovery', () => {
     const { client, get, logger } = setup()
     get.mockResolvedValue(response(401))
     logger.write.mockRejectedValue(new Error('synthetic log unavailable'))
-    expect((await client.fetchAppDashboard(token)).availablePoints.value).toBe(42)
+    expect((await finishRetries(client.fetchAppDashboard(token))).availablePoints.value).toBe(42)
   })
 
   it('cancels a browser read promptly and disposes late responses without accepting them', async () => {
@@ -318,7 +426,7 @@ describe('App request recovery', () => {
   it('closes the account transport with its browser context and rejects new operations', async () => {
     const { client, context, get, transport } = setup()
     context.emit('close')
-    await expect(client.fetchAppDashboard(token)).rejects.toThrow('App platform closed')
+    await expect(finishRetries(client.fetchAppDashboard(token))).rejects.toThrow('App platform closed')
     await expect(client.submitAppActivity(token, { amount: 1 })).rejects.toThrow(
       'App platform closed'
     )
@@ -332,7 +440,7 @@ describe('App request recovery', () => {
       const { client, get, post, transport } = setup()
       if (source === 'http2') {
         get.mockResolvedValue(response(401))
-        await client.fetchAppDashboard(token)
+        await finishRetries(client.fetchAppDashboard(token))
         transport.submitActivity.mockResolvedValue(response(503))
       } else {
         post.mockResolvedValue(response(503))

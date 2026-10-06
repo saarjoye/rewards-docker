@@ -35,6 +35,7 @@ const roots: string[] = []
 const stores: SqliteStore[] = []
 
 afterEach(async () => {
+  vi.useRealTimers()
   vi.restoreAllMocks()
   for (const store of stores.splice(0)) store.close()
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
@@ -74,7 +75,10 @@ function response(status: number, body: string): MockResponse {
   } as unknown as MockResponse
 }
 
-async function fixture(appResponse: APIResponse | Error) {
+async function fixture(
+  appResponse: APIResponse | Error,
+  taskFlags: Partial<typeof DEFAULT_CONFIG.tasks> = {}
+) {
   const root = await mkdtemp(join(tmpdir(), 'rewards-app-discovery-'))
   roots.push(root)
   const store = new SqliteStore(join(root, 'state.sqlite'))
@@ -111,7 +115,7 @@ async function fixture(appResponse: APIResponse | Error) {
     {} as EncryptedSessionStore,
     { openSlot } as unknown as BrowserRuntime,
     { write } as unknown as StructuredLogger,
-    { ...DEFAULT_CONFIG, tasks: { ...DEFAULT_CONFIG.tasks, mobileSearch: true } }
+    { ...DEFAULT_CONFIG, tasks: { ...DEFAULT_CONFIG.tasks, mobileSearch: true, ...taskFlags } }
   )
   const verified = observation()
   vi.spyOn(LoginController.prototype, 'login').mockResolvedValue(undefined)
@@ -122,7 +126,7 @@ async function fixture(appResponse: APIResponse | Error) {
   const acquire = vi
     .spyOn(AppOAuthClient.prototype, 'acquire')
     .mockResolvedValue({ accessToken: 'synthetic-refreshed', expiresAt: '2099-01-01' })
-  vi.spyOn(AppOAuthClient.prototype, 'readStored').mockResolvedValue({
+  const readStored = vi.spyOn(AppOAuthClient.prototype, 'readStored').mockResolvedValue({
     accessToken: 'synthetic-token',
     expiresAt: '2026-10-06T10:00:00.000Z'
   })
@@ -228,6 +232,7 @@ async function fixture(appResponse: APIResponse | Error) {
     mobileCommit,
     oauthCommit,
     acquire,
+    readStored,
     bootstrap,
     finalRead,
     appMutation,
@@ -242,8 +247,9 @@ describe('App Dashboard discovery fault isolation', () => {
     async (status) => {
       const appResponse = response(status, '{}')
       const input = await fixture(appResponse)
+      vi.useFakeTimers()
       const stages: AccountPipelineStage[] = []
-      const result = await new AccountPipeline({
+      const pending = new AccountPipeline({
         execute: (stage) => {
           stages.push(stage)
           return input.execute(stage)
@@ -256,8 +262,14 @@ describe('App Dashboard discovery fault isolation', () => {
         localDate: '2026-10-06',
         signal: input.controller.signal
       })
+      await vi.runAllTimersAsync()
+      const result = await pending
 
       expect(result.status).toBe('partial')
+      expect(result.stages.find(({ stage }) => stage === 'authenticate')?.result).toMatchObject({
+        status: 'partial',
+        failureStage: 'app-dashboard'
+      })
       expect(result.stages.find(({ stage }) => stage === 'discover')?.result).toMatchObject({
         status: 'partial',
         failureStage: 'app-dashboard'
@@ -298,6 +310,44 @@ describe('App Dashboard discovery fault isolation', () => {
     }
   )
 
+  it('keeps mobile search authentication without reading App OAuth when all App tasks are disabled', async () => {
+    const input = await fixture(response(401, '{}'), {
+      appActivities: false,
+      appCheckIn: false,
+      readToEarn: false
+    })
+    vi.useFakeTimers()
+    const pending = input.execute('authenticate')
+    await vi.runAllTimersAsync()
+
+    await expect(pending).resolves.toEqual({ status: 'completed' })
+    expect(input.readStored).not.toHaveBeenCalled()
+    expect(input.acquire).not.toHaveBeenCalled()
+    expect(input.get).not.toHaveBeenCalled()
+    expect(input.oauthCommit).not.toHaveBeenCalled()
+    expect(input.desktopCommit).toHaveBeenCalledOnce()
+    expect(input.mobileCommit).toHaveBeenCalledOnce()
+    await expect(input.execute('discover')).resolves.toEqual({ status: 'completed' })
+    const discovery = input.resources.discovery as DiscoveryOutput
+    expect(discovery.tasks.find((task) => task.type === 'mobile-search')?.executable).toBe(true)
+  })
+
+  it('keeps acquisition failures distinct from App Dashboard failures and continues web discovery', async () => {
+    const input = await fixture(response(200, '{}'))
+    vi.spyOn(AppOAuthClient.prototype, 'readStored').mockResolvedValue(undefined)
+    input.acquire.mockRejectedValue(new Error('synthetic acquisition failure'))
+
+    await expect(input.execute('authenticate')).resolves.toMatchObject({
+      status: 'partial',
+      failureStage: 'app-oauth'
+    })
+    await expect(input.execute('discover')).resolves.toEqual({ status: 'completed' })
+    expect(input.get).not.toHaveBeenCalled()
+    expect(input.bootstrap).toHaveBeenCalledOnce()
+    expect(input.appMutation).not.toHaveBeenCalled()
+    expect(input.resources.discovery).toBeDefined()
+  })
+
   it.each([
     [
       'network error',
@@ -335,7 +385,10 @@ describe('App Dashboard discovery fault isolation', () => {
 
   it('does not reset exhausted App authorization reads in discovery or affect web tasks', async () => {
     const input = await fixture(response(401, '{}'))
-    await expect(input.execute('authenticate')).resolves.toMatchObject({ status: 'partial' })
+    vi.useFakeTimers()
+    const authentication = input.execute('authenticate')
+    await vi.runAllTimersAsync()
+    await expect(authentication).resolves.toMatchObject({ status: 'partial' })
     const requests = input.get.mock.calls.length
     await expect(input.execute('discover')).resolves.toMatchObject({ status: 'partial' })
     expect(input.get).toHaveBeenCalledTimes(requests)

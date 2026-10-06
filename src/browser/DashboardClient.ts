@@ -608,6 +608,7 @@ export class DashboardClient {
       const source = useHttp2 ? 'http2' : 'browser-api'
       let response: AppPlatformResponse | undefined
       let retry = false
+      let retryDelayMs = 1_000
       let status: number | undefined
       const requestStarted = Date.now()
       try {
@@ -628,6 +629,7 @@ export class DashboardClient {
           )
           retry = [403, 408, 502, 503, 504].includes(status)
           if (status === 401) {
+            retryDelayMs = attempt * 10_000
             this.appAuthorizationFailures += 1
             retry = this.appAuthorizationFailures < 3 && attempt < 3
             if (!retry) this.appAuthorizationUnavailable = error
@@ -669,6 +671,7 @@ export class DashboardClient {
         if (observation.availablePoints.availability === 'valid') {
           await authorization?.confirm(signal)
           this.assertAppReady(signal)
+          this.appAuthorizationFailures = 0
           if (useHttp2) this.useAppPlatform = true
         }
         this.accept(observation)
@@ -691,7 +694,6 @@ export class DashboardClient {
         // Reuse connections after HTTP rejections; retire only failed network connections.
         if (networkError(error)) this.appPlatform.reset()
         useHttp2 = true
-        await delay(Math.min(1_000, deadline - Date.now()), signal)
       } finally {
         try {
           await response?.dispose()
@@ -699,6 +701,9 @@ export class DashboardClient {
           // Cleanup failure must not replace the request result.
         }
       }
+      const remainingMs = deadline - Date.now()
+      if (remainingMs <= 0) throw new AppPlatformRequestError('timeout')
+      await delay(Math.min(retryDelayMs, remainingMs), signal)
     }
     throw new DashboardFetchError('App Dashboard 请求失败', undefined, 3, Date.now() - started)
   }
