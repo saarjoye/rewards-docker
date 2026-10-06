@@ -1,3 +1,4 @@
+import type { AppDashboardAuthorization } from './AppAuthorizationSession.js'
 import { randomInt } from 'node:crypto'
 
 import type {
@@ -216,6 +217,8 @@ function serverActionAcknowledged(statusOk: boolean, responseText: string): bool
 
 export class DashboardClient {
   private readonly confirmedObservations: RewardsObservation[] = []
+  private appAuthorizationFailures = 0
+  private appAuthorizationUnavailable: DashboardFetchError | undefined
   private useAppPlatform = false
   private appContextClosed = false
 
@@ -567,13 +570,41 @@ export class DashboardClient {
   async fetchAppDashboard(
     accessToken: string,
     onStructure?: (structure: CreditStructure) => void,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    authorization?: AppDashboardAuthorization
+  ): Promise<RewardsObservation> {
+    this.assertAppReady(signal)
+    this.assertAppAuthorized()
+    const controller = new AbortController()
+    const onAbort = () => {
+      controller.abort(abortReason(signal))
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+    if (signal?.aborted) onAbort()
+    const timer = setTimeout(() => {
+      controller.abort(new AppPlatformRequestError('timeout'))
+    }, 45_000)
+    try {
+      return await this.readAppDashboard(accessToken, onStructure, controller.signal, authorization)
+    } finally {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+    }
+  }
+
+  private async readAppDashboard(
+    accessToken: string,
+    onStructure: ((structure: CreditStructure) => void) | undefined,
+    signal: AbortSignal,
+    authorization: AppDashboardAuthorization | undefined
   ): Promise<RewardsObservation> {
     const started = Date.now()
     const deadline = started + 45_000
+    let currentToken = authorization?.accessToken ?? accessToken
     let useHttp2 = this.useAppPlatform
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       this.assertAppReady(signal)
+      this.assertAppAuthorized()
       const source = useHttp2 ? 'http2' : 'browser-api'
       let response: AppPlatformResponse | undefined
       let retry = false
@@ -583,19 +614,44 @@ export class DashboardClient {
         const timeout = Math.min(15_000, deadline - Date.now())
         if (timeout <= 0) throw new AppPlatformRequestError('timeout')
         response = useHttp2
-          ? await this.appPlatform.getDashboard(this.appHeaders(accessToken), timeout, signal)
-          : await this.appApiRequest('GET', accessToken, timeout, signal)
+          ? await this.appPlatform.getDashboard(this.appHeaders(currentToken), timeout, signal)
+          : await this.appApiRequest('GET', currentToken, timeout, signal)
         this.assertAppReady(signal)
         if (!response.ok()) {
           status = response.status()
-          retry = [401, 403, 408, 502, 503, 504].includes(status)
-          throw new DashboardFetchError(
+          const error = new DashboardFetchError(
             'App Dashboard 请求失败',
             status,
             attempt,
             Date.now() - started,
             source === 'http2'
           )
+          retry = [403, 408, 502, 503, 504].includes(status)
+          if (status === 401) {
+            this.appAuthorizationFailures += 1
+            retry = this.appAuthorizationFailures < 3 && attempt < 3
+            if (!retry) this.appAuthorizationUnavailable = error
+            if (retry && authorization) {
+              try {
+                currentToken = (await authorization.refresh(signal)) ?? currentToken
+                this.assertAppReady(signal)
+              } catch (refreshError) {
+                this.assertAppReady(signal)
+                this.appAuthorizationUnavailable = error
+                retry = false
+                await this.logAppRequest(
+                  'app-authorization-refresh-failed',
+                  source,
+                  attempt,
+                  status,
+                  requestStarted,
+                  refreshError
+                )
+                throw refreshError
+              }
+            }
+          }
+          throw error
         }
         const payload = await responseJson(response)
         this.assertAppReady(signal)
@@ -610,8 +666,10 @@ export class DashboardClient {
             attempts: attempt
           }
         }
-        if (useHttp2 && observation.availablePoints.availability === 'valid') {
-          this.useAppPlatform = true
+        if (observation.availablePoints.availability === 'valid') {
+          await authorization?.confirm(signal)
+          this.assertAppReady(signal)
+          if (useHttp2) this.useAppPlatform = true
         }
         this.accept(observation)
         await this.logAppRequest('app-dashboard-request', source, attempt, 200, requestStarted)
@@ -627,9 +685,10 @@ export class DashboardClient {
           error
         )
         retry ||= networkError(error)
-        if (!retry || attempt === 3 || Date.now() >= deadline) throw error
-        // An HTTP rejection does not imply a broken HTTP/2 connection.
-        // Reuse it for the bounded read retry; retire only failed network connections.
+        if (this.appAuthorizationUnavailable || !retry || attempt === 3 || Date.now() >= deadline) {
+          throw error
+        }
+        // Reuse connections after HTTP rejections; retire only failed network connections.
         if (networkError(error)) this.appPlatform.reset()
         useHttp2 = true
         await delay(Math.min(1_000, deadline - Date.now()), signal)
@@ -642,6 +701,10 @@ export class DashboardClient {
       }
     }
     throw new DashboardFetchError('App Dashboard 请求失败', undefined, 3, Date.now() - started)
+  }
+
+  private assertAppAuthorized(): void {
+    if (this.appAuthorizationUnavailable) throw this.appAuthorizationUnavailable
   }
 
   private assertAppReady(signal?: AbortSignal): void {
@@ -832,6 +895,7 @@ export class DashboardClient {
     signal?: AbortSignal
   ): Promise<number | undefined> {
     this.assertAppReady(signal)
+    this.assertAppAuthorized()
     const started = Date.now()
     const source = this.useAppPlatform ? 'http2' : 'browser-api'
     let response: AppPlatformResponse | undefined

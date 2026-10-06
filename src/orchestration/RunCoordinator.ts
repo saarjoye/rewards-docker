@@ -1,3 +1,4 @@
+import { AppAuthorizationSession } from '../browser/AppAuthorizationSession.js'
 import { randomUUID } from 'node:crypto'
 
 import type { AccountBrowserSlot } from '../browser/BrowserRuntime.js'
@@ -71,6 +72,7 @@ interface AccountResources {
   desktopClient?: DashboardClient
   mobileClient?: DashboardClient
   appToken?: AppToken
+  appAuthorization?: AppAuthorizationSession
   appObservation?: RewardsObservation
   verifiedObservation?: RewardsObservation
   discovery?: DiscoveryOutput
@@ -459,9 +461,10 @@ export class ApplicationRunCoordinator {
         try {
           context.signal.throwIfAborted()
           resources.appObservation = await resources.mobileClient.fetchAppDashboard(
-            resources.appToken.accessToken,
+            resources.appAuthorization?.accessToken ?? resources.appToken.accessToken,
             undefined,
-            context.signal
+            context.signal,
+            resources.appAuthorization
           )
           context.signal.throwIfAborted()
           resources.guardDate?.()
@@ -712,7 +715,7 @@ export class ApplicationRunCoordinator {
             this.config,
             context.runId,
             `account-${String(context.runAccountIndex)}`,
-            resources.appToken?.accessToken,
+            resources.appAuthorization ?? resources.appToken?.accessToken,
             this.mutationLedger,
             resources.guardDate
           ).executeTypes({
@@ -804,7 +807,7 @@ export class ApplicationRunCoordinator {
           this.config,
           context.runId,
           `account-${String(context.runAccountIndex)}`,
-          resources.appToken?.accessToken,
+          resources.appAuthorization ?? resources.appToken?.accessToken,
           this.mutationLedger,
           resources.guardDate
         ).executeTypes({
@@ -995,18 +998,22 @@ export class ApplicationRunCoordinator {
         context.runId,
         `account-${String(context.runAccountIndex)}`
       )
-      resources.appToken =
-        (await oauth.readStored(context.accountId)) ??
-        (await oauth.acquire(context.accountId, credentials, context.signal))
+      resources.appAuthorization = new AppAuthorizationSession(
+        oauth,
+        context.accountId,
+        credentials,
+        resources.guardDate
+      )
+      resources.appToken = await resources.appAuthorization.initialize(context.signal)
       context.signal.throwIfAborted()
       resources.appObservation = await resources.mobileClient.fetchAppDashboard(
-        resources.appToken.accessToken,
+        resources.appAuthorization.accessToken ?? resources.appToken.accessToken,
         undefined,
-        context.signal
+        context.signal,
+        resources.appAuthorization
       )
       context.signal.throwIfAborted()
       resources.guardDate?.()
-      await oauth.commitVerified(context.accountId, resources.appToken)
       return { status: 'completed' }
     } catch (error) {
       context.signal.throwIfAborted()

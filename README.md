@@ -13,7 +13,7 @@ App 任务保留未确认状态，整体运行可以显示部分完成；不会�
 保留取消、跨日中止和提交幂等规则。正常 App 路径、现有任务执行器、任务配置、
 简洁分数通知和分类余额核算保持原行为；不新增迁移、配置、依赖或浏览器版本。
 
-GitHub Actions 验证候选通过后，发布 `ghcr.io/saarjoye/mrs-core:5.0.0-next.28`
+GitHub Actions 验证候选通过后，发布 `ghcr.io/saarjoye/mrs-core:5.0.0-next.29`
 并同步 `latest`。升级保留原 Compose、全部持久卷、主密钥、账号和定时设置。
 故障回归验证的是流程隔离，不代表微软 App 接口恢复或真实积分到账。
 

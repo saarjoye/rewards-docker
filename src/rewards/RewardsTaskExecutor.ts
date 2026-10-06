@@ -1,3 +1,4 @@
+import type { AppDashboardAuthorization } from '../browser/AppAuthorizationSession.js'
 import { randomBytes, randomUUID } from 'node:crypto'
 
 import type { BrowserContext } from 'patchright'
@@ -84,11 +85,19 @@ export class RewardsTaskExecutor {
     private readonly config: ApplicationConfig,
     private readonly runId: string,
     private readonly accountAlias: string,
-    private readonly appToken?: string,
+    private readonly appToken?: string | AppDashboardAuthorization,
     private readonly mutationLedger: ReadableMutationLedger = store,
     private readonly guardDate?: () => void
   ) {
     this.mutation = new MutationExecutor(mutationLedger)
+  }
+
+  private get appAccessToken(): string | undefined {
+    return typeof this.appToken === 'string' ? this.appToken : this.appToken?.accessToken
+  }
+
+  private get appAuthorization(): AppDashboardAuthorization | undefined {
+    return typeof this.appToken === 'string' ? undefined : this.appToken
   }
 
   async executeTypes(input: {
@@ -280,8 +289,7 @@ export class RewardsTaskExecutor {
 
       if (original.type === 'read-to-earn') {
         const outcome = await this.executeReadToEarn(descriptor, input.signal)
-        if (outcome === 'failed') return { status: 'failed', tasks: selected }
-        if (outcome === 'partial') partial = true
+        if (outcome !== 'completed') partial = true
         continue
       }
 
@@ -398,7 +406,7 @@ export class RewardsTaskExecutor {
           return { accepted: result.acknowledged, observedAt: new Date().toISOString() }
         }
         if (descriptor.task.type === 'app-check-in' || descriptor.task.type === 'app-activity') {
-          if (!this.appToken) return { accepted: false, observedAt: new Date().toISOString() }
+          if (!this.appAccessToken) return { accepted: false, observedAt: new Date().toISOString() }
           const payload = this.appPayload(descriptor.task.type, offer)
           await this.submitAppEvidence(descriptor.task, payload, signal)
           return { accepted: true, observedAt: new Date().toISOString() }
@@ -518,11 +526,11 @@ export class RewardsTaskExecutor {
     payload: Readonly<Record<string, unknown>>,
     signal: AbortSignal
   ): Promise<void> {
-    if (!this.appToken) throw new Error('App authentication unavailable')
+    if (!this.appAccessToken) throw new Error('App authentication unavailable')
     this.store.ledger.captureTaskBalance(this.runId, task.accountId, 'task-before', task.taskId)
     let credit: TaskCreditEvidence | undefined
     const balance = await this.client.submitAppActivity(
-      this.appToken,
+      this.appAccessToken,
       payload,
       undefined,
       (value) => {
@@ -598,10 +606,15 @@ export class RewardsTaskExecutor {
     }
     if (
       (descriptor.task.type === 'app-check-in' || descriptor.task.type === 'app-activity') &&
-      this.appToken
+      this.appAccessToken
     ) {
       throwIfAborted(signal)
-      const observation = await this.client.fetchAppDashboard(this.appToken, undefined, signal)
+      const observation = await this.client.fetchAppDashboard(
+        this.appAccessToken,
+        undefined,
+        signal,
+        this.appAuthorization
+      )
       throwIfAborted(signal)
       try {
         this.guardDate?.()
@@ -680,7 +693,7 @@ export class RewardsTaskExecutor {
     descriptor: TaskExecutionDescriptor,
     signal: AbortSignal
   ): Promise<'completed' | 'partial' | 'failed'> {
-    if (!this.appToken) {
+    if (!this.appAccessToken) {
       this.persist({ ...descriptor.task, status: 'failed', reason: 'app-oauth unavailable' })
       return 'failed'
     }
@@ -701,7 +714,12 @@ export class RewardsTaskExecutor {
       const ledgerId = `${descriptor.task.taskId}:article:${String(index + 1)}`
       const previousState = this.mutationLedger.getMutationState(ledgerId)
       if (previousState) {
-        const verified = await this.readAppOffer(descriptor, signal)
+        let verified: RewardOffer | undefined
+        try {
+          verified = await this.readAppOffer(descriptor, signal)
+        } catch (error) {
+          return this.pauseReadToEarn(descriptor.task, { completed, total }, error, signal)
+        }
         if (!verified || (!verified.complete && verified.completed <= completed)) {
           this.persist({
             ...descriptor.task,
@@ -760,13 +778,7 @@ export class RewardsTaskExecutor {
         if (verified.complete) return 'completed'
       } catch (error) {
         this.mutationLedger.updateMutation(ledgerId, 'verification-pending')
-        this.persist({
-          ...descriptor.task,
-          status: 'verification-pending',
-          progress: { completed, total },
-          reason: error instanceof Error ? error.message : '阅读任务结果待复核'
-        })
-        return 'partial'
+        return this.pauseReadToEarn(descriptor.task, { completed, total }, error, signal)
       }
       if (index < maximumSubmissions - 1) {
         await abortableDelay(5_000, signal)
@@ -781,17 +793,39 @@ export class RewardsTaskExecutor {
     return 'partial'
   }
 
+  private pauseReadToEarn(
+    task: TaskRecord,
+    progress: TaskRecord['progress'],
+    error: unknown,
+    signal: AbortSignal
+  ): 'partial' {
+    this.persist({
+      ...task,
+      status: 'verification-pending',
+      progress,
+      reason: `阅读任务结果待复核：${verificationReadFailure(error)}`
+    })
+    throwIfAborted(signal)
+    if (error instanceof BusinessDateChanged) throw error
+    this.guardDate?.()
+    return 'partial'
+  }
+
   private async readAppOffer(
     descriptor: TaskExecutionDescriptor,
     signal: AbortSignal
   ): Promise<RewardOffer | undefined> {
-    if (!this.appToken) return undefined
-    const observation = await this.client.fetchAppDashboard(this.appToken, undefined, signal)
-    try {
-      this.guardDate?.()
-    } catch {
-      return undefined
-    }
+    throwIfAborted(signal)
+    this.guardDate?.()
+    if (!this.appAccessToken) return undefined
+    const observation = await this.client.fetchAppDashboard(
+      this.appAccessToken,
+      undefined,
+      signal,
+      this.appAuthorization
+    )
+    throwIfAborted(signal)
+    this.guardDate?.()
     const offer = observation.offers.find(
       (offer) => offer.sourceTaskId === descriptor.task.sourceTaskId
     )

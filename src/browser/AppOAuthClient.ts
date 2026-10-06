@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
 
-import type { BrowserContext, Page } from 'patchright'
+import type { APIResponse, BrowserContext, Page } from 'patchright'
 
 import { EncryptedSessionStore, type StoredSession } from '../auth/EncryptedSessionStore.js'
 import type { AccountCredentials } from '../infra/AccountSecretStore.js'
@@ -26,6 +26,42 @@ interface TokenResponse {
   error?: unknown
 }
 
+async function requestWithCancellation(
+  request: () => Promise<APIResponse>,
+  signal: AbortSignal
+): Promise<APIResponse> {
+  signal.throwIfAborted()
+  const pending = request()
+  return new Promise<APIResponse>((resolve, reject) => {
+    let finished = false
+    const onAbort = () => {
+      if (finished) return
+      finished = true
+      signal.removeEventListener('abort', onAbort)
+      reject(signal.reason instanceof Error ? signal.reason : new Error('Cancelled'))
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    void pending.then(
+      (response) => {
+        if (finished) {
+          void response.dispose().catch(() => undefined)
+          return
+        }
+        finished = true
+        signal.removeEventListener('abort', onAbort)
+        resolve(response)
+      },
+      (error: unknown) => {
+        if (finished) return
+        finished = true
+        signal.removeEventListener('abort', onAbort)
+        reject(error instanceof Error ? error : new Error('OAuth request failed'))
+      }
+    )
+    if (signal.aborted) onAbort()
+  })
+}
+
 export class AppOAuthClient {
   constructor(
     private readonly context: BrowserContext,
@@ -48,7 +84,9 @@ export class AppOAuthClient {
     credentials: AccountCredentials,
     signal: AbortSignal
   ): Promise<AppToken> {
+    signal.throwIfAborted()
     const stored = await this.sessions.read<AppToken>(accountId, 'app-oauth')
+    signal.throwIfAborted()
     if (stored?.payload.refreshToken) {
       const refreshed = await this.exchange(
         new URLSearchParams({
@@ -56,8 +94,12 @@ export class AppOAuthClient {
           client_id: CLIENT_ID,
           refresh_token: stored.payload.refreshToken,
           scope: SCOPE
-        })
-      ).catch(() => undefined)
+        }),
+        signal
+      ).catch(() => {
+        signal.throwIfAborted()
+        return undefined
+      })
       if (refreshed) return refreshed
     }
 
@@ -73,7 +115,8 @@ export class AppOAuthClient {
       login_hint: credentials.email
     }).toString()
 
-    let code = await this.resolveCodeWithRequest(authorize)
+    signal.throwIfAborted()
+    let code = await this.resolveCodeWithRequest(authorize, signal)
     if (!code) code = await this.resolveCodeWithPage(authorize, credentials, signal)
     if (!code) throw new Error('app-oauth-code-missing')
 
@@ -84,8 +127,10 @@ export class AppOAuthClient {
         code,
         redirect_uri: REWARDS_URLS.oauthRedirect,
         scope: SCOPE
-      })
+      }),
+      signal
     )
+    signal.throwIfAborted()
     await this.logger.write({
       level: 'info',
       event: 'app-oauth-acquired',
@@ -106,12 +151,20 @@ export class AppOAuthClient {
     await this.sessions.commitVerified(session, true)
   }
 
-  private async resolveCodeWithRequest(authorize: URL): Promise<string | undefined> {
-    const response = await this.context.request
-      .get(authorize.href, { timeout: 15_000, maxRedirects: 20 })
-      .catch(() => undefined)
+  private async resolveCodeWithRequest(
+    authorize: URL,
+    signal: AbortSignal
+  ): Promise<string | undefined> {
+    const response = await requestWithCancellation(
+      () => this.context.request.get(authorize.href, { timeout: 15_000, maxRedirects: 20 }),
+      signal
+    ).catch(() => {
+      signal.throwIfAborted()
+      return undefined
+    })
     if (!response) return undefined
     try {
+      signal.throwIfAborted()
       return this.extractCode(response.url())
     } finally {
       await response.dispose()
@@ -123,8 +176,14 @@ export class AppOAuthClient {
     credentials: AccountCredentials,
     signal: AbortSignal
   ): Promise<string | undefined> {
+    signal.throwIfAborted()
     const oauthPage = await this.context.newPage()
+    const onAbort = () => {
+      void oauthPage.close().catch(() => undefined)
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
     try {
+      signal.throwIfAborted()
       await navigateForAuthentication(oauthPage, authorize.href, signal)
       let code = this.extractCode(oauthPage.url())
       if (code) return code
@@ -136,8 +195,10 @@ export class AppOAuthClient {
           timeout: 20_000
         })
         .catch(() => undefined)
+      signal.throwIfAborted()
       return this.extractCode(oauthPage.url())
     } finally {
+      signal.removeEventListener('abort', onAbort)
       await oauthPage.close().catch(() => undefined)
     }
   }
@@ -152,14 +213,20 @@ export class AppOAuthClient {
     }
   }
 
-  private async exchange(body: URLSearchParams): Promise<AppToken> {
-    const response = await this.context.request.post(REWARDS_URLS.oauthToken, {
-      timeout: 15_000,
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      data: body.toString()
-    })
+  private async exchange(body: URLSearchParams, signal: AbortSignal): Promise<AppToken> {
+    const response = await requestWithCancellation(
+      () =>
+        this.context.request.post(REWARDS_URLS.oauthToken, {
+          timeout: 15_000,
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          data: body.toString()
+        }),
+      signal
+    )
     try {
+      signal.throwIfAborted()
       const payload = (await response.json()) as TokenResponse
+      signal.throwIfAborted()
       if (!response.ok() || typeof payload.access_token !== 'string') {
         throw new Error(`app-oauth-token-failed:${String(response.status())}`)
       }

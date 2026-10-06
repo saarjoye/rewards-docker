@@ -119,6 +119,9 @@ async function fixture(appResponse: APIResponse | Error) {
     verification: { valid: true },
     observation: verified
   })
+  const acquire = vi
+    .spyOn(AppOAuthClient.prototype, 'acquire')
+    .mockResolvedValue({ accessToken: 'synthetic-refreshed', expiresAt: '2099-01-01' })
   vi.spyOn(AppOAuthClient.prototype, 'readStored').mockResolvedValue({
     accessToken: 'synthetic-token',
     expiresAt: '2026-10-06T10:00:00.000Z'
@@ -224,6 +227,7 @@ async function fixture(appResponse: APIResponse | Error) {
     desktopCommit,
     mobileCommit,
     oauthCommit,
+    acquire,
     bootstrap,
     finalRead,
     appMutation,
@@ -277,8 +281,9 @@ describe('App Dashboard discovery fault isolation', () => {
       expect(input.resources.initialPoints).toBe(100)
       expect(input.resources.finalPoints).toBe(1_000)
       expect(input.finalRead).toHaveBeenCalledOnce()
-      expect(input.get).toHaveBeenCalledTimes(2)
-      expect(appResponse.dispose).toHaveBeenCalledTimes(2)
+      const expectedReads = status === 401 ? 1 : 2
+      expect(input.get).toHaveBeenCalledTimes(expectedReads)
+      expect(appResponse.dispose).toHaveBeenCalledTimes(expectedReads)
       expect(input.oauthCommit).not.toHaveBeenCalled()
       expect(input.desktopCommit).toHaveBeenCalledOnce()
       expect(input.mobileCommit).toHaveBeenCalledOnce()
@@ -328,6 +333,18 @@ describe('App Dashboard discovery fault isolation', () => {
     expect(input.resources.initialPoints).toBe(100)
   })
 
+  it('does not reset exhausted App authorization reads in discovery or affect web tasks', async () => {
+    const input = await fixture(response(401, '{}'))
+    await expect(input.execute('authenticate')).resolves.toMatchObject({ status: 'partial' })
+    const requests = input.get.mock.calls.length
+    await expect(input.execute('discover')).resolves.toMatchObject({ status: 'partial' })
+    expect(input.get).toHaveBeenCalledTimes(requests)
+    expect(input.acquire).toHaveBeenCalledTimes(1)
+    expect(input.oauthCommit).not.toHaveBeenCalled()
+    await expect(input.execute('web-rewards')).resolves.toMatchObject({ status: 'completed' })
+    expect(input.resources.discovery).toBeDefined()
+  })
+
   it('keeps healthy App discovery unchanged and avoids a duplicate App read', async () => {
     const input = await fixture(
       response(
@@ -344,6 +361,7 @@ describe('App Dashboard discovery fault isolation', () => {
     await expect(input.execute('discover')).resolves.toEqual({ status: 'completed' })
     expect((input.resources.discovery as DiscoveryOutput).dataSources['app-dashboard']).toBe(true)
     expect(input.get).toHaveBeenCalledOnce()
+    expect(input.acquire).not.toHaveBeenCalled()
     expect(input.oauthCommit).toHaveBeenCalledOnce()
     expect(input.write).not.toHaveBeenCalledWith(
       expect.objectContaining({ event: 'app-dashboard-unavailable' })

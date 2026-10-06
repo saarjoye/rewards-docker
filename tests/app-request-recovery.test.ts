@@ -3,6 +3,9 @@ import type { BrowserContext, Page } from 'patchright'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { DashboardClient, DashboardFetchError } from '../src/browser/DashboardClient.js'
+import { AppAuthorizationSession } from '../src/browser/AppAuthorizationSession.js'
+import type { AppOAuthClient } from '../src/browser/AppOAuthClient.js'
+import { BusinessDateChanged } from '../src/orchestration/BusinessDate.js'
 import type { AppPlatformTransport } from '../src/browser/AppPlatformClient.js'
 import type { StructuredLogger } from '../src/infra/StructuredLogger.js'
 
@@ -46,6 +49,115 @@ afterEach(() => {
 })
 
 describe('App request recovery', () => {
+  it('shares the 401 limit across successful reads and later stages without replaying submissions', async () => {
+    const { client, get, post, transport } = setup()
+    get.mockResolvedValue(response(401))
+    await client.fetchAppDashboard(token)
+    transport.getDashboard.mockResolvedValueOnce(response(401)).mockResolvedValueOnce(response())
+    await client.fetchAppDashboard(token)
+    transport.getDashboard.mockResolvedValue(response(401))
+    await expect(client.fetchAppDashboard(token)).rejects.toMatchObject({ status: 401 })
+    const reads = transport.getDashboard.mock.calls.length
+    await expect(client.fetchAppDashboard(token)).rejects.toMatchObject({ status: 401 })
+    await expect(client.submitAppActivity(token, { type: 103 })).rejects.toMatchObject({
+      status: 401
+    })
+    expect(transport.getDashboard).toHaveBeenCalledTimes(reads)
+    expect(get).toHaveBeenCalledTimes(1)
+    expect(post).not.toHaveBeenCalled()
+    expect(transport.submitActivity).not.toHaveBeenCalled()
+    const other = setup()
+    expect((await other.client.fetchAppDashboard('other-token')).availablePoints.value).toBe(42)
+  })
+
+  it('uses one refreshed token for recovery and later calls, and persists it only after valid balance', async () => {
+    const { client, get, transport } = setup()
+    const oauth = {
+      readStored: vi
+        .fn<AppOAuthClient['readStored']>()
+        .mockResolvedValue({ accessToken: token, expiresAt: '2099-01-01' }),
+      acquire: vi
+        .fn<AppOAuthClient['acquire']>()
+        .mockResolvedValue({ accessToken: 'synthetic-refreshed', expiresAt: '2099-01-01' }),
+      commitVerified: vi.fn<AppOAuthClient['commitVerified']>().mockResolvedValue(undefined)
+    }
+    const authorization = new AppAuthorizationSession(oauth, 'synthetic-account', {
+      email: 'test@example.invalid',
+      password: 'synthetic'
+    })
+    const signal = new AbortController().signal
+    await authorization.initialize(signal)
+    get.mockResolvedValue(response(401))
+    transport.getDashboard.mockResolvedValueOnce(response(401)).mockResolvedValueOnce(response())
+    await client.fetchAppDashboard(token, undefined, signal, authorization)
+    expect(oauth.acquire).toHaveBeenCalledTimes(1)
+    expect(
+      transport.getDashboard.mock.calls.every(
+        ([headers]) => headers.Authorization === 'Bearer synthetic-refreshed'
+      )
+    ).toBe(true)
+    expect(oauth.commitVerified).toHaveBeenCalledTimes(1)
+    await client.fetchAppDashboard(token, undefined, signal, authorization)
+    expect(transport.getDashboard.mock.calls.at(-1)?.[0].Authorization).toBe(
+      'Bearer synthetic-refreshed'
+    )
+    expect(oauth.commitVerified).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not commit an unusable App snapshot', async () => {
+    const { client, get } = setup()
+    get.mockResolvedValue(response(200, { response: { promotions: [] } }))
+    const authorization = { accessToken: token, refresh: vi.fn(), confirm: vi.fn() }
+    const observation = await client.fetchAppDashboard(token, undefined, undefined, authorization)
+    expect(observation.availablePoints.availability).not.toBe('valid')
+    expect(authorization.confirm).not.toHaveBeenCalled()
+  })
+
+  it('does not swallow a business-date change during authorization recovery', async () => {
+    const { client, get, transport } = setup()
+    get.mockResolvedValue(response(401))
+    const changed = new BusinessDateChanged()
+    const authorization = {
+      accessToken: token,
+      refresh: vi.fn().mockRejectedValue(changed),
+      confirm: vi.fn()
+    }
+    await expect(client.fetchAppDashboard(token, undefined, undefined, authorization)).rejects.toBe(
+      changed
+    )
+    expect(transport.getDashboard).not.toHaveBeenCalled()
+    expect(authorization.confirm).not.toHaveBeenCalled()
+  })
+
+  it('includes authorization recovery in the 45-second deadline', async () => {
+    vi.useFakeTimers()
+    const { client, get, transport } = setup()
+    get.mockResolvedValue(response(401))
+    const authorization = {
+      accessToken: token,
+      refresh: vi.fn(
+        (signal: AbortSignal) =>
+          new Promise<string>((_resolve, reject) => {
+            signal.addEventListener(
+              'abort',
+              () => {
+                reject(signal.reason instanceof Error ? signal.reason : new Error('Cancelled'))
+              },
+              { once: true }
+            )
+          })
+      ),
+      confirm: vi.fn()
+    }
+    const failed = expect(
+      client.fetchAppDashboard(token, undefined, undefined, authorization)
+    ).rejects.toThrow('timeout')
+    await vi.advanceTimersByTimeAsync(45_000)
+    await failed
+    expect(transport.getDashboard).not.toHaveBeenCalled()
+    expect(authorization.confirm).not.toHaveBeenCalled()
+  })
+
   it('keeps the normal browser API path and disposes its response', async () => {
     const { client, get, transport } = setup()
     const reply = response()
@@ -96,7 +208,9 @@ describe('App request recovery', () => {
     expect(observed).not.toHaveBeenCalled()
     for (const reply of replies) expect(reply.dispose).toHaveBeenCalledTimes(1)
     // A failed probe does not select HTTP/2 for future mutations.
-    await client.submitAppActivity(token, { type: 103 })
+    await expect(client.submitAppActivity(token, { type: 103 })).rejects.toMatchObject({
+      status: 401
+    })
     expect(transport.submitActivity).not.toHaveBeenCalled()
   })
 
