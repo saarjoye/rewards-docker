@@ -9,8 +9,11 @@ import { Tag } from 'tdesign-react/es/tag/index.js'
 import type { ButtonProps, InputRef } from 'tdesign-react'
 import { stateLabel, publicText } from './display'
 
-// Preserve native disabled semantics; the library otherwise renders a disabled div.
-export function Button(props: ButtonProps): ReactElement {
+// Preserve native disabled controls without blocking navigation for enabled links.
+export function Button({ href, ...props }: ButtonProps): ReactElement {
+  if (href && !props.disabled && !props.loading) {
+    return <TButton {...props} href={href} tag="a" />
+  }
   return <TButton {...props} tag="button" />
 }
 export function StatusTag({ value, label }: { value: string; label?: string }): ReactElement {

@@ -872,6 +872,10 @@ describe('web API', () => {
         headers: { cookie }
       })
       expect(report.statusCode).toBe(200)
+      expect(report.headers['content-type']).toContain('application/json')
+      expect(report.headers['content-disposition']).toMatch(
+        /^attachment; filename="rewards-run-\d{4}-\d{2}-\d{2}\.json"$/
+      )
       expect(report.json<{ tasks: unknown[] }>().tasks).toEqual([])
       const list = await app.inject({ method: 'GET', url: '/api/runs?page=6', headers: { cookie } })
       expect(list.json<{ runs: unknown[] }>().runs).toHaveLength(2)
