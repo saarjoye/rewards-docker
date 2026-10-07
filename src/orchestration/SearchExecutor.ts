@@ -12,6 +12,8 @@ import { defaultSearchQueryPool, SearchQueryPool } from './SearchQueryPool.js'
 
 export { FALLBACK_SEARCH_TERMS as SEARCH_TERMS } from './SearchQueryPool.js'
 
+const SEARCH_SCROLL_BUDGET_MS = 10_000
+
 export type SearchOperationStage =
   | 'search-box'
   | 'submit'
@@ -48,7 +50,7 @@ export function calculateSearchQueryBudgetMs(search: SearchExecutionConfig): num
   const searchBox = 16_000
   const submit = 15_000
   const postSubmit = 5_000
-  const scroll = search.scroll ? 10_000 : 0
+  const scroll = search.scroll ? SEARCH_SCROLL_BUDGET_MS : 0
   const click = search.clickResult ? search.resultVisitSeconds * 1000 + 17_000 : 0
   const configuredDelay = search.delayMaxSeconds * 1000 + 2_000
   const dashboard = 55_000
@@ -102,6 +104,16 @@ async function boundedCleanup(operation: Promise<unknown>): Promise<void> {
   } finally {
     if (timer) clearTimeout(timer)
   }
+}
+
+function searchPageFailureReason(error: unknown): string {
+  const message = error instanceof Error ? error.message : ''
+  if (error instanceof Error && error.name === 'TimeoutError') return 'page-operation-timeout'
+  if (/timeout|timed out|超时/i.test(message)) return 'page-operation-timeout'
+  if (/execution context.*destroyed|cannot find context|frame.*detached|navigation/i.test(message))
+    return 'navigation-changed'
+  if (/closed|target.*destroyed/i.test(message)) return 'page-closed'
+  return 'page-operation-failed'
 }
 
 export class SearchExecutor {
@@ -593,8 +605,9 @@ export class SearchExecutor {
           return current
         }
 
+        let scrollSkipped = false
         try {
-          await this.performQueryWithSearchBoxRetry(
+          scrollSkipped = await this.performQueryWithSearchBoxRetry(
             ensureSearchPage,
             closeSearchPage,
             query,
@@ -631,23 +644,53 @@ export class SearchExecutor {
           if (input.signal.aborted) throw signalError(input.signal)
           if (error instanceof BusinessDateChanged) throw error
           if (summary.awaitingProgress) {
-            const grew = await observe()
+            const failedDuringScroll =
+              error instanceof SearchExecutionError && error.operationStage === 'scroll'
+            let grew: boolean
+            try {
+              grew = await observe()
+            } catch (observationError) {
+              input.signal.throwIfAborted()
+              if (observationError instanceof BusinessDateChanged) throw observationError
+              if (!failedDuringScroll) throw observationError
+              summary = { ...summary, state: 'progress-pending' }
+              return await pending()
+            }
+            if (failedDuringScroll) {
+              if (current.status === 'completed') return current
+              return await pending()
+            }
             if (error instanceof SearchExecutionError && error.operationStage === 'submit') {
               if (!grew) return await pending()
               if (current.status === 'completed') return current
             }
           }
           throw new SearchExecutionError(
-            '搜索页面操作失败',
+            error instanceof SearchExecutionError
+              ? error.message
+              : `搜索页面操作失败（${searchPageFailureReason(error)}）`,
             error instanceof SearchExecutionError ? error.operationStage : 'submit',
             summary.completed,
             total
           )
         }
 
-        const observation = await observe()
+        let observation: boolean
+        try {
+          observation = await observe()
+        } catch (error) {
+          if (input.signal.aborted) throw signalError(input.signal)
+          if (error instanceof BusinessDateChanged) throw error
+          if (!scrollSkipped) throw error
+          summary = { ...summary, state: 'progress-pending' }
+          return await pending()
+        }
         if (!observation) {
-          if (input.singleQuery !== undefined || lastObservationResult !== 'progress-unchanged')
+          if (
+            scrollSkipped ||
+            input.singleQuery !== undefined ||
+            lastObservationResult !== 'progress-unchanged'
+          )
             return await pending()
         }
 
@@ -813,10 +856,10 @@ export class SearchExecutor {
     beforeSubmit?: () => void,
     onSubmitting?: () => void,
     onSubmitted?: () => void
-  ): Promise<void> {
+  ): Promise<boolean> {
     const deadline = Date.now() + timeoutMs
     try {
-      await this.performQuery(
+      return await this.performQuery(
         ensureSearchPage,
         closeSearchPage,
         query,
@@ -828,7 +871,6 @@ export class SearchExecutor {
         onSubmitting,
         onSubmitted
       )
-      return
     } catch (error) {
       if (
         !(error instanceof SearchExecutionError) ||
@@ -858,7 +900,7 @@ export class SearchExecutor {
         })
         .catch(() => undefined)
 
-      await this.performQuery(
+      return await this.performQuery(
         ensureSearchPage,
         closeSearchPage,
         query,
@@ -870,7 +912,49 @@ export class SearchExecutor {
         onSubmitting,
         onSubmitted
       )
-      return
+    }
+  }
+
+  private async scrollSearchPage(page: Page, parentSignal: AbortSignal): Promise<void> {
+    const controller = new AbortController()
+    let rejectAborted: (reason: Error) => void = () => undefined
+    const cancelled = new Promise<never>((_resolve, reject) => {
+      rejectAborted = reject
+    })
+    const abort = (): void => {
+      controller.abort(signalError(parentSignal))
+      rejectAborted(signalError(parentSignal))
+    }
+    parentSignal.addEventListener('abort', abort, { once: true })
+    if (parentSignal.aborted) abort()
+    const operation = (async () => {
+      for (let step = 0; step < 2; step += 1) {
+        controller.signal.throwIfAborted()
+        await page.evaluate(() => {
+          window.scrollBy({
+            left: 0,
+            top: Math.floor(window.innerHeight * (0.4 + Math.random() * 0.4)),
+            behavior: 'smooth'
+          })
+        })
+        controller.signal.throwIfAborted()
+        await abortableDelay(randomBetween(500, 1000), controller.signal)
+      }
+    })()
+    let timer: NodeJS.Timeout | undefined
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        const error = new SearchExecutionError('page-operation-timeout', 'scroll', 0, 0)
+        controller.abort(error)
+        reject(error)
+      }, SEARCH_SCROLL_BUDGET_MS)
+    })
+    try {
+      await Promise.race([operation, timeout, cancelled])
+    } finally {
+      controller.abort()
+      if (timer) clearTimeout(timer)
+      parentSignal.removeEventListener('abort', abort)
     }
   }
 
@@ -885,109 +969,120 @@ export class SearchExecutor {
     beforeSubmit?: () => void,
     onSubmitting?: () => void,
     onSubmitted?: () => void
-  ): Promise<void> {
+  ): Promise<boolean> {
     if (timeoutMs <= 0) throw new SearchExecutionError('搜索预算已耗尽', 'search-box', 0, 0)
     const controller = new AbortController()
     if (parentSignal.aborted) controller.abort(signalError(parentSignal))
     let stage: SearchOperationStage = 'search-box'
-    let operationError: unknown
+    let scrollSkipped = false
 
     const operation = (async () => {
-      try {
-        controller.signal.throwIfAborted()
-        const page = await ensureSearchPage(controller.signal)
-        controller.signal.throwIfAborted()
-        stage = 'search-box'
+      controller.signal.throwIfAborted()
+      const page = await ensureSearchPage(controller.signal)
+      controller.signal.throwIfAborted()
+      stage = 'search-box'
 
-        if (typeof page.evaluate === 'function') {
-          await page
-            .evaluate(() => {
-              window.scrollTo({ left: 0, top: 0, behavior: 'auto' })
-            })
-            .catch(() => undefined)
-        }
-        const keyboard = (
-          page as unknown as {
-            keyboard?: {
-              press?: (key: string, options?: { delay?: number }) => Promise<void>
-              type?: (text: string, options?: { delay?: number }) => Promise<void>
-            }
-          }
-        ).keyboard
-
-        if (typeof keyboard?.press === 'function') {
-          await keyboard.press('Home').catch(() => undefined)
-        }
-
-        const box = page.locator('#sb_form_q, textarea[name="q"], input[name="q"]').first()
-        await box.waitFor({ state: 'visible', timeout: 16_000 })
-        controller.signal.throwIfAborted()
-
-        const boxOps = box as unknown as {
-          click?: (options?: { clickCount?: number }) => Promise<void>
-          press?: (key: string, options?: { timeout?: number }) => Promise<void>
-        }
-
-        if (typeof keyboard?.type === 'function') {
-          if (typeof boxOps.click === 'function') {
-            await boxOps.click({ clickCount: 3 })
-          }
-          await box.fill('')
-          controller.signal.throwIfAborted()
-          await keyboard.type(query, { delay: randomBetween(45, 75) })
-        } else {
-          await box.fill(query)
-        }
-        controller.signal.throwIfAborted()
-
-        stage = 'submit'
-        beforeSubmit?.()
-        controller.signal.throwIfAborted()
-        onSubmitting?.()
-        controller.signal.throwIfAborted()
-        if (typeof boxOps.press === 'function') {
-          await boxOps.press('Enter', { timeout: 15_000 })
-        } else if (typeof keyboard?.press === 'function') {
-          await keyboard.press('Enter')
-        } else {
-          throw new Error('Search page does not support Enter submission')
-        }
-        controller.signal.throwIfAborted()
-        onSubmitted?.()
-        controller.signal.throwIfAborted()
-
-        stage = 'post-submit-wait'
-        await abortableDelay(3_000, controller.signal)
-
-        if (this.config.scroll && typeof page.evaluate === 'function') {
-          stage = 'scroll'
-          for (let step = 0; step < 2; step += 1) {
-            controller.signal.throwIfAborted()
-            await page.evaluate(() => {
-              window.scrollBy({
-                left: 0,
-                top: Math.floor(window.innerHeight * (0.4 + Math.random() * 0.4)),
-                behavior: 'smooth'
-              })
-            })
-            await abortableDelay(randomBetween(500, 1000), controller.signal)
-          }
-        }
-
-        if (this.config.clickResult) {
-          stage = 'click'
-          await this.visitResult(page, controller.signal)
-        }
-
-        stage = 'search-delay'
-        await abortableDelay(
-          randomBetween(this.config.delayMinSeconds, this.config.delayMaxSeconds) * 1000,
-          controller.signal
-        )
-      } catch (error) {
-        operationError = error
-        throw error
+      if (typeof page.evaluate === 'function') {
+        await page
+          .evaluate(() => {
+            window.scrollTo({ left: 0, top: 0, behavior: 'auto' })
+          })
+          .catch(() => undefined)
       }
+      const keyboard = (
+        page as unknown as {
+          keyboard?: {
+            press?: (key: string, options?: { delay?: number }) => Promise<void>
+            type?: (text: string, options?: { delay?: number }) => Promise<void>
+          }
+        }
+      ).keyboard
+
+      if (typeof keyboard?.press === 'function') {
+        await keyboard.press('Home').catch(() => undefined)
+      }
+
+      const box = page.locator('#sb_form_q, textarea[name="q"], input[name="q"]').first()
+      await box.waitFor({ state: 'visible', timeout: 16_000 })
+      controller.signal.throwIfAborted()
+
+      const boxOps = box as unknown as {
+        click?: (options?: { clickCount?: number }) => Promise<void>
+        press?: (key: string, options?: { timeout?: number }) => Promise<void>
+      }
+
+      if (typeof keyboard?.type === 'function') {
+        if (typeof boxOps.click === 'function') {
+          await boxOps.click({ clickCount: 3 })
+        }
+        await box.fill('')
+        controller.signal.throwIfAborted()
+        await keyboard.type(query, { delay: randomBetween(45, 75) })
+      } else {
+        await box.fill(query)
+      }
+      controller.signal.throwIfAborted()
+
+      stage = 'submit'
+      beforeSubmit?.()
+      controller.signal.throwIfAborted()
+      onSubmitting?.()
+      controller.signal.throwIfAborted()
+      if (typeof boxOps.press === 'function') {
+        await boxOps.press('Enter', { timeout: 15_000 })
+      } else if (typeof keyboard?.press === 'function') {
+        await keyboard.press('Enter')
+      } else {
+        throw new Error('Search page does not support Enter submission')
+      }
+      controller.signal.throwIfAborted()
+      onSubmitted?.()
+      controller.signal.throwIfAborted()
+
+      stage = 'post-submit-wait'
+      await abortableDelay(3_000, controller.signal)
+
+      if (this.config.scroll && typeof page.evaluate === 'function') {
+        stage = 'scroll'
+        try {
+          await this.scrollSearchPage(page, controller.signal)
+        } catch (error) {
+          controller.signal.throwIfAborted()
+          if (error instanceof BusinessDateChanged) throw error
+          scrollSkipped = true
+          await closeSearchPage()
+          controller.signal.throwIfAborted()
+          if (typeof this.logger.write === 'function')
+            await this.logger
+              .write({
+                level: 'warn',
+                event: 'search-scroll-skipped',
+                runId: this.runId,
+                taskId: metadata.taskId,
+                taskType: mobile ? 'mobile-search' : 'pc-search',
+                stage: 'scroll',
+                status: 'skipped',
+                submitted: true,
+                queryIndex: metadata.queryIndex,
+                submittedCount: metadata.submittedCount + 1,
+                activePageCount: this.activePageCount,
+                reason: searchPageFailureReason(error)
+              })
+              .catch(() => undefined)
+        }
+      }
+
+      controller.signal.throwIfAborted()
+      if (this.config.clickResult && !scrollSkipped) {
+        stage = 'click'
+        await this.visitResult(page, controller.signal)
+      }
+
+      stage = 'search-delay'
+      await abortableDelay(
+        randomBetween(this.config.delayMinSeconds, this.config.delayMaxSeconds) * 1000,
+        controller.signal
+      )
     })()
 
     let timer: NodeJS.Timeout | undefined
@@ -1030,13 +1125,14 @@ export class SearchExecutor {
           })
           .catch(() => undefined)
       }
+      return scrollSkipped
     } catch (error) {
       controller.abort(error)
       await closeSearchPage()
       await boundedCleanup(operation)
       if (error instanceof SearchExecutionError || error instanceof BusinessDateChanged) throw error
       throw new SearchExecutionError(
-        operationError instanceof Error ? operationError.message : '搜索页面操作失败',
+        `搜索页面操作失败（${searchPageFailureReason(error)}）`,
         stage,
         0,
         0
