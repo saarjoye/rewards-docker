@@ -16,7 +16,7 @@ import {
   type TaskSummary
 } from './TaskEvidencePanel'
 import { PointSummary, type PointStatistics } from './PointSummary'
-import { LiveRunStream, type StreamEvent } from './LiveRunStream'
+import { LiveRunStream } from './LiveRunStream'
 import { points, clockTime, duration } from './display'
 export { stateLabel, points, clockTime, duration } from './display'
 
@@ -351,7 +351,7 @@ function RunDetail({
               <LiveRunStream
                 title="本轮运行任务动态"
                 events={value.run.accounts.flatMap((account) =>
-                  (account.tasks ?? []).map((task) => ({
+                  account.tasks.map((task) => ({
                     id: `${account.accountId}:${task.taskId}`,
                     time: account.startedAt ?? value.run.startedAt,
                     accountId: account.accountId,
@@ -528,12 +528,12 @@ function Calendar({
       <div className="calendar-month-stats">
         <Card bordered={false} className="calendar-stat-card">
           <span className="muted">本月全账号净收益</span>
-          <strong className="metric-value">{monthTotal > 0 ? `+${monthTotal}` : monthTotal} 分</strong>
+          <strong className="metric-value">{monthTotal > 0 ? `+${String(monthTotal)}` : monthTotal} 分</strong>
         </Card>
         <Card bordered={false} className="calendar-stat-card">
           <span className="muted">单日最高收益</span>
           <strong className="metric-value">
-            {maxDayGain > 0 ? `+${maxDayGain} 分` : '—'}
+            {maxDayGain > 0 ? `+${String(maxDayGain)} 分` : '—'}
             {maxDayDate !== '—' && <small className="muted">（${maxDayDate.slice(5)}）</small>}
           </strong>
         </Card>
@@ -578,7 +578,7 @@ function Calendar({
                       className={`day-total-badge ${dayTotalGain < 0 ? 'negative' : ''}`}
                       title={`当日全账号总得分：${points(dayTotalGain)}`}
                     >
-                      {dayTotalGain > 0 ? `+${dayTotalGain}` : `${dayTotalGain}`}分
+                      {dayTotalGain > 0 ? `+${String(dayTotalGain)}` : String(dayTotalGain)}分
                     </span>
                   )}
                 </div>

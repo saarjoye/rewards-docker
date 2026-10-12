@@ -57,7 +57,7 @@ export function Overview({
     ? accountMap.get(currentRunningTask.accountId)
     : null
   const currentAccountLabel = currentRunningAccount
-    ? `账号 ${currentRunningAccount.runAccountIndex} · ${currentRunningAccount.displayAlias}`
+    ? `账号 ${String(currentRunningAccount.runAccountIndex)} · ${currentRunningAccount.displayAlias}`
     : null
 
   return (

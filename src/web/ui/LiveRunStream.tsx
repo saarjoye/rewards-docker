@@ -108,7 +108,7 @@ export function LiveRunStream({
                   <div className="stream-item-main">
                     <span className="stream-time">{clockTime(event.time).slice(-8)}</span>
                     <span className="stream-account-badge">
-                      {event.accountIndex ? `账号 ${event.accountIndex}` : '账号'} · {event.accountLabel}
+                      {event.accountIndex ? `账号 ${String(event.accountIndex)}` : '账号'} · {event.accountLabel}
                     </span>
                     <span className="stream-task-name">
                       <span className="task-icon">{typeInfo.icon}</span>
