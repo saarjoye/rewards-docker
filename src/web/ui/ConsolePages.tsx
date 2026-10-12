@@ -1,4 +1,4 @@
-﻿import { useState, type ReactElement } from 'react'
+import { useState, type ReactElement } from 'react'
 import { Card } from 'tdesign-react/es/card/index.js'
 import { DatePicker } from 'tdesign-react/es/date-picker/index.js'
 import { Empty } from 'tdesign-react/es/empty/index.js'
@@ -12,7 +12,6 @@ import { TaskPointTable } from './TaskPointTable'
 import { RunResultSummary } from './RunResultSummary'
 import { runStatusLabel, executionModeLabel } from '../../domain/RunOutcome'
 import { clockTime, duration, points, publicText, stateLabel } from './display'
-import { LiveRunStream, type StreamEvent } from './LiveRunStream'
 
 export function Overview({
   state,
@@ -22,43 +21,6 @@ export function Overview({
   openRun: (id: string) => void
 }): ReactElement {
   const active = state?.runs.find((row) => row.runId === state.activeRunId)
-  const accountMap = new Map((state?.accounts ?? []).map((a) => [a.accountId, a]))
-
-  const todayDetailsMap = new Map<string, number | null>()
-  for (const day of state?.today ?? []) {
-    for (const d of day.taskPointDetails ?? []) {
-      const pts = d.confirmedPoints ?? (d.status === 'completed' ? (d.reportedPoints ?? d.expectedPoints ?? null) : null)
-      todayDetailsMap.set(`${day.accountId}:${d.taskId}`, pts)
-    }
-  }
-
-  const streamEvents: StreamEvent[] = (state?.tasks ?? []).map((t) => {
-    const acc = accountMap.get(t.accountId)
-    const earned = todayDetailsMap.get(`${t.accountId}:${t.taskId}`) ?? null
-    return {
-      id: `${t.accountId}:${t.taskId}:${t.updatedAt}`,
-      time: t.updatedAt,
-      accountId: t.accountId,
-      accountLabel: acc?.displayAlias ?? '账号',
-      accountIndex: acc ? acc.runAccountIndex : undefined,
-      taskType: t.type,
-      taskName: t.displayName,
-      status: t.status,
-      progressCompleted: t.progress.completed,
-      progressTotal: t.progress.total,
-      earnedPoints: earned,
-      reason: t.reason,
-      isActive: t.status === 'running'
-    }
-  })
-
-  const currentRunningTask = (state?.tasks ?? []).find((t) => t.status === 'running')
-  const currentRunningAccount = currentRunningTask
-    ? accountMap.get(currentRunningTask.accountId)
-    : null
-  const currentAccountLabel = currentRunningAccount
-    ? `账号 ${String(currentRunningAccount.runAccountIndex)} · ${currentRunningAccount.displayAlias}`
-    : null
 
   return (
     <>
@@ -111,12 +73,6 @@ export function Overview({
         ) : (
           <p className="muted">当前没有运行中的任务。通过“新建运行”选择账号和执行方式。</p>
         )}
-        <LiveRunStream
-          title="实时运行流"
-          events={streamEvents}
-          currentAccountLabel={currentAccountLabel}
-          isRunning={Boolean(active)}
-        />
       </Card>
       <Card
         bordered={false}
@@ -301,7 +257,7 @@ export function TasksPage({
             ]}
           />
           <SelectField
-            label="执行状态"
+            label="状态"
             value={status}
             onChange={(value) => {
               setStatus(value)
@@ -309,21 +265,31 @@ export function TasksPage({
             }}
             options={[
               { label: '全部状态', value: '' },
-              { label: '进行中', value: 'running' },
               { label: '待执行', value: 'discovered' },
+              { label: '已选择', value: 'selected' },
+              { label: '执行中', value: 'running' },
+              { label: '已提交', value: 'submitted' },
               { label: '待复核', value: 'verification-pending' },
-              { label: '执行已结束', value: 'completed' },
+              { label: '已完成', value: 'completed' },
               { label: '已跳过', value: 'skipped' },
               { label: '失败', value: 'failed' },
-              { label: '需要人工处理', value: 'action-required' }
+              { label: '需处理', value: 'action-required' }
             ]}
           />
-          <Field label="搜索任务" value={search} onChange={setSearch} placeholder="输入任务名称" />
+          <Field
+            label="搜索"
+            value={search}
+            onChange={(value) => {
+              setSearch(value)
+              setPage(1)
+            }}
+            placeholder="搜索任务名称或类型"
+          />
         </div>
         <DataTable
           rows={filtered.slice((current - 1) * 15, current * 15)}
           rowKey={(row) => `${row.accountId}:${row.taskId}`}
-          empty={state?.tasks.length ? '没有匹配的任务' : '暂无任务记录'}
+          empty="没有匹配的任务记录"
           columns={[
             {
               key: 'account',

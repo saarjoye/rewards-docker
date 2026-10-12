@@ -210,7 +210,7 @@ small.observation {
 }
 .balance-cards {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
   gap: 16px;
 }
 .account-point-totals {
@@ -1005,37 +1005,91 @@ details summary:focus-visible,
   margin-top: 14px;
 }
 
-/* 纯净四要素任务明细表格 (TaskPureTable) */
+/* 纯净三列任务明细表格 (TaskPureTable) */
 .task-pure-table {
   width: 100%;
   border-collapse: collapse;
   margin-top: 8px;
+  table-layout: auto;
+  font-size: 12.5px;
+}
+.task-pure-table th {
+  background: #f8fafc;
+  color: #64748b;
+  font-weight: 600;
+  font-size: 12px;
+  padding: 6px 6px;
+  border-bottom: 1px solid #e2e8f0;
+  white-space: nowrap;
+}
+.task-pure-table td {
+  padding: 7px 6px;
+  border-bottom: 1px solid #f1f5f9;
+  vertical-align: middle;
+  line-height: 1.4;
+}
+.task-pure-table .th-task-name,
+.task-pure-table .td-task-name {
+  text-align: left;
+  min-width: 120px;
+}
+.task-pure-table .th-task-progress,
+.task-pure-table .td-task-progress {
+  text-align: center;
+  white-space: nowrap;
+  width: 68px;
+}
+.task-pure-table .th-task-points,
+.task-pure-table .td-task-points {
+  text-align: right;
+  white-space: nowrap;
+  width: 72px;
 }
 .task-name-cell {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  align-items: flex-start;
+  gap: 6px;
 }
 .task-name-cell .task-icon {
-  font-size: 16px;
+  font-size: 14px;
+  line-height: 1.4;
+  flex-shrink: 0;
 }
-.task-status-cell {
+.task-name-content {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
+.task-title-text {
+  color: #1e293b;
+  font-weight: 500;
+  word-break: keep-all;
+  overflow-wrap: break-word;
+}
+.task-state-inline {
+  display: inline-block;
+  color: #64748b;
+  font-size: 11px;
+}
+.task-progress-num {
+  font-variant-numeric: tabular-nums;
+  color: #334155;
+  font-weight: 500;
 }
 .task-reason-tip {
   color: #dc2626;
   font-size: 11px;
-  line-height: 1.2;
+  line-height: 1.25;
 }
 .point-gain-num {
   color: #059669;
   font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 .point-zero-num {
   color: #64748b;
+  font-variant-numeric: tabular-nums;
 }
 .point-pending-num {
   color: #94a3b8;
@@ -1044,6 +1098,9 @@ details summary:focus-visible,
   color: #0284c7;
   display: block;
   font-size: 11px;
+}
+.run-stream-wrapper {
+  margin-bottom: 16px;
 }
 
 /* 积分日历优化样式 */

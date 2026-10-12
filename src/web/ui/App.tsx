@@ -616,7 +616,7 @@ export function App(): ReactElement {
         {page === 'tasks' && <TasksPage state={state} date={taskDate} onDate={setTaskDate} />}
         <Suspense fallback={<Loading text="页面加载中" />}>
           {(page === 'history' || page === 'calendar') && (
-            <RunPages key={page} page={page} activeRunId={state?.activeRunId ?? null} />
+            <RunPages key={page} page={page} activeRunId={state?.activeRunId ?? null} state={state} />
           )}
           {page === 'accounts' && (
             <AccountsPage
