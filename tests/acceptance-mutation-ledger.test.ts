@@ -2,10 +2,18 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-
-import { afterEach, describe, expect, it } from 'vitest'
+import type { BrowserContext } from 'patchright'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { HashedMutationLedger } from '../src/acceptance/HashedMutationLedger.js'
+import type { DashboardClient } from '../src/browser/DashboardClient.js'
+import type { TaskRecord } from '../src/domain/Task.js'
+import { DEFAULT_CONFIG } from '../src/infra/Config.js'
+import { SqliteStore } from '../src/infra/SqliteStore.js'
+import type { StructuredLogger } from '../src/infra/StructuredLogger.js'
+import type { DiscoveryOutput } from '../src/rewards/RewardsDiscoveryService.js'
+import type { RewardOffer, RewardsDiscoverySnapshot } from '../src/rewards/RewardsModel.js'
+import { RewardsTaskExecutor } from '../src/rewards/RewardsTaskExecutor.js'
 
 const roots: string[] = []
 
@@ -78,5 +86,248 @@ describe('acceptance mutation ledger', () => {
     ledger.cancelMutation(taskId)
     expect(ledger.getMutationState(taskId)).toBe('submitted')
     ledger.close()
+  })
+
+  it('ledger verified 的 quest 子任务直接判 completed', async () => {
+    const store = new SqliteStore(':memory:')
+    try {
+      const task: TaskRecord = {
+        taskId: 'synthetic:2026-10-12:quest-child-1',
+        accountId: 'synthetic-account',
+        localDate: '2026-10-12',
+        sourceTaskId: 'quest-child-1',
+        type: 'more-promotion',
+        source: 'rsc',
+        displayName: '合成任务1',
+        executable: true,
+        required: false,
+        status: 'discovered',
+        progress: { completed: 0, total: 1 },
+        updatedAt: '2026-10-12T00:00:00Z',
+        quest: {
+          parentOfferId: 'parent-punch-card',
+          title: '合成任务1',
+          ariaLabel: '打开合成页面, 合成任务1'
+        }
+      }
+      store.upsertTask(task, 'run-1')
+      store.beginMutation(task.taskId)
+      store.updateMutation(task.taskId, 'verified')
+
+      const readQuest = vi.fn()
+      const client = {
+        fetchDashboard: vi.fn(),
+        readQuest
+      } as unknown as DashboardClient
+
+      const executor = new RewardsTaskExecutor(
+        {} as BrowserContext,
+        client,
+        store,
+        { write: vi.fn().mockResolvedValue(undefined) } as unknown as StructuredLogger,
+        DEFAULT_CONFIG,
+        'run-2',
+        'synthetic-account'
+      )
+
+      const discovery: DiscoveryOutput = {
+        snapshot: { offers: [], actionIds: {} } as unknown as RewardsDiscoverySnapshot,
+        tasks: [task],
+        descriptors: new Map([[task.taskId, { task }]]),
+        dataSources: {
+          rsc: true,
+          dom: false,
+          dashboard: false,
+          flyout: false,
+          'app-dashboard': false
+        }
+      }
+
+      const result = await executor.executeTypes({
+        discovery,
+        types: ['more-promotion'],
+        mode: 'mutating',
+        signal: new AbortController().signal
+      })
+
+      expect(result.status).toBe('completed')
+      expect(result.tasks[0]?.status).toBe('completed')
+      expect(readQuest).not.toHaveBeenCalled()
+    } finally {
+      store.close()
+    }
+  })
+
+  it('executeReadToEarn: previousState=verification-pending 且 mutating 时重新提交并推进 completed', async () => {
+    const store = new SqliteStore(':memory:')
+    try {
+      const offer: RewardOffer = {
+        sourceTaskId: 'read-article',
+        type: 'read-to-earn',
+        source: 'app-dashboard',
+        displayName: '阅读文章赚积分',
+        complete: false,
+        completed: 0,
+        total: 1,
+        executable: true,
+        attributes: { offerid: 'read-article', type: 'msnreadearn' }
+      }
+      const task: TaskRecord = {
+        taskId: 'synthetic:2026-10-12:read-to-earn',
+        accountId: 'synthetic-account',
+        localDate: '2026-10-12',
+        sourceTaskId: 'read-article',
+        type: 'read-to-earn',
+        source: 'app-dashboard',
+        displayName: '阅读文章赚积分',
+        executable: true,
+        required: false,
+        status: 'verification-pending',
+        progress: { completed: 0, total: 1 },
+        updatedAt: '2026-10-12T00:00:00Z'
+      }
+      store.upsertTask(task, 'run-1')
+      const ledgerId = `${task.taskId}:article:1`
+      store.beginMutation(ledgerId)
+      store.updateMutation(ledgerId, 'verification-pending')
+
+      const initialObs = {
+        offers: [{ ...offer, completed: 0, complete: false }],
+        availablePoints: { value: 100, availability: 'valid', source: 'app-dashboard' }
+      }
+      const confirmedObs = {
+        offers: [{ ...offer, completed: 1, complete: true }],
+        availablePoints: { value: 130, availability: 'valid', source: 'app-dashboard' }
+      }
+
+      const fetchAppDashboard = vi
+        .fn()
+        .mockResolvedValueOnce(initialObs)
+        .mockResolvedValueOnce(confirmedObs)
+      const submitAppActivity = vi.fn().mockResolvedValue(130)
+
+      const client = {
+        fetchAppDashboard,
+        submitAppActivity
+      } as unknown as DashboardClient
+
+      const executor = new RewardsTaskExecutor(
+        {} as BrowserContext,
+        client,
+        store,
+        { write: vi.fn().mockResolvedValue(undefined) } as unknown as StructuredLogger,
+        DEFAULT_CONFIG,
+        'run-2',
+        'synthetic-account',
+        'mock-app-token'
+      )
+
+      const discovery: DiscoveryOutput = {
+        snapshot: { offers: [offer], actionIds: {} } as unknown as RewardsDiscoverySnapshot,
+        tasks: [task],
+        descriptors: new Map([[task.taskId, { task, offer }]]),
+        dataSources: {
+          rsc: false,
+          dom: false,
+          dashboard: false,
+          flyout: false,
+          'app-dashboard': true
+        }
+      }
+
+      const result = await executor.executeTypes({
+        discovery,
+        types: ['read-to-earn'],
+        mode: 'mutating',
+        signal: new AbortController().signal
+      })
+
+      expect(result.status).toBe('completed')
+      expect(submitAppActivity).toHaveBeenCalledTimes(1)
+      expect(store.getMutationState(ledgerId)).toBe('verified')
+      expect(result.tasks[0]?.status).toBe('completed')
+      expect(result.tasks[0]?.progress.completed).toBe(1)
+    } finally {
+      store.close()
+    }
+  })
+
+  it('executeReadToEarn: previousState=verification-pending 且 read-only 时保持 partial 且不提交', async () => {
+    const store = new SqliteStore(':memory:')
+    try {
+      const offer: RewardOffer = {
+        sourceTaskId: 'read-article',
+        type: 'read-to-earn',
+        source: 'app-dashboard',
+        displayName: '阅读文章赚积分',
+        complete: false,
+        completed: 0,
+        total: 1,
+        executable: true,
+        attributes: { offerid: 'read-article', type: 'msnreadearn' }
+      }
+      const task: TaskRecord = {
+        taskId: 'synthetic:2026-10-12:read-to-earn',
+        accountId: 'synthetic-account',
+        localDate: '2026-10-12',
+        sourceTaskId: 'read-article',
+        type: 'read-to-earn',
+        source: 'app-dashboard',
+        displayName: '阅读文章赚积分',
+        executable: true,
+        required: false,
+        status: 'verification-pending',
+        progress: { completed: 0, total: 1 },
+        updatedAt: '2026-10-12T00:00:00Z'
+      }
+      store.upsertTask(task, 'run-1')
+      const ledgerId = `${task.taskId}:article:1`
+      store.beginMutation(ledgerId)
+      store.updateMutation(ledgerId, 'verification-pending')
+
+      const initialObs = {
+        offers: [{ ...offer, completed: 0, complete: false }],
+        availablePoints: { value: 100, availability: 'valid', source: 'app-dashboard' }
+      }
+
+      const fetchAppDashboard = vi.fn().mockResolvedValue(initialObs)
+      const submitAppActivity = vi.fn().mockResolvedValue(100)
+
+      const client = {
+        fetchAppDashboard,
+        submitAppActivity
+      } as unknown as DashboardClient
+
+      const executor = new RewardsTaskExecutor(
+        {} as BrowserContext,
+        client,
+        store,
+        { write: vi.fn().mockResolvedValue(undefined) } as unknown as StructuredLogger,
+        DEFAULT_CONFIG,
+        'run-2',
+        'synthetic-account',
+        'mock-app-token'
+      )
+
+      const outcome = await (executor as unknown as {
+        executeReadToEarn: (
+          descriptor: { task: TaskRecord; offer?: RewardOffer },
+          signal: AbortSignal,
+          mode: 'read-only' | 'mutating'
+        ) => Promise<'completed' | 'partial' | 'failed'>
+      }).executeReadToEarn(
+        { task, offer },
+        new AbortController().signal,
+        'read-only'
+      )
+
+      expect(outcome).toBe('partial')
+      expect(submitAppActivity).not.toHaveBeenCalled()
+      expect(store.getMutationState(ledgerId)).toBe('verification-pending')
+      const updated = store.getTask(task.taskId)
+      expect(updated?.status).toBe('verification-pending')
+    } finally {
+      store.close()
+    }
   })
 })

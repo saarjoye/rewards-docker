@@ -413,7 +413,7 @@ export class RewardsTaskExecutor {
     const ledgerState = this.mutationLedger.getMutationState(task.taskId)
     if (!ledgerState) return { task, handled: false, pending: false }
 
-    if (ledgerState === 'verified' && !task.quest) {
+    if (ledgerState === 'verified') {
       const finalStatus = task.status === 'skipped' ? 'skipped' : 'completed'
       return {
         task: this.persist({

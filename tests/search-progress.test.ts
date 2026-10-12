@@ -1218,4 +1218,36 @@ describe('strict search counter shapes', () => {
     expect(result.searchObservation?.submittedCount).toBeGreaterThan(2)
   })
 
+  it('progress-unchanged 时保持 unknownSubmissionCount 封顶不无限累积', async () => {
+    const seed: TaskRecord = {
+      ...task(3),
+      status: 'verification-pending',
+      searchObservation: {
+        runId: 'prior-run',
+        submittedCount: 2,
+        unknownSubmissionCount: 3,
+        awaitingProgress: true,
+        completed: 3,
+        total: 60,
+        observedAt: '2026-09-10T00:00:00.000Z',
+        result: 'progress-pending',
+        state: 'progress-pending'
+      }
+    }
+    const h = harness(
+      [
+        observation([{ pointProgress: 3, pointProgressMax: 60 }])
+      ],
+      seed
+    )
+    const result = await finish(
+      h.executor.run({
+        ...h.input,
+        readOnly: true
+      })
+    )
+    expect(result.searchObservation?.unknownSubmissionCount).toBe(1)
+    expect(result.searchObservation?.lastEvent?.unknownSubmissionCount).toBe(1)
+  })
+
 })

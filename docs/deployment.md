@@ -4,9 +4,24 @@ Next 单应用沿用 `ghcr.io/saarjoye/mrs-core` 镜像名，替代旧版 Core/W
 
 ## 发布和切换
 
-现有仓库的 `main` 分支通过 `.github/workflows/docker-image.yml` 构建。先执行离线测试、类型检查、ESLint、构建和 Compose 校验，再构建 `linux/amd64` 与 `linux/arm64` 候选镜像。候选镜像使用空数据、禁用外部网络做启动健康检查；成功后才更新 `5.0.0-next.34` 与 `latest`。完整提交固定标签为 `sha-<完整提交号>`。
+现有仓库的 `main` 分支通过 `.github/workflows/docker-image.yml` 构建。先执行离线测试、类型检查、ESLint、构建和 Compose 校验，再构建 `linux/amd64` 与 `linux/arm64` 候选镜像。候选镜像使用空数据、禁用外部网络做启动健康检查；成功后才更新 `5.0.0-next.35` 与 `latest`。完整提交固定标签为 `sha-<完整提交号>`。
 
-## next.34 任务明细防溢出隔离与运行记录纯净动态流
+## next.35 搜索恢复异常收口与任务包复核闭环
+
+### 任务包子任务复核闭环与搜索恢复防中断
+
+进一步加固搜索与奖励任务复核状态机：
+- `RewardsTaskExecutor.reconcileKnownMutation` 对 `ledgerState === 'verified'` 的任务包（`quest`）子任务直接按 `completed` 落盘，不再依赖只读 discovery 二次确认，消除跨日重复 `verification-pending`；
+- `SearchExecutor` 的 `recoveredFromPersistence` 覆盖 `state === 'failed' && unknownSubmissionCount > 0` 持久化恢复场景，在 `mutating` 恢复模式下遇到仪表盘请求失败时降级为 `progress-pending` 并安全返回，不再抛出 `dashboard-request-failed` 中断整轮运行；
+- `observe()` 在 `progress-unchanged` 时保持 `unknownSubmissionCount` 封顶为 1，不无限累积；恢复循环仅由 `maxQueries`、`stagnantLimit` 与 `roundDeadline` 收口。
+
+### 升级与验证
+
+应用镜像为 `ghcr.io/saarjoye/mrs-core:5.0.0-next.35`，候选健康验证成功后同步
+更新 `latest`。升级无需新增配置、迁移或依赖安装；保留原 Compose、持久卷、
+主密钥、账号、调度及任务证据。绑定目录仍需允许 UID/GID `1000:1000` 写入。
+
+## next.34 任务明细防溢出隔离与运行记录纯净动态流（历史版本）
 
 ### 概览账号任务明细边界隔离与中文化
 

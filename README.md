@@ -4,7 +4,15 @@ Microsoft Rewards Next 是一个重新设计的本地自动化项目，重点解
 
 当前仓库是独立实现，不读取旧项目的账号、Session、运行状态或密钥。Web 管理、真实运行编排、浏览器登录、Rewards 数据源和十类任务适配器已经接入；真实任务仍必须按只读、单账号受控 mutation、三账号全量和连续三日的顺序验收。
 
-## next.34 任务明细防溢出隔离与运行记录纯净动态流
+## next.35 搜索恢复异常收口与任务包复核闭环
+
+补齐搜索任务持久化失败恢复与任务包子任务复核逻辑：当任务包（quest）子任务在变更账本中已处于 `verified` 状态时，直接按 `completed` 结算，消除跨日只读未刷新导致的 `verification-pending` 死循环；扩展 `SearchExecutor` 的 `recoveredFromPersistence` 判定以覆盖 `state === 'failed' && unknownSubmissionCount > 0` 的持久化恢复场景，避免网络波动引发 `dashboard-request-failed` 中断整轮运行；补充 `executeReadToEarn` 在 `mutating` 与 `read-only` 下的待复核重试与隔离单测。
+
+GitHub Actions 验证候选通过后，发布 `ghcr.io/saarjoye/mrs-core:5.0.0-next.35`
+并同步 `latest`。升级无需新增迁移、配置或依赖，保留原 Compose、持久卷、主密钥、
+账号和定时设置。
+
+## next.34 任务明细防溢出隔离与运行记录纯净动态流（历史版本）
 
 彻底修复概况页账号卡片展开“查看任务明细”后向右溢出穿透其他账号卡片及多账号展开重叠的问题：为账号卡片及任务明细容器增加严格宽度与溢出隔离约束，采用固定列比自适应换行布局，任务标题与状态小标签独立间隔展示（消除“PC 搜索已完成”粘连现象），并将内部英文任务代号（如 `ENUS_readarticle...`）自动映射为直观中文名称（如“MSN 资讯阅读”），过滤未执行的 0/10 0分占位项。
 

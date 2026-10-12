@@ -303,7 +303,8 @@ describe('persistent quest continuation', () => {
       mode: 'mutating',
       signal: new AbortController().signal
     })
-    expect(result.status).toBe('partial')
+    expect(result.status).toBe('completed')
+    expect(result.tasks[0]?.status).toBe('completed')
     expect(f.navigateQuestOffer).not.toHaveBeenCalled()
     expect(store.getMutationState(completed.taskId)).toBe('verified')
   })

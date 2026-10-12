@@ -691,6 +691,58 @@ describe('persistent page, single submission, typing, and stagnant detection', (
       })
     )
   })
+
+  it('mutating 且 recoveredFromPersistence 时 dashboard-request-failed 不抛错', async () => {
+    vi.useFakeTimers()
+    const fetchDashboard = vi.fn().mockRejectedValue(new Error('network error'))
+    const write = vi.fn().mockResolvedValue(undefined)
+    const logger = { write } as unknown as StructuredLogger
+
+    const executor = createSearchExecutor(
+      { newPage: vi.fn() } as unknown as BrowserContext,
+      { fetchDashboard } as unknown as DashboardClient,
+      logger,
+      {
+        ...DEFAULT_CONFIG.search,
+        delayMinSeconds: 0,
+        delayMaxSeconds: 0,
+        scroll: false,
+        clickResult: false
+      },
+      'run-current',
+      'account-4'
+    )
+
+    const failedPersistedTask: TaskRecord = {
+      ...task(12),
+      status: 'running',
+      searchObservation: {
+        runId: 'run-current',
+        submittedCount: 1,
+        unknownSubmissionCount: 1,
+        awaitingProgress: false,
+        completed: 12,
+        total: 60,
+        observedAt: '2026-09-03T00:00:00Z',
+        result: 'request-failed',
+        state: 'failed'
+      }
+    }
+
+    const runPromise = executor.run({
+      task: failedPersistedTask,
+      mobile: false,
+      executionMode: 'mutating',
+      signal: new AbortController().signal,
+      onProgress: vi.fn()
+    })
+
+    await vi.runAllTimersAsync()
+    const result = await runPromise
+
+    expect(result.status).toBe('verification-pending')
+    expect(result.searchObservation?.state).toBe('progress-pending')
+  })
 })
 
 describe('SearchQueryPool', () => {

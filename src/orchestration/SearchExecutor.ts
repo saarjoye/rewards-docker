@@ -155,7 +155,8 @@ export class SearchExecutor {
       Boolean(
         existing &&
           (existing.runId !== this.runId ||
-            existing.recoveryAttemptedRunId !== undefined)
+            existing.recoveryAttemptedRunId !== undefined ||
+            (existing.state === 'failed' && existing.unknownSubmissionCount > 0))
       )
     let summary: NonNullable<TaskRecord['searchObservation']> = existing ?? {
       runId: this.runId,
@@ -572,7 +573,12 @@ export class SearchExecutor {
     }
 
     try {
-      if (summary.awaitingProgress || current.status === 'verification-pending' || input.readOnly) {
+      if (
+        summary.awaitingProgress ||
+        current.status === 'verification-pending' ||
+        input.readOnly ||
+        (summary.state === 'failed' && summary.unknownSubmissionCount > 0)
+      ) {
         const grew = await observe()
         if (current.status === 'completed') return current
         if (grew && (input.readOnly === true || !retryScopeAllowed)) return current
