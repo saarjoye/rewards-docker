@@ -94,7 +94,8 @@ export class DashboardFetchError extends Error {
     readonly status: number | undefined,
     readonly attempts: number,
     readonly durationMs: number,
-    readonly usedFallback: boolean | null = null
+    readonly usedFallback: boolean | null = null,
+    readonly authRedirect = false
   ) {
     super(message)
     this.name = 'DashboardFetchError'
@@ -278,6 +279,8 @@ export class DashboardClient {
     let lastStatus: number | undefined
     let lastReason = 'dashboard unavailable'
     let allowFlyoutFallback = false
+    let authRedirect = false
+    let authRedirectStatus: number | undefined
     try {
       while (attempts < DASHBOARD_ATTEMPTS) {
         attempts += 1
@@ -294,8 +297,15 @@ export class DashboardClient {
             lastStatus = response.status()
             const contentType = response.headers()['content-type'] ?? 'unknown'
             const isHtmlResponse = contentType.toLowerCase().includes('text/html')
+            const location = response.headers()['location'] ?? ''
             const isRedirectedToAuth =
-              /login\.(live|microsoftonline)\.com|\/oauth20_|\/Signin/i.test(response.url())
+              /login\.(live|microsoftonline)\.com|\/oauth20_|\/Signin/i.test(
+                `${response.url()} ${location}`
+              )
+            if (isRedirectedToAuth) {
+              authRedirect = true
+              authRedirectStatus = lastStatus
+            }
             await this.logger
               .write({
                 level: response.ok() && !isHtmlResponse && !isRedirectedToAuth ? 'debug' : 'warn',
@@ -309,32 +319,30 @@ export class DashboardClient {
                 message: `content-type=${contentType.split(';')[0] ?? 'unknown'}`
               })
               .catch(() => undefined)
-            if (response.ok()) {
-              if (isHtmlResponse || isRedirectedToAuth) {
-                lastReason = 'auth redirect or HTML response'
-                allowFlyoutFallback = true
-                usedFallback = true
-                const flyout = await this.fetchFlyout(
-                  Math.max(deadline, Date.now() + 5_000),
-                  signal
+            if (isRedirectedToAuth || (response.ok() && isHtmlResponse)) {
+              lastReason = isRedirectedToAuth ? 'auth redirect' : 'HTML response'
+              allowFlyoutFallback = true
+              usedFallback = true
+              const flyout = await this.fetchFlyout(
+                Math.max(deadline, Date.now() + 5_000),
+                signal
+              )
+              if (flyout) return finish(flyout)
+              if (attempts >= DASHBOARD_ATTEMPTS) break
+            } else if (response.ok()) {
+              try {
+                const observation = parseDashboardPayload(
+                  await responseJson(response),
+                  'legacy-getuserinfo'
                 )
-                if (flyout) return finish(flyout)
-                if (attempts >= DASHBOARD_ATTEMPTS) break
-              } else {
-                try {
-                  const observation = parseDashboardPayload(
-                    await responseJson(response),
-                    'legacy-getuserinfo'
-                  )
-                  this.accept(observation)
-                  return finish(observation)
-                } catch (error) {
-                  lastReason = error instanceof Error ? error.message : 'dashboard parse error'
-                  allowFlyoutFallback = true
-                  const retryTransientBody =
-                    error instanceof DashboardResponseBodyError && attempts < DASHBOARD_ATTEMPTS
-                  if (!retryTransientBody) break
-                }
+                this.accept(observation)
+                return finish(observation)
+              } catch (error) {
+                lastReason = error instanceof Error ? error.message : 'dashboard parse error'
+                allowFlyoutFallback = true
+                const retryTransientBody =
+                  error instanceof DashboardResponseBodyError && attempts < DASHBOARD_ATTEMPTS
+                if (!retryTransientBody) break
               }
             } else {
               lastReason = `dashboard HTTP ${String(lastStatus)}`
@@ -432,10 +440,11 @@ export class DashboardClient {
 
       throw new DashboardFetchError(
         `dashboard 获取失败: ${lastReason}`,
-        lastStatus,
+        authRedirect ? authRedirectStatus : lastStatus,
         attempts,
         Date.now() - started,
-        usedFallback
+        usedFallback,
+        authRedirect
       )
     } finally {
       this.page.off('response', listener)

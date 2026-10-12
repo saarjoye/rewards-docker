@@ -733,7 +733,7 @@ export class ApplicationRunCoordinator {
       .find(
         (task) =>
           task.accountId === context.accountId &&
-          task.status === 'failed' &&
+          (task.status === 'failed' || task.status === 'action-required') &&
           types.includes(task.type)
       )
     return {
@@ -750,7 +750,7 @@ export class ApplicationRunCoordinator {
     singleAccountMode: boolean,
     targetAccountIndex: number | undefined,
     retryPendingSearch: boolean
-  ): Promise<{ status: 'completed' | 'partial' | 'failed' }> {
+  ): Promise<{ status: 'completed' | 'partial' | 'failed' | 'action-required' }> {
     if (!resources.discovery || !resources.desktop || !resources.desktopClient) {
       throw new Error('desktop-search resources unavailable')
     }
@@ -780,6 +780,7 @@ export class ApplicationRunCoordinator {
         resumePendingSearch: mode === 'mutating' && !singleAccountMode
       })
       if (desktopOutcome.status === 'failed') return { status: 'failed' }
+      if (desktopOutcome.status === 'action-required') return { status: 'action-required' }
       if (desktopOutcome.status === 'partial') status = 'partial'
     }
 
@@ -821,6 +822,7 @@ export class ApplicationRunCoordinator {
           retryPendingSearch
         })
         if (mobileOutcome.status === 'failed') return { status: 'failed' }
+        if (mobileOutcome.status === 'action-required') return { status: 'action-required' }
         if (mobileOutcome.status === 'partial') status = 'partial'
       }
     }

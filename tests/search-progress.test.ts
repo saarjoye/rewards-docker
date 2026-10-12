@@ -380,6 +380,45 @@ describe('search dashboard observation', () => {
     }
   })
 
+  it('classifies a dashboard authentication redirect as action-required without submitting', async () => {
+    const seed = task(9)
+    const h = harness([observation()], seed)
+    h.fetchDashboard.mockRejectedValue(new DashboardFetchError('private', 302, 1, 0, null, true))
+    const store = new SqliteStore(':memory:')
+    try {
+      store.upsertTask(seed, 'run')
+      const discovery = {
+        tasks: [seed],
+        descriptors: new Map([[seed.taskId, { task: seed }]])
+      } as unknown as DiscoveryOutput
+      const executor = new RewardsTaskExecutor(
+        h.context,
+        h.client,
+        store,
+        h.logger,
+        h.config,
+        'run',
+        'synthetic'
+      )
+      const result = await finish(
+        executor.executeTypes({
+          discovery,
+          types: ['pc-search'],
+          mode: 'mutating',
+          signal: h.input.signal
+        })
+      )
+      expect(result.status).toBe('action-required')
+      expect(store.ledger.latestSearchTask(seed.taskId)).toMatchObject({
+        status: 'action-required',
+        searchObservation: { state: 'failed', canContinue: false }
+      })
+      expect(h.press).toHaveBeenCalledTimes(1)
+    } finally {
+      store.close()
+    }
+  })
+
   it('closes an incomplete running search as verification-pending without dropping progress', async () => {
     const seed = task(9)
     const h = harness([observation([{ pointProgress: 10, pointProgressMax: 60 }])], seed)
@@ -725,6 +764,22 @@ describe('search dashboard observation', () => {
       searchObservation: { result: 'counter-invalid' }
     })
     h.fetchDashboard.mockRejectedValue(new DashboardFetchError('private', 401, 1, 0))
+    await expect(finish(h.executor.run(h.input))).rejects.toMatchObject({
+      message: 'dashboard-authentication-failed'
+    })
+  })
+
+  it('maps an exhausted authentication redirect to authentication failure', async () => {
+    const h = harness()
+    h.fetchDashboard.mockRejectedValue(new DashboardFetchError('private', 302, 1, 0, null, true))
+    await expect(finish(h.executor.run(h.input))).rejects.toMatchObject({
+      message: 'dashboard-authentication-failed'
+    })
+  })
+
+  it('maps a 200 auth redirect to authentication failure rather than counter-invalid', async () => {
+    const h = harness()
+    h.fetchDashboard.mockRejectedValue(new DashboardFetchError('private', 200, 1, 0, null, true))
     await expect(finish(h.executor.run(h.input))).rejects.toMatchObject({
       message: 'dashboard-authentication-failed'
     })

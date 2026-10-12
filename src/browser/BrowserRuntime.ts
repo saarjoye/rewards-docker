@@ -10,6 +10,15 @@ import { EncryptedSessionStore, type StoredSession } from '../auth/EncryptedSess
 
 export type BrowserStorageState = Awaited<ReturnType<BrowserContext['storageState']>>
 
+const IDENTITY_POISON_COOKIE = '_U'
+
+export function sanitizeStorageState(state: BrowserStorageState): BrowserStorageState {
+  return {
+    ...state,
+    cookies: state.cookies.filter((cookie) => cookie.name !== IDENTITY_POISON_COOKIE)
+  }
+}
+
 export interface AccountBrowserSlot {
   slot: AuthSlot
   context: BrowserContext
@@ -42,6 +51,7 @@ export class BrowserRuntime {
     const reusedBrowser = this.browser?.isConnected() === true
     const browser = await this.getBrowser()
     const stored = await this.options.sessions.read<BrowserStorageState>(accountId, slot)
+    const storageState = stored ? sanitizeStorageState(stored.payload) : undefined
     const mobile = slot === 'web-mobile'
     const contextOptions: BrowserContextOptions = {
       locale: 'zh-CN',
@@ -56,7 +66,7 @@ export class BrowserRuntime {
         'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.7',
         'Sec-CH-UA-Platform': mobile ? '"Android"' : '"Windows"'
       },
-      ...(stored ? { storageState: stored.payload } : {})
+      ...(storageState ? { storageState } : {})
     }
     const context = await browser.newContext(contextOptions)
     context.setDefaultTimeout(15_000)
@@ -74,7 +84,7 @@ export class BrowserRuntime {
           accountId,
           slot,
           validatedAt: new Date().toISOString(),
-          payload: await context.storageState()
+          payload: sanitizeStorageState(await context.storageState())
         }
         await this.options.sessions.commitVerified(session, true)
       }

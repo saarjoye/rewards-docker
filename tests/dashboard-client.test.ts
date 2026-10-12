@@ -763,6 +763,40 @@ describe('dashboard authentication responses and fallback budget', () => {
     expect(JSON.stringify(write.mock.calls)).not.toContain('synthetic-region')
   })
 
+  it('marks an exhausted authentication redirect as an auth error', async () => {
+    const redirect = textResponse(302, '', 'text/html')
+    redirect.url = () => 'https://rewards.bing.com/api/getuserinfo?type=1'
+    redirect.headers = () => ({
+      'content-type': 'text/html',
+      location: 'https://rewards.bing.com/Signin?idru=synthetic'
+    })
+    const { client, get } = fixture([
+      redirect,
+      response(401, {}),
+      response(401, {}),
+      response(401, {}),
+      response(401, {})
+    ])
+    await expect(client.fetchDashboard()).rejects.toMatchObject({
+      name: 'DashboardFetchError',
+      status: 302,
+      authRedirect: true
+    })
+    expect(get).toHaveBeenCalled()
+    expect(client.latestObservation).toBeUndefined()
+  })
+
+  it('marks a 200 authentication redirect without treating it as a counter parse failure', async () => {
+    const redirect = response(200, {})
+    redirect.url = () => 'https://login.live.com/oauth20_authorize.srf'
+    const { client } = fixture([redirect, response(401, {}), response(401, {})])
+    await expect(client.fetchDashboard()).rejects.toMatchObject({
+      name: 'DashboardFetchError',
+      status: 200,
+      authRedirect: true
+    })
+  })
+
   it('retries malformed JSON even without a previously confirmed observation', async () => {
     vi.useFakeTimers()
     const { client, get } = fixture([textResponse(200, '{invalid'), response(200, valid)])

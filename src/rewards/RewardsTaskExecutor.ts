@@ -111,7 +111,10 @@ export class RewardsTaskExecutor {
     singleQuery?: string
     retryPendingSearch?: boolean
     resumePendingSearch?: boolean
-  }): Promise<{ status: 'completed' | 'partial' | 'failed'; tasks: readonly TaskRecord[] }> {
+  }): Promise<{
+    status: 'completed' | 'partial' | 'failed' | 'action-required'
+    tasks: readonly TaskRecord[]
+  }> {
     throwIfAborted(input.signal)
     this.guardDate?.()
     const selected = input.discovery.tasks.filter((task) => input.types.includes(task.type))
@@ -262,9 +265,12 @@ export class RewardsTaskExecutor {
             partial = true
             continue
           }
+          const authenticationFailed =
+            error instanceof SearchExecutionError &&
+            error.message === 'dashboard-authentication-failed'
           const failed = this.persist({
             ...latest,
-            status: 'failed',
+            status: authenticationFailed ? 'action-required' : 'failed',
             ...(latest.searchObservation
               ? {
                   searchObservation: {
@@ -282,7 +288,10 @@ export class RewardsTaskExecutor {
                   : '搜索失败'
           })
           await this.logTask(failed)
-          return { status: 'failed', tasks: selected }
+          return {
+            status: authenticationFailed ? 'action-required' : 'failed',
+            tasks: selected
+          }
         }
         continue
       }

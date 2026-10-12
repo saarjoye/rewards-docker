@@ -339,12 +339,14 @@ export class SearchExecutor {
           if (error instanceof BusinessDateChanged) throw error
           usedFallback = error instanceof DashboardFetchError ? error.usedFallback : null
           result =
-            error instanceof DashboardFetchError && [401, 403].includes(error.status ?? 0)
+            error instanceof DashboardFetchError && error.authRedirect
               ? 'authentication-failed'
-              : error instanceof TypeError ||
-                  (error instanceof DashboardFetchError && error.status === 200)
-                ? 'counter-invalid'
-                : 'request-failed'
+              : error instanceof DashboardFetchError && [401, 403].includes(error.status ?? 0)
+                ? 'authentication-failed'
+                : error instanceof TypeError ||
+                    (error instanceof DashboardFetchError && error.status === 200)
+                  ? 'counter-invalid'
+                  : 'request-failed'
           if (result === 'request-failed') requestFailures += 1
           else received = true
         }
