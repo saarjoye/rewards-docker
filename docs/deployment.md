@@ -4,9 +4,39 @@ Next 单应用沿用 `ghcr.io/saarjoye/mrs-core` 镜像名，替代旧版 Core/W
 
 ## 发布和切换
 
-现有仓库的 `main` 分支通过 `.github/workflows/docker-image.yml` 构建。先执行离线测试、类型检查、ESLint、构建和 Compose 校验，再构建 `linux/amd64` 与 `linux/arm64` 候选镜像。候选镜像使用空数据、禁用外部网络做启动健康检查；成功后才更新 `5.0.0-next.30` 与 `latest`。完整提交固定标签为 `sha-<完整提交号>`。
+现有仓库的 `main` 分支通过 `.github/workflows/docker-image.yml` 构建。先执行离线测试、类型检查、ESLint、构建和 Compose 校验，再构建 `linux/amd64` 与 `linux/arm64` 候选镜像。候选镜像使用空数据、禁用外部网络做启动健康检查；成功后才更新 `5.0.0-next.31` 与 `latest`。完整提交固定标签为 `sha-<完整提交号>`。
 
-## next.30 会话 _U Cookie 隔离与鉴权失败分类
+## next.31 搜索恢复循环与任务死循环修复
+
+### 搜索恢复与查询推进
+
+`SearchExecutor.run()` 移除恢复路径 `queryLimit = 1` 与单次提交早退分支，
+允许待复核任务在单账号重试或常规轮次中按 `maxQueries` 跑满查询，依赖现有
+`stagnantLimit` 与截止时间正常收口。`observe()` 在确认进度增长（`progress-increased`）
+时清零 `unknownSubmissionCount` 与最新事件计数；`normalizeIncompleteSearchTask`
+在任务处于 `progress-confirmed` 且未等待进度时保留 `running`，避免重置回
+`verification-pending`。mutating 模式下已有成功确认或持久化恢复的搜索任务遇连续
+Dashboard 请求失败时保持待复核并返回 partial，不再抛错导致整轮账号中断。
+
+### 账本复核与死循环收口
+
+`RewardsTaskExecutor.reconcileKnownMutation()` 在账本已有 `verified` 记录且非打卡包
+子任务时直接确认完成（或保留 discovery 跳过），不再因只读快照延迟每天把领取奖励积分打回
+`verification-pending`。`executeReadToEarn()` 在 mutating 模式下对未确认文章执行有限重试，
+确认进度提升后更新账本，避免长期停滞在 `partial`。针对官方失效活动
+（`offer-not-found-before-activation`），在多次复核确认无 offer 后安全降级为 `skipped` 并记录原因。
+
+### 升级与验证
+
+应用镜像为 `ghcr.io/saarjoye/mrs-core:5.0.0-next.31`，候选健康验证成功后同步
+更新 `latest`。升级无需新增配置、迁移或依赖安装；保留原 Compose、持久卷、
+主密钥、账号、调度及任务证据。绑定目录仍需允许 UID/GID `1000:1000` 写入。
+
+GitHub Actions 的 Compose 校验、双架构构建与空数据健康检查必须通过后，
+版本标签与 `latest` 才可用于升级。上线后可对历史待复核账号执行单账号运行（开启
+`retryPendingSearch`），观察日志中搜索查询连续提交并结算至满额。
+
+## next.30 会话 _U Cookie 隔离与鉴权失败分类（历史版本）
 
 ### 会话清洗
 
@@ -207,7 +237,7 @@ App 数据源缺失时对应任务保持未知，账号仍可能部分完成，�
 1. 在管理页停止当前任务并确认完全空闲，避开定时触发窗口；按原部署方式做一致性
    备份，记录旧镜像标签或 digest。不要直接用强制重启代替任务正常停止。
 2. 保留原 Compose 文件、项目名、服务名、端口、全部数据卷、主密钥和环境配置。
-   如需固定版本，只把原服务的 `image` 改为上述 next.30 镜像；不要用示例文件覆盖
+   如需固定版本，只把原服务的 `image` 改为上述 next.31 镜像；不要用示例文件覆盖
    现有部署。已有调度继续保留，`RUN_ON_START` 应为 `false`。
 3. 在原 Compose 项目目录使用原来的 `-p` / `-f` / `--env-file` 参数拉取并重建
    应用服务。下面仅适用于已经使用本仓库 `compose.yaml` 及默认服务名的部署：
