@@ -111,3 +111,63 @@ export function taskTypeInfo(type?: string | null): TaskTypeInfo {
     fullLabel: `${item.icon} ${item.label}`
   }
 }
+
+export function friendlyTaskDisplayName(task: {
+  taskId?: string | null | undefined
+  displayName?: string | null | undefined
+  type?: string | null | undefined
+}): string {
+  const raw = task.displayName?.trim()
+  const id = (task.taskId ?? '').toLowerCase()
+  const type = (task.type ?? '').toLowerCase()
+  const combined = `${id} ${raw ?? ''}`.toLowerCase()
+
+  if (raw && /[\u4e00-\u9fa5]/.test(raw)) {
+    return publicText(raw)
+  }
+
+  if (
+    type === 'read-to-earn' ||
+    combined.includes('readarticle') ||
+    combined.includes('read-to-earn')
+  ) {
+    return 'MSN 资讯阅读'
+  }
+  if (type === 'pc-search' || combined.includes('pc-search') || combined.includes('pc_search')) {
+    return 'PC 必应搜索'
+  }
+  if (
+    type === 'mobile-search' ||
+    combined.includes('mobile-search') ||
+    combined.includes('mobile_search')
+  ) {
+    return '移动必应搜索'
+  }
+  if (
+    type === 'app-check-in' ||
+    combined.includes('app-check-in') ||
+    combined.includes('checkin') ||
+    combined.includes('check-in')
+  ) {
+    return '每日签到'
+  }
+  if (combined.includes('quiz')) {
+    return '每日测验'
+  }
+  if (combined.includes('poll')) {
+    return '每日投票'
+  }
+
+  if (task.type) {
+    const info = taskTypeInfo(task.type)
+    if (info.label && info.label !== '其他活动' && info.label !== task.type) {
+      return info.label
+    }
+  }
+
+  if (raw && !/^[a-z0-9_:-]+$/i.test(raw)) {
+    return publicText(raw)
+  }
+
+  return taskTypeInfo(task.type).label
+}

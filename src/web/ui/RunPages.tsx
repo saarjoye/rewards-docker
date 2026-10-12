@@ -4,11 +4,11 @@ import { Card } from 'tdesign-react/es/card/index.js'
 import { DatePicker } from 'tdesign-react/es/date-picker/index.js'
 import { Empty } from 'tdesign-react/es/empty/index.js'
 import { Loading } from 'tdesign-react/es/loading/index.js'
-import { Button, DataTable, Feedback, PageHeader, StatusTag } from './UiKit'
+import { Button, Feedback, PageHeader, StatusTag } from './UiKit'
 import type { ReactElement } from 'react'
 import { createRequestQueue } from './requestQueue'
 import { RunResultSummary, type RunResultFields } from './RunResultSummary'
-import { runStatusLabel, accountStatusLabel, executionModeLabel } from '../../domain/RunOutcome'
+import { runStatusLabel, accountStatusLabel } from '../../domain/RunOutcome'
 import {
   TaskEvidencePanel,
   type EvidenceRow,
@@ -138,7 +138,6 @@ export function RunPages({
   const [selected, setSelected] = useState(() =>
     window.location.hash.startsWith('#run/') ? window.location.hash.slice(5) : ''
   )
-  const [number, setNumber] = useState(1)
   const [month, setMonth] = useState(() =>
     new Intl.DateTimeFormat('en-CA', {
       timeZone: 'Asia/Shanghai',
@@ -172,51 +171,44 @@ export function RunPages({
       />
     )
   return page === 'history' ? (
-    <HistoryList number={number} setNumber={setNumber} open={open} activeRunId={activeRunId} state={state} />
+    <HistoryList activeRunId={activeRunId} state={state} />
   ) : (
     <Calendar month={month} setMonth={setMonth} open={open} activeRunId={activeRunId} />
   )
 }
 
 function HistoryList({
-  number,
-  setNumber,
-  open,
   activeRunId,
   state
 }: {
-  number: number
-  setNumber: (value: number) => void
-  open: (id: string) => void
   activeRunId: string | null
   state?: StatePayload | undefined
 }): ReactElement {
-  const { value, error } = useRead<{ runs: Run[]; hasMore: boolean }>(
-    '/api/runs?page=' + String(number),
-    activeRunId ?? ''
-  )
   const accountMap = new Map((state?.accounts ?? []).map((a) => [a.accountId, a]))
   const activeRun = state?.runs.find((r) => r.runId === activeRunId)
 
-  const streamEvents: StreamEvent[] = (state?.tasks ?? []).map((t) => {
-    const acc = accountMap.get(t.accountId)
-    const earned = resolveTaskEarnedPoints(t)
-    return {
-      id: `${t.accountId}:${t.taskId}:${t.updatedAt}`,
-      time: t.updatedAt,
-      accountId: t.accountId,
-      accountLabel: acc?.displayAlias ?? '账号',
-      accountIndex: acc ? acc.runAccountIndex : undefined,
-      taskType: t.type,
-      taskName: t.displayName,
-      status: t.status,
-      progressCompleted: t.progress.completed,
-      progressTotal: t.progress.total,
-      earnedPoints: earned,
-      reason: t.reason,
-      isActive: t.status === 'running'
-    }
-  })
+  const streamEvents: StreamEvent[] = (state?.tasks ?? [])
+    .filter((t) => !t.taskId.startsWith('category-'))
+    .map((t) => {
+      const acc = accountMap.get(t.accountId)
+      const earned = resolveTaskEarnedPoints(t)
+      return {
+        id: `${t.accountId}:${t.taskId}:${t.updatedAt}`,
+        time: t.updatedAt,
+        accountId: t.accountId,
+        accountLabel: acc?.displayAlias ?? '账号',
+        accountIndex: acc ? acc.runAccountIndex : undefined,
+        taskType: t.type,
+        taskId: t.taskId,
+        taskName: t.displayName,
+        status: t.status,
+        progressCompleted: t.progress.completed,
+        progressTotal: t.progress.total,
+        earnedPoints: earned,
+        reason: t.reason,
+        isActive: t.status === 'running'
+      }
+    })
 
   const currentRunningTask = (state?.tasks ?? []).find((t) => t.status === 'running')
   const currentRunningAccount = currentRunningTask
@@ -228,116 +220,18 @@ function HistoryList({
 
   return (
     <section>
-      <PageHeader title="运行记录" description="每次运行独立保存；点击详情查看账号状态和余额证据" />
-      <Feedback error={error} />
-      <div className="run-stream-wrapper">
+      <PageHeader
+        title="运行记录"
+        description="实时展示各账号执行任务、执行进度、获得积分与失败原因"
+      />
+      <div className="run-stream-wrapper full-stream">
         <LiveRunStream
-          title="实时运行滚动流"
+          title="实时运行动态滚动流"
           events={streamEvents}
           currentAccountLabel={currentAccountLabel}
           isRunning={Boolean(activeRun)}
         />
       </div>
-      <Card bordered={false}>
-        <DataTable
-          rows={value?.runs ?? []}
-          rowKey={(row) => row.runId}
-          loading={!value && !error}
-          empty={error ? '记录暂不可用' : '暂无运行记录'}
-          columns={[
-            {
-              key: 'time',
-              title: '开始 — 结束 = 执行时长',
-              cell: (row) => (
-                <>
-                  <span>
-                    {clockTime(row.startedAt)} —{' '}
-                    {row.finishedAt
-                      ? clockTime(row.finishedAt)
-                      : row.runId === activeRunId
-                        ? '进行中'
-                        : '—'}
-                  </span>
-                  <small className="muted">
-                    ={' '}
-                    {duration(
-                      row.startedAt,
-                      row.finishedAt ??
-                        (row.runId === activeRunId ? new Date().toISOString() : null)
-                    )}
-                  </small>
-                </>
-              )
-            },
-            {
-              key: 'status',
-              title: '运行 / 数据状态',
-              cell: (row) => (
-                <div className="tag-group">
-                  <StatusTag value={row.status} label={runStatusLabel(row.status)} />
-                  <small>模式：{executionModeLabel(row.executionMode)}</small>
-                  <StatusTag value={row.persistence} />
-                </div>
-              )
-            },
-            {
-              key: 'progress',
-              title: '账号进度',
-              cell: (row) => (
-                <>
-                  <span>
-                    已结束 {row.accountsProcessed}/{row.accountsTotal}
-                  </span>
-                  <small>
-                    完全完成 {row.accountsCompleted ?? '—'}/{row.accountsTotal} · 部分完成{' '}
-                    {row.accountsPartial ?? '—'} · 失败 {row.accountsFailed ?? '—'}
-                  </small>
-                </>
-              )
-            },
-            {
-              key: 'balance',
-              title: '本轮实时余额变化',
-              cell: (row) => points(row.liveBalanceDelta)
-            },
-            {
-              key: 'action',
-              title: '操作',
-              cell: (row) => (
-                <Button
-                  variant="text"
-                  onClick={() => {
-                    open(row.runId)
-                  }}
-                >
-                  查看详情
-                </Button>
-              )
-            }
-          ]}
-        />
-        <div className="pagination">
-          <Button
-            variant="outline"
-            disabled={number <= 1}
-            onClick={() => {
-              setNumber(number - 1)
-            }}
-          >
-            上一页
-          </Button>
-          <span>第 {number} 页</span>
-          <Button
-            variant="outline"
-            disabled={!value?.hasMore}
-            onClick={() => {
-              setNumber(number + 1)
-            }}
-          >
-            下一页
-          </Button>
-        </div>
-      </Card>
     </section>
   )
 }

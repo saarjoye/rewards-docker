@@ -4,7 +4,7 @@ import {
   taskPointStateLabel,
   type TaskPointDetail
 } from '../../domain/TaskPointDetail'
-import { publicText, friendlyFailureReason, taskTypeInfo } from './display'
+import { friendlyFailureReason, friendlyTaskDisplayName, taskTypeInfo } from './display'
 
 export interface TaskPointCandidate {
   taskId: string
@@ -78,16 +78,25 @@ export function resolveTaskEarnedPoints(task: TaskPointCandidate): number | null
 export function TaskPointTable({ tasks }: { tasks: readonly TaskPointDetail[] }): ReactElement {
   const visibleTasks =
     tasks.length > 1
-      ? tasks.filter(
-          (t) =>
-            !t.taskId.startsWith('category-') &&
-            !(
-              t.status === 'skipped' &&
-              (!t.progress || t.progress.completed === 0 || t.progress.total === 0 || t.progress.total === null) &&
-              t.confirmedPoints === null &&
-              (!t.reason || t.reason.includes('未发现'))
-            )
-        )
+      ? tasks.filter((t) => {
+          if (t.taskId.startsWith('category-')) return false
+          if (
+            t.status === 'skipped' &&
+            (!t.progress || t.progress.completed === 0 || t.progress.total === 0 || t.progress.total === null) &&
+            t.confirmedPoints === null &&
+            (!t.reason || t.reason.includes('未发现'))
+          ) {
+            return false
+          }
+          const earned = resolveTaskEarnedPoints(t)
+          const isZeroPlaceholder =
+            (earned === null || earned === 0) &&
+            t.progress?.completed === 0 &&
+            (t.status === 'skipped' || t.status === 'discovered' || t.status === 'unknown') &&
+            !t.reason
+          if (isZeroPlaceholder) return false
+          return true
+        })
       : tasks
 
   return (
@@ -96,6 +105,11 @@ export function TaskPointTable({ tasks }: { tasks: readonly TaskPointDetail[] })
         <p className="observation">暂无任务明细记录</p>
       ) : (
         <table className="task-points-table task-pure-table">
+          <colgroup>
+            <col className="col-task-name" />
+            <col className="col-task-progress" />
+            <col className="col-task-points" />
+          </colgroup>
           <thead>
             <tr>
               <th className="th-task-name">任务名称</th>
@@ -108,6 +122,7 @@ export function TaskPointTable({ tasks }: { tasks: readonly TaskPointDetail[] })
               const typeInfo = taskTypeInfo(task.type)
               const earned = resolveTaskEarnedPoints(task)
               const failureText = task.reason ? friendlyFailureReason(task.reason) : null
+              const displayName = friendlyTaskDisplayName(task)
 
               return (
                 <tr key={`${task.businessDate ?? ''}:${task.taskId}`}>
@@ -116,9 +131,7 @@ export function TaskPointTable({ tasks }: { tasks: readonly TaskPointDetail[] })
                       <span className="task-icon">{typeInfo.icon}</span>
                       <div className="task-name-content">
                         <div className="task-title-row">
-                          <strong className="task-title-text">
-                            {publicText(task.displayName || typeInfo.label)}
-                          </strong>
+                          <strong className="task-title-text">{displayName}</strong>
                           <span className={`task-state-badge state-${task.status}`}>
                             {taskPointStateLabel(task.status)}
                           </span>

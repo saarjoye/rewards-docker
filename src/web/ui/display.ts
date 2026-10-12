@@ -27,7 +27,13 @@
     unknown: '—'
   })[value] ?? '—'
 
-export { publicText, friendlyFailureReason, taskTypeInfo, type TaskTypeInfo } from '../../domain/Presentation'
+export {
+  publicText,
+  friendlyFailureReason,
+  friendlyTaskDisplayName,
+  taskTypeInfo,
+  type TaskTypeInfo
+} from '../../domain/Presentation'
 
 export function versionLabel(value: string | null | undefined): string {
   const version = value?.trim()
