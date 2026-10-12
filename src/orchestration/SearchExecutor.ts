@@ -150,6 +150,13 @@ export class SearchExecutor {
   }): Promise<TaskRecord> {
     let current = input.task
     const existing = current.searchObservation
+    const recoveredFromPersistence =
+      input.task.status === 'verification-pending' ||
+      Boolean(
+        existing &&
+          (existing.runId !== this.runId ||
+            existing.recoveryAttemptedRunId !== undefined)
+      )
     let summary: NonNullable<TaskRecord['searchObservation']> = existing ?? {
       runId: this.runId,
       submittedCount: 0,
@@ -351,6 +358,12 @@ export class SearchExecutor {
           else received = true
         }
         lastObservationResult = result
+        const effectiveUnknownSubmissionCount =
+          result === 'progress-increased'
+            ? 0
+            : summary.unknownSubmissionCount > 0
+              ? Math.min(summary.unknownSubmissionCount, 1)
+              : 0
         const state: SearchState =
           result === 'progress-increased'
             ? 'progress-confirmed'
@@ -379,7 +392,7 @@ export class SearchExecutor {
           usedFallback,
           attempt: attempt + 1,
           submittedCount: summary.submittedCount,
-          unknownSubmissionCount: summary.unknownSubmissionCount,
+          unknownSubmissionCount: effectiveUnknownSubmissionCount,
           lastConfirmedCompleted:
             result === 'progress-increased'
               ? (counter?.value?.completed ?? summary.completed)
@@ -387,7 +400,6 @@ export class SearchExecutor {
           lastConfirmedTotal: summary.total,
           canContinue:
             !input.readOnly &&
-            !retryAttempted &&
             result === 'progress-increased' &&
             counter?.value?.remaining !== 0,
           retryReason:
@@ -401,7 +413,7 @@ export class SearchExecutor {
                     ? 'authorized-valid-counter'
                     : result
         }
-        summary = { ...summary, result, state, canContinue: event.canContinue, lastEvent: event }
+        summary = { ...summary, result, state, unknownSubmissionCount: effectiveUnknownSubmissionCount, canContinue: event.canContinue, lastEvent: event }
         await this.logger.write({
           level: result === 'progress-increased' ? 'debug' : 'warn',
           event: 'search-dashboard-observation',
@@ -417,9 +429,9 @@ export class SearchExecutor {
           remaining: counter?.availability === 'valid' ? (counter.value?.remaining ?? null) : null,
           observedAt: counter?.observedAt ?? new Date().toISOString(),
           attempt: attempt + 1,
-          queryIndex: summary.submittedCount + summary.unknownSubmissionCount,
+          queryIndex: summary.submittedCount + effectiveUnknownSubmissionCount,
           submittedCount: summary.submittedCount,
-          unknownSubmissionCount: summary.unknownSubmissionCount,
+          unknownSubmissionCount: effectiveUnknownSubmissionCount,
           durationMs: event.durationMs,
           usedFallback,
           ...(input.accountIndex === undefined ? {} : { accountIndex: input.accountIndex }),
@@ -440,7 +452,8 @@ export class SearchExecutor {
             completed: counter.value.completed,
             total: counter.value.total,
             observedAt: counter.observedAt,
-            awaitingProgress: false
+            awaitingProgress: false,
+            unknownSubmissionCount: 0
           }
           current = {
             ...current,
@@ -453,6 +466,14 @@ export class SearchExecutor {
         save()
       }
       if (!received && requestFailures > 0) {
+        const isMutating =
+          (input.executionMode ?? (input.readOnly === true ? 'read-only' : 'mutating')) ===
+          'mutating'
+        if (isMutating && (retryCounterEligible || recoveredFromPersistence)) {
+          summary = { ...summary, state: 'progress-pending', canContinue: false }
+          save()
+          return false
+        }
         summary = { ...summary, state: 'failed', canContinue: false }
         save()
         throw new SearchExecutionError(
@@ -554,18 +575,23 @@ export class SearchExecutor {
       if (summary.awaitingProgress || current.status === 'verification-pending' || input.readOnly) {
         const grew = await observe()
         if (current.status === 'completed') return current
-        if (grew) return current
+        if (grew && (input.readOnly === true || !retryScopeAllowed)) return current
         if (input.readOnly === true) return await pending()
-        if (!canRetryPendingSearch()) return await pending()
-        retryAttempted = true
-        summary = { ...summary, recoveryAttemptedRunId: this.runId }
-        save()
+        if (!grew) {
+          if (!canRetryPendingSearch()) return await pending()
+          retryAttempted = true
+          summary = { ...summary, recoveryAttemptedRunId: this.runId }
+          save()
+        } else {
+          summary = { ...summary, recoveryAttemptedRunId: this.runId }
+          save()
+        }
       }
       if (summary.runId !== this.runId) {
         summary = { ...summary, runId: this.runId }
         save()
       }
-      const queryLimit = retryAttempted ? 1 : maxQueries
+      const queryLimit = maxQueries
       const queryOffset = summary.submittedCount + summary.unknownSubmissionCount
       const stagnantLimit = this.config.stagnantLimit ?? 10
       let consecutiveUnchangedCount = 0
@@ -689,11 +715,15 @@ export class SearchExecutor {
         }
         if (!observation) {
           if (
+            retryAttempted ||
             scrollSkipped ||
             input.singleQuery !== undefined ||
             lastObservationResult !== 'progress-unchanged'
           )
             return await pending()
+        }
+        if (retryAttempted && observation) {
+          retryAttempted = false
         }
 
         if (lastObservationResult === 'progress-increased') {
@@ -731,11 +761,6 @@ export class SearchExecutor {
         }
 
         if (current.status === 'completed') return current
-        if (retryAttempted) {
-          summary = { ...summary, canContinue: false }
-          save()
-          return current
-        }
         if (input.singleQuery !== undefined) {
           summary = { ...summary, canContinue: false }
           save()

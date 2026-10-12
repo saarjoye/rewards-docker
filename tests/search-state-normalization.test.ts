@@ -59,6 +59,28 @@ describe('incomplete search task normalization', () => {
     })
   })
 
+  it('state=progress-confirmed 且 awaitingProgress=false 时不 normalize 为 verification-pending', () => {
+    const original = {
+      ...task('pc-search', 'running', 3, 60),
+      searchObservation: {
+        runId: 'run',
+        submittedCount: 1,
+        unknownSubmissionCount: 0,
+        awaitingProgress: false,
+        completed: 3,
+        total: 60,
+        observedAt: '2026-09-16T00:00:00.000Z',
+        result: 'progress-increased',
+        state: 'progress-confirmed' as const,
+        canContinue: true
+      }
+    }
+    const result = normalizeIncompleteSearchTask(original)
+    expect(result).toBe(original)
+    expect(result.status).toBe('running')
+    expect(result.searchObservation?.canContinue).toBe(true)
+  })
+
   it('leaves completed, failed and non-search tasks unchanged', () => {
     const completed = task('pc-search', 'completed', 60, 60)
     const failed = task('pc-search', 'failed', 24, 60)

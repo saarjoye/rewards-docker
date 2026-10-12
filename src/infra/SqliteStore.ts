@@ -287,6 +287,18 @@ export class SqliteStore {
     if (result.changes === 0) throw new Error('Task identity mismatch')
   }
 
+  countOfferNotFoundHistory(accountId: string, sourceTaskId: string): number {
+    const row = this.database
+      .prepare(
+        `SELECT count(*) AS count FROM run_tasks
+         WHERE account_id = ?
+           AND json_extract(payload_json, '$.sourceTaskId') = ?
+           AND json_extract(payload_json, '$.reason') LIKE '%offer-not-found-before-activation%'`
+      )
+      .get(accountId, sourceTaskId) as { count: number } | undefined
+    return row?.count ?? 0
+  }
+
   getTask(taskId: string): TaskRecord | undefined {
     const row = this.database
       .prepare(

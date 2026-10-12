@@ -58,16 +58,31 @@ export function normalizeIncompleteSearchTask(task: TaskRecord): TaskRecord {
   ) {
     return task
   }
+  const observation = task.searchObservation
+  if (observation?.state === 'progress-confirmed' && !observation.awaitingProgress) {
+    return task
+  }
+  const shouldMarkPending =
+    !observation ||
+    observation.awaitingProgress === true ||
+    observation.state === 'progress-pending' ||
+    observation.state === 'failed' ||
+    (observation.state as string) === 'search-submitted'
+
+  if (!shouldMarkPending) {
+    return task
+  }
+
   return {
     ...task,
     status: 'verification-pending',
     reason: task.reason ?? 'progress-unconfirmed: 搜索仍有剩余进度',
-    ...(task.searchObservation
+    ...(observation
       ? {
           searchObservation: {
-            ...task.searchObservation,
+            ...observation,
             canContinue: false,
-            state: task.searchObservation.state ?? 'progress-pending'
+            state: observation.state ?? 'progress-pending'
           }
         }
       : {})
@@ -121,6 +136,23 @@ export class RewardsTaskExecutor {
     const reconciled = selected.map((task) => {
       if (task.type === 'pc-search' || task.type === 'mobile-search') {
         const previous = this.store.ledger.latestSearchTask(task.taskId)
+        if (
+          previous?.searchObservation &&
+          previous.status === 'verification-pending' &&
+          previous.searchObservation.state === 'progress-confirmed' &&
+          !previous.searchObservation.awaitingProgress
+        ) {
+          return {
+            task: {
+              ...task,
+              progress: previous.progress,
+              searchObservation: previous.searchObservation,
+              status: 'running' as const
+            },
+            handled: false,
+            pending: false
+          }
+        }
         if (
           previous?.searchObservation &&
           (previous.searchObservation.awaitingProgress ||
@@ -297,7 +329,7 @@ export class RewardsTaskExecutor {
       }
 
       if (original.type === 'read-to-earn') {
-        const outcome = await this.executeReadToEarn(descriptor, input.signal)
+        const outcome = await this.executeReadToEarn(descriptor, input.signal, input.mode)
         if (outcome !== 'completed') partial = true
         continue
       }
@@ -343,13 +375,28 @@ export class RewardsTaskExecutor {
   }
 
   private persistMutationOutcome(task: TaskRecord, outcome: MutationOutcome): TaskRecord {
-    if (outcome.status !== 'verified')
+    if (outcome.status !== 'verified') {
+      const reason =
+        outcome.errorCode ?? outcome.message ?? outcome.verification?.reason ?? '只读复核未通过'
+      if (
+        task.type === 'special-promotion' &&
+        (outcome.errorCode === 'offer-not-found-before-activation' ||
+          reason.includes('offer-not-found-before-activation')) &&
+        this.store.countOfferNotFoundHistory(task.accountId, task.sourceTaskId) >= 2
+      ) {
+        return this.persist({
+          ...task,
+          status: 'skipped',
+          executable: false,
+          reason: 'offer-not-found-before-activation: 多次复核仍无可用 offer，降级跳过'
+        })
+      }
       return this.persist({
         ...task,
         status: outcome.status,
-        reason:
-          outcome.errorCode ?? outcome.message ?? outcome.verification?.reason ?? '只读复核未通过'
+        reason
       })
+    }
     const completed = { ...task }
     delete completed.reason
     return this.persist({
@@ -366,13 +413,41 @@ export class RewardsTaskExecutor {
     const ledgerState = this.mutationLedger.getMutationState(task.taskId)
     if (!ledgerState) return { task, handled: false, pending: false }
 
+    if (ledgerState === 'verified' && !task.quest) {
+      const finalStatus = task.status === 'skipped' ? 'skipped' : 'completed'
+      return {
+        task: this.persist({
+          ...task,
+          status: finalStatus
+        }),
+        handled: true,
+        pending: false
+      }
+    }
+
+    if (
+      task.type === 'special-promotion' &&
+      this.store.countOfferNotFoundHistory(task.accountId, task.sourceTaskId) >= 3
+    ) {
+      return {
+        task: this.persist({
+          ...task,
+          status: 'skipped',
+          executable: false,
+          reason: 'offer-not-found-before-activation: 多次复核仍无可用 offer，降级跳过'
+        }),
+        handled: true,
+        pending: false
+      }
+    }
+
     const confirmedByDiscovery =
       task.status === 'completed' ||
       (task.type === 'claim-bonus-points' &&
         task.status === 'skipped' &&
         task.progress.completed >= 1)
     if (confirmedByDiscovery) {
-      if (ledgerState !== 'verified') this.mutationLedger.updateMutation(task.taskId, 'verified')
+      this.mutationLedger.updateMutation(task.taskId, 'verified')
       return { task: this.persist(task), handled: true, pending: false }
     }
 
@@ -381,10 +456,7 @@ export class RewardsTaskExecutor {
     const pending = this.persist({
       ...task,
       status: 'verification-pending',
-      reason:
-        ledgerState === 'verified'
-          ? '历史复核已完成，但最新只读状态不一致'
-          : '已有任务动作尚未被最新只读数据确认，不会重复提交'
+      reason: '已有任务动作尚未被最新只读数据确认，不会重复提交'
     })
     return { task: pending, handled: true, pending: true }
   }
@@ -700,7 +772,8 @@ export class RewardsTaskExecutor {
 
   private async executeReadToEarn(
     descriptor: TaskExecutionDescriptor,
-    signal: AbortSignal
+    signal: AbortSignal,
+    mode: ExecutionMode = 'mutating'
   ): Promise<'completed' | 'partial' | 'failed'> {
     if (!this.appAccessToken) {
       this.persist({ ...descriptor.task, status: 'failed', reason: 'app-oauth unavailable' })
@@ -729,27 +802,74 @@ export class RewardsTaskExecutor {
         } catch (error) {
           return this.pauseReadToEarn(descriptor.task, { completed, total }, error, signal)
         }
-        if (!verified || (!verified.complete && verified.completed <= completed)) {
+        if (verified && (verified.complete || verified.completed > completed)) {
+          this.mutationLedger.updateMutation(ledgerId, 'verified')
+          completed = verified.completed
+          total = verified.total
+          if (verified.complete) {
+            this.persist({
+              ...descriptor.task,
+              status: 'completed',
+              progress: { completed, total }
+            })
+            return 'completed'
+          }
+          continue
+        }
+        if (mode === 'read-only' || previousState === 'verified') {
           this.persist({
             ...descriptor.task,
-            status: 'verification-pending',
+            status: previousState === 'verified' ? 'completed' : 'verification-pending',
             progress: { completed, total },
-            reason: '已有阅读动作尚未确认，仅执行只读复核'
+            ...(previousState === 'verified' ? {} : { reason: '已有阅读动作尚未确认，仅执行只读复核' })
           })
-          return 'partial'
+          return previousState === 'verified' ? 'completed' : 'partial'
         }
-        this.mutationLedger.updateMutation(ledgerId, 'verified')
-        completed = verified.completed
-        total = verified.total
-        if (verified.complete) {
-          this.persist({
-            ...descriptor.task,
-            status: 'completed',
-            progress: { completed, total }
-          })
-          return 'completed'
+        try {
+          await this.submitAppEvidence(
+            descriptor.task,
+            {
+              amount: 1,
+              id: randomBytes(32).toString('hex'),
+              type: 101,
+              attributes: { offerid: descriptor.offer?.sourceTaskId ?? 'ENUS_readarticle3_30points' },
+              country: 'CN'
+            },
+            signal
+          )
+          this.mutationLedger.updateMutation(ledgerId, 'submitted')
+          let retriedVerified: RewardOffer | undefined
+          try {
+            retriedVerified = await this.readAppOffer(descriptor, signal)
+          } catch (error) {
+            return this.pauseReadToEarn(descriptor.task, { completed, total }, error, signal)
+          }
+          if (!retriedVerified || (!retriedVerified.complete && retriedVerified.completed <= completed)) {
+            this.mutationLedger.updateMutation(ledgerId, 'verification-pending')
+            this.persist({
+              ...descriptor.task,
+              status: 'verification-pending',
+              progress: { completed, total },
+              reason: '阅读重试动作已提交，但 App Dashboard 未确认进度增加'
+            })
+            return 'partial'
+          }
+          this.mutationLedger.updateMutation(ledgerId, 'verified')
+          completed = retriedVerified.completed
+          total = retriedVerified.total
+          if (retriedVerified.complete) {
+            this.persist({
+              ...descriptor.task,
+              status: 'completed',
+              progress: { completed, total }
+            })
+            return 'completed'
+          }
+          continue
+        } catch (error) {
+          this.mutationLedger.updateMutation(ledgerId, 'verification-pending')
+          return this.pauseReadToEarn(descriptor.task, { completed, total }, error, signal)
         }
-        continue
       }
       if (!this.mutationLedger.beginMutation(ledgerId)) return 'partial'
       try {

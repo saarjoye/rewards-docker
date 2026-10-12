@@ -159,11 +159,11 @@ describe('search dashboard observation', () => {
       })
     )
     expect(result).toMatchObject({
-      status: 'running',
+      status: 'verification-pending',
       progress: { completed: 49, total: 60 },
-      searchObservation: { state: 'progress-confirmed', submittedCount: 2, canContinue: false }
+      searchObservation: { submittedCount: 25 }
     })
-    expect(h.press).toHaveBeenCalledTimes(1)
+    expect(h.press).toHaveBeenCalledTimes(24)
   })
 
   it('keeps pending when an authorized retry does not change progress', async () => {
@@ -324,9 +324,9 @@ describe('search dashboard observation', () => {
     )
     expect(result).toMatchObject({
       progress: { completed: 49, total: 60 },
-      searchObservation: { submittedCount: 2 }
+      searchObservation: { submittedCount: 25 }
     })
-    expect(h.press).toHaveBeenCalledTimes(1)
+    expect(h.press).toHaveBeenCalledTimes(24)
     const reasons = h.write.mock.calls
       .map(([event]) => event.retryReason)
       .filter((reason): reason is string => typeof reason === 'string')
@@ -451,9 +451,8 @@ describe('search dashboard observation', () => {
         status: 'partial',
         tasks: [
           {
-            status: 'verification-pending',
-            progress: { completed: 10, total: 60 },
-            reason: 'progress-unconfirmed: 搜索仍有剩余进度'
+            status: 'running',
+            progress: { completed: 10, total: 60 }
           }
         ]
       })
@@ -916,17 +915,17 @@ describe('search dashboard observation', () => {
       const first = await finish(executor.executeTypes(input))
       expect(first).toMatchObject({
         status: 'partial',
-        tasks: [{ progress: { completed: 49 }, searchObservation: { submittedCount: 2 } }]
+        tasks: [{ progress: { completed: 49 }, searchObservation: { submittedCount: 25 } }]
       })
-      expect(h.press).toHaveBeenCalledTimes(1)
-      expect(h.fill).toHaveBeenCalledTimes(1)
+      expect(h.press).toHaveBeenCalledTimes(24)
+      expect(h.fill).toHaveBeenCalledTimes(24)
 
       const second = await finish(executor.executeTypes(input))
       expect(second).toMatchObject({ status: 'partial' })
-      expect(h.press).toHaveBeenCalledTimes(1)
+      expect(h.press).toHaveBeenCalledTimes(24)
       expect(store.ledger.latestSearchTask(seed.taskId)).toMatchObject({
         progress: { completed: 49 },
-        searchObservation: { recoveryAttemptedRunId: 'run', submittedCount: 2 }
+        searchObservation: { recoveryAttemptedRunId: 'run', submittedCount: 25 }
       })
     } finally {
       store.close()
@@ -1088,4 +1087,135 @@ describe('strict search counter shapes', () => {
       ).pcSearch.availability
     ).toBe('invalid')
   })
+
+  it('verification-pending 继承 + progress-increased 后应继续跑满 maxQueries', async () => {
+    const seed: TaskRecord = {
+      ...task(3),
+      status: 'verification-pending',
+      searchObservation: {
+        runId: 'prior-run',
+        submittedCount: 1,
+        unknownSubmissionCount: 0,
+        awaitingProgress: false,
+        completed: 3,
+        total: 60,
+        observedAt: '2026-09-10T00:00:00.000Z',
+        result: 'progress-increased',
+        state: 'progress-confirmed',
+        canContinue: true
+      }
+    }
+    const store = new SqliteStore(':memory:')
+    try {
+      store.upsertTask(seed, 'prior-run')
+      const h = harness(
+        [
+          observation([{ pointProgress: 6, pointProgressMax: 60 }]),
+          observation([{ pointProgress: 9, pointProgressMax: 60 }]),
+          observation([{ pointProgress: 12, pointProgressMax: 60 }])
+        ],
+        seed
+      )
+      const discovery = {
+        tasks: [seed],
+        descriptors: new Map([[seed.taskId, { task: seed }]])
+      } as unknown as DiscoveryOutput
+      const executor = new RewardsTaskExecutor(
+        h.context,
+        h.client,
+        store,
+        h.logger,
+        h.config,
+        'new-run',
+        'synthetic'
+      )
+      const result = await finish(
+        executor.executeTypes({
+          discovery,
+          types: ['pc-search'],
+          mode: 'mutating',
+          signal: h.input.signal,
+          accountMode: 'account',
+          accountIndex: 0,
+          targetAccountIndex: 0,
+          retryPendingSearch: true
+        })
+      )
+      expect(h.press.mock.calls.length).toBeGreaterThan(1)
+      expect(result.tasks[0]?.progress.completed).toBeGreaterThan(3)
+    } finally {
+      store.close()
+    }
+  })
+
+  it('progress-increased 清零 unknownSubmissionCount', async () => {
+    const seed: TaskRecord = {
+      ...task(3),
+      status: 'verification-pending',
+      searchObservation: {
+        runId: 'prior-run',
+        submittedCount: 1,
+        unknownSubmissionCount: 1,
+        awaitingProgress: true,
+        completed: 3,
+        total: 60,
+        observedAt: '2026-09-10T00:00:00.000Z',
+        result: 'progress-pending',
+        state: 'progress-pending'
+      }
+    }
+    const h = harness(
+      [
+        observation([{ pointProgress: 6, pointProgressMax: 60 }])
+      ],
+      seed
+    )
+    const result = await finish(
+      h.executor.run({
+        ...h.input,
+        readOnly: true
+      })
+    )
+    expect(result.searchObservation?.unknownSubmissionCount).toBe(0)
+    expect(result.searchObservation?.lastEvent?.unknownSubmissionCount).toBe(0)
+    expect(result.searchObservation?.awaitingProgress).toBe(false)
+  })
+
+  it('恢复路径不再 1 次即退', async () => {
+    const seed: TaskRecord = {
+      ...task(48),
+      status: 'verification-pending',
+      searchObservation: {
+        runId: 'prior-run',
+        submittedCount: 1,
+        unknownSubmissionCount: 0,
+        awaitingProgress: true,
+        completed: 48,
+        total: 60,
+        observedAt: '2026-09-10T00:00:00.000Z',
+        result: 'progress-pending',
+        state: 'progress-pending'
+      }
+    }
+    const h = harness(
+      [
+        observation([{ pointProgress: 48, pointProgressMax: 60 }]),
+        observation([{ pointProgress: 51, pointProgressMax: 60 }]),
+        observation([{ pointProgress: 54, pointProgressMax: 60 }])
+      ],
+      seed
+    )
+    const result = await finish(
+      h.executor.run({
+        ...h.input,
+        accountMode: 'account',
+        accountIndex: 0,
+        targetAccountIndex: 0,
+        retryPendingSearch: true
+      })
+    )
+    expect(h.press.mock.calls.length).toBeGreaterThan(1)
+    expect(result.searchObservation?.submittedCount).toBeGreaterThan(2)
+  })
+
 })
