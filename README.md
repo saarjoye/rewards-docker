@@ -4,7 +4,24 @@ Microsoft Rewards Next 是一个重新设计的本地自动化项目，重点解
 
 当前仓库是独立实现，不读取旧项目的账号、Session、运行状态或密钥。Web 管理、真实运行编排、浏览器登录、Rewards 数据源和十类任务适配器已经接入；真实任务仍必须按只读、单账号受控 mutation、三账号全量和连续三日的顺序验收。
 
-## next.29 搜索滚动容错、报告下载与 App 故障隔离
+## next.30 会话 _U Cookie 隔离与鉴权失败分类
+
+恢复持久化浏览器会话和写回认证槽时均过滤 `.bing.com` 的 `_U` cookie，避免其导致
+`rewards.bing.com/api/getuserinfo` 固定 302 到登录页；其余 cookie、origins 和会话结构
+保持不变，无 `_U` 时行为不变。
+
+Dashboard 请求把 302 到 `/Signin`、`login.live.com` 或
+`login.microsoftonline.com` 识别为鉴权跳转。重试耗尽后以鉴权类错误返回，
+搜索执行器将其映射为 `dashboard-authentication-failed`，账号进入
+`action-required` 并提示重新登录，不再作为网络失败烧尽重试后直接 `failed`。
+只读模式、取消和业务日期变化语义不变。
+
+GitHub Actions 验证候选通过后，发布 `ghcr.io/saarjoye/mrs-core:5.0.0-next.30`
+并同步 `latest`。升级无需新增迁移、配置或依赖，保留原 Compose、持久卷、主密钥、
+账号和定时设置。上线前应只读确认相关账号的 Dashboard 返回 200 和有效 JSON；
+合成测试和镜像健康不代表真实账号已恢复。
+
+## next.29 搜索滚动容错、报告下载与 App 故障隔离（历史版本）
 
 搜索已提交后，可选滚动异常或超过独立 10 秒预算会记录脱敏警告、关闭异常页面并跳过
 该页面的结果点击，保留原搜索间隔，再按官方进度继续或只读复核。结果不明确时保留
