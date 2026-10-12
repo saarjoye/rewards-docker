@@ -11,7 +11,7 @@ import {
   type TaskPointSummary
 } from '../domain/TaskPointSummary.js'
 import { taskCategoryPoints } from '../domain/TaskCategoryPoints.js'
-import { publicText } from '../domain/Presentation.js'
+import { friendlyFailureReason, publicText } from '../domain/Presentation.js'
 import { executionModeLabel, runStatusLabel, taskBoundAccountState } from '../domain/RunOutcome.js'
 
 const officialApiBase = 'https://qyapi.weixin.qq.com'
@@ -539,7 +539,7 @@ export class Notifications {
       ...(['failed', 'partial', 'action-required', 'interrupted'].includes(event.executionState)
         ? [
             `结束阶段：${redactText(event.failureStage ?? '—')}`,
-            `原因：${redactText(event.failureReason ?? '详情请查看任务账本')}`
+            `原因：${redactText(event.failureReason ? friendlyFailureReason(event.failureReason) : '详情请查看任务账本')}`
           ]
         : []),
       `运行：${event.runId.slice(0, 8)}`

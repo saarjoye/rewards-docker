@@ -1,103 +1,86 @@
-import type { ReactElement } from 'react'
+﻿import type { ReactElement } from 'react'
 import {
   formatTaskPoints,
-  taskPointAmountLabel,
   taskPointStateLabel,
   type TaskPointDetail
 } from '../../domain/TaskPointDetail'
-import { taskPointSummaries } from '../../domain/TaskPointSummary'
-import { publicText } from './display'
+import { StatusTag } from './UiKit'
+import { publicText, friendlyFailureReason, taskTypeInfo } from './display'
 
 export function TaskPointTable({ tasks }: { tasks: readonly TaskPointDetail[] }): ReactElement {
-  const summaries = taskPointSummaries(tasks)
-  const details = summaries.flatMap((summary) => summary.tasks)
   return (
     <div className="task-points-breakdown">
       {tasks.length === 0 ? (
-        <p className="observation">暂无保存的任务积分明细</p>
+        <p className="observation">暂无任务明细记录</p>
       ) : (
-        <>
-          <table className="evidence-table task-points-table task-points-summary">
-            <caption>
-              任务积分明细（{summaries.length} 类 · {details.length} 项）
-            </caption>
-            <thead>
-              <tr>
-                <th>任务</th>
-                <th>积分</th>
-                <th>状态</th>
-              </tr>
-            </thead>
-            <tbody>
-              {summaries.map((summary) => (
-                <tr key={summary.key}>
-                  <td data-label="任务">
-                    <strong>{publicText(summary.displayName)}</strong>
-                    {summary.tasks.some((task) => task.isQuestTask) && (
-                      <small>含任务包子任务</small>
+        <table className="evidence-table task-points-table task-pure-table">
+          <thead>
+            <tr>
+              <th>任务名称</th>
+              <th>执行进度</th>
+              <th>获得积分</th>
+              <th>完成状态</th>
+            </tr>
+          </thead>
+          <tbody>
+            {tasks.map((task) => {
+              const typeInfo = taskTypeInfo(task.type)
+              const earned =
+                task.confirmedPoints !== null
+                  ? task.confirmedPoints
+                  : task.status === 'completed'
+                    ? (task.reportedPoints ?? task.expectedPoints ?? null)
+                    : null
+              const failureText = task.reason ? friendlyFailureReason(task.reason) : null
+
+              return (
+                <tr key={`${task.businessDate ?? ''}:${task.taskId}`}>
+                  <td data-label="任务名称">
+                    <div className="task-name-cell">
+                      <span className="task-icon">{typeInfo.icon}</span>
+                      <div>
+                        <strong>{publicText(task.displayName || typeInfo.label)}</strong>
+                        {task.isQuestTask && <small className="quest-tag">任务包子任务</small>}
+                      </div>
+                    </div>
+                  </td>
+                  <td data-label="执行进度">
+                    {task.progress?.total != null ? (
+                      <span className="task-progress-num">
+                        {task.progress.completed}/{task.progress.total}
+                      </span>
+                    ) : task.status === 'completed' ? (
+                      <span className="task-progress-num">已达标</span>
+                    ) : (
+                      '—'
                     )}
                   </td>
-                  <td data-label="积分">
-                    <strong>{summary.amountLabel}</strong>
-                  </td>
-                  <td data-label="状态">
-                    {summary.statusLabel}
-                    {summary.progress && (
-                      <small>
-                        进度 {summary.progress.completed}/{summary.progress.total}
-                      </small>
+                  <td data-label="获得积分">
+                    {earned !== null && earned > 0 ? (
+                      <strong className="point-gain-num">{formatTaskPoints(earned)}</strong>
+                    ) : earned === 0 ? (
+                      <span className="point-zero-num">0 分</span>
+                    ) : (
+                      <span className="point-pending-num">—</span>
                     )}
-                    {summary.reason && <small>{publicText(summary.reason)}</small>}
+                  </td>
+                  <td data-label="完成状态">
+                    <div className="task-status-cell">
+                      <StatusTag
+                        value={task.status}
+                        label={taskPointStateLabel(task.status)}
+                      />
+                      {failureText && (
+                        <small className="task-reason-tip">⚠️ {failureText}</small>
+                      )}
+                    </div>
                   </td>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-          <details className="task-points-details">
-            <summary>查看具体任务与积分依据</summary>
-            <table className="evidence-table task-points-table">
-              <caption>具体任务（{details.length} 项）</caption>
-              <thead>
-                <tr>
-                  <th>任务</th>
-                  <th>得分明细</th>
-                  <th>完成状态</th>
-                </tr>
-              </thead>
-              <tbody>
-                {details.map((task) => (
-                  <tr key={`${task.businessDate ?? ''}:${task.taskId}`}>
-                    <td data-label="任务">
-                      <strong>{publicText(task.displayName)}</strong>
-                      {task.isQuestTask && <small>任务包子任务</small>}
-                      {task.businessDate && <small>{task.businessDate}</small>}
-                    </td>
-                    <td data-label="得分明细">
-                      <strong>{taskPointAmountLabel(task)}</strong>
-                      {task.confirmedPoints !== null && task.reportedPoints !== null && (
-                        <small>上报 {formatTaskPoints(task.reportedPoints)}</small>
-                      )}
-                      {task.expectedPoints !== null && (
-                        <small>预计 {formatTaskPoints(task.expectedPoints)}</small>
-                      )}
-                    </td>
-                    <td data-label="完成状态">
-                      {taskPointStateLabel(task.status)}
-                      {task.progress?.total != null && (
-                        <small>
-                          进度 {task.progress.completed}/{task.progress.total}
-                        </small>
-                      )}
-                      {task.reason && <small>{publicText(task.reason)}</small>}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </details>
-        </>
+              )
+            })}
+          </tbody>
+        </table>
       )}
-      <small className="observation">总增加以余额变化为准；未确认金额不作为到账。</small>
     </div>
   )
 }

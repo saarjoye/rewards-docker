@@ -1,4 +1,4 @@
-export const stateLabel = (value: string): string =>
+﻿export const stateLabel = (value: string): string =>
   ({
     running: '进行中',
     queued: '等待执行',
@@ -27,7 +27,7 @@ export const stateLabel = (value: string): string =>
     unknown: '—'
   })[value] ?? '—'
 
-export { publicText } from '../../domain/Presentation'
+export { publicText, friendlyFailureReason, taskTypeInfo, type TaskTypeInfo } from '../../domain/Presentation'
 
 export function versionLabel(value: string | null | undefined): string {
   const version = value?.trim()

@@ -16,6 +16,7 @@ import {
   type TaskSummary
 } from './TaskEvidencePanel'
 import { PointSummary, type PointStatistics } from './PointSummary'
+import { LiveRunStream, type StreamEvent } from './LiveRunStream'
 import { points, clockTime, duration } from './display'
 export { stateLabel, points, clockTime, duration } from './display'
 
@@ -346,6 +347,32 @@ function RunDetail({
               )}
             </p>
             <RunResultSummary run={value.run} />
+            <div className="run-stream-wrapper">
+              <LiveRunStream
+                title="本轮运行任务动态"
+                events={value.run.accounts.flatMap((account) =>
+                  (account.tasks ?? []).map((task) => ({
+                    id: `${account.accountId}:${task.taskId}`,
+                    time: account.startedAt ?? value.run.startedAt,
+                    accountId: account.accountId,
+                    accountLabel: account.accountLabel,
+                    accountIndex: account.accountIndex ?? undefined,
+                    taskType: task.type ?? 'unknown',
+                    taskName: task.displayName,
+                    status: task.status,
+                    progressCompleted: (task.progress?.completed ?? task.taskProgress?.completed) ?? undefined,
+                    progressTotal: (task.progress?.total ?? task.taskProgress?.total) ?? undefined,
+                    earnedPoints: (task.taskPoints?.confirmedPoints ?? task.taskEarnedPoints ?? task.reportedPoints) ?? undefined,
+                    reason: task.reason ?? undefined,
+                    isActive: task.status === 'running'
+                  }))
+                )}
+                currentAccountLabel={
+                  value.run.accounts.find((a) => a.executionState === 'running')?.accountLabel
+                }
+                isRunning={id === activeRunId}
+              />
+            </div>
             <div className="section-heading">
               <span>
                 已结束 {value.run.accountsProcessed}/{value.run.accountsTotal} 个账号
@@ -460,6 +487,23 @@ function Calendar({
     ? selected
     : (value?.entries[0]?.businessDate ?? month + '-01')
   const entries = value?.entries.filter((row) => row.businessDate === date) ?? []
+
+  const monthEntries = (value?.entries ?? []).filter((r) => r.businessDate.startsWith(month))
+  const monthTotal = monthEntries.reduce((sum, r) => sum + (r.dailyBalanceDelta ?? 0), 0)
+  const dayTotals = new Map<string, number>()
+  for (const e of monthEntries) {
+    dayTotals.set(e.businessDate, (dayTotals.get(e.businessDate) ?? 0) + (e.dailyBalanceDelta ?? 0))
+  }
+  let maxDayGain = 0
+  let maxDayDate = '—'
+  for (const [d, gain] of dayTotals) {
+    if (gain > maxDayGain) {
+      maxDayGain = gain
+      maxDayDate = d
+    }
+  }
+  const recordedDays = dayTotals.size
+
   return (
     <section>
       <PageHeader
@@ -481,6 +525,23 @@ function Calendar({
         }
       />
       <Feedback error={error} />
+      <div className="calendar-month-stats">
+        <Card bordered={false} className="calendar-stat-card">
+          <span className="muted">本月全账号净收益</span>
+          <strong className="metric-value">{monthTotal > 0 ? `+${monthTotal}` : monthTotal} 分</strong>
+        </Card>
+        <Card bordered={false} className="calendar-stat-card">
+          <span className="muted">单日最高收益</span>
+          <strong className="metric-value">
+            {maxDayGain > 0 ? `+${maxDayGain} 分` : '—'}
+            {maxDayDate !== '—' && <small className="muted">（${maxDayDate.slice(5)}）</small>}
+          </strong>
+        </Card>
+        <Card bordered={false} className="calendar-stat-card">
+          <span className="muted">打卡记录天数</span>
+          <strong className="metric-value">{recordedDays} 天</strong>
+        </Card>
+      </div>
       <Card bordered={false} className="calendar-panel">
         <TCalendar
           controllerConfig={false}
@@ -492,6 +553,10 @@ function Calendar({
           cell={(cell) => {
             const day = cell.formattedDate ?? ''
             const rows = value?.entries.filter((row) => row.businessDate === day) ?? []
+            const dayTotalGain = rows.reduce(
+              (sum, row) => sum + (row.dailyBalanceDelta ?? 0),
+              0
+            )
             return (
               <button
                 className={
@@ -506,19 +571,31 @@ function Calendar({
                   if (day.slice(0, 7) !== month) setMonth(day.slice(0, 7))
                 }}
               >
-                <span className="day-number">{Number(day.slice(-2))}</span>
+                <div className="calendar-cell-header">
+                  <span className="day-number">{Number(day.slice(-2))}</span>
+                  {rows.length > 0 && (
+                    <span
+                      className={`day-total-badge ${dayTotalGain < 0 ? 'negative' : ''}`}
+                      title={`当日全账号总得分：${points(dayTotalGain)}`}
+                    >
+                      {dayTotalGain > 0 ? `+${dayTotalGain}` : `${dayTotalGain}`}分
+                    </span>
+                  )}
+                </div>
                 {rows.length > 0 && (
-                  <>
-                    <span className="day-dot" />
-                    <div className="calendar-cell-accounts">
-                      {rows.slice(0, 3).map((row) => (
-                        <span key={row.accountId}>
-                          账号 {row.accountIndex ?? '?'}：{points(row.dailyBalanceDelta)}
-                        </span>
-                      ))}
-                      {rows.length > 3 && <small>另有 {rows.length - 3} 个账号</small>}
-                    </div>
-                  </>
+                  <div className="calendar-cell-accounts">
+                    {rows.map((row) => (
+                      <span
+                        key={row.accountId}
+                        className={`calendar-acc-row ${
+                          (row.dailyBalanceDelta ?? 0) < 0 ? 'acc-negative' : ''
+                        }`}
+                      >
+                        <span className="acc-idx">账号 {row.accountIndex ?? '?'}:</span>
+                        <strong className="acc-pts">{points(row.dailyBalanceDelta)}</strong>
+                      </span>
+                    ))}
+                  </div>
                 )}
               </button>
             )
@@ -528,42 +605,52 @@ function Calendar({
       <Card
         bordered={false}
         className="calendar-day-detail"
-        title={date + ' · 当日明细'}
-        subtitle="选择日期查看账号、余额依据和对应运行"
+        title={date + ' · 当日账号收益明细'}
+        subtitle="点击下方查看按钮跳转至该次运行详情"
       >
         {!value ? (
           <Empty description={error ? '暂时无法读取' : '读取中'} />
         ) : entries.length === 0 ? (
           <Empty description="当天无本地记录" />
         ) : (
-          entries.map((entry) => (
-            <article className="calendar-account" key={entry.accountId}>
-              <div className="section-heading">
-                <strong>
-                  账号 {entry.accountIndex ?? '—'} · {entry.accountLabel}
-                </strong>
-                <StatusTag value={entry.verificationStatus} />
-              </div>
-              <p className="balance-number">{points(entry.dailyBalanceDelta)}</p>
-              <details>
-                <summary>积分依据</summary>
-                <PointSummary value={entry} />
-              </details>
-              <div className="calendar-run-links">
-                {entry.records.map((record) => (
-                  <Button
-                    variant="outline"
-                    key={record.runId}
-                    onClick={() => {
-                      open(record.runId)
-                    }}
+          <div className="calendar-accounts-grid">
+            {entries.map((entry) => (
+              <article className="calendar-account-card" key={entry.accountId}>
+                <div className="section-heading">
+                  <strong>
+                    账号 {entry.accountIndex ?? '—'} · {entry.accountLabel}
+                  </strong>
+                  <StatusTag value={entry.verificationStatus} />
+                </div>
+                <div className="calendar-acc-gain">
+                  <span className="muted">当日净收益</span>
+                  <strong
+                    className={`balance-number ${
+                      (entry.dailyBalanceDelta ?? 0) < 0 ? 'text-negative' : ''
+                    }`}
                   >
-                    {runStatusLabel(record.status)} · 查看
-                  </Button>
-                ))}
-              </div>
-            </article>
-          ))
+                    {points(entry.dailyBalanceDelta)}
+                  </strong>
+                </div>
+                {entry.confirmedTaskPoints != null && (
+                  <p className="muted">已确认任务得分：{points(entry.confirmedTaskPoints)}</p>
+                )}
+                <div className="calendar-run-links">
+                  {entry.records.map((record) => (
+                    <Button
+                      variant="outline"
+                      key={record.runId}
+                      onClick={() => {
+                        open(record.runId)
+                      }}
+                    >
+                      {runStatusLabel(record.status)} · 查看
+                    </Button>
+                  ))}
+                </div>
+              </article>
+            ))}
+          </div>
         )}
       </Card>
     </section>
