@@ -64,7 +64,7 @@ export function normalizeIncompleteSearchTask(task: TaskRecord): TaskRecord {
   }
   const shouldMarkPending =
     !observation ||
-    observation.awaitingProgress === true ||
+    observation.awaitingProgress ||
     observation.state === 'progress-pending' ||
     observation.state === 'failed' ||
     (observation.state as string) === 'search-submitted'
