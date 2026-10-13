@@ -627,6 +627,7 @@ function extractAnchoredObjects(
 function classifyRscOffer(item: RecordValue): RewardOffer['type'] {
   const offerId = (stringValue(item.offerId) ?? '').toLowerCase()
   const name = (stringValue(item.name) ?? '').toLowerCase()
+  if (/gamification.*dailycheckin|pc.*daily.*checkin|pccheckin/i.test(offerId + name)) return 'pc-check-in'
   if (offerId.includes('pcparent') || offerId.includes('pcchild')) return 'punch-card'
   if (/daily|quiz|poll/.test(offerId) || /daily/.test(name)) return 'daily-set'
   if (/special|highvalue|searchonbing/.test(offerId + name)) return 'special-promotion'
@@ -886,6 +887,12 @@ export function parseRewardsQuestHtml(html: string, parentOfferId: string): read
     let safeClick = false
     try {
       const target = new URL(href)
+      const isDesktopWeeklyExclusive =
+        /WW_pcparent_RewardsApp_weekly_Exclusive/i.test(parentOfferId) ||
+        /WW_pcchild.*RewardsApp_weekly_Exclusive/i.test(id)
+      const excludedPattern = isDesktopWeeklyExclusive
+        ? /Install|quiz|poll|check.?in|read.?to.?earn/i
+        : /RewardsApp|Install|Exclusive|quiz|poll|check.?in|read.?to.?earn/i
       safeClick =
         target.protocol === 'https:' &&
         !target.username &&
@@ -894,7 +901,7 @@ export function parseRewardsQuestHtml(html: string, parentOfferId: string): read
         ['www.bing.com', 'bing.com', 'cn.bing.com'].includes(target.hostname) &&
         target.pathname === '/search' &&
         Boolean(target.searchParams.get('q')) &&
-        !/RewardsApp|Install|Exclusive|quiz|poll|check.?in|read.?to.?earn/i.test(id) &&
+        !excludedPattern.test(id) &&
         (item.edgeAction === null || item.edgeAction === undefined) &&
         item.isDisabled !== true
     } catch {
@@ -946,4 +953,39 @@ export function extractActionIds(scripts: readonly string[]): Readonly<Record<st
     }
   }
   return output
+}
+
+
+export interface StreakObservation {
+  readonly streakDays?: number
+  readonly currentStreak?: number
+}
+
+export function extractStreakObservation(payload: unknown): StreakObservation | undefined {
+  if (typeof payload === 'string') {
+    const match = payload.match(/(?:\u6bcf\u65e5\u8fde\u7eed\u6253\u5361|\u8fde\u7eed\u6253\u5361|streakDays|streakCount)\s*[:?'"\s]*(\d+)/i)
+    if (match?.[1]) {
+      const days = parseInt(match[1], 10)
+      if (Number.isSafeInteger(days) && days >= 0) return { streakDays: days, currentStreak: days }
+    }
+    return undefined
+  }
+  const envelope = asRecord(payload)
+  if (!envelope) return undefined
+  const dashboard = asRecord(envelope.dashboard)
+  const flyout = asRecord(envelope.flyoutResult)
+  const appResponse = asRecord(envelope.response)
+  const root = dashboard ?? flyout ?? appResponse ?? envelope
+  const userStatus = asRecord(root.userStatus)
+  const streak = userStatus?.streak ?? root.streak ?? userStatus?.dailySetStreak
+  if (typeof streak === 'number' && Number.isSafeInteger(streak) && streak >= 0) {
+    return { streakDays: streak, currentStreak: streak }
+  }
+  if (isRecord(streak)) {
+    const count = safeNonNegativeInteger(streak.streakCount ?? streak.currentStreak ?? streak.count)
+    if (count !== undefined) {
+      return { streakDays: count, currentStreak: count }
+    }
+  }
+  return undefined
 }

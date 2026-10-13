@@ -66,6 +66,7 @@ const allTaskTypes: readonly CanonicalTaskType[] = [
   'special-promotion',
   'more-promotion',
   'app-check-in',
+  'pc-check-in',
   'read-to-earn',
   'punch-card',
   'mobile-search',
@@ -237,7 +238,7 @@ describe('acceptance report', () => {
       'email-input',
       'password-input'
     ])
-    expect(report.tasks.filter((item) => item.type !== 'unknown')).toHaveLength(10)
+    expect(report.tasks.filter((item) => item.type !== 'unknown')).toHaveLength(allTaskTypes.length)
     expect(report.tasks.find((item) => item.type === 'unknown')).toMatchObject({
       executable: 0,
       statuses: ['unknown'],

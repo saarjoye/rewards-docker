@@ -8,10 +8,12 @@
     "morePromotions": true,
     "appActivities": true,
     "appCheckIn": true,
+    "pcCheckIn": false,
     "readToEarn": true,
     "pcSearch": true,
-    "mobileSearch": true,
+    "mobileSearch": false,
     "punchCards": true,
+    "desktopAppWeekly": false,
     "claimBonusPoints": true
   },
   "search": {

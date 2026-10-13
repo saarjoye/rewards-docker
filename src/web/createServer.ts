@@ -68,15 +68,27 @@ const searchSettingsSchema = z
     scroll: z.boolean(),
     clickResult: z.boolean(),
     resultVisitSeconds: z.number().int().min(1).max(120),
-    stagnantLimit: z.number().int().min(1).max(100).optional()
+    stagnantLimit: z.number().int().min(1).max(100).optional(),
+    quizPollEnabled: z.boolean().optional(),
+    quizPollScope: z.enum(['all', 'selected']).optional(),
+    quizPollAccountIds: z.array(z.string()).optional()
   })
   .refine((value) => value.delayMaxSeconds >= value.delayMinSeconds, {
     message: 'delayMaxSeconds must be greater than or equal to delayMinSeconds'
   })
+  .refine(
+    (value) =>
+      !value.quizPollEnabled ||
+      value.quizPollScope !== 'selected' ||
+      (value.quizPollAccountIds?.length ?? 0) > 0,
+    {
+      message: 'quizPollAccountIds must not be empty when quizPollScope is selected'
+    }
+  )
 
 export interface RunCoordinator {
   start(request: RunRequest): Promise<{ runId: string; selectedAccountIndexes: readonly number[] }>
-  cancel?(runId: string): boolean
+  cancel?(runId: string, reason?: string): boolean
   readonly activeRunId: string | undefined
 }
 
@@ -198,7 +210,13 @@ export async function createServer(dependencies: WebServerDependencies): Promise
   app.get('/api/settings/search', (_request, reply) => {
     reply.header('cache-control', 'no-store')
     if (!dependencies.config?.search) return reply.code(503).send({ error: 'config-unavailable' })
-    return dependencies.config.search
+    const quizPoll = dependencies.store.getQuizPollSettings()
+    return {
+      ...dependencies.config.search,
+      quizPollEnabled: quizPoll.enabled,
+      quizPollScope: quizPoll.scope,
+      quizPollAccountIds: quizPoll.accountIds
+    }
   })
   app.put('/api/settings/search', async (request, reply) => {
     if (!dependencies.config?.search || !dependencies.configPath)
@@ -206,7 +224,11 @@ export async function createServer(dependencies: WebServerDependencies): Promise
     const input = searchSettingsSchema.parse(request.body)
     const search = {
       ...dependencies.config.search,
-      ...input,
+      delayMinSeconds: input.delayMinSeconds,
+      delayMaxSeconds: input.delayMaxSeconds,
+      scroll: input.scroll,
+      clickResult: input.clickResult,
+      resultVisitSeconds: input.resultVisitSeconds,
       stagnantLimit: input.stagnantLimit ?? dependencies.config.search.stagnantLimit
     }
     const next = { ...dependencies.config, search }
@@ -216,7 +238,20 @@ export async function createServer(dependencies: WebServerDependencies): Promise
       return reply.code(500).send({ error: 'config-write-failed' })
     }
     Object.assign(dependencies.config.search, search)
-    return next.search
+    if (input.quizPollEnabled !== undefined) {
+      dependencies.store.saveQuizPollSettings({
+        enabled: input.quizPollEnabled,
+        scope: input.quizPollScope ?? 'all',
+        accountIds: input.quizPollAccountIds ?? []
+      })
+    }
+    const quizPoll = dependencies.store.getQuizPollSettings()
+    return {
+      ...next.search,
+      quizPollEnabled: quizPoll.enabled,
+      quizPollScope: quizPoll.scope,
+      quizPollAccountIds: quizPoll.accountIds
+    }
   })
   app.get('/api/notifications/wecom', (_request, reply) => {
     reply.header('cache-control', 'no-store')
@@ -440,7 +475,7 @@ export async function createServer(dependencies: WebServerDependencies): Promise
 
   app.post('/api/runs/:runId/cancel', async (request, reply) => {
     const { runId } = z.object({ runId: z.uuid() }).parse(request.params)
-    if (!dependencies.runCoordinator?.cancel?.(runId)) {
+    if (!dependencies.runCoordinator?.cancel?.(runId, 'user-cancelled')) {
       return reply.code(409).send({ error: 'run-not-active' })
     }
     return reply.code(202).send({ ok: true })

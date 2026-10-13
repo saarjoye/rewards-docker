@@ -1331,6 +1331,129 @@ describe('claim mutation idempotency', () => {
     }
   })
 
+  it('submits interactive Quiz via reportServerAction when quizPollSettings is enabled for account and RSC hash is present', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'rewards-next-interactive-quiz-enabled-'))
+    roots.push(root)
+    const store = new SqliteStore(join(root, 'state.sqlite'))
+    store.saveQuizPollSettings({ enabled: true, scope: 'selected', accountIds: ['account'] })
+    try {
+      const reward: RewardOffer = {
+        ...offer('daily-set', 'interactive-quiz-offer'),
+        destinationUrl: 'https://example.test/quiz',
+        attributes: { promotionType: 'quiz' }
+      }
+      const completedReward: RewardOffer = {
+        ...reward,
+        completed: 10,
+        total: 10,
+        complete: true
+      }
+      const task: TaskRecord = {
+        taskId: 'account:2026-09-04:interactive-quiz-offer',
+        accountId: 'account',
+        localDate: '2026-09-04',
+        sourceTaskId: reward.sourceTaskId,
+        type: 'daily-set',
+        source: 'rsc',
+        displayName: 'Interactive quiz offer',
+        executable: true,
+        required: true,
+        status: 'discovered',
+        progress: { completed: 0, total: 10 },
+        updatedAt: '2026-09-04T00:00:00.000Z'
+      }
+      const discovery: DiscoveryOutput = {
+        snapshot: {
+          rewardsUser: evidence(true),
+          market: evidence('CN'),
+          availablePoints: evidence(100),
+          pcSearch: evidence({ completed: 60, total: 60, remaining: 0 }),
+          mobileSearch: evidence({ completed: 0, total: 30, remaining: 30 }),
+          offers: [reward],
+          actionIds: { reportActivity: 'synthetic-action' }
+        },
+        tasks: [task],
+        descriptors: new Map([[task.taskId, { task, offer: reward }]]),
+        dataSources: {
+          rsc: true,
+          dom: false,
+          dashboard: false,
+          flyout: false,
+          'app-dashboard': false
+        }
+      }
+      const reportServerAction = vi.fn().mockResolvedValue({
+        status: 200,
+        ok: true,
+        acknowledged: true,
+        text: '0:{"ok":true}'
+      })
+      const bootstrapRsc = vi.fn().mockResolvedValue({
+        html: [],
+        offers: [completedReward],
+        availablePoints: evidence(110),
+        actionIds: { reportActivity: 'synthetic-action' }
+      })
+      const executor = new RewardsTaskExecutor(
+        {} as BrowserContext,
+        {
+          reportServerAction,
+          bootstrapRsc,
+          discoverDomOffers: vi.fn().mockResolvedValue([]),
+          fetchFlyout: vi.fn().mockResolvedValue(undefined),
+          fetchDashboard: vi.fn().mockResolvedValue({
+            source: 'legacy-dashboard',
+            offers: [completedReward],
+            rewardsUser: evidence(true),
+            market: evidence('CN'),
+            availablePoints: evidence(110),
+            pcSearch: evidence({ completed: 60, total: 60, remaining: 0 }),
+            mobileSearch: evidence({ completed: 0, total: 30, remaining: 30 }),
+            topLevelFields: []
+          })
+        } as unknown as DashboardClient,
+        store,
+        { write: vi.fn().mockResolvedValue(undefined) } as unknown as StructuredLogger,
+        DEFAULT_CONFIG,
+        'run',
+        'account-1'
+      )
+
+      await expect(
+        executor.executeTypes({
+          discovery,
+          types: ['daily-set'],
+          mode: 'mutating',
+          signal: new AbortController().signal
+        })
+      ).resolves.toMatchObject({ status: 'completed' })
+
+      expect(reportServerAction).toHaveBeenCalledTimes(1)
+      expect(store.getTask(task.taskId)?.status).toBe('completed')
+
+      // When scope is selected and account is not in accountIds, interactive quiz must be blocked
+      store.saveQuizPollSettings({ enabled: true, scope: 'selected', accountIds: ['other-account'] })
+      const otherTask: TaskRecord = { ...task, taskId: 'account:2026-09-04:interactive-quiz-offer-2', sourceTaskId: 'interactive-quiz-offer-2' }
+      const otherReward: RewardOffer = { ...reward, sourceTaskId: 'interactive-quiz-offer-2' }
+      const otherDiscovery: DiscoveryOutput = {
+        ...discovery,
+        tasks: [otherTask],
+        descriptors: new Map([[otherTask.taskId, { task: otherTask, offer: otherReward }]])
+      }
+      await expect(
+        executor.executeTypes({
+          discovery: otherDiscovery,
+          types: ['daily-set'],
+          mode: 'mutating',
+          signal: new AbortController().signal
+        })
+      ).resolves.toMatchObject({ status: 'partial' })
+      expect(reportServerAction).toHaveBeenCalledTimes(1)
+    } finally {
+      store.close()
+    }
+  })
+
   it('uses an official card for a flyout offer and never sends its hash to reportActivity', async () => {
     const root = await mkdtemp(join(tmpdir(), 'rewards-next-flyout-navigation-'))
     roots.push(root)

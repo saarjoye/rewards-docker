@@ -66,8 +66,11 @@ const detailedFailureLabels: Record<string, string> = {
   'stagnant-search': '搜索积分未再增加，已自动收工',
   'query-limit-reached': '已达到单次最大搜索次数上限',
   'network-or-provider-error': '消息推送服务网络异常',
-  'action-required': '需要人工在浏览器中处理',
-  'verification-pending': '等待微软服务器确认进度'
+    'action-required': '需要人工在浏览器中处理',
+  'verification-pending': '等待微软服务器确认进度',
+  'Execution stopped; verification remains pending': '运行已停止，保留待复核',
+  'Execution stopped (user-cancelled); verification remains pending': '用户手动停止，保留待复核',
+  'Execution stopped (process-interrupted); verification remains pending': '进程中断(SIGTERM/SIGINT)，保留待复核'
 }
 
 export function friendlyFailureReason(reason?: string | null): string {
@@ -95,6 +98,7 @@ export function taskTypeInfo(type?: string | null): TaskTypeInfo {
     'mobile-search': { label: '移动必应搜索', icon: '📱' },
     'read-to-earn': { label: 'MSN 资讯阅读', icon: '📰' },
     'app-check-in': { label: '每日签到', icon: '📅' },
+    'pc-check-in': { label: 'PC 每日签到', icon: '🖥️' },
     'daily-set': { label: '每日任务', icon: '🧩' },
     'punch-card': { label: '打卡活动', icon: '📦' },
     'more-promotion': { label: '更多推广', icon: '🎁' },
@@ -142,6 +146,20 @@ export function friendlyTaskDisplayName(task: {
     combined.includes('mobile_search')
   ) {
     return '移动必应搜索'
+  }
+  if (
+    type === 'pc-check-in' ||
+    combined.includes('pc-check-in') ||
+    combined.includes('pc_check_in') ||
+    id === 'pc-check-in'
+  ) {
+    return 'PC 每日签到'
+  }
+  if (
+    combined.includes('rewardsapp_weekly_exclusive') ||
+    combined.includes('weekly_exclusive')
+  ) {
+    return '电脑端专属周任务'
   }
   if (
     type === 'app-check-in' ||

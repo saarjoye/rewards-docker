@@ -53,10 +53,12 @@ function tasksForScope(scope: TaskScope) {
     morePromotions: full || scope === 'web',
     appActivities: full || scope === 'app',
     appCheckIn: full || scope === 'app',
+    pcCheckIn: full || scope === 'web',
     readToEarn: full || scope === 'app',
     pcSearch: full || scope === 'search',
     mobileSearch: full,
     punchCards: full || scope === 'web',
+    desktopAppWeekly: full || scope === 'web',
     claimBonusPoints: full || scope === 'claim'
   }
 }

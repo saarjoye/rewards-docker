@@ -22,9 +22,98 @@ export function Overview({
 }): ReactElement {
   const active = state?.runs.find((row) => row.runId === state.activeRunId)
 
+  const todayDeltas =
+    state?.today
+      .map((d) => d.dailyBalanceDelta)
+      .filter((v): v is number => typeof v === 'number' && Number.isFinite(v)) ?? []
+  const totalDailyGain =
+    todayDeltas.length > 0 ? todayDeltas.reduce((acc, v) => acc + v, 0) : null
+
+  const totalPointsArr =
+    state?.today
+      .map((d) => d.accountTotalPoints)
+      .filter((v): v is number => typeof v === 'number' && Number.isFinite(v)) ?? []
+  const aggregateTotalPoints =
+    totalPointsArr.length > 0 ? totalPointsArr.reduce((acc, v) => acc + v, 0) : null
+
+  const discovered = state?.taskSummary.discovered ?? 0
+  const completed = state?.taskSummary.completed ?? 0
+  const completionRate =
+    discovered > 0 ? Math.round((completed / discovered) * 100) : state ? 0 : null
+
+  const attentionAccounts =
+    state?.today.filter((d) =>
+      ['action-required', 'failed', 'verification-pending', 'partial'].includes(
+        d.verificationStatus
+      )
+    ).length ?? 0
+
   return (
     <>
       <PageHeader title="概览" description="运行进度、账号余额与需要处理的事项" />
+      <section className="overview-hero-grid" aria-label="多账号聚合总览">
+        <div className="hero-stat-card hero-card-gain">
+          <div className="hero-stat-header">
+            <span className="hero-stat-label">今日积分总增量</span>
+            <span className="hero-stat-badge gain-badge">全账号净增</span>
+          </div>
+          <strong className="hero-stat-value gain-value">
+            {totalDailyGain !== null ? points(totalDailyGain) : '—'}
+          </strong>
+          <span className="hero-stat-subtext muted">
+            已统计 {todayDeltas.length}/{state?.today.length ?? 0} 个有效观测账号
+          </span>
+        </div>
+
+        <div className="hero-stat-card hero-card-total">
+          <div className="hero-stat-header">
+            <span className="hero-stat-label">全账号积分总资产</span>
+            <span className="hero-stat-badge asset-badge">当前结余</span>
+          </div>
+          <strong className="hero-stat-value total-value">
+            {aggregateTotalPoints !== null ? `${String(aggregateTotalPoints)} 分` : '—'}
+          </strong>
+          <span className="hero-stat-subtext muted">
+            覆盖 {totalPointsArr.length}/{state?.today.length ?? 0} 个账号最新余额
+          </span>
+        </div>
+
+        <div className="hero-stat-card hero-card-progress">
+          <div className="hero-stat-header">
+            <span className="hero-stat-label">今日任务达成率</span>
+            <span className="hero-stat-badge progress-badge">
+              {completionRate !== null ? `${String(completionRate)}%` : '—'}
+            </span>
+          </div>
+          <strong className="hero-stat-value progress-value">
+            {completionRate !== null ? `${String(completionRate)}%` : '读取中'}
+          </strong>
+          <span className="hero-stat-subtext muted">
+            {completed}/{discovered} 项任务执行达标
+          </span>
+        </div>
+
+        <div className="hero-stat-card hero-card-health">
+          <div className="hero-stat-header">
+            <span className="hero-stat-label">账号运行健康度</span>
+            <span
+              className={`hero-stat-badge ${attentionAccounts === 0 ? 'health-good' : 'health-warn'}`}
+            >
+              {attentionAccounts === 0 ? '全状态健康' : `${String(attentionAccounts)} 个需关注`}
+            </span>
+          </div>
+          <strong
+            className={`hero-stat-value ${attentionAccounts === 0 ? 'health-value-good' : 'health-value-warn'}`}
+          >
+            {attentionAccounts === 0 ? '全部正常' : `${String(attentionAccounts)} 待处理`}
+          </strong>
+          <span className="hero-stat-subtext muted">
+            {attentionAccounts === 0
+              ? '无异常、无阻塞、无未决'
+              : '含失败、受阻或待复核账号'}
+          </span>
+        </div>
+      </section>
       <section className="metrics" aria-label="任务统计">
         {[
           ['已发现任务', state?.taskSummary.discovered],

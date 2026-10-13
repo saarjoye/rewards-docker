@@ -37,6 +37,12 @@ const DEFAULT_DEFINITIONS: readonly TaskDefinition[] = [
   { type: 'special-promotion', aliases: ['special-promotion'], executable: true, required: false },
   { type: 'more-promotion', aliases: ['more-promotion'], executable: true, required: false },
   { type: 'app-check-in', aliases: ['app-check-in'], executable: true, required: false },
+  {
+    type: 'pc-check-in',
+    aliases: ['pc-check-in', 'gamification_dailycheckin', 'gamification_sapphire_dailycheckin'],
+    executable: true,
+    required: false
+  },
   { type: 'read-to-earn', aliases: ['read-to-earn'], executable: true, required: false },
   { type: 'punch-card', aliases: ['punch-card', 'quest'], executable: true, required: false },
   { type: 'mobile-search', aliases: ['mobile-search'], executable: true, required: false },

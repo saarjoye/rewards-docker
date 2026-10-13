@@ -107,6 +107,14 @@ export class RewardsTaskExecutor {
     this.mutation = new MutationExecutor(mutationLedger)
   }
 
+  private isQuizPollEnabledForAccount(accountId: string): boolean {
+    if (typeof this.store.getQuizPollSettings !== 'function') return false
+    const settings = this.store.getQuizPollSettings()
+    if (!settings.enabled) return false
+    if (settings.scope === 'all') return true
+    return settings.accountIds.includes(accountId)
+  }
+
   private get appAccessToken(): string | undefined {
     return typeof this.appToken === 'string' ? this.appToken : this.appToken?.accessToken
   }
@@ -474,6 +482,7 @@ export class RewardsTaskExecutor {
           if (actionId) {
             const response = await this.client.reportServerAction({
               actionId,
+              actionName: 'reportClaimAllPoints',
               body: [],
               url: REWARDS_URLS.earn,
               referer: REWARDS_URLS.earn,
@@ -492,6 +501,66 @@ export class RewardsTaskExecutor {
           await this.submitAppEvidence(descriptor.task, payload, signal)
           return { accepted: true, observedAt: new Date().toISOString() }
         }
+        if (descriptor.task.type === 'pc-check-in') {
+          const actionId = findAction(snapshot, 'reportActivity')
+          if (actionId && offer && offer.hash) {
+            const response = await this.client.reportServerAction({
+              actionId,
+              actionName: 'reportActivity',
+              body: buildReportActivityBody(offer),
+              offerId: offer.sourceTaskId,
+              url: REWARDS_URLS.dashboard,
+              referer: REWARDS_URLS.dashboard,
+              routerStateTree:
+                snapshot.routerStateTree ?? buildRewardsRouterStateTree('dashboard'),
+              ...(snapshot.deploymentId ? { deploymentId: snapshot.deploymentId } : {})
+            })
+            return {
+              accepted: response.acknowledged,
+              ...(response.rejected === undefined ? {} : { rejected: response.rejected }),
+              observedAt: new Date().toISOString(),
+              ...(response.credit ? { credit: response.credit } : {})
+            }
+          }
+          const legacy = await this.client.reportLegacyActivity({
+            offerId: offer?.sourceTaskId ?? 'Gamification_DailyCheckIn',
+            hash: offer?.hash ?? '1'
+          })
+          let credit: TaskCreditEvidence | undefined
+          if (legacy.ok && legacy.text) {
+            try {
+              const data = JSON.parse(legacy.text) as unknown
+              const dataRecord =
+                typeof data === 'object' && data !== null
+                  ? (data as Record<string, unknown>)
+                  : null
+              const resp =
+                dataRecord &&
+                typeof dataRecord.response === 'object' &&
+                dataRecord.response !== null
+                  ? (dataRecord.response as Record<string, unknown>)
+                  : null
+              const act =
+                resp && typeof resp.activity === 'object' && resp.activity !== null
+                  ? (resp.activity as Record<string, unknown>)
+                  : null
+              const points = Number(dataRecord?.points ?? act?.p ?? 0)
+              if (Number.isFinite(points) && points > 0) {
+                credit = {
+                  officialCreditId: offer?.sourceTaskId ?? 'Gamification_DailyCheckIn',
+                  earnedPoints: points
+                }
+              }
+            } catch {
+              /* ignore non-json */
+            }
+          }
+          return {
+            accepted: legacy.ok,
+            observedAt: new Date().toISOString(),
+            ...(credit ? { credit } : {})
+          }
+        }
         if (!offer) return { accepted: false, observedAt: new Date().toISOString() }
         if (descriptor.quest) {
           await this.client.navigateQuestOffer(offer, descriptor.quest, signal, this.guardDate)
@@ -499,9 +568,18 @@ export class RewardsTaskExecutor {
         }
         const actionId = findAction(snapshot, 'reportActivity')
         const executionPath = webOfferExecutionPath(offer, actionId !== undefined)
-        if (executionPath === 'report-activity' && actionId) {
+        const isInteractiveQuizOrPoll =
+          executionPath === 'interactive-quiz' || executionPath === 'interactive-poll'
+        const allowControlledInteractive =
+          offer.source === 'rsc' &&
+          Boolean(offer.hash) &&
+          actionId !== undefined &&
+          isInteractiveQuizOrPoll &&
+          this.isQuizPollEnabledForAccount(descriptor.task.accountId)
+        if ((executionPath === 'report-activity' || allowControlledInteractive) && actionId) {
           const response = await this.client.reportServerAction({
             actionId,
+            actionName: 'reportActivity',
             body: buildReportActivityBody(offer),
             offerId: offer.sourceTaskId,
             ...(offer.parentOfferId
@@ -639,17 +717,24 @@ export class RewardsTaskExecutor {
     if (
       descriptor.task.type === 'claim-bonus-points' ||
       descriptor.task.type === 'app-check-in' ||
-      descriptor.task.type === 'app-activity'
+      descriptor.task.type === 'app-activity' ||
+      descriptor.task.type === 'pc-check-in'
     ) {
       return undefined
     }
     if (!descriptor.offer) return '任务缺少可验证的执行元数据'
-    const path = webOfferExecutionPath(
-      descriptor.offer,
-      findAction(snapshot, 'reportActivity') !== undefined
-    )
-    if (path === 'interactive-quiz') return '交互式 Quiz 尚未实现，禁止作为普通活动提交'
-    if (path === 'interactive-poll') return '交互式投票尚未实现，禁止作为普通活动提交'
+    const actionId = findAction(snapshot, 'reportActivity')
+    const path = webOfferExecutionPath(descriptor.offer, actionId !== undefined)
+    const hasValidRscAction =
+      descriptor.offer.source === 'rsc' && Boolean(descriptor.offer.hash) && actionId !== undefined
+    if (path === 'interactive-quiz') {
+      if (this.isQuizPollEnabledForAccount(descriptor.task.accountId) && hasValidRscAction) return undefined
+      return '交互式 Quiz 尚未实现，禁止作为普通活动提交'
+    }
+    if (path === 'interactive-poll') {
+      if (this.isQuizPollEnabledForAccount(descriptor.task.accountId) && hasValidRscAction) return undefined
+      return '交互式投票尚未实现，禁止作为普通活动提交'
+    }
     if (path === 'unsupported') return '任务缺少受支持且可验证的执行路径'
     return undefined
   }

@@ -8,10 +8,12 @@ const taskFlagsSchema = z.object({
   morePromotions: z.boolean(),
   appActivities: z.boolean(),
   appCheckIn: z.boolean(),
+  pcCheckIn: z.boolean().default(false),
   readToEarn: z.boolean(),
   pcSearch: z.boolean(),
   mobileSearch: z.boolean(),
   punchCards: z.boolean(),
+  desktopAppWeekly: z.boolean().default(false),
   claimBonusPoints: z.boolean()
 })
 
@@ -52,10 +54,12 @@ export const DEFAULT_CONFIG: ApplicationConfig = applicationConfigSchema.parse({
     morePromotions: true,
     appActivities: true,
     appCheckIn: true,
+    pcCheckIn: false,
     readToEarn: true,
     pcSearch: true,
     mobileSearch: false,
     punchCards: true,
+    desktopAppWeekly: false,
     claimBonusPoints: true
   },
   search: {

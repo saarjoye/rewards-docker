@@ -11,6 +11,12 @@ import { RunLedger, migrateRunLedger } from './RunLedger.js'
 import { redactText } from '../security/Redactor.js'
 import { SearchQueryReservations } from './SearchQueryReservations.js'
 
+export interface QuizPollSettings {
+  readonly enabled: boolean
+  readonly scope: 'all' | 'selected'
+  readonly accountIds: readonly string[]
+}
+
 export interface PointsHistoryRecord {
   accountId: string
   localDate: string
@@ -381,6 +387,51 @@ export class SqliteStore {
     this.changed()
   }
 
+  getQuizPollSettings(): QuizPollSettings {
+    const row = this.database
+      .prepare('SELECT enabled, scope, account_ids_json FROM quiz_poll_settings WHERE id = 1')
+      .get() as { enabled: number; scope: string; account_ids_json: string } | undefined
+    if (!row) {
+      return {
+        enabled: false,
+        scope: 'all',
+        accountIds: []
+      }
+    }
+    let accountIds: string[]
+    try {
+      accountIds = JSON.parse(row.account_ids_json) as string[]
+    } catch {
+      accountIds = []
+    }
+    return {
+      enabled: row.enabled === 1,
+      scope: row.scope === 'selected' ? 'selected' : 'all',
+      accountIds: Array.isArray(accountIds) ? accountIds : []
+    }
+  }
+
+  saveQuizPollSettings(settings: QuizPollSettings): void {
+    const now = new Date().toISOString()
+    this.database
+      .prepare(
+        `INSERT INTO quiz_poll_settings(id, enabled, scope, account_ids_json, updated_at)
+         VALUES (1, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           enabled = excluded.enabled,
+           scope = excluded.scope,
+           account_ids_json = excluded.account_ids_json,
+           updated_at = excluded.updated_at`
+      )
+      .run(
+        settings.enabled ? 1 : 0,
+        settings.scope === 'selected' ? 'selected' : 'all',
+        JSON.stringify(settings.accountIds),
+        now
+      )
+    this.changed()
+  }
+
   getLatestPointsHistory(accountId: string, localDate: string): PointsHistoryRecord | undefined {
     const row = this.database
       .prepare(
@@ -656,6 +707,13 @@ export class SqliteStore {
     // Ledger tables must exist before their business indexes are created.
     migrateRunLedger(this.database)
     this.database.exec(`
+      CREATE TABLE IF NOT EXISTS quiz_poll_settings (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        enabled INTEGER NOT NULL DEFAULT 0,
+        scope TEXT NOT NULL DEFAULT 'all',
+        account_ids_json TEXT NOT NULL DEFAULT '[]',
+        updated_at TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS deleted_accounts (
         account_id TEXT PRIMARY KEY,
         deleted_at TEXT NOT NULL

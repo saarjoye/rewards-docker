@@ -104,6 +104,7 @@ export function controlledTaskType(args: readonly string[]): TaskRecord['type'] 
     'special-promotion',
     'more-promotion',
     'app-check-in',
+    'pc-check-in',
     'read-to-earn',
     'punch-card',
     'mobile-search',

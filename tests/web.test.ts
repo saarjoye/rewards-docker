@@ -449,6 +449,56 @@ describe('web API', () => {
       expect(
         (JSON.parse(await readFile(configPath, 'utf8')) as { search: unknown }).search
       ).toMatchObject({ stagnantLimit: 4 })
+
+      // Quiz/Poll configuration through search settings API
+      expect(
+        (
+          await loaded.app.inject({
+            method: 'PUT',
+            url,
+            headers,
+            payload: {
+              ...valid,
+              quizPollEnabled: true,
+              quizPollScope: 'selected',
+              quizPollAccountIds: []
+            }
+          })
+        ).statusCode
+      ).toBe(400)
+
+      const quizPutRes = await loaded.app.inject({
+        method: 'PUT',
+        url,
+        headers,
+        payload: {
+          ...valid,
+          quizPollEnabled: true,
+          quizPollScope: 'selected',
+          quizPollAccountIds: ['acc-alpha', 'acc-beta']
+        }
+      })
+      expect(quizPutRes.statusCode).toBe(200)
+      expect(quizPutRes.json()).toMatchObject({
+        quizPollEnabled: true,
+        quizPollScope: 'selected',
+        quizPollAccountIds: ['acc-alpha', 'acc-beta']
+      })
+      expect((await loaded.app.inject({ method: 'GET', url, headers })).json()).toMatchObject({
+        quizPollEnabled: true,
+        quizPollScope: 'selected',
+        quizPollAccountIds: ['acc-alpha', 'acc-beta']
+      })
+
+      // Verify quizPoll is saved in sqliteStore and NOT in config.json
+      expect(loaded.store.getQuizPollSettings()).toEqual({
+        enabled: true,
+        scope: 'selected',
+        accountIds: ['acc-alpha', 'acc-beta']
+      })
+      const savedConfigFile = JSON.parse(await readFile(configPath, 'utf8')) as Record<string, unknown>
+      expect((savedConfigFile.search as Record<string, unknown>).quizPollEnabled).toBeUndefined()
+      expect((savedConfigFile.tasks as Record<string, unknown> | undefined)?.interactiveQuiz).toBeUndefined()
     } finally {
       await loaded.app.close()
       loaded.store.close()

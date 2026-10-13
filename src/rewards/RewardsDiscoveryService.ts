@@ -510,6 +510,7 @@ export class RewardsDiscoveryService {
       'special-promotion': '特殊活动',
       'more-promotion': '更多推广',
       'app-check-in': '每日签到',
+      'pc-check-in': 'PC 每日签到',
       'read-to-earn': '阅读赚取',
       'punch-card': '打卡活动',
       'mobile-search': '移动搜索',

@@ -4,7 +4,15 @@ Microsoft Rewards Next 是一个重新设计的本地自动化项目，重点解
 
 当前仓库是独立实现，不读取旧项目的账号、Session、运行状态或密钥。Web 管理、真实运行编排、浏览器登录、Rewards 数据源和十类任务适配器已经接入；真实任务仍必须按只读、单账号受控 mutation、三账号全量和连续三日的顺序验收。
 
-## next.35 搜索恢复异常收口与任务包复核闭环
+## next.36 交互式答题独立控制、PC签入与现代多账号看板
+
+融合外部脚本增强任务与计分看板设计：支持首页 Server Action `404` 自动刷新重试与 `reportServerAction` 交互式 Quiz / Poll 答题能力；Quiz / Poll 自动答题完全由 WebUI「搜索设置」独立控制（支持全部账号或指定个别账号开启，SQLite 落盘，无需修改 `config.json`）；新增 PC 每日签入（`pc-check-in`）与桌面端周任务（`desktopAppWeekly`）适配器；重构概况页多账号 Hero 卡片与分类计分明细展示。
+
+GitHub Actions 验证候选通过后，发布 `ghcr.io/saarjoye/mrs-core:5.0.0-next.36`
+并同步 `latest`。升级无需新增迁移、配置或依赖，保留原 Compose、持久卷、主密钥、
+账号和定时设置。
+
+## next.35 搜索恢复异常收口与任务包复核闭环（历史版本）
 
 补齐搜索任务持久化失败恢复与任务包子任务复核逻辑：当任务包（quest）子任务在变更账本中已处于 `verified` 状态时，直接按 `completed` 结算，消除跨日只读未刷新导致的 `verification-pending` 死循环；扩展 `SearchExecutor` 的 `recoveredFromPersistence` 判定以覆盖 `state === 'failed' && unknownSubmissionCount > 0` 的持久化恢复场景，避免网络波动引发 `dashboard-request-failed` 中断整轮运行；补充 `executeReadToEarn` 在 `mutating` 与 `read-only` 下的待复核重试与隔离单测。
 

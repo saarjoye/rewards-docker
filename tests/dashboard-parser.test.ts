@@ -3,7 +3,8 @@ import { describe, expect, it } from 'vitest'
 import {
   buildRewardsQuestRouterStateTree,
   parseDashboardPayload,
-  parseRewardsHtml
+  parseRewardsHtml,
+  extractStreakObservation
 } from '../src/rewards/DashboardParser.js'
 
 describe('dashboard parser', () => {
@@ -305,4 +306,27 @@ describe('dashboard parser', () => {
       ])
     )
   })
+  it('extracts read-only streak observation from JSON or raw text without mutating', () => {
+    expect(extractStreakObservation('\u6bcf\u65e5\u8fde\u7eed\u6253\u5361 14 \u5929')).toEqual({ streakDays: 14, currentStreak: 14 })
+    expect(extractStreakObservation('streakCount: 5')).toEqual({ streakDays: 5, currentStreak: 5 })
+    expect(
+      extractStreakObservation({
+        dashboard: {
+          userStatus: {
+            streak: { currentStreak: 21 }
+          }
+        }
+      })
+    ).toEqual({ streakDays: 21, currentStreak: 21 })
+    expect(
+      extractStreakObservation({
+        userStatus: {
+          dailySetStreak: 7
+        }
+      })
+    ).toEqual({ streakDays: 7, currentStreak: 7 })
+    expect(extractStreakObservation(null)).toBeUndefined()
+    expect(extractStreakObservation('no streak here')).toBeUndefined()
+  })
+
 })

@@ -14,7 +14,7 @@ import { aggregateAccountStatus, type AccountRunStatus } from '../domain/Account
 import { localDateKey } from '../domain/DateKey.js'
 import { batchStatus } from '../domain/RunOutcome.js'
 import type { RunRequest } from '../domain/RunRequest.js'
-import type { TaskRecord } from '../domain/Task.js'
+import { createTaskId, type TaskRecord } from '../domain/Task.js'
 import type { AccountSecretStore, AccountSummary } from '../infra/AccountSecretStore.js'
 import type { ApplicationConfig } from '../infra/Config.js'
 import type { SqliteStore } from '../infra/SqliteStore.js'
@@ -90,6 +90,7 @@ export class ApplicationRunCoordinator {
   private completion: Promise<void> | undefined
   private finishing = false
   private interrupted = false
+  private cancelReason: string | undefined
 
   constructor(
     private readonly accounts: AccountSecretStore,
@@ -144,6 +145,7 @@ export class ApplicationRunCoordinator {
     this.active = { runId, controller }
     this.finishing = false
     this.interrupted = false
+    this.cancelReason = undefined
     this.completion = this.executeRun(
       runId,
       localDate,
@@ -159,10 +161,11 @@ export class ApplicationRunCoordinator {
     return { runId, selectedAccountIndexes: selected.map((account) => account.runAccountIndex) }
   }
 
-  cancel(runId: string): boolean {
+  cancel(runId: string, reason = 'run-cancelled'): boolean {
     if (!this.active || this.active.runId !== runId || this.finishing) return false
+    this.cancelReason = reason
     this.store.updateRun(runId, 'cancelling')
-    this.active.controller.abort(new Error('run-cancelled'))
+    this.active.controller.abort(new Error(reason))
     return true
   }
 
@@ -172,7 +175,12 @@ export class ApplicationRunCoordinator {
 
   async stopAndWait(reason: 'cancelled' | 'interrupted' = 'cancelled'): Promise<void> {
     if (this.active && !this.finishing && reason === 'interrupted') this.interrupted = true
-    if (this.active) this.cancel(this.active.runId)
+    if (this.active) {
+      this.cancel(
+        this.active.runId,
+        reason === 'interrupted' ? 'process-interrupted' : 'run-cancelled'
+      )
+    }
     await this.completion
   }
 
@@ -431,7 +439,9 @@ export class ApplicationRunCoordinator {
         status: signal.aborted ? 'partial' : 'failed',
         stage: signal.aborted ? 'cancelled' : 'execution-error',
         message: signal.aborted
-          ? 'Execution stopped; verification remains pending'
+          ? (this.cancelReason && this.cancelReason !== 'run-cancelled'
+              ? `Execution stopped (${this.cancelReason}); verification remains pending`
+              : 'Execution stopped; verification remains pending')
           : 'Execution failed',
         updatedAt: new Date().toISOString()
       })
@@ -495,8 +505,8 @@ export class ApplicationRunCoordinator {
         accountId: context.accountId,
         localDate: context.localDate,
         client: resources.desktopClient,
-        punchCards: this.config.tasks.punchCards,
-        knownQuestTasks: this.config.tasks.punchCards
+        punchCards: this.config.tasks.punchCards || this.config.tasks.desktopAppWeekly,
+        knownQuestTasks: this.config.tasks.punchCards || this.config.tasks.desktopAppWeekly
           ? this.store.ledger.continuingQuestTasks(context.accountId, context.localDate)
           : [],
         ...(resources.verifiedObservation === undefined
@@ -567,8 +577,8 @@ export class ApplicationRunCoordinator {
             accountId: context.accountId,
             localDate: context.localDate,
             client: resources.desktopClient,
-            punchCards: this.config.tasks.punchCards,
-            knownQuestTasks: this.config.tasks.punchCards
+            punchCards: this.config.tasks.punchCards || this.config.tasks.desktopAppWeekly,
+            knownQuestTasks: this.config.tasks.punchCards || this.config.tasks.desktopAppWeekly
               ? this.store.ledger.continuingQuestTasks(context.accountId, context.localDate)
               : [],
             ...(resources.appObservation === undefined
@@ -873,10 +883,11 @@ export class ApplicationRunCoordinator {
   private enabledTaskTypes(stage: AccountPipelineStage): readonly TaskRecord['type'][] {
     if (stage === 'web-rewards') {
       return [
+        ...(this.config.tasks.pcCheckIn ? (['pc-check-in'] as const) : []),
         ...(this.config.tasks.dailySet ? (['daily-set'] as const) : []),
         ...(this.config.tasks.specialPromotions ? (['special-promotion'] as const) : []),
         ...(this.config.tasks.morePromotions ? (['more-promotion'] as const) : []),
-        ...(this.config.tasks.punchCards ? (['punch-card'] as const) : [])
+        ...(this.config.tasks.punchCards || this.config.tasks.desktopAppWeekly ? (['punch-card'] as const) : [])
       ]
     }
     if (stage === 'app-tasks') {
@@ -905,8 +916,24 @@ export class ApplicationRunCoordinator {
       ...this.enabledTaskTypes('search'),
       ...this.enabledTaskTypes('claim-bonus-points')
     ])
-    const tasks = discovery.tasks.map((task) =>
-      enabled.has(task.type) || task.type === 'unknown'
+    const tasks = discovery.tasks.map((task) => {
+      if (task.type === 'punch-card') {
+        const isDesktopWeekly =
+          /WW_pcparent_RewardsApp_weekly_Exclusive/i.test(task.quest?.parentOfferId ?? '') ||
+          /RewardsApp_weekly_Exclusive/i.test(task.sourceTaskId)
+        const allowed = isDesktopWeekly
+          ? this.config.tasks.desktopAppWeekly
+          : this.config.tasks.punchCards
+        if (!allowed) {
+          return {
+            ...task,
+            executable: false,
+            status: 'skipped' as const,
+            reason: '配置已禁用'
+          }
+        }
+      }
+      return enabled.has(task.type) || task.type === 'unknown'
         ? task
         : {
             ...task,
@@ -914,8 +941,43 @@ export class ApplicationRunCoordinator {
             status: 'skipped' as const,
             reason: '配置已禁用'
           }
-    )
+    })
     const descriptors = new Map(discovery.descriptors)
+    if (this.config.tasks.pcCheckIn && !tasks.some((t) => t.type === 'pc-check-in')) {
+      const firstTask = tasks[0]
+      if (firstTask) {
+        const taskId = createTaskId(firstTask.accountId, firstTask.localDate, 'Gamification_DailyCheckIn')
+        const checkInTask: TaskRecord = {
+          taskId,
+          accountId: firstTask.accountId,
+          localDate: firstTask.localDate,
+          sourceTaskId: 'Gamification_DailyCheckIn',
+          type: 'pc-check-in',
+          source: 'rsc',
+          displayName: 'PC 每日签到',
+          executable: true,
+          required: false,
+          status: 'discovered',
+          progress: { completed: 0, total: 1 },
+          updatedAt: new Date().toISOString()
+        }
+        tasks.push(checkInTask)
+        descriptors.set(taskId, {
+          task: checkInTask,
+          offer: {
+            sourceTaskId: 'Gamification_DailyCheckIn',
+            type: 'pc-check-in',
+            source: 'rsc',
+            displayName: 'PC 每日签到',
+            completed: 0,
+            total: 1,
+            complete: false,
+            executable: true,
+            hash: '1'
+          }
+        })
+      }
+    }
     for (const task of tasks) {
       const current = descriptors.get(task.taskId)
       if (current) descriptors.set(task.taskId, { ...current, task })

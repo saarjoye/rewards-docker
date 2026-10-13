@@ -254,6 +254,66 @@ describe('server action transport', () => {
     expect(request.headers).not.toHaveProperty('Referer')
     expect(request.headers).not.toHaveProperty('Origin')
   })
+
+  it('self-heals a 404 Server Action response by re-scanning referenced scripts and retrying once', async () => {
+    let evaluateCount = 0
+    const evaluate = vi.fn().mockImplementation(() => {
+      evaluateCount += 1
+      if (evaluateCount === 1) {
+        return Promise.resolve({ status: 404, ok: false, text: 'Not Found' })
+      }
+      return Promise.resolve({ status: 200, ok: true, text: '1:true' })
+    })
+    const goto = vi.fn().mockResolvedValue(null)
+    const content = vi
+      .fn()
+      .mockResolvedValue('<html><head><script src="/static/app.js"></script></head><body></body></html>')
+    const page = {
+      url: () => 'https://rewards.bing.com/dashboard',
+      goto,
+      evaluate,
+      content
+    } as unknown as Page
+
+    const requestGet = vi.fn().mockResolvedValue({
+      ok: () => true,
+      text: () =>
+        Promise.resolve(
+          'self.createServerReference("1234567890abcdef1234567890abcdef1234567890abcdef", "reportActivity")'
+        ),
+      dispose: vi.fn().mockResolvedValue(undefined)
+    })
+    const context = {
+      request: {
+        get: requestGet
+      }
+    } as unknown as BrowserContext
+
+    const client = new DashboardClient(
+      context,
+      page,
+      { write: vi.fn().mockResolvedValue(undefined) } as unknown as StructuredLogger,
+      'run',
+      'account-1'
+    )
+
+    const result = await client.reportServerAction({
+      actionId: 'stale-action-hash',
+      actionName: 'reportActivity',
+      body: ['test-payload'],
+      url: 'https://rewards.bing.com/dashboard',
+      referer: 'https://rewards.bing.com/dashboard',
+      routerStateTree: 'tree-1'
+    })
+
+    expect(result.status).toBe(200)
+    expect(result.acknowledged).toBe(true)
+    expect(evaluateCount).toBe(2)
+    const secondCallArg = evaluate.mock.calls[1]?.[1] as { headers: Record<string, string> }
+    expect(secondCallArg.headers['Next-Action']).toBe(
+      '1234567890abcdef1234567890abcdef1234567890abcdef'
+    )
+  })
 })
 
 describe('App activity transport', () => {

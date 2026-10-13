@@ -7,6 +7,7 @@ export type CanonicalTaskType =
   | 'special-promotion'
   | 'more-promotion'
   | 'app-check-in'
+  | 'pc-check-in'
   | 'read-to-earn'
   | 'punch-card'
   | 'mobile-search'

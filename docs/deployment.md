@@ -4,9 +4,25 @@ Next 单应用沿用 `ghcr.io/saarjoye/mrs-core` 镜像名，替代旧版 Core/W
 
 ## 发布和切换
 
-现有仓库的 `main` 分支通过 `.github/workflows/docker-image.yml` 构建。先执行离线测试、类型检查、ESLint、构建和 Compose 校验，再构建 `linux/amd64` 与 `linux/arm64` 候选镜像。候选镜像使用空数据、禁用外部网络做启动健康检查；成功后才更新 `5.0.0-next.35` 与 `latest`。完整提交固定标签为 `sha-<完整提交号>`。
+现有仓库的 `main` 分支通过 `.github/workflows/docker-image.yml` 构建。先执行离线测试、类型检查、ESLint、构建和 Compose 校验，再构建 `linux/amd64` 与 `linux/arm64` 候选镜像。候选镜像使用空数据、禁用外部网络做启动健康检查；成功后才更新 `5.0.0-next.36` 与 `latest`。完整提交固定标签为 `sha-<完整提交号>`。
 
-## next.35 搜索恢复异常收口与任务包复核闭环
+## next.36 交互式答题独立控制、PC签入与现代多账号看板
+
+### 交互式答题 WebUI 独立控制与新增任务适配
+
+扩展 Rewards 任务执行与多账号看板体验：
+- `DashboardClient` 在首页 Server Action 遭遇 HTTP 404 时自动刷新页面重新提取 Action ID 并带退避重试；
+- 支持 RSC `reportServerAction` 交互式答题/投票（Quiz / Poll），并在 WebUI「搜索设置」中提供独立开关与账号作用范围选择（全部账号或自选个别账号，SQLite 落盘，移除 `config.json` 静态项）；
+- 新增 `pc-check-in`（PC 每日签入）与 `desktopAppWeekly`（桌面端每周 70 分周常）任务发现与受控执行适配器；
+- 重构概况页多账号 Hero 卡片与分类积分明细块，直观展示各账号任务进度与积分增减。
+
+### 升级与验证
+
+应用镜像为 `ghcr.io/saarjoye/mrs-core:5.0.0-next.36`，候选健康验证成功后同步
+更新 `latest`。升级无需新增配置、迁移或依赖安装；保留原 Compose、持久卷、
+主密钥、账号、调度及任务证据。绑定目录仍需允许 UID/GID `1000:1000` 写入。
+
+## next.35 搜索恢复异常收口与任务包复核闭环（历史版本）
 
 ### 任务包子任务复核闭环与搜索恢复防中断
 

@@ -18,3 +18,4 @@ diagnostics/
 *.log
 lxc106/
 .bootstrap.env
+JS版/

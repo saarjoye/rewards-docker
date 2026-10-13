@@ -152,6 +152,18 @@ describe('quest parser and isolation', () => {
     expect(webOfferExecutionPath(childOffer({ locked: true }), true)).toBe('unsupported')
     expect(webOfferExecutionPath(parentOffer({ isGroup: true }), true)).toBe('unsupported')
   })
+
+  it('allows WW_pcparent_RewardsApp_weekly_Exclusive child search offers while keeping other Exclusive offers restricted', () => {
+    const weeklyParent = 'WW_pcparent_RewardsApp_weekly_Exclusive'
+    const weeklyChild = 'WW_pcchild1_urlreward_RewardsApp_weekly_Exclusive'
+    const raw = JSON.stringify({
+      offerId: weeklyParent,
+      children: [{ props: linkProps({ offerId: weeklyChild }) }]
+    })
+    const offers = parseRewardsQuestHtml(raw, weeklyParent)
+    expect(offers).toHaveLength(1)
+    expect(offers[0]?.executable).toBe(true)
+  })
 })
 
 describe('quest detail discovery', () => {

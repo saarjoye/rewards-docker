@@ -645,7 +645,7 @@ export function App(): ReactElement {
             <ScheduleSettings csrfToken={csrfToken} onUnsavedChange={setUnsaved} />
           )}
           {page === 'search' && (
-            <SearchSettings csrfToken={csrfToken} onUnsavedChange={setUnsaved} />
+            <SearchSettings csrfToken={csrfToken} onUnsavedChange={setUnsaved} accounts={state?.accounts ?? []} />
           )}
         </Suspense>
       </main>

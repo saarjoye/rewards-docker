@@ -177,6 +177,17 @@ export class QuestClient {
     if (!/^[A-Za-z0-9_-]+_pcparent_[A-Za-z0-9_-]+$/i.test(parentOfferId))
       throw new MutationNotStartedError('Invalid quest identity', 'offer-invalid-destination')
     const target = REWARDS_URLS.quest(parentOfferId)
+    if (
+      /WW_pcparent_RewardsApp_weekly_Exclusive/i.test(parentOfferId) &&
+      typeof page.setExtraHTTPHeaders === 'function'
+    ) {
+      await page
+        .setExtraHTTPHeaders({
+          'X-MSRewards-App': '1',
+          'X-Rewards-Source': 'msrewards-desktop'
+        })
+        .catch(() => undefined)
+    }
     const response = await page.goto(target, {
       waitUntil: 'domcontentloaded',
       timeout: Math.min(30_000, check())

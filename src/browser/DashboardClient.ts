@@ -812,6 +812,7 @@ export class DashboardClient {
 
   async reportServerAction(input: {
     actionId: string
+    actionName?: string
     body: readonly unknown[]
     url?: string
     referer?: string
@@ -836,38 +837,73 @@ export class DashboardClient {
       }
     }
 
-    const response = await this.page.evaluate(
-      async ({ requestUrl, headers, body, timeoutMs }) => {
-        const controller = new AbortController()
-        const timeout = window.setTimeout(() => {
-          controller.abort()
-        }, timeoutMs)
-        try {
-          const result = await fetch(requestUrl, {
-            method: 'POST',
-            credentials: 'include',
-            headers,
-            body,
-            signal: controller.signal
-          })
-          return { status: result.status, ok: result.ok, text: await result.text() }
-        } finally {
-          window.clearTimeout(timeout)
-        }
-      },
-      {
-        requestUrl: url,
-        headers: {
-          Accept: 'text/x-component',
-          'Content-Type': 'text/plain;charset=UTF-8',
-          'Next-Action': input.actionId,
-          'Next-Router-State-Tree': input.routerStateTree,
-          ...(input.deploymentId ? { 'X-Deployment-Id': input.deploymentId } : {})
+    const sendAction = (actionId: string, deploymentId?: string) =>
+      this.page.evaluate(
+        async ({ requestUrl, headers, body, timeoutMs }) => {
+          const controller = new AbortController()
+          const timeout = window.setTimeout(() => {
+            controller.abort()
+          }, timeoutMs)
+          try {
+            const result = await fetch(requestUrl, {
+              method: 'POST',
+              credentials: 'include',
+              headers,
+              body,
+              signal: controller.signal
+            })
+            return { status: result.status, ok: result.ok, text: await result.text() }
+          } finally {
+            window.clearTimeout(timeout)
+          }
         },
-        body: JSON.stringify(input.body),
-        timeoutMs: 20_000
+        {
+          requestUrl: url,
+          headers: {
+            Accept: 'text/x-component',
+            'Content-Type': 'text/plain;charset=UTF-8',
+            'Next-Action': actionId,
+            'Next-Router-State-Tree': input.routerStateTree,
+            ...(deploymentId ? { 'X-Deployment-Id': deploymentId } : {})
+          },
+          body: JSON.stringify(input.body),
+          timeoutMs: 20_000
+        }
+      )
+
+    let response = await sendAction(input.actionId, input.deploymentId)
+    if (response.status === 404 && typeof this.page.content === 'function') {
+      const actionKey = input.actionName ?? 'reportActivity'
+      const html = await this.page.content().catch(() => '')
+      if (html) {
+        const scripts = await this.readReferencedScripts([html], undefined, Date.now() + 10_000).catch(
+          () => []
+        )
+        const actionIds = extractActionIds(scripts)
+        const nextActionId =
+          actionIds[actionKey] ??
+          actionIds[actionKey.toLowerCase()] ??
+          Object.entries(actionIds).find(
+            ([name]) => name.toLowerCase() === actionKey.toLowerCase()
+          )?.[1]
+        if (nextActionId && nextActionId !== input.actionId) {
+          const refreshedDeploymentId = parseRewardsHtml(html).deploymentId ?? input.deploymentId
+          await this.logger
+            .write({
+              level: 'info',
+              event: 'server-action-404-refreshed',
+              stage: 'web-rewards',
+              runId: this.runId,
+              accountAlias: this.accountAlias,
+              httpStatus: 404,
+              retryAttempt: 1,
+              message: `Server Action ${actionKey} 404，已重新提取最新 Action Hash 并重试 1 次`
+            })
+            .catch(() => undefined)
+          response = await sendAction(nextActionId, refreshedDeploymentId)
+        }
       }
-    )
+    }
     let credit: TaskCreditEvidence | undefined
     if (response.ok && input.offerId) {
       for (const line of response.text.split('\n')) {
@@ -899,6 +935,60 @@ export class DashboardClient {
         !/^\d+:true\s*$/m.test(response.text),
       ...(credit ? { credit } : {})
     }
+  }
+
+  async reportLegacyActivity(input: {
+    offerId: string
+    hash?: string
+    referer?: string
+  }): Promise<{ status: number; text: string; ok: boolean }> {
+    const referer = input.referer ?? REWARDS_URLS.dashboard
+    const refererUrl = new URL(referer)
+    const currentUrl = new URL(this.page.url())
+    if (currentUrl.origin !== refererUrl.origin || currentUrl.pathname !== refererUrl.pathname) {
+      await this.page.goto(referer, { waitUntil: 'domcontentloaded', timeout: 30_000 })
+    }
+
+    return await this.page.evaluate(
+      async ({ offerId, hash }) => {
+        let token = ''
+        const tokenInput = document.querySelector<HTMLInputElement>(
+          'input[name="__RequestVerificationToken"]'
+        )
+        if (tokenInput?.value) {
+          token = tokenInput.value
+        } else {
+          const html = document.documentElement.innerHTML
+          const match =
+            html.match(/name=["']__RequestVerificationToken["'][^>]*value=["']([^"']+)["']/i) ??
+            html.match(/"(?:__)?verificationToken"\s*:\s*"([^"]+)"/i)
+          if (match?.[1]) token = match[1]
+        }
+        const bodyParams = new URLSearchParams({
+          id: offerId,
+          hash,
+          activityAmount: '1'
+        })
+        if (token) bodyParams.set('__RequestVerificationToken', token)
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          'X-Requested-With': 'XMLHttpRequest'
+        }
+        if (token) headers['RequestVerificationToken'] = token
+
+        const res = await fetch(
+          'https://rewards.bing.com/api/reportactivity?X-Requested-With=XMLHttpRequest',
+          {
+            method: 'POST',
+            credentials: 'include',
+            headers,
+            body: bodyParams.toString()
+          }
+        )
+        return { status: res.status, ok: res.ok, text: await res.text() }
+      },
+      { offerId: input.offerId, hash: input.hash ?? '1' }
+    )
   }
 
   async submitAppActivity(
