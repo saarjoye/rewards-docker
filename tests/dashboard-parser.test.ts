@@ -130,6 +130,22 @@ describe('dashboard parser', () => {
     const parsed = parseRewardsHtml(html)
     expect(parsed.offers).toHaveLength(1)
     expect(parsed.offers[0]).toMatchObject({ sourceTaskId: 'offer-1', executable: true })
+  })
+
+  it('backfills completed progress to total points when offer is marked completed without pointProgress', () => {
+    const chunk = JSON.stringify(
+      'x:{"offerId":"offer-done","title":"Completed task","points":10,"isCompleted":true}'
+    )
+    const html = `<script>self.__next_f.push([1,${chunk}])</script>`
+    const parsed = parseRewardsHtml(html)
+    expect(parsed.offers).toHaveLength(1)
+    expect(parsed.offers[0]).toMatchObject({
+      sourceTaskId: 'offer-done',
+      complete: true,
+      completed: 10,
+      total: 10,
+      executable: false
+    })
     expect(parsed.availablePoints.availability).toBe('missing')
     expect(parsed.availablePoints.value).toBeUndefined()
   })

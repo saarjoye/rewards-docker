@@ -8,7 +8,7 @@ Microsoft Rewards Next 是一个重新设计的本地自动化项目，重点解
 
 融合外部脚本增强任务与计分看板设计：支持首页 Server Action `404` 自动刷新重试与 `reportServerAction` 交互式 Quiz / Poll 答题能力；Quiz / Poll 自动答题完全由 WebUI「搜索设置」独立控制（支持全部账号或指定个别账号开启，SQLite 落盘，无需修改 `config.json`）；新增 PC 每日签入（`pc-check-in`）与桌面端周任务（`desktopAppWeekly`）适配器；重构概况页多账号 Hero 卡片与分类计分明细展示。
 
-GitHub Actions 验证候选通过后，发布 `ghcr.io/saarjoye/mrs-core:5.0.0-next.36`
+GitHub Actions 验证候选通过后，发布 `ghcr.io/saarjoye/mrs-core:5.0.0-next.37`
 并同步 `latest`。升级无需新增迁移、配置或依赖，保留原 Compose、持久卷、主密钥、
 账号和定时设置。
 

@@ -297,19 +297,24 @@ function normalizeOffer(
       attributes?.activitymax ??
       attributes?.pointProgressMax
   )
-  const completed =
-    safeNonNegativeInteger(
-      item.pointProgress ??
-        attributes?.progress ??
-        attributes?.pointprogress ??
-        attributes?.activityprogress
-    ) ?? 0
+  const rawCompleted = safeNonNegativeInteger(
+    item.pointProgress ??
+      attributes?.progress ??
+      attributes?.pointprogress ??
+      attributes?.activityprogress
+  )
   const completeValue = item.complete ?? item.isCompleted ?? attributes?.complete
   const completeText = stringValue(completeValue)
   const complete =
     completeValue === true ||
     completeText?.toLowerCase() === 'true' ||
-    (total !== undefined && total > 0 && completed >= total)
+    (total !== undefined && total > 0 && rawCompleted !== undefined && rawCompleted >= total)
+  const completed =
+    rawCompleted !== undefined && rawCompleted > 0
+      ? rawCompleted
+      : complete && total !== undefined && total > 0
+        ? total
+        : (rawCompleted ?? 0)
   const hash = stringValue(item.hash)
   const locked = item.isLocked === true || item.isDisabled === true
   const destinationUrl = stringValue(item.destinationUrl ?? item.destination)

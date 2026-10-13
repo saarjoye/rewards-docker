@@ -118,7 +118,7 @@ export function SearchSettings({
         setQuizPollAccountIds(Array.from(data.quizPollAccountIds ?? []))
       })
       .catch(() => {
-        if (!controller.signal.aborted) setMessage('?????????????')
+        if (!controller.signal.aborted) setMessage('读取失败，请刷新页面重试。')
       })
     return () => {
       controller.abort()
@@ -147,11 +147,11 @@ export function SearchSettings({
       visit < 1 ||
       visit > 120
     ) {
-      setMessage('????????? 5?900 ?????????????? 1?120 ?????? 1?100?')
+      setMessage('参数不合法：延迟需 5–900 秒且最大值≥最小值，结果停留 1–120 秒，停滞次数 1–100。')
       return
     }
     if (quizPollEnabled && quizPollScope === 'selected' && quizPollAccountIds.length === 0) {
-      setMessage('????????? Quiz / Poll ???????????????')
+      setMessage('参数不合法：启用 Quiz / Poll 并选择“指定个别账号”时，请至少选择一个账号。')
       return
     }
     savingRef.current = true
@@ -185,10 +185,10 @@ export function SearchSettings({
         setQuizPollEnabled(Boolean(data.quizPollEnabled))
         setQuizPollScope(data.quizPollScope === 'selected' ? 'selected' : 'all')
         setQuizPollAccountIds(Array.from(data.quizPollAccountIds ?? []))
-        setMessage('????????????????????')
+        setMessage('已保存，下一次搜索与自动答题立即生效。')
       })
       .catch(() => {
-        setMessage('?????????????????')
+        setMessage('保存失败，原设置保持不变，请重试。')
       })
       .finally(() => {
         savingRef.current = false
@@ -197,14 +197,14 @@ export function SearchSettings({
   }
 
   return (
-    <Card title="????">
+    <Card title="搜索设置">
       <p>
-        ????????????????????????????????????????????
+        控制搜索每条之间的随机等待时间（秒）与结果页停留行为。保存后无需重启，下一次搜索即生效。
       </p>
       <form onSubmit={submit}>
         <p>
           <label>
-            ??????????
+            连续未获积分停止次数{' '}
             <input
               type="number"
               min="1"
@@ -219,46 +219,52 @@ export function SearchSettings({
           </label>
         </p>
         <p>
-          ???????????
-          <input
-            type="number"
-            min="5"
-            max="900"
-            required
-            value={delayMin}
-            disabled={settings === null || saving}
-            onChange={(event) => {
-              setDelayMin(event.target.value)
-            }}
-          />
+          <label>
+            每条搜索最小延迟（秒）{' '}
+            <input
+              type="number"
+              min="5"
+              max="900"
+              required
+              value={delayMin}
+              disabled={settings === null || saving}
+              onChange={(event) => {
+                setDelayMin(event.target.value)
+              }}
+            />
+          </label>
         </p>
         <p>
-          ???????????
-          <input
-            type="number"
-            min="5"
-            max="900"
-            required
-            value={delayMax}
-            disabled={settings === null || saving}
-            onChange={(event) => {
-              setDelayMax(event.target.value)
-            }}
-          />
+          <label>
+            每条搜索最大延迟（秒）{' '}
+            <input
+              type="number"
+              min="5"
+              max="900"
+              required
+              value={delayMax}
+              disabled={settings === null || saving}
+              onChange={(event) => {
+                setDelayMax(event.target.value)
+              }}
+            />
+          </label>
         </p>
         <p>
-          ????????????????
-          <input
-            type="number"
-            min="1"
-            max="120"
-            required
-            value={resultVisit}
-            disabled={settings === null || saving}
-            onChange={(event) => {
-              setResultVisit(event.target.value)
-            }}
-          />
+          <label>
+            结果页停留（秒，点击结果时生效）{' '}
+            <input
+              type="number"
+              min="1"
+              max="120"
+              required
+              value={resultVisit}
+              disabled={settings === null || saving}
+              onChange={(event) => {
+                setResultVisit(event.target.value)
+              }}
+            />
+          </label>
         </p>
         <p>
           <label>
@@ -269,8 +275,8 @@ export function SearchSettings({
               onChange={(event) => {
                 setScroll(event.target.checked)
               }}
-            />
-            ??????
+            />{' '}
+            随机滚动页面
           </label>
         </p>
         <p>
@@ -282,16 +288,16 @@ export function SearchSettings({
               onChange={(event) => {
                 setClickResult(event.target.checked)
               }}
-            />
-            ????????????
+            />{' '}
+            点击并访问第一条搜索结果
           </label>
         </p>
 
         <hr style={{ margin: '20px 0', borderColor: '#e7e7e7', borderStyle: 'solid', borderWidth: '1px 0 0 0' }} />
         <div style={{ marginBottom: '16px' }}>
-          <h4 style={{ margin: '0 0 8px 0', fontSize: '15px', fontWeight: 600 }}>Quiz / Poll ????</h4>
+          <h4 style={{ margin: '0 0 8px 0', fontSize: '15px', fontWeight: 600 }}>Quiz / Poll 自动答题</h4>
           <p style={{ margin: '0 0 12px 0', color: '#666', fontSize: '13px' }}>
-            ????????????????? Quiz ??????????????
+            自动完成仪表盘中的 Quiz（测验问答）与 Poll（投票）互动任务并认领积分。
           </p>
           <p>
             <label>
@@ -302,8 +308,8 @@ export function SearchSettings({
                 onChange={(event) => {
                   setQuizPollEnabled(event.target.checked)
                 }}
-              />
-              ?? Quiz / Poll ????
+              />{' '}
+              开启 Quiz / Poll 自动答题
             </label>
           </p>
         </div>
@@ -322,7 +328,7 @@ export function SearchSettings({
                     setQuizPollScope('all')
                   }}
                 />
-                ????
+                全部账号
               </label>
               <label style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}>
                 <input
@@ -335,7 +341,7 @@ export function SearchSettings({
                     setQuizPollScope('selected')
                   }}
                 />
-                ??????
+                指定个别账号
               </label>
             </div>
 
@@ -343,7 +349,7 @@ export function SearchSettings({
               <div style={{ marginTop: '8px', padding: '12px', background: '#f8f9fa', borderRadius: '6px', border: '1px solid #e5e5e5' }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
                   <span style={{ fontSize: '13px', fontWeight: 500, color: '#333' }}>
-                    ??????????
+                    选择开启自动答题的账号：
                   </span>
                   {accounts.length > 0 && (
                     <div style={{ display: 'flex', gap: '8px' }}>
@@ -362,7 +368,7 @@ export function SearchSettings({
                           setQuizPollAccountIds(accounts.map((a) => a.accountId))
                         }}
                       >
-                        ??
+                        全选
                       </button>
                       <span style={{ color: '#ccc', fontSize: '12px' }}>|</span>
                       <button
@@ -380,17 +386,20 @@ export function SearchSettings({
                           setQuizPollAccountIds([])
                         }}
                       >
-                        ??
+                        清空
                       </button>
                     </div>
                   )}
                 </div>
                 {accounts.length === 0 ? (
-                  <div style={{ color: '#888', fontSize: '12px' }}>??????????</div>
+                  <div style={{ color: '#888', fontSize: '12px' }}>暂无可配置的账号</div>
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '200px', overflowY: 'auto' }}>
                     {accounts.map((account) => {
                       const checked = quizPollAccountIds.includes(account.accountId)
+                      const label = account.displayAlias || (account.runAccountIndex !== undefined ? '账号 ' + String(account.runAccountIndex) : '账号')
+                      const emailSuffix = account.maskedEmail ? ' (' + account.maskedEmail + ')' : ''
+                      const disabledSuffix = account.enabled === false ? ' (已禁用)' : ''
                       return (
                         <label
                           key={account.accountId}
@@ -409,9 +418,7 @@ export function SearchSettings({
                             }}
                           />
                           <span>
-                            {account.displayAlias || `?? ${account.runAccountIndex !== undefined ? String(account.runAccountIndex) : ''}`}
-                            {account.maskedEmail ? ` (${account.maskedEmail})` : ''}
-                            {account.enabled === false ? ' (???)' : ''}
+                            {label}{emailSuffix}{disabledSuffix}
                           </span>
                         </label>
                       )
@@ -424,10 +431,10 @@ export function SearchSettings({
         )}
 
         <Button type="submit" disabled={settings === null || !dirty || saving}>
-          {saving ? '????' : '??????'}
+          {saving ? '保存中…' : '保存搜索设置'}
         </Button>
         {message &&
-          (message.includes('??') || message.includes('???') || message.includes('??') ? (
+          (message.includes('失败') || message.includes('不合法') ? (
             <Feedback error={message} />
           ) : (
             <Feedback message={message} />
