@@ -1,4 +1,4 @@
-﻿export const stateLabel = (state: string): string =>
+export const stateLabel = (state: string): string =>
   ({
     confirmed: '已确认',
     final: '最终观测',
@@ -57,6 +57,12 @@ const detailedFailureLabels: Record<string, string> = {
   'task-verification-source-mismatch': '复核任务或来源不一致',
   'task-verification-date-changed': '跨天日期变更，保留待复核',
   'offer-authentication-failed': '账号登录态失效，需重新认证',
+  'password-missing-oauth-required': '会话已过期且未配置密码，请重新导入 OAuth 授权码或 Cookie',
+  'bing-session-error': 'Bing 登录态未确认或失效，请导入 Cookie 或检查登录',
+  'Bing Rewards identity not confirmed': 'Bing Rewards 身份未确认，请更新 Cookie 或重新登录',
+  'login-password-choice': '微软登录要求其他验证方式，请登录控制台更新会话',
+  'login-password': '账号密码验证失败或需人工验证',
+  'login-account-picker': '账号选择异常，请更新会话',
   'offer-network-failed': '网络连接异常，页面加载超时',
   'offer-browser-failed': '自动化浏览器执行异常',
   'offer-invalid-destination': '任务目标链接安全检查未通过',

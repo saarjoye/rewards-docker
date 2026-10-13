@@ -1,10 +1,29 @@
-# Next 发布与部署
+﻿# Next 发布与部署
 
 Next 单应用沿用 `ghcr.io/saarjoye/mrs-core` 镜像名，替代旧版 Core/Web 双容器。**不是旧 Core 的接口兼容更新：旧 Web 依赖 3010 控制接口，不能继续搭配新版镜像。**
 
 ## 发布和切换
 
-现有仓库的 `main` 分支通过 `.github/workflows/docker-image.yml` 构建。先执行离线测试、类型检查、ESLint、构建和 Compose 校验，再构建 `linux/amd64` 与 `linux/arm64` 候选镜像。候选镜像使用空数据、禁用外部网络做启动健康检查；成功后才更新 `5.0.0-next.37` 与 `latest`。完整提交固定标签为 `sha-<完整提交号>`。
+现有仓库的 `main` 分支通过 `.github/workflows/docker-image.yml` 构建。先执行离线测试、类型检查、ESLint、构建和 Compose 校验，再构建 `linux/amd64` 与 `linux/arm64` 候选镜像。候选镜像使用空数据、禁用外部网络做启动健康检查；成功后才更新 `5.0.0-next.38` 与 `latest`。完整提交固定标签为 `sha-<完整提交号>`。
+
+## next.38 双引擎架构、国区安全锁、秒级体检与趋势看板（当前版本）
+
+### 双引擎架构与防风控强化
+
+落地双引擎混合架构，兼顾抗高级风控与秒级高敏：
+- 保留 Playwright 真实浏览器底座、反指纹与键鼠模拟，用于搜索与高风控任务；
+- 引入 FastApiEngine 纯 HTTP 秒级探测，支持账号状态/连签/印章/阅读一键秒级体检诊断；
+- 前置 Bing RevIpCC 出口国区安全锁（Region Lock），非 CN 节点主动拦截熔断，防异地锁区；
+- 概览看板新增次日 0 点刷新倒计时与 7/30 天积分增长趋势纯 CSS 柱状图；
+- 凭据支持双轨模式，支持 Web Cookie 与移动端 OAuth AppToken 安全导入与托管。
+
+### 升级与验证
+
+应用镜像为 ghcr.io/saarjoye/mrs-core:5.0.0-next.38，候选健康验证成功后同步
+更新 latest。升级无需新增配置、迁移或依赖安装；保留原 Compose、持久卷、
+主密钥、账号、调度及任务证据。绑定目录仍需允许 UID/GID 1000:1000 写入。
+
+## next.37 修复搜索设置乱码与已完成任务进度回填（历史版本）
 
 ## next.36 交互式答题独立控制、PC签入与现代多账号看板
 

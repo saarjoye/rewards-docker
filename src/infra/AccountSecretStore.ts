@@ -7,7 +7,7 @@ import { maskEmail } from '../security/Redactor.js'
 
 export interface AccountCredentials {
   email: string
-  password: string
+  password?: string
 }
 
 export interface AccountSummary {
@@ -16,6 +16,9 @@ export interface AccountSummary {
   displayAlias: string
   maskedEmail: string
   enabled: boolean
+  hasPassword?: boolean
+  hasOAuth?: boolean
+  hasWebSession?: boolean
 }
 
 export class AccountSecretStore {
@@ -25,11 +28,14 @@ export class AccountSecretStore {
   ) {}
 
   create(
-    input: { email: string; password: string; displayAlias?: string },
+    input: { email: string; password?: string; displayAlias?: string },
     now = new Date()
   ): string {
     const accountId = randomUUID()
-    const credentials: AccountCredentials = { email: input.email, password: input.password }
+    const credentials: AccountCredentials = {
+      email: input.email,
+      password: input.password ?? ''
+    }
     const encrypted = encryptBytes(Buffer.from(JSON.stringify(credentials), 'utf8'), this.key)
     const displayAlias = input.displayAlias?.trim() || maskEmail(input.email)
     const timestamp = now.toISOString()
@@ -68,7 +74,8 @@ export class AccountSecretStore {
         runAccountIndex: index + 1,
         displayAlias: row.display_alias,
         maskedEmail: maskEmail(credentials.email),
-        enabled: row.enabled === 1
+        enabled: row.enabled === 1,
+        hasPassword: Boolean(credentials.password && credentials.password.trim().length > 0)
       }
     })
   }
@@ -121,14 +128,15 @@ export class AccountSecretStore {
     if (!row) return false
 
     const credentials = this.decryptCredentials(row.encrypted_credentials)
-    const encryptedCredentials = input.password
-      ? JSON.stringify(
-          encryptBytes(
-            Buffer.from(JSON.stringify({ ...credentials, password: input.password }), 'utf8'),
-            this.key
+    const encryptedCredentials =
+      input.password !== undefined
+        ? JSON.stringify(
+            encryptBytes(
+              Buffer.from(JSON.stringify({ ...credentials, password: input.password }), 'utf8'),
+              this.key
+            )
           )
-        )
-      : row.encrypted_credentials
+        : row.encrypted_credentials
     const displayAlias = input.displayAlias?.trim() || row.display_alias
     const enabled = input.enabled === undefined ? row.enabled : input.enabled ? 1 : 0
 

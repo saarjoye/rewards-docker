@@ -10,11 +10,26 @@ import type { ExecutionMode } from '../domain/RunRequest.js'
 import { RunLedger, migrateRunLedger } from './RunLedger.js'
 import { redactText } from '../security/Redactor.js'
 import { SearchQueryReservations } from './SearchQueryReservations.js'
+import { localDateKey } from '../domain/DateKey.js'
 
 export interface QuizPollSettings {
   readonly enabled: boolean
   readonly scope: 'all' | 'selected'
   readonly accountIds: readonly string[]
+}
+
+export interface PointsTrendDay {
+  date: string
+  totalGained: number
+  totalPoints: number
+  accounts: Array<{
+    accountId: string
+    initialPoints: number | null
+    finalPoints: number | null
+    gainedPoints: number | null
+    status: AccountRunStatus
+    balanceConfirmed: boolean
+  }>
 }
 
 export interface PointsHistoryRecord {
@@ -464,6 +479,71 @@ export class SqliteStore {
       balanceConfirmed: row.balance_confirmed === 1,
       recordedAt: row.recorded_at
     }
+  }
+
+  getPointsHistoryTrend(days = 30): PointsTrendDay[] {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - Math.max(0, days - 1));
+    const cutoffDate = localDateKey(cutoff);
+
+    const rows = this.database
+      .prepare(
+        `SELECT id, account_id, local_date, initial_points, final_points, gained_points, status,
+                balance_confirmed, recorded_at
+         FROM points_history
+         WHERE local_date >= ?
+         ORDER BY local_date ASC, id ASC`
+      )
+      .all(cutoffDate) as Array<{
+        id: number;
+        account_id: string;
+        local_date: string;
+        initial_points: number | null;
+        final_points: number | null;
+        gained_points: number | null;
+        status: AccountRunStatus;
+        balance_confirmed: number;
+        recorded_at: string;
+      }>;
+
+    const dateMap = new Map<string, Map<string, {
+      accountId: string;
+      initialPoints: number | null;
+      finalPoints: number | null;
+      gainedPoints: number | null;
+      status: AccountRunStatus;
+      balanceConfirmed: boolean;
+    }>>();
+
+    for (const row of rows) {
+      let accMap = dateMap.get(row.local_date);
+      if (!accMap) {
+        accMap = new Map();
+        dateMap.set(row.local_date, accMap);
+      }
+      accMap.set(row.account_id, {
+        accountId: row.account_id,
+        initialPoints: row.initial_points,
+        finalPoints: row.final_points,
+        gainedPoints: row.gained_points,
+        status: row.status,
+        balanceConfirmed: row.balance_confirmed === 1
+      });
+    }
+
+    const result: PointsTrendDay[] = [];
+    for (const [date, accMap] of dateMap.entries()) {
+      const accounts = Array.from(accMap.values());
+      const totalGained = accounts.reduce((sum, a) => sum + (a.gainedPoints ?? 0), 0);
+      const totalPoints = accounts.reduce((sum, a) => sum + (a.finalPoints ?? 0), 0);
+      result.push({
+        date,
+        totalGained,
+        totalPoints,
+        accounts
+      });
+    }
+    return result;
   }
 
   recordEvidence<T>(input: {

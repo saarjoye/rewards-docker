@@ -100,7 +100,12 @@ export class AppOAuthClient {
         signal.throwIfAborted()
         return undefined
       })
-      if (refreshed) return refreshed
+      if (refreshed) {
+        return {
+          ...refreshed,
+          refreshToken: refreshed.refreshToken ?? stored.payload.refreshToken
+        }
+      }
     }
 
     const state = randomBytes(16).toString('hex')

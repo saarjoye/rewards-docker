@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises'
+﻿import { readFile } from 'node:fs/promises'
 
 import { z } from 'zod'
 
@@ -17,11 +17,19 @@ const taskFlagsSchema = z.object({
   claimBonusPoints: z.boolean()
 })
 
+const networkSchema = z
+  .object({
+    lockRegion: z.boolean().default(false),
+    proxyUrl: z.string().optional()
+  })
+  .default({ lockRegion: false })
+
 export const applicationConfigSchema = z.object({
   locale: z.literal('zh-CN'),
   market: z.literal('CN'),
   timezone: z.string().min(1),
   tasks: taskFlagsSchema,
+  network: networkSchema,
   search: z
     .object({
       delayMinSeconds: z.number().int().min(5).max(900),
@@ -61,6 +69,9 @@ export const DEFAULT_CONFIG: ApplicationConfig = applicationConfigSchema.parse({
     punchCards: true,
     desktopAppWeekly: false,
     claimBonusPoints: true
+  },
+  network: {
+    lockRegion: false
   },
   search: {
     delayMinSeconds: 30,

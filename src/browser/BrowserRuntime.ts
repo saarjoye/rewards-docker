@@ -1,4 +1,4 @@
-import patchright, {
+﻿import patchright, {
   type Browser,
   type BrowserContext,
   type BrowserContextOptions,
@@ -32,6 +32,7 @@ export interface BrowserRuntimeOptions {
   headless: boolean
   sessions: EncryptedSessionStore
   executablePath?: string
+  proxyUrl?: string
 }
 
 const DESKTOP_AGENT =
@@ -99,16 +100,23 @@ export class BrowserRuntime {
 
   private async getBrowser(): Promise<Browser> {
     if (this.browser?.isConnected()) return this.browser
+    const args = [
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-dev-shm-usage',
+      '--disable-blink-features=AutomationControlled'
+    ]
+    if (this.options.proxyUrl) {
+      args.push(`--proxy-server=${this.options.proxyUrl}`)
+    } else {
+      args.push('--no-proxy-server')
+    }
+
     this.browser = await patchright.chromium.launch({
       headless: this.options.headless,
       ...(this.options.executablePath ? { executablePath: this.options.executablePath } : {}),
-      args: [
-        '--no-first-run',
-        '--no-default-browser-check',
-        '--disable-dev-shm-usage',
-        '--disable-blink-features=AutomationControlled',
-        '--no-proxy-server'
-      ]
+      ...(this.options.proxyUrl ? { proxy: { server: this.options.proxyUrl } } : {}),
+      args
     })
     return this.browser
   }

@@ -1,8 +1,16 @@
-# Microsoft Rewards Next
+﻿# Microsoft Rewards Next
 
 Microsoft Rewards Next 是一个重新设计的本地自动化项目，重点解决登录误判、不同账号任务差异、重复 mutation、Dashboard 数据源变化、搜索超时和容器浏览器重复下载问题。
 
 当前仓库是独立实现，不读取旧项目的账号、Session、运行状态或密钥。Web 管理、真实运行编排、浏览器登录、Rewards 数据源和十类任务适配器已经接入；真实任务仍必须按只读、单账号受控 mutation、三账号全量和连续三日的顺序验收。
+
+## next.38 双引擎架构、国区安全锁、秒级体检与趋势看板
+
+落地双引擎混合架构，兼顾抗高级风控与秒级高敏：保留 Playwright 真实渲染底座与键鼠模拟抗高级风控；新增 FastApiEngine 纯 HTTP 秒级探测体检与连签打卡；支持 Bing RevIpCC 出口国区安全锁拦截；控制台新增次日 0 点刷新倒计时与 7/30 天积分增长趋势柱状图；凭据支持双轨模式（账号密码 / Cookie / OAuth 导入）。
+
+GitHub Actions 验证候选通过后，发布 ghcr.io/saarjoye/mrs-core:5.0.0-next.38
+并同步 latest。升级无需新增迁移、配置或依赖，保留原 Compose、持久卷、主密钥、
+账号和定时设置。
 
 ## next.36 交互式答题独立控制、PC签入与现代多账号看板
 

@@ -1,4 +1,4 @@
-import { AppAuthorizationSession } from '../browser/AppAuthorizationSession.js'
+﻿import { AppAuthorizationSession } from '../browser/AppAuthorizationSession.js'
 import { randomUUID } from 'node:crypto'
 
 import type { AccountBrowserSlot } from '../browser/BrowserRuntime.js'
@@ -8,6 +8,7 @@ import { AppOAuthClient, type AppToken } from '../browser/AppOAuthClient.js'
 import { LoginController } from '../browser/LoginController.js'
 import { navigateForAuthentication } from '../browser/AuthNavigation.js'
 import { REWARDS_URLS } from '../browser/Urls.js'
+import { fastApiEngine, cookieItemsToString } from '../auth/FastApiEngine.js'
 import { LoginStateError, requiresUserAction } from '../auth/LoginState.js'
 import type { EncryptedSessionStore } from '../auth/EncryptedSessionStore.js'
 import { aggregateAccountStatus, type AccountRunStatus } from '../domain/AccountRun.js'
@@ -15,7 +16,7 @@ import { localDateKey } from '../domain/DateKey.js'
 import { batchStatus } from '../domain/RunOutcome.js'
 import type { RunRequest } from '../domain/RunRequest.js'
 import { createTaskId, type TaskRecord } from '../domain/Task.js'
-import type { AccountSecretStore, AccountSummary } from '../infra/AccountSecretStore.js'
+import type { AccountCredentials, AccountSecretStore, AccountSummary } from '../infra/AccountSecretStore.js'
 import type { ApplicationConfig } from '../infra/Config.js'
 import type { SqliteStore } from '../infra/SqliteStore.js'
 import type { StructuredLogger } from '../infra/StructuredLogger.js'
@@ -217,6 +218,33 @@ export class ApplicationRunCoordinator {
     const results: AccountRunStatus[] = []
     try {
       this.store.updateRun(runId, 'running')
+      if (this.config.network.lockRegion) {
+        const regionCheck = await fastApiEngine.checkRegionLock()
+        if (!regionCheck.allowed) {
+          await this.logger
+            .write({
+              level: 'error',
+              event: 'region-lock-blocked',
+              runId,
+              message: regionCheck.message
+            })
+            .catch(() => undefined)
+          for (const account of selected) {
+            this.store.upsertAccountRun({
+              runId,
+              accountId: account.accountId,
+              runAccountIndex: account.runAccountIndex,
+              localDate,
+              status: 'failed',
+              stage: 'region-lock',
+              message: regionCheck.message,
+              updatedAt: new Date().toISOString()
+            })
+          }
+          this.store.updateRun(runId, 'interrupted', new Date().toISOString())
+          return
+        }
+      }
       for (const account of selected) {
         if (controller.signal.aborted) break
         const status = await this.executeAccount(
@@ -457,7 +485,7 @@ export class ApplicationRunCoordinator {
     stage: AccountPipelineStage,
     context: AccountPipelineContext,
     mode: ExecutionMode,
-    credentials: { email: string; password: string },
+    credentials: AccountCredentials,
     resources: AccountResources,
     singleAccountMode: boolean,
     targetAccountIndex: number | undefined,
@@ -698,6 +726,18 @@ export class ApplicationRunCoordinator {
         status: 'partial',
         message: '最终余额尚未反映已确认的搜索进度',
         failureStage: 'final-dashboard-settlement'
+      }
+    }
+
+    if (stage === 'web-rewards') {
+      try {
+        const rawCookies = await resources.desktop.context.cookies()
+        const cookieStr = cookieItemsToString(rawCookies)
+        if (cookieStr) {
+          await fastApiEngine.runVisualSearchStreak(cookieStr)
+        }
+      } catch {
+        // Non-blocking visual streak attempt
       }
     }
 
@@ -987,7 +1027,7 @@ export class ApplicationRunCoordinator {
 
   private async authenticate(
     context: AccountPipelineContext,
-    credentials: { email: string; password: string },
+    credentials: AccountCredentials,
     resources: AccountResources
   ): Promise<StageResult> {
     const login = new LoginController(this.logger)
@@ -1146,7 +1186,7 @@ export class ApplicationRunCoordinator {
     slot: AccountBrowserSlot,
     client: DashboardClient,
     login: LoginController,
-    credentials: { email: string; password: string },
+    credentials: AccountCredentials,
     signal: AbortSignal
   ): Promise<RewardsObservation | undefined> {
     const discovery = new RewardsDiscoveryService()

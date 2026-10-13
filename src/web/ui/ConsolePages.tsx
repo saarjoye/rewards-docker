@@ -1,4 +1,4 @@
-import { useState, type ReactElement } from 'react'
+﻿import { useState, useEffect, type ReactElement } from 'react'
 import { Card } from 'tdesign-react/es/card/index.js'
 import { DatePicker } from 'tdesign-react/es/date-picker/index.js'
 import { Empty } from 'tdesign-react/es/empty/index.js'
@@ -12,6 +12,137 @@ import { TaskPointTable } from './TaskPointTable'
 import { RunResultSummary } from './RunResultSummary'
 import { runStatusLabel, executionModeLabel } from '../../domain/RunOutcome'
 import { clockTime, duration, points, publicText, stateLabel } from './display'
+
+
+function MidnightCountdown(): ReactElement {
+  const [timeLeft, setTimeLeft] = useState({ hours: 0, minutes: 0, seconds: 0 })
+
+  useEffect(() => {
+    const update = () => {
+      const now = new Date()
+      const utc = now.getTime() + now.getTimezoneOffset() * 60000
+      const shanghaiTime = new Date(utc + 3600000 * 8)
+      const midnight = new Date(shanghaiTime)
+      midnight.setHours(24, 0, 0, 0)
+      const diff = Math.max(0, midnight.getTime() - shanghaiTime.getTime())
+      const hours = Math.floor(diff / 3600000)
+      const minutes = Math.floor((diff % 3600000) / 60000)
+      const seconds = Math.floor((diff % 60000) / 1000)
+      setTimeLeft({ hours, minutes, seconds })
+    }
+    update()
+    const interval = setInterval(update, 1000)
+    return () => { clearInterval(interval); }
+  }, [])
+
+  const pad = (n: number) => String(n).padStart(2, '0')
+
+  return (
+    <div className="midnight-countdown" title="距离次日0点 (Asia/Shanghai) 微软积分与任务额度刷新">
+      <span className="countdown-label">距次日刷新:</span>
+      <span className="countdown-digits">
+        {pad(timeLeft.hours)}:{pad(timeLeft.minutes)}:{pad(timeLeft.seconds)}
+      </span>
+    </div>
+  )
+}
+
+export interface TrendDay {
+  date: string
+  totalGained: number
+  totalPoints: number
+  accounts: Array<{
+    accountId: string
+    initialPoints: number | null
+    finalPoints: number | null
+    gainedPoints: number | null
+    status: string
+    balanceConfirmed: boolean
+  }>
+}
+
+function PointsTrendCard(): ReactElement {
+  const [days, setDays] = useState<7 | 30>(7)
+  const [trend, setTrend] = useState<TrendDay[]>([])
+
+  useEffect(() => {
+    let active = true
+    fetch(`/api/points/history?days=${String(days)}`)
+      .then(async (res) => (res.ok ? ((await res.json()) as { trend: TrendDay[] }) : Promise.reject(new Error("fetch failed"))))
+      .then((data) => {
+        if (active && Array.isArray(data.trend)) {
+          setTrend(data.trend)
+        }
+      })
+      .catch(() => {})
+    return () => {
+      active = false
+    }
+  }, [days])
+
+  const totalGainedSum = trend.reduce((sum, d) => sum + d.totalGained, 0)
+  const maxGained = Math.max(1, ...trend.map((d) => d.totalGained))
+
+  return (
+    <Card
+      bordered={false}
+      title="积分增长趋势"
+      subtitle={`全账号最近 ${String(days)} 天收益波动统计 · 柱条指示当日净增`}
+      actions={
+        <div className="trend-toggle-group">
+          <button
+            type="button"
+            className={`trend-toggle-btn ${days === 7 ? 'active' : ''}`}
+            onClick={() => { setDays(7); }}
+          >
+            7 天
+          </button>
+          <button
+            type="button"
+            className={`trend-toggle-btn ${days === 30 ? 'active' : ''}`}
+            onClick={() => { setDays(30); }}
+          >
+            30 天
+          </button>
+        </div>
+      }
+    >
+      <div className="trend-summary-row">
+        <span className="muted">区间总净增:</span>
+        <strong className="trend-summary-gained">+{String(totalGainedSum)} 分</strong>
+        <span className="muted">日均增长:</span>
+        <strong>+{String(trend.length > 0 ? Math.round(totalGainedSum / trend.length) : 0)} 分/天</strong>
+      </div>
+
+      {trend.length === 0 ? (
+        <Empty description="暂无历史趋势数据，执行日常任务或体检后将自动绘制" />
+      ) : (
+        <div className="trend-bar-chart">
+          {trend.map((day) => {
+            const heightPercent = Math.max(8, Math.round((day.totalGained / maxGained) * 100))
+            const shortDate = day.date.slice(5)
+            return (
+              <div key={day.date} className="trend-bar-col" title={`${day.date}: +${String(day.totalGained)} 分`}>
+                <div className="trend-bar-container">
+                  <span className="trend-bar-tooltip">
+                    {day.date}
+                    <br />
+                    +{String(day.totalGained)} 分
+                  </span>
+                  <div
+                    className="trend-bar-fill"
+                    style={{ height: `${String(heightPercent)}%` }}
+                  />
+                </div>
+                <span className="trend-bar-label">{shortDate}</span>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </Card>
+  )
+}
 
 export function Overview({
   state,
@@ -50,7 +181,7 @@ export function Overview({
 
   return (
     <>
-      <PageHeader title="概览" description="运行进度、账号余额与需要处理的事项" />
+      <PageHeader title="概览" description="运行进度、账号余额与需要处理的事项" actions={<MidnightCountdown />} />
       <section className="overview-hero-grid" aria-label="多账号聚合总览">
         <div className="hero-stat-card hero-card-gain">
           <div className="hero-stat-header">
@@ -130,6 +261,7 @@ export function Overview({
           </Card>
         ))}
       </section>
+      <PointsTrendCard />
       <Card bordered={false} title="当前运行" className="active-run-card">
         {active ? (
           <div className="active-run">
@@ -438,7 +570,11 @@ export function AccountsPage({
   add,
   edit,
   toggle,
-  remove
+  remove,
+  manageCredentials,
+  testAccount,
+  testAllAccounts,
+  testing
 }: {
   accounts: AccountSummary[]
   busy: boolean
@@ -447,6 +583,10 @@ export function AccountsPage({
   edit: (account: AccountSummary) => void
   toggle: (account: AccountSummary) => void
   remove: (account: AccountSummary) => void
+  manageCredentials?: (account: AccountSummary) => void
+  testAccount?: (account: AccountSummary) => void
+  testAllAccounts?: () => void
+  testing?: boolean
 }): ReactElement {
   const [query, setQuery] = useState('')
   const rows = accounts.filter((row) =>
@@ -458,9 +598,21 @@ export function AccountsPage({
         title="账号管理"
         description="管理账号名称和运行资格；账号编号仅用于选择，不代表完成数量"
         actions={
-          <Button icon={<AddIcon />} onClick={add}>
-            添加账号
-          </Button>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            {testAllAccounts && (
+              <Button
+                variant="outline"
+                disabled={Boolean(busy || testing)}
+                loading={Boolean(testing)}
+                onClick={testAllAccounts}
+              >
+                全员一键体检
+              </Button>
+            )}
+            <Button icon={<AddIcon />} onClick={add}>
+              添加账号
+            </Button>
+          </div>
         }
       />
       <Card bordered={false}>
@@ -487,7 +639,26 @@ export function AccountsPage({
               title: '名称与账号',
               cell: (row) => (
                 <>
-                  <strong>{row.displayAlias}</strong>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                    <strong>{row.displayAlias}</strong>
+                    <div className="credentials-badge-list">
+                      {row.hasOAuth ? (
+                        <span className="badge-tag badge-success" title="OAuth 令牌已绑定">OAuth</span>
+                      ) : (
+                        <span className="badge-tag badge-muted" title="未绑定 OAuth">无 OAuth</span>
+                      )}
+                      {row.hasWebSession ? (
+                        <span className="badge-tag badge-success" title="Web Cookie 已导入">Cookie</span>
+                      ) : (
+                        <span className="badge-tag badge-muted" title="未导入 Cookie">无 Cookie</span>
+                      )}
+                      {row.hasPassword ? (
+                        <span className="badge-tag badge-info" title="已设置密码">密码</span>
+                      ) : (
+                        <span className="badge-tag badge-muted" title="免密模式">免密</span>
+                      )}
+                    </div>
+                  </div>
                   <small className="muted">{row.maskedEmail}</small>
                 </>
               )
@@ -513,6 +684,28 @@ export function AccountsPage({
               title: '操作',
               cell: (row) => (
                 <div className="account-actions">
+                  {testAccount && (
+                    <Button
+                      variant="text"
+                      disabled={Boolean(busy || testing)}
+                      onClick={() => {
+                        testAccount(row)
+                      }}
+                    >
+                      体检
+                    </Button>
+                  )}
+                  {manageCredentials && (
+                    <Button
+                      variant="text"
+                      disabled={busy}
+                      onClick={() => {
+                        manageCredentials(row)
+                      }}
+                    >
+                      托管凭证
+                    </Button>
+                  )}
                   <Button
                     variant="text"
                     disabled={busy}

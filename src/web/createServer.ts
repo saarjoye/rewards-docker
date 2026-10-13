@@ -1,4 +1,4 @@
-import { writeFile } from 'node:fs/promises'
+﻿import { writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 
 import cookie from '@fastify/cookie'
@@ -15,6 +15,15 @@ import type { AccountSecretStore } from '../infra/AccountSecretStore.js'
 import type { AdminAuthStore } from '../infra/AdminAuthStore.js'
 import type { ApplicationConfig } from '../infra/Config.js'
 import type { SqliteStore } from '../infra/SqliteStore.js'
+import {
+  SessionImportManager,
+  exchangeOAuthCode,
+  exchangeOAuthRefreshToken,
+  parseAndNormalizeCookies
+} from '../auth/SessionImportManager.js'
+import type { AppToken } from '../browser/AppOAuthClient.js'
+import type { BrowserStorageState } from '../browser/BrowserRuntime.js'
+import { fastApiEngine, cookieItemsToString, type HealthCheckResult } from '../auth/FastApiEngine.js'
 import { RunViews } from './RunViews.js'
 import { scheduleInput, type Scheduler } from '../orchestration/Scheduler.js'
 import { notificationInput, type Notifications } from '../notifications/Notifications.js'
@@ -34,12 +43,14 @@ const loginSchema = z.object({
 })
 const accountSchema = z.object({
   email: z.email().max(320),
-  password: z.string().min(1).max(1024),
-  displayAlias: z.string().trim().min(1).max(80).optional()
+  password: z.string().max(1024).optional().default(''),
+  displayAlias: z.string().trim().min(1).max(80).optional(),
+  oauthCode: z.string().trim().optional(),
+  cookies: z.string().trim().optional()
 })
 const accountUpdateSchema = z
   .object({
-    password: z.string().min(1).max(1024).optional(),
+    password: z.string().max(1024).optional(),
     displayAlias: z.string().trim().min(1).max(80).optional(),
     enabled: z.boolean().optional()
   })
@@ -61,6 +72,10 @@ const runRequestSchema = z.discriminatedUnion('accountMode', [
     })
     .strict()
 ])
+const networkSettingsSchema = z.object({
+  lockRegion: z.boolean(),
+  proxyUrl: z.string().trim().optional()
+})
 const searchSettingsSchema = z
   .object({
     delayMinSeconds: z.number().int().min(5).max(900),
@@ -112,6 +127,7 @@ function getSessionToken(request: FastifyRequest): string | undefined {
 
 export async function createServer(dependencies: WebServerDependencies): Promise<FastifyInstance> {
   const views = new RunViews(dependencies.store)
+  const sessionImport = new SessionImportManager(dependencies.sessions)
   const app = Fastify({ logger: false, bodyLimit: 64 * 1024 })
   const streams = new Set<() => void>()
   let stateRevision = 0
@@ -253,6 +269,42 @@ export async function createServer(dependencies: WebServerDependencies): Promise
       quizPollAccountIds: quizPoll.accountIds
     }
   })
+  
+  app.get('/api/settings/network', (_request, reply) => {
+    reply.header('cache-control', 'no-store')
+    const network = dependencies.config?.network ?? { lockRegion: false }
+    return {
+      lockRegion: network.lockRegion,
+      proxyUrl: network.proxyUrl ?? ''
+    }
+  })
+
+  app.put('/api/settings/network', async (request, reply) => {
+    if (!dependencies.config || !dependencies.configPath) {
+      return reply.code(503).send({ error: 'config-unavailable' })
+    }
+    const input = networkSettingsSchema.parse(request.body)
+    const network = {
+      lockRegion: input.lockRegion,
+      ...(input.proxyUrl && input.proxyUrl.length > 0 ? { proxyUrl: input.proxyUrl } : {})
+    }
+    const next = { ...dependencies.config, network }
+    try {
+      await writeFile(dependencies.configPath, `${JSON.stringify(next, null, 2)}\n`, 'utf8')
+    } catch {
+      return reply.code(500).send({ error: 'config-write-failed' })
+    }
+    dependencies.config.network = network
+    return {
+      lockRegion: network.lockRegion,
+      proxyUrl: network.proxyUrl ?? ''
+    }
+  })
+
+  app.post('/api/settings/network/test', async () => {
+    return await fastApiEngine.checkRegionLock()
+  })
+
   app.get('/api/notifications/wecom', (_request, reply) => {
     reply.header('cache-control', 'no-store')
     return (
@@ -326,7 +378,7 @@ export async function createServer(dependencies: WebServerDependencies): Promise
     await dependencies.notifications?.close()
   })
 
-  app.get('/api/state', (request) => {
+  app.get('/api/state', async (request) => {
     const localDate = localDateKey()
     const { date } = z
       .object({
@@ -336,7 +388,20 @@ export async function createServer(dependencies: WebServerDependencies): Promise
           .default(localDate)
       })
       .parse(request.query)
-    const accounts = dependencies.accounts.list()
+    const rawAccounts = dependencies.accounts.list()
+    const accounts = await Promise.all(
+      rawAccounts.map(async (account) => {
+        const status = await sessionImport.getCredentialsStatus(
+          account.accountId,
+          Boolean(account.hasPassword)
+        )
+        return {
+          ...account,
+          hasOAuth: status.oauth.bound,
+          hasWebSession: status.webSession.bound
+        }
+      })
+    )
     const activeRunId = dependencies.runCoordinator?.activeRunId ?? null
     const key = `${date}:${activeRunId ?? ''}:${JSON.stringify(
       accounts.map((account) => ({
@@ -344,7 +409,10 @@ export async function createServer(dependencies: WebServerDependencies): Promise
         displayAlias: account.displayAlias,
         maskedEmail: account.maskedEmail,
         runAccountIndex: account.runAccountIndex,
-        enabled: account.enabled
+        enabled: account.enabled,
+        hasPassword: account.hasPassword,
+        hasOAuth: account.hasOAuth,
+        hasWebSession: account.hasWebSession
       }))
     )}`
     const now = Date.now()
@@ -375,14 +443,241 @@ export async function createServer(dependencies: WebServerDependencies): Promise
 
   app.post('/api/accounts', async (request, reply) => {
     const body = accountSchema.parse(request.body)
+
+    let resolvedToken: AppToken | undefined
+    if (body.oauthCode) {
+      try {
+        resolvedToken = await exchangeOAuthCode(body.oauthCode)
+      } catch (error) {
+        return reply.code(400).send({
+          error: 'oauth-exchange-failed',
+          message: error instanceof Error ? error.message : 'OAuth 授权码兑换失败'
+        })
+      }
+    }
+
+    let resolvedCookies: ReturnType<typeof parseAndNormalizeCookies> | undefined
+    if (body.cookies) {
+      try {
+        resolvedCookies = parseAndNormalizeCookies(body.cookies)
+      } catch (error) {
+        return reply.code(400).send({
+          error: 'cookie-import-failed',
+          message: error instanceof Error ? error.message : 'Cookie 解析失败'
+        })
+      }
+    }
+
     const accountId = dependencies.accounts.create({
       email: body.email,
-      password: body.password,
+      password: body.password || '',
       ...(body.displayAlias === undefined ? {} : { displayAlias: body.displayAlias })
     })
+
+    if (resolvedToken) {
+      await sessionImport.saveOAuthToken(accountId, resolvedToken)
+    }
+    if (resolvedCookies) {
+      await sessionImport.saveWebSessionCookies(accountId, resolvedCookies)
+    }
+
     dependencies.store.notifyAccountsChanged()
-    const account = dependencies.accounts.list().find((item) => item.accountId === accountId)
+    const rawAccount = dependencies.accounts.list().find((item) => item.accountId === accountId)
+    const status = rawAccount
+      ? await sessionImport.getCredentialsStatus(accountId, Boolean(rawAccount.hasPassword))
+      : undefined
+    const account = rawAccount
+      ? {
+          ...rawAccount,
+          hasOAuth: status?.oauth.bound ?? false,
+          hasWebSession: status?.webSession.bound ?? false
+        }
+      : undefined
     return reply.code(201).send({ account })
+  })
+
+  app.get('/api/accounts/:accountId/credentials-status', async (request, reply) => {
+    const { accountId } = z.object({ accountId: z.uuid() }).parse(request.params)
+    const account = dependencies.accounts.list().find((item) => item.accountId === accountId)
+    if (!account) {
+      return reply.code(404).send({ error: 'account-not-found' })
+    }
+    const status = await sessionImport.getCredentialsStatus(
+      accountId,
+      Boolean(account.hasPassword)
+    )
+    return status
+  })
+
+  app.post('/api/accounts/:accountId/oauth', async (request, reply) => {
+    const { accountId } = z.object({ accountId: z.uuid() }).parse(request.params)
+    if (!dependencies.accounts.has(accountId)) {
+      return reply.code(404).send({ error: 'account-not-found' })
+    }
+    const body = z
+      .object({
+        code: z.string().trim().optional(),
+        refreshToken: z.string().trim().optional()
+      })
+      .refine((v) => Boolean(v.code || v.refreshToken), {
+        message: '需提供授权码或刷新令牌'
+      })
+      .parse(request.body)
+
+    try {
+      let token: AppToken
+      if (body.code) {
+        token = await exchangeOAuthCode(body.code)
+      } else if (body.refreshToken) {
+        token = await exchangeOAuthRefreshToken(body.refreshToken)
+      } else {
+        throw new Error('需提供授权码或刷新令牌')
+      }
+      await sessionImport.saveOAuthToken(accountId, token)
+      dependencies.store.notifyAccountsChanged()
+      return {
+        success: true,
+        expiresAt: token.expiresAt,
+        hasRefreshToken: Boolean(token.refreshToken)
+      }
+    } catch (error) {
+      return reply.code(400).send({
+        error: 'oauth-exchange-failed',
+        message: error instanceof Error ? error.message : 'OAuth 兑换失败'
+      })
+    }
+  })
+
+  app.post('/api/accounts/:accountId/cookies', async (request, reply) => {
+    const { accountId } = z.object({ accountId: z.uuid() }).parse(request.params)
+    if (!dependencies.accounts.has(accountId)) {
+      return reply.code(404).send({ error: 'account-not-found' })
+    }
+    const body = z
+      .object({
+        cookies: z.string().trim().min(1)
+      })
+      .parse(request.body)
+
+    try {
+      const parsed = parseAndNormalizeCookies(body.cookies)
+      await sessionImport.saveWebSessionCookies(accountId, parsed)
+      dependencies.store.notifyAccountsChanged()
+      return {
+        success: true,
+        cookieCount: parsed.length
+      }
+    } catch (error) {
+      return reply.code(400).send({
+        error: 'cookie-import-failed',
+        message: error instanceof Error ? error.message : 'Cookie 解析失败'
+      })
+    }
+  })
+
+
+  const testSingleAccount = async (accountId: string): Promise<HealthCheckResult> => {
+    const currentAccount = dependencies.accounts.list().find((a) => a.accountId === accountId)
+    if (!currentAccount) {
+      throw new Error('account-not-found')
+    }
+
+    const desktopSession = await dependencies.sessions.read<BrowserStorageState>(
+      accountId,
+      'web-desktop'
+    )
+    const mobileSession = await dependencies.sessions.read<BrowserStorageState>(
+      accountId,
+      'web-mobile'
+    )
+    const oauthSession = await dependencies.sessions.read<AppToken>(accountId, 'app-oauth')
+
+    const cookies = desktopSession?.payload.cookies.length
+      ? desktopSession.payload.cookies
+      : mobileSession?.payload.cookies ?? []
+
+    const cookieStr = cookies.length > 0 ? cookieItemsToString(cookies) : undefined
+    const token = oauthSession?.payload.accessToken ? oauthSession.payload : undefined
+
+    const result = await fastApiEngine.testAccount({
+      accountId,
+      ...(cookieStr ? { cookieStr } : {}),
+      ...(token ? { token } : {})
+    })
+
+    if (result.token.refreshedToken) {
+      await sessionImport.saveOAuthToken(accountId, result.token.refreshedToken)
+    }
+
+    if (
+      result.nickname &&
+      (!currentAccount.displayAlias || currentAccount.displayAlias.trim() === '')
+    ) {
+      dependencies.accounts.update(accountId, { displayAlias: result.nickname })
+      dependencies.store.notifyAccountsChanged()
+    }
+
+    if (result.balance > 0) {
+      const localDate = localDateKey()
+      const latest = dependencies.store.getLatestPointsHistory(accountId, localDate)
+      dependencies.store.recordPoints({
+        accountId,
+        localDate,
+        initialPoints: latest?.initialPoints ?? result.balance,
+        finalPoints: result.balance,
+        status: latest?.status ?? 'success',
+        balanceConfirmed: true,
+        recordedAt: new Date().toISOString()
+      })
+    }
+
+    return result
+  }
+
+  app.post('/api/accounts/:accountId/test', async (request, reply) => {
+    const { accountId } = z.object({ accountId: z.uuid() }).parse(request.params)
+    try {
+      const result = await testSingleAccount(accountId)
+      return { result }
+    } catch (error) {
+      if (error instanceof Error && error.message === 'account-not-found') {
+        return reply.code(404).send({ error: 'account-not-found' })
+      }
+      return reply.code(500).send({
+        error: 'test-failed',
+        message: error instanceof Error ? error.message : '体检失败'
+      })
+    }
+  })
+
+  app.post('/api/accounts/test-all', async () => {
+    const accounts = dependencies.accounts.list()
+    const results = await Promise.all(
+      accounts.map(async (account) => {
+        try {
+          return await testSingleAccount(account.accountId)
+        } catch (error) {
+          return {
+            accountId: account.accountId,
+            overallValid: false,
+            balance: 0,
+            cookie: { valid: false, message: error instanceof Error ? error.message : '体检异常' },
+            token: { valid: false, message: error instanceof Error ? error.message : '体检异常' }
+          }
+        }
+      })
+    )
+    return { results }
+  })
+
+  app.delete('/api/accounts/:accountId/session', async (request, reply) => {
+    const { accountId } = z.object({ accountId: z.uuid() }).parse(request.params)
+    if (!dependencies.accounts.has(accountId)) {
+      return reply.code(404).send({ error: 'account-not-found' })
+    }
+    dependencies.sessions.removeAll(accountId)
+    dependencies.store.notifyAccountsChanged()
+    return reply.code(200).send({ success: true })
   })
 
   app.patch('/api/accounts/:accountId', async (request, reply) => {
@@ -436,6 +731,18 @@ export async function createServer(dependencies: WebServerDependencies): Promise
             ...(body.retryPendingSearch ? { retryPendingSearch: true } : {})
           }
     return reply.code(202).send(await dependencies.runCoordinator.start(runRequest))
+  })
+
+
+  app.get('/api/points/history', (request, reply) => {
+    reply.header('cache-control', 'no-store')
+    const { days } = z
+      .object({
+        days: z.coerce.number().int().min(1).max(365).default(30)
+      })
+      .parse(request.query)
+    const trend = dependencies.store.getPointsHistoryTrend(days)
+    return { trend }
   })
 
   app.get('/api/runs/:runId', async (request, reply) => {

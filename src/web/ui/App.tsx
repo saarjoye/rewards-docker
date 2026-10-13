@@ -1,5 +1,6 @@
-import type { TaskPointDetail } from '../../domain/TaskPointDetail'
+﻿import type { TaskPointDetail } from '../../domain/TaskPointDetail'
 import {
+  useCallback,
   lazy,
   Suspense,
   useEffect,
@@ -28,7 +29,8 @@ import {
   LogoutIcon,
   MenuIcon,
   PlayCircleIcon,
-  SearchIcon
+  SearchIcon,
+  InternetIcon
 } from 'tdesign-icons-react'
 import { createRequestQueue } from './requestQueue'
 const RunPages = lazy(async () => ({ default: (await import('./RunPages')).RunPages }))
@@ -41,6 +43,9 @@ const NotificationSettings = lazy(async () => ({
 const SearchSettings = lazy(async () => ({
   default: (await import('./SearchSettings')).SearchSettings
 }))
+const NetworkSettings = lazy(async () => ({
+  default: (await import('./NetworkSettings')).NetworkSettings
+}))
 import { type PointStatistics } from './PointSummary'
 import { AccountsPage, Overview, TasksPage } from './ConsolePages'
 import { Button, Feedback, Field, SelectField } from './UiKit'
@@ -52,6 +57,9 @@ export interface AccountSummary {
   displayAlias: string
   maskedEmail: string
   enabled: boolean
+  hasPassword?: boolean
+  hasOAuth?: boolean
+  hasWebSession?: boolean
 }
 
 interface TaskState {
@@ -188,6 +196,150 @@ function LoginView({ onLogin }: { onLogin: (token: string) => void }): ReactElem
   )
 }
 
+
+export interface HealthCheckResult {
+  accountId: string
+  overallValid: boolean
+  balance: number
+  nickname?: string
+  cookie: {
+    valid: boolean
+    balance?: number
+    userName?: string
+    streakDays?: number
+    stamps?: { progress: number; max: number }
+    pcSearch?: string
+    message: string
+  }
+  token: {
+    valid: boolean
+    balance?: number
+    readProgress?: string
+    message: string
+    refreshedToken?: unknown
+  }
+}
+
+function HealthReportModal({
+  visible,
+  onClose,
+  reports,
+  accounts
+}: {
+  visible: boolean
+  onClose: () => void
+  reports: HealthCheckResult[] | null
+  accounts: AccountSummary[]
+}): ReactElement {
+  const accountMap = useMemo(() => {
+    return new Map(accounts.map((a) => [a.accountId, a]))
+  }, [accounts])
+
+  return (
+    <Dialog
+      header="账号秒级体检诊断报告"
+      visible={visible}
+      onClose={onClose}
+      footer={
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '12px' }}>
+          <Button onClick={onClose}>确定</Button>
+        </div>
+      }
+      width="680px"
+      destroyOnClose
+    >
+      <div className="health-report-container">
+        {!reports || reports.length === 0 ? (
+          <p className="muted">暂无体检数据</p>
+        ) : (
+          reports.map((report) => {
+            const acc = accountMap.get(report.accountId)
+            const title = acc?.displayAlias || report.nickname || report.accountId.slice(0, 8)
+            const email = acc?.maskedEmail || ''
+            return (
+              <div
+                key={report.accountId}
+                className={`health-card ${report.overallValid ? 'health-card-valid' : 'health-card-invalid'}`}
+              >
+                <div className="health-card-header">
+                  <div className="health-card-title">
+                    <strong>{title}</strong>
+                    {email && <span className="muted" style={{ fontSize: '12px' }}>({email})</span>}
+                    {report.overallValid ? (
+                      <span className="badge-tag badge-success">正常在线</span>
+                    ) : (
+                      <span className="badge-tag badge-warning">需要关注</span>
+                    )}
+                  </div>
+                  <div className="health-card-balance">
+                    实时余额: {report.balance > 0 ? `${String(report.balance)} 分` : '—'}
+                  </div>
+                </div>
+
+                <div className="health-card-grid">
+                  <div className="health-card-col">
+                    <div className="health-col-title">
+                      <span>Web 会话 (Cookie)</span>
+                      {report.cookie.valid ? (
+                        <span className="badge-tag badge-success">有效</span>
+                      ) : (
+                        <span className="badge-tag badge-muted">未就绪</span>
+                      )}
+                    </div>
+                    <div className="health-metric-row">
+                      <span>连签天数:</span>
+                      <span>{report.cookie.streakDays !== undefined ? `${String(report.cookie.streakDays)} 天` : '—'}</span>
+                    </div>
+                    <div className="health-metric-row">
+                      <span>印章进度:</span>
+                      <span>
+                        {report.cookie.stamps
+                          ? `${String(report.cookie.stamps.progress)} / ${String(report.cookie.stamps.max)}`
+                          : '—'}
+                      </span>
+                    </div>
+                    <div className="health-metric-row">
+                      <span>PC 搜索:</span>
+                      <span>{report.cookie.pcSearch || '—'}</span>
+                    </div>
+                    <div className="health-col-msg">{report.cookie.message}</div>
+                  </div>
+
+                  <div className="health-card-col">
+                    <div className="health-col-title">
+                      <span>移动端/API (Token)</span>
+                      {report.token.valid ? (
+                        <span className="badge-tag badge-success">有效</span>
+                      ) : (
+                        <span className="badge-tag badge-muted">未就绪</span>
+                      )}
+                    </div>
+                    <div className="health-metric-row">
+                      <span>阅读新闻:</span>
+                      <span>{report.token.readProgress || '—'}</span>
+                    </div>
+                    <div className="health-metric-row">
+                      <span>Token 续期:</span>
+                      <span>
+                        {report.token.refreshedToken ? (
+                          <span style={{ color: '#16a34a' }}>已自动续期</span>
+                        ) : (
+                          '无需续期'
+                        )}
+                      </span>
+                    </div>
+                    <div className="health-col-msg">{report.token.message}</div>
+                  </div>
+                </div>
+              </div>
+            )
+          })
+        )}
+      </div>
+    </Dialog>
+  )
+}
+
 export function App(): ReactElement {
   const [restoring, setRestoring] = useState(true)
   const [page, setPage] = useState<
@@ -199,6 +351,7 @@ export function App(): ReactElement {
     | 'notifications'
     | 'schedule'
     | 'search'
+    | 'network'
   >(() => {
     const hash = window.location.hash.slice(1)
     if (hash.startsWith('run/')) return 'history'
@@ -208,7 +361,8 @@ export function App(): ReactElement {
       hash === 'accounts' ||
       hash === 'notifications' ||
       hash === 'schedule' ||
-      hash === 'search'
+      hash === 'search' ||
+      hash === 'network'
       ? hash
       : 'overview'
   })
@@ -218,6 +372,10 @@ export function App(): ReactElement {
   const [submitting, setSubmitting] = useState(false)
   const [editingAccount, setEditingAccount] = useState('')
   const [deletingAccount, setDeletingAccount] = useState<AccountSummary | null>(null)
+  const [managingAccount, setManagingAccount] = useState<AccountSummary | null>(null)
+  const [testingHealth, setTestingHealth] = useState(false)
+  const [healthReports, setHealthReports] = useState<HealthCheckResult[] | null>(null)
+  const [showHealthModal, setShowHealthModal] = useState(false)
   const [alias, setAlias] = useState('')
   const [csrfToken, setCsrfToken] = useState<string>()
   const [state, setState] = useState<StatePayload>()
@@ -457,7 +615,8 @@ export function App(): ReactElement {
     { id: 'accounts' as const, label: '账号管理', icon: <UserIcon /> },
     { id: 'notifications' as const, label: '消息推送', icon: <NotificationIcon /> },
     { id: 'schedule' as const, label: '定时任务', icon: <CalendarIcon /> },
-    { id: 'search' as const, label: '搜索设置', icon: <SearchIcon /> }
+    { id: 'search' as const, label: '搜索设置', icon: <SearchIcon /> },
+    { id: 'network' as const, label: '网络设置', icon: <InternetIcon /> }
   ]
   useEffect(() => {
     const change = () => {
@@ -481,7 +640,8 @@ export function App(): ReactElement {
         hash === 'accounts' ||
         hash === 'notifications' ||
         hash === 'schedule' ||
-        hash === 'search'
+        hash === 'search' ||
+        hash === 'network'
       )
         setPage(hash)
     }
@@ -506,6 +666,45 @@ export function App(): ReactElement {
     window.location.hash = target
     setShowNavigation(false)
   }
+  
+  const testAccount = async (account: AccountSummary): Promise<void> => {
+    setTestingHealth(true)
+    setError('')
+    try {
+      const data = await requestJson<{ result: HealthCheckResult }>(
+        `/api/accounts/${encodeURIComponent(account.accountId)}/test`,
+        { method: 'POST' },
+        csrfToken
+      )
+      setHealthReports([data.result])
+      setShowHealthModal(true)
+      await loadState()
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '体检执行失败')
+    } finally {
+      setTestingHealth(false)
+    }
+  }
+
+  const testAllAccounts = async (): Promise<void> => {
+    setTestingHealth(true)
+    setError('')
+    try {
+      const data = await requestJson<{ results: HealthCheckResult[] }>(
+        '/api/accounts/test-all',
+        { method: 'POST' },
+        csrfToken
+      )
+      setHealthReports(data.results)
+      setShowHealthModal(true)
+      await loadState()
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '全员体检执行失败')
+    } finally {
+      setTestingHealth(false)
+    }
+  }
+
   const openRun = (id: string) => {
     navigate('#run/' + id)
   }
@@ -631,11 +830,22 @@ export function App(): ReactElement {
                 setEditingAccount(account.accountId)
                 setAlias(account.displayAlias)
               }}
+              manageCredentials={(account: AccountSummary) => {
+                rememberTrigger()
+                setManagingAccount(account)
+              }}
               toggle={(account) => void toggleAccount(account)}
               remove={(account) => {
                 rememberTrigger()
                 setDeletingAccount(account)
               }}
+              testAccount={(account) => {
+                void testAccount(account)
+              }}
+              testAllAccounts={() => {
+                void testAllAccounts()
+              }}
+              testing={testingHealth}
             />
           )}
           {page === 'notifications' && (
@@ -646,6 +856,9 @@ export function App(): ReactElement {
           )}
           {page === 'search' && (
             <SearchSettings csrfToken={csrfToken} onUnsavedChange={setUnsaved} accounts={state?.accounts ?? []} />
+          )}
+          {page === 'network' && (
+            <NetworkSettings csrfToken={csrfToken} onUnsavedChange={setUnsaved} />
           )}
         </Suspense>
       </main>
@@ -671,7 +884,7 @@ export function App(): ReactElement {
           if (!accountSaving) setShowAccountForm(false)
         }}
         footer={false}
-        size="480px"
+        size="520px"
         destroyOnClose
       >
         <AccountForm
@@ -683,6 +896,35 @@ export function App(): ReactElement {
           }}
         />
       </Drawer>
+      <Drawer
+        header={managingAccount ? `凭据与会话托管: ${managingAccount.displayAlias}` : '凭据与会话托管'}
+        visible={managingAccount !== null}
+        onBeforeClose={restoreTrigger}
+        onClose={() => {
+          setManagingAccount(null)
+        }}
+        footer={false}
+        size="540px"
+        destroyOnClose
+      >
+        {managingAccount && (
+          <CredentialsDrawerContent
+            account={managingAccount}
+            csrfToken={csrfToken}
+            onUpdated={async () => {
+              await loadState()
+            }}
+          />
+        )}
+      </Drawer>
+      <HealthReportModal
+        visible={showHealthModal}
+        onClose={() => {
+          setShowHealthModal(false)
+        }}
+        reports={healthReports}
+        accounts={state?.accounts ?? []}
+      />
       <Dialog
         header="编辑账号名称"
         visible={Boolean(editingAccount)}
@@ -877,6 +1119,9 @@ export function App(): ReactElement {
   )
 }
 
+const OAUTH_AUTHORIZE_URL =
+  'https://login.live.com/oauth20_authorize.srf?client_id=0000000040170455&response_type=code&scope=service::prod.rewardsplatform.microsoft.com::MBI_SSL&redirect_uri=https://login.live.com/oauth20_desktop.srf'
+
 function AccountForm({
   csrfToken,
   onBusyChange,
@@ -886,11 +1131,15 @@ function AccountForm({
   onBusyChange: (busy: boolean) => void
   onCreated: () => Promise<void>
 }): ReactElement {
+  const [mode, setMode] = useState<'managed' | 'password'>('managed')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [alias, setAlias] = useState('')
+  const [oauthCode, setOauthCode] = useState('')
+  const [cookies, setCookies] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+
   async function submit(event: FormEvent): Promise<void> {
     event.preventDefault()
     if (busy) return
@@ -904,13 +1153,17 @@ function AccountForm({
           method: 'POST',
           body: JSON.stringify({
             email,
-            password,
-            ...(alias.trim() ? { displayAlias: alias.trim() } : {})
+            ...(password ? { password } : {}),
+            ...(alias.trim() ? { displayAlias: alias.trim() } : {}),
+            ...(mode === 'managed' && oauthCode.trim() ? { oauthCode: oauthCode.trim() } : {}),
+            ...(mode === 'managed' && cookies.trim() ? { cookies: cookies.trim() } : {})
           })
         },
         csrfToken
       )
       setPassword('')
+      setOauthCode('')
+      setCookies('')
       await onCreated()
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '账号添加失败')
@@ -919,8 +1172,30 @@ function AccountForm({
       onBusyChange(false)
     }
   }
+
   return (
     <form className="stack-form" onSubmit={(event) => void submit(event)}>
+      <div className="credentials-mode-tabs" role="tablist">
+        <button
+          type="button"
+          className={`credentials-mode-tab ${mode === 'managed' ? 'active' : ''}`}
+          onClick={() => {
+            setMode('managed')
+          }}
+        >
+          OAuth + Cookie 托管（推荐）
+        </button>
+        <button
+          type="button"
+          className={`credentials-mode-tab ${mode === 'password' ? 'active' : ''}`}
+          onClick={() => {
+            setMode('password')
+          }}
+        >
+          账号密码（传统模式）
+        </button>
+      </div>
+
       <Field label="显示名称" value={alias} onChange={setAlias} maxLength={80} disabled={busy} />
       <Field
         label="Microsoft 账号"
@@ -931,19 +1206,377 @@ function AccountForm({
         required
         disabled={busy}
       />
-      <Field
-        label="密码"
-        type="password"
-        value={password}
-        onChange={setPassword}
-        autoComplete="new-password"
-        required
-        disabled={busy}
-      />
+
+      {mode === 'managed' ? (
+        <>
+          <div className="oauth-helper-card">
+            <p style={{ margin: '0 0 6px 0', fontWeight: 600 }}>1. 绑定微软官方 OAuth 授权（免密运行核心）：</p>
+            <p style={{ margin: '0 0 8px 0' }} className="muted">
+              在已登录此账号的浏览器中打开下方授权页面，同意后浏览器将重定向至空白页，复制地址栏完整 URL 或 code 粘贴到下方：
+            </p>
+            <a
+              href={OAUTH_AUTHORIZE_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="oauth-link-btn"
+            >
+              打开微软官方授权页面 ↗
+            </a>
+            <Field
+              label="授权重定向链接或授权码"
+              value={oauthCode}
+              onChange={setOauthCode}
+              placeholder="https://login.live.com/oauth20_desktop.srf?code=... 或 code 字符串"
+              disabled={busy}
+            />
+          </div>
+
+          <div className="form-field">
+            <label>2. 托管 Web Cookie（可选，绕过无头登录风控）：</label>
+            <textarea
+              className="native-textarea"
+              rows={4}
+              value={cookies}
+              onChange={(e) => {
+                setCookies(e.target.value)
+              }}
+              placeholder="粘贴 Cookie-Editor 导出的 JSON 数组、Playwright storageState 或 HTTP Cookie 标头 (name=value; ...)"
+              disabled={busy}
+            />
+            <small className="muted">支持 bing.com 与 rewards.bing.com 的登录 Cookie，免受无头验证码拦截。</small>
+          </div>
+
+          <Field
+            label="备用密码（可选）"
+            type="password"
+            value={password}
+            onChange={setPassword}
+            autoComplete="new-password"
+            placeholder="纯免密模式可直接留空"
+            disabled={busy}
+          />
+        </>
+      ) : (
+        <Field
+          label="密码"
+          type="password"
+          value={password}
+          onChange={setPassword}
+          autoComplete="new-password"
+          required
+          disabled={busy}
+        />
+      )}
+
       <Feedback error={error} />
       <Button type="submit" block loading={busy}>
         保存账号
       </Button>
     </form>
+  )
+}
+
+interface CredentialsStatusPayload {
+  accountId: string
+  hasPassword: boolean
+  oauth: {
+    bound: boolean
+    hasRefreshToken: boolean
+    expiresAt?: string
+    validatedAt?: string
+  }
+  webSession: {
+    bound: boolean
+    desktopCookieCount: number
+    mobileCookieCount: number
+    validatedAt?: string
+  }
+}
+
+function CredentialsDrawerContent({
+  account,
+  csrfToken,
+  onUpdated
+}: {
+  account: AccountSummary
+  csrfToken?: string
+  onUpdated: () => Promise<void>
+}): ReactElement {
+  const [status, setStatus] = useState<CredentialsStatusPayload | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [message, setMessage] = useState('')
+
+  const [newPassword, setNewPassword] = useState('')
+  const [oauthInput, setOauthInput] = useState('')
+  const [cookieInput, setCookieInput] = useState('')
+
+  const fetchStatus = useCallback(async () => {
+    try {
+      const data = await requestJson<CredentialsStatusPayload>(
+        `/api/accounts/${account.accountId}/credentials-status`
+      )
+      setStatus(data)
+      setError('')
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '获取凭证状态失败')
+    } finally {
+      setLoading(false)
+    }
+  }, [account.accountId])
+
+  useEffect(() => {
+    void fetchStatus()
+  }, [fetchStatus])
+
+  async function handleUpdatePassword(clear = false): Promise<void> {
+    if (busy) return
+    setBusy(true)
+    setError('')
+    setMessage('')
+    try {
+      await requestJson(
+        `/api/accounts/${account.accountId}`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({ password: clear ? '' : newPassword })
+        },
+        csrfToken
+      )
+      setNewPassword('')
+      setMessage(clear ? '密码已成功清除（进入免密模式）' : '密码已成功更新')
+      await fetchStatus()
+      await onUpdated()
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '更新密码失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleImportOAuth(): Promise<void> {
+    if (busy || !oauthInput.trim()) return
+    setBusy(true)
+    setError('')
+    setMessage('')
+    try {
+      const res = await requestJson<{ success: boolean; expiresAt: string }>(
+        `/api/accounts/${account.accountId}/oauth`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ code: oauthInput.trim() })
+        },
+        csrfToken
+      )
+      setOauthInput('')
+      setMessage(`OAuth 授权兑换成功！有效期至 ${new Date(res.expiresAt).toLocaleString()}`)
+      await fetchStatus()
+      await onUpdated()
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'OAuth 绑定失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleImportCookies(): Promise<void> {
+    if (busy || !cookieInput.trim()) return
+    setBusy(true)
+    setError('')
+    setMessage('')
+    try {
+      const res = await requestJson<{ success: boolean; cookieCount: number }>(
+        `/api/accounts/${account.accountId}/cookies`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ cookies: cookieInput.trim() })
+        },
+        csrfToken
+      )
+      setCookieInput('')
+      setMessage(`成功导入并更新 ${String(res.cookieCount)} 个 Cookie！`)
+      await fetchStatus()
+      await onUpdated()
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Cookie 导入失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleClearSession(): Promise<void> {
+    if (busy) return
+    setBusy(true)
+    setError('')
+    setMessage('')
+    try {
+      await requestJson(
+        `/api/accounts/${account.accountId}/session`,
+        {
+          method: 'DELETE'
+        },
+        csrfToken
+      )
+      setMessage('该账号的全部托管会话已清空')
+      await fetchStatus()
+      await onUpdated()
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '清空会话失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (loading) {
+    return <p className="muted">正在加载凭证状态...</p>
+  }
+
+  return (
+    <div className="credentials-drawer-body">
+      <Feedback error={error} message={message} />
+
+      <div className="credentials-section">
+        <h4>
+          <span>OAuth 授权令牌</span>
+          {status?.oauth.bound ? (
+            <span className="badge-tag badge-success">已绑定</span>
+          ) : (
+            <span className="badge-tag badge-muted">未绑定</span>
+          )}
+        </h4>
+        {status?.oauth.bound ? (
+          <p className="muted" style={{ margin: '0 0 10px 0', fontSize: '12px' }}>
+            {status.oauth.hasRefreshToken ? '✅ 包含长效刷新令牌（支持自动静默续期）' : '⚠️ 未包含刷新令牌'}
+            {status.oauth.expiresAt && ` · 到期时间: ${new Date(status.oauth.expiresAt).toLocaleString()}`}
+          </p>
+        ) : (
+          <p className="muted" style={{ margin: '0 0 10px 0', fontSize: '12px' }}>
+            绑定 OAuth 授权码后，签到与阅读等操作将免登录直接调用官方接口，大幅降低风控概率。
+          </p>
+        )}
+        <div className="oauth-helper-card" style={{ marginBottom: '8px' }}>
+          <a
+            href={OAUTH_AUTHORIZE_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="oauth-link-btn"
+          >
+            打开微软官方授权页面 ↗
+          </a>
+          <Field
+            label="粘贴授权跳转 URL 或 code="
+            value={oauthInput}
+            onChange={setOauthInput}
+            placeholder="https://login.live.com/oauth20_desktop.srf?code=... 或 code"
+            disabled={busy}
+          />
+          <div style={{ marginTop: '8px' }}>
+            <Button
+              onClick={() => void handleImportOAuth()}
+              disabled={busy || !oauthInput.trim()}
+              loading={busy}
+            >
+              换取并绑定 OAuth 令牌
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      <div className="credentials-section">
+        <h4>
+          <span>Web 会话 Cookie</span>
+          {status?.webSession.bound ? (
+            <span className="badge-tag badge-success">已导入</span>
+          ) : (
+            <span className="badge-tag badge-muted">未导入</span>
+          )}
+        </h4>
+        {status?.webSession.bound ? (
+          <p className="muted" style={{ margin: '0 0 10px 0', fontSize: '12px' }}>
+            已存储 Desktop: {status.webSession.desktopCookieCount} 个 / Mobile: {status.webSession.mobileCookieCount} 个 Cookie
+            {status.webSession.validatedAt && ` · 更新于: ${new Date(status.webSession.validatedAt).toLocaleString()}`}
+          </p>
+        ) : (
+          <p className="muted" style={{ margin: '0 0 10px 0', fontSize: '12px' }}>
+            托管浏览器 Cookie 可供 PC/移动端搜索直接复用已登录会话，免除无头浏览器登录风险。
+          </p>
+        )}
+        <div className="form-field">
+          <textarea
+            className="native-textarea"
+            rows={4}
+            value={cookieInput}
+            onChange={(e) => {
+              setCookieInput(e.target.value)
+            }}
+            placeholder="粘贴 Cookie-Editor 导出的 JSON 数组、Playwright storageState 或 HTTP Cookie 标头 (name=value; ...)"
+            disabled={busy}
+          />
+        </div>
+        <div style={{ marginTop: '8px' }}>
+          <Button
+            onClick={() => void handleImportCookies()}
+            disabled={busy || !cookieInput.trim()}
+            loading={busy}
+          >
+            导入并覆盖 Web Cookie
+          </Button>
+        </div>
+      </div>
+
+      <div className="credentials-section">
+        <h4>
+          <span>账号密码</span>
+          {status?.hasPassword ? (
+            <span className="badge-tag badge-info">已配置</span>
+          ) : (
+            <span className="badge-tag badge-muted">免密模式</span>
+          )}
+        </h4>
+        <Field
+          label="设置或修改密码"
+          type="password"
+          value={newPassword}
+          onChange={setNewPassword}
+          placeholder="输入新密码"
+          disabled={busy}
+        />
+        <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
+          <Button
+            onClick={() => void handleUpdatePassword(false)}
+            disabled={busy || !newPassword.trim()}
+            loading={busy}
+          >
+            保存密码
+          </Button>
+          {status?.hasPassword && (
+            <Button
+              variant="text"
+              theme="danger"
+              onClick={() => void handleUpdatePassword(true)}
+              disabled={busy}
+            >
+              清除密码（转为免密）
+            </Button>
+          )}
+        </div>
+      </div>
+
+      <div className="credentials-section" style={{ borderColor: 'rgba(239, 68, 68, 0.3)' }}>
+        <h4 style={{ color: '#dc2626' }}>危险操作：清空已存会话</h4>
+        <p className="muted" style={{ fontSize: '12px', margin: '0 0 10px 0' }}>
+          将清除此账号已保存的所有 OAuth 令牌和 Web Cookie，账号本身与历史积分记录不受影响。
+        </p>
+        <Button
+          theme="danger"
+          onClick={() => void handleClearSession()}
+          disabled={busy || (!status?.oauth.bound && !status?.webSession.bound)}
+          loading={busy}
+        >
+          清空所有已存会话
+        </Button>
+      </div>
+    </div>
   )
 }

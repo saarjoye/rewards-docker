@@ -417,6 +417,14 @@ export class LoginController {
       return
     }
     if (state === 'password-input') {
+      if (!credentials.password || !credentials.password.trim()) {
+        throw new LoginStateError({
+          loginState: state,
+          loginStage: 'password-missing-oauth-required',
+          message: '会话已过期且未配置密码，请在 Web 控制台重新导入 OAuth 授权码或 Cookie',
+          ...location(page)
+        })
+      }
       const password = await firstVisible(page.locator(SELECTORS.password))
       if (!password) return
       try {
