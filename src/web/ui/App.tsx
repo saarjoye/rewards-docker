@@ -740,7 +740,7 @@ export function App(): ReactElement {
     setError('')
     setMessage('')
     try {
-      let body: { balance?: number; todayPoints?: number } = {}
+      const body: { balance?: number; todayPoints?: number } = {}
       if (calibrateMode === 'manual') {
         const val = parseInt(manualBalanceStr.trim(), 10)
         if (isNaN(val) || val < 0) {

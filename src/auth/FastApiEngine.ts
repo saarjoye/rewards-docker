@@ -101,7 +101,7 @@ export function extractBalancedJsonObject(str: string, searchKey: string): Recor
   }
   if (end !== -1) {
     try {
-      const parsed = JSON.parse(str.substring(braceIdx, end))
+      const parsed: unknown = JSON.parse(str.substring(braceIdx, end))
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
         return parsed as Record<string, unknown>
       }
