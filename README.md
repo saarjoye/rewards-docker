@@ -4,6 +4,17 @@ Microsoft Rewards Next 是一个重新设计的本地自动化项目，重点解
 
 当前仓库是独立实现，不读取旧项目的账号、Session、运行状态或密钥。Web 管理、真实运行编排、浏览器登录、Rewards 数据源和十类任务适配器已经接入；真实任务仍必须按只读、单账号受控 mutation、三账号全量和连续三日的顺序验收。
 
+## next.40 修复体检Cookie搜索计数误判与Flight流余额解析
+
+彻底修复账号秒级体检中双轨凭据误报冲突的问题：
+- 剔除 Bing Cookie 中 `_EDGE_S` 字段 `rc=65`（搜索请求计数器）误匹配为积分的逻辑，杜绝虚假低分；
+- 接入 Next.js App Router RSC Flight 数据流反转译与积分字段正则提取（`availablePoints`、`totalPoints`、`balance`）；
+- Cookie 探测无积分字段时安全降级为 undefined，避免与真实 Token 积分（如 12993）发生虚假偏差冲突；
+- 双轨体检统一使用空值合并安全兜底。
+
+GitHub Actions 验证候选通过后，发布 ghcr.io/saarjoye/mrs-core:5.0.0-next.40
+并同步 latest。升级无需新增迁移、配置或依赖，保留原 Compose、持久卷、主密钥、
+账号和定时设置。
 ## next.39 余额多源口径隔离熔断、双轨体检拦截、预计得分看板与导航超时归因
 
 解决首页今日得分与账号总分因不同数据来源口径混用而导致数值反复跳变的问题：

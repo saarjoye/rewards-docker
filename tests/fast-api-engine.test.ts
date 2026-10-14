@@ -127,6 +127,43 @@ describe('FastApiEngine & extractNicknameFromCookie', () => {
       expect(res.userName).toBe('saarjoye')
     })
 
+    it('extracts balance from Next.js Flight chunks with whitespace tolerance and ignores cookie rc counter', async () => {
+      const flightPayload = JSON.stringify('1:{"userStatus":{"availablePoints": 12993},"activityCards":[]}')
+      const html = `
+        <html>
+          <body>
+            <div>每日连续打卡 120 天</div>
+            <div aria-label="收集的印章" aria-valuemax="12" aria-valuenow="6"></div>
+            <script>self.__next_f.push([1,${flightPayload}])</script>
+          </body>
+        </html>
+      `
+      const mockFetch = vi.fn(() => Promise.resolve(new Response(html, { status: 200 })))
+      const engine = new FastApiEngine(mockFetch)
+      // Cookie contains rc=65 (Bing search request counter)
+      const res = await engine.checkCookieStatus('N=saarjoye; _EDGE_S=F=1&rc=65; rb=10')
+      expect(res.valid).toBe(true)
+      expect(res.balance).toBe(12993)
+      expect(res.balance).not.toBe(65)
+      expect(res.streakDays).toBe(120)
+      expect(res.stamps?.progress).toBe(6)
+    })
+
+    it('does not mistake Bing search counter rc=65 for points when balance is absent from html', async () => {
+      const html = `
+        <html>
+          <body>
+            <div>activityCards</div>
+          </body>
+        </html>
+      `
+      const mockFetch = vi.fn(() => Promise.resolve(new Response(html, { status: 200 })))
+      const engine = new FastApiEngine(mockFetch)
+      const res = await engine.checkCookieStatus('N=saarjoye; _EDGE_S=F=1&rc=65')
+      expect(res.valid).toBe(true)
+      expect(res.balance).toBeUndefined()
+    })
+
     it('returns invalid on 401', async () => {
       const mockFetch = vi.fn(() => Promise.resolve(new Response('unauthorized', { status: 401 })))
       const engine = new FastApiEngine(mockFetch)
@@ -235,6 +272,30 @@ describe('FastApiEngine & extractNicknameFromCookie', () => {
       expect(res.conflict).toBeUndefined()
       expect(res.overallValid).toBe(true)
       expect(res.balance).toBe(12928)
+    })
+
+    it('does not trigger conflict when Cookie balance is undefined and Token balance is present', async () => {
+      const engine = new FastApiEngine()
+      vi.spyOn(engine, 'checkCookieStatus').mockResolvedValue({
+        valid: true,
+        userName: 'same-user',
+        message: 'Cookie 有效'
+      })
+      vi.spyOn(engine, 'checkTokenStatus').mockResolvedValue({
+        valid: true,
+        balance: 12993,
+        message: 'Token 有效'
+      })
+
+      const res = await engine.testAccount({
+        accountId: 'acc-1',
+        cookieStr: 'some-cookie',
+        token: { accessToken: 'token-1', expiresAt: '2026-10-15T00:00:00Z' }
+      })
+
+      expect(res.conflict).toBeUndefined()
+      expect(res.overallValid).toBe(true)
+      expect(res.balance).toBe(12993)
     })
   })
 });

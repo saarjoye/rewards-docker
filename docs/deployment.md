@@ -4,9 +4,25 @@ Next 单应用沿用 `ghcr.io/saarjoye/mrs-core` 镜像名，替代旧版 Core/W
 
 ## 发布和切换
 
-现有仓库的 `main` 分支通过 `.github/workflows/docker-image.yml` 构建。先执行离线测试、类型检查、ESLint、构建和 Compose 校验，再构建 `linux/amd64` 与 `linux/arm64` 候选镜像。候选镜像使用空数据、禁用外部网络做启动健康检查；成功后才更新 `5.0.0-next.39` 与 `latest`。完整提交固定标签为 `sha-<完整提交号>`。
+现有仓库的 `main` 分支通过 `.github/workflows/docker-image.yml` 构建。先执行离线测试、类型检查、ESLint、构建和 Compose 校验，再构建 `linux/amd64` 与 `linux/arm64` 候选镜像。候选镜像使用空数据、禁用外部网络做启动健康检查；成功后才更新 `5.0.0-next.40` 与 `latest`。完整提交固定标签为 `sha-<完整提交号>`。
 
-## next.39 余额多源口径隔离熔断、双轨体检拦截、预计得分看板与导航超时归因（当前版本）
+## next.40 修复体检Cookie搜索计数误判与Flight流余额解析（当前版本）
+
+### 双轨体检精准化与Flight流余额解析
+
+彻底修复账号秒级体检中双轨凭据误报冲突的问题：
+- 剔除 Bing Cookie 中 `_EDGE_S` 字段 `rc=65`（搜索请求计数器）误匹配为积分的逻辑，杜绝虚假低分；
+- 接入 Next.js App Router RSC Flight 数据流反转译与积分字段正则提取（`availablePoints`、`totalPoints`、`balance`）；
+- Cookie 探测无积分字段时安全降级为 undefined，避免与真实 Token 积分（如 12993）发生虚假偏差冲突；
+- 双轨体检统一使用空值合并安全兜底。
+
+### 升级与验证
+
+应用镜像为 ghcr.io/saarjoye/mrs-core:5.0.0-next.40，候选健康验证成功后同步
+更新 latest。升级无需新增配置、迁移或依赖安装；保留原 Compose、持久卷、
+主密钥、账号、调度及任务证据。绑定目录仍需允许 UID/GID 1000:1000 写入。
+
+## next.39 余额多源口径隔离熔断、双轨体检拦截、预计得分看板与导航超时归因（历史版本）
 
 ### 余额口径一致性与看板强化
 

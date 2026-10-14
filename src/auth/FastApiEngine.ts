@@ -1,5 +1,6 @@
 ﻿import type { AppToken } from '../browser/AppOAuthClient.js'
 import { exchangeOAuthRefreshToken } from './SessionImportManager.js'
+import { decodeFlightChunks } from '../rewards/DashboardParser.js'
 
 export const USER_AGENTS = {
   pc: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0',
@@ -178,14 +179,18 @@ export class FastApiEngine {
       }
 
       const rawHtml = await response.text()
-      const clean = rawHtml.replace(/\\"/g, '"')
+      const flight = decodeFlightChunks(rawHtml)
+      const clean = (flight ? `${flight}\n${rawHtml}` : rawHtml).replace(/\\"/g, '"')
       const isAuthValid =
         clean.includes('pointsCounters') ||
         clean.includes('pointsHistory') ||
-        clean.includes('activityCards')
+        clean.includes('activityCards') ||
+        clean.includes('availablePoints') ||
+        clean.includes('userStatus') ||
+        clean.includes('dailySetPromotions')
 
       if (isAuthValid) {
-        let balance = 0
+        let balance: number | undefined
         let pcProgress = 0
         let pcMax = 60
         let streakDays = 0
@@ -210,36 +215,48 @@ export class FastApiEngine {
             }
             try {
               const pts = JSON.parse(clean.substring(braceIdx, end)) as {
-                pc?: { max?: number; progress?: number }
+                pc?: { max?: number; progress?: number; pointProgress?: number; pointProgressMax?: number }
                 totalPoints?: number
                 balance?: number
               }
-              pcMax = pts.pc?.max ?? 60
-              pcProgress = pts.pc?.progress ?? 0
-              if (pts.totalPoints != null) balance = pts.totalPoints
-              else if (pts.balance != null) balance = pts.balance
+              pcMax = pts.pc?.max ?? pts.pc?.pointProgressMax ?? 60
+              pcProgress = pts.pc?.progress ?? pts.pc?.pointProgress ?? 0
+              if (pts.totalPoints != null && pts.totalPoints > 0) balance = pts.totalPoints
+              else if (pts.balance != null && pts.balance > 0) balance = pts.balance
             } catch {
               // ignore JSON parse
             }
           }
         }
 
-        // 提取余额
-        if (balance === 0) {
-          const balMatch =
-            clean.match(/"totalPoints":(\d+)/) ||
-            clean.match(/"balance":(\d+)/) ||
-            clean.match(/"availablePoints":(\d+)/) ||
-            trimmed.match(/rc=(\d+)/) ||
-            trimmed.match(/rb=(\d+)/)
-          if (balMatch && balMatch[1]) {
-            balance = parseInt(balMatch[1], 10)
+        // 兜底提取 PC 搜索配额
+        if (pcProgress === 0 && pcMax === 60) {
+          const pcMatch =
+            clean.match(/"pcSearch"\s*:\s*\[\s*\{[^}]*?"pointProgress"\s*:\s*(\d+)[^}]*?"pointProgressMax"\s*:\s*(\d+)/) ||
+            clean.match(/"pointProgress"\s*:\s*(\d+)[^}]*?"pointProgressMax"\s*:\s*(\d+)/)
+          if (pcMatch && pcMatch[1] && pcMatch[2]) {
+            pcProgress = parseInt(pcMatch[1], 10)
+            pcMax = parseInt(pcMatch[2], 10)
+          }
+        }
+
+        // 提取余额：在 Flight 流或 HTML 中按优先级提取 availablePoints、totalPoints、balance
+        if (balance === undefined) {
+          const availableMatches = [...clean.matchAll(/"availablePoints"\s*:\s*["']?(\d+)["']?/g)]
+          const totalMatches = [...clean.matchAll(/"totalPoints"\s*:\s*["']?(\d+)["']?/g)]
+          const balMatches = [...clean.matchAll(/"balance"\s*:\s*["']?(\d+)["']?/g)]
+
+          const raw = availableMatches.at(-1)?.[1] ?? totalMatches.at(-1)?.[1] ?? balMatches.at(-1)?.[1]
+          if (raw !== undefined) {
+            balance = parseInt(raw, 10)
           }
         }
 
         // 提取连续签到
         const cleanText = clean.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ')
-        const streakMatch = cleanText.match(/每日连续打卡\s*(\d+)/)
+        const streakMatch =
+          cleanText.match(/(?:每日连续打卡|连续打卡)\s*(\d+)/) ||
+          clean.match(/"(?:streakDays|streakCount|currentStreak)"\s*:\s*(\d+)/)
         if (streakMatch && streakMatch[1]) {
           streakDays = parseInt(streakMatch[1], 10)
         }
@@ -257,12 +274,12 @@ export class FastApiEngine {
 
         return {
           valid: true,
-          balance,
+          ...(balance !== undefined ? { balance } : {}),
           userName,
           streakDays,
           stamps: { progress: stampsProgress, max: stampsMax },
           pcSearch: `${String(pcProgress)}/${String(pcMax)}`,
-          message: `网页端在线 | 积分: ${String(balance)} | 连签: ${String(streakDays)}天 | 搜索: ${String(pcProgress)}/${String(pcMax)}`
+          message: `网页端在线 | 积分: ${balance !== undefined ? String(balance) : '—'} | 连签: ${String(streakDays)}天 | 搜索: ${String(pcProgress)}/${String(pcMax)}`
         }
       }
 
@@ -393,7 +410,7 @@ export class FastApiEngine {
         : Promise.resolve<TokenStatusResult>({ valid: false, message: '未配置 App Token' })
     ])
 
-    const balance = cookieRes.balance || tokenRes.balance || 0
+    const balance = cookieRes.balance ?? tokenRes.balance ?? 0
     const nickname =
       cookieRes.userName || (input.cookieStr ? extractNicknameFromCookie(input.cookieStr) : undefined)
     let overallValid = cookieRes.valid || tokenRes.valid

@@ -594,7 +594,7 @@ export function parseDashboardPayload(
   }
 }
 
-function decodeFlightChunks(html: string): string {
+export function decodeFlightChunks(html: string): string {
   const pushPattern = /self\.__next_f\.push\(\[1,\s*"((?:[^"\\]|\\.)*)"\]\)/g
   let combined = ''
   for (const match of html.matchAll(pushPattern)) {
