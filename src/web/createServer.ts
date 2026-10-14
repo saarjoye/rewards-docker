@@ -651,6 +651,70 @@ export async function createServer(dependencies: WebServerDependencies): Promise
     }
   })
 
+  app.post('/api/accounts/:accountId/calibrate', async (request, reply) => {
+    const { accountId } = z.object({ accountId: z.uuid() }).parse(request.params)
+    const body = z
+      .object({
+        balance: z.number().int().nonnegative().optional()
+      })
+      .optional()
+      .parse(request.body ?? {})
+
+    try {
+      if (body?.balance !== undefined) {
+        dependencies.store.ledger.calibrateBalance(accountId, body.balance, 'app-dashboard')
+        const localDate = localDateKey()
+        const latest = dependencies.store.getLatestPointsHistory(accountId, localDate)
+        dependencies.store.recordPoints({
+          accountId,
+          localDate,
+          initialPoints: latest?.initialPoints ?? body.balance,
+          finalPoints: body.balance,
+          status: latest?.status ?? 'success',
+          balanceConfirmed: true,
+          recordedAt: new Date().toISOString()
+        })
+        return {
+          success: true,
+          accountId,
+          balance: body.balance,
+          message: '积分校准成功：已回填 ' + String(body.balance) + ' 分并清除冲突标记'
+        }
+      }
+
+      const result = await testSingleAccount(accountId)
+      if (result.conflict) {
+        return await reply.code(409).send({
+          error: 'dual-track-conflict',
+          message: result.conflictMessage ?? '双轨凭据冲突，请检查账号绑定一致性'
+        })
+      }
+      if (result.balance <= 0) {
+        return await reply.code(400).send({
+          error: 'balance-unavailable',
+          message: '未能读取到有效积分，请检查 Cookie 或 App Token 登录状态'
+        })
+      }
+
+      return {
+        success: true,
+        accountId,
+        balance: result.balance,
+        nickname: result.nickname,
+        message: '积分校准成功：已从远程读取真实积分 ' + String(result.balance) + ' 分并回填，冲突已清除',
+        healthResult: result
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message === 'account-not-found') {
+        return await reply.code(404).send({ error: 'account-not-found' })
+      }
+      return await reply.code(500).send({
+        error: 'calibrate-failed',
+        message: error instanceof Error ? error.message : '积分校准失败'
+      })
+    }
+  })
+
   app.post('/api/accounts/test-all', async () => {
     const accounts = dependencies.accounts.list()
     const results = await Promise.all(
