@@ -315,6 +315,7 @@ export function Overview({
                 <AccountPointTotals
                   today={day.dailyBalanceDelta}
                   total={day.accountTotalPoints ?? null}
+                  expected={day.expectedDailyPoints ?? null}
                 />
                 <p className="muted">余额更新：{clockTime(day.accountTotalPointsAt)}</p>
                 <details className="account-task-details">
@@ -402,16 +403,58 @@ export function Overview({
 
 export function AccountPointTotals({
   today,
-  total
+  total,
+  expected
 }: {
   today: number | null
   total: number | null
+  expected?: number | null
 }): ReactElement {
+  const diff =
+    today !== null && expected !== null && expected !== undefined
+      ? expected - today
+      : null
+  const isFulfilled =
+    today !== null &&
+    expected !== null &&
+    expected !== undefined &&
+    today >= expected &&
+    expected > 0
   return (
     <dl className="account-point-totals">
       <div>
         <dt>今日得分</dt>
-        <dd>{points(today)}</dd>
+        <dd>
+          {points(today)}
+          {expected !== null && expected !== undefined && expected > 0 ? (
+            <span
+              style={{
+                fontSize: '12px',
+                marginLeft: '6px',
+                fontWeight: 'normal',
+                color: 'var(--color-text-secondary, #64748b)'
+              }}
+            >
+              / 预计 {expected} 分
+            </span>
+          ) : null}
+          {isFulfilled ? (
+            <span
+              className="badge-tag badge-success"
+              style={{ marginLeft: '6px', fontSize: '11px', padding: '1px 5px' }}
+            >
+              已达标
+            </span>
+          ) : null}
+          {diff !== null && diff > 0 ? (
+            <span
+              className="badge-tag badge-warning"
+              style={{ marginLeft: '6px', fontSize: '11px', padding: '1px 5px' }}
+            >
+              未满分 (差 {diff} 分)
+            </span>
+          ) : null}
+        </dd>
       </div>
       <div>
         <dt>账号总分</dt>

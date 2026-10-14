@@ -104,6 +104,7 @@ export interface StatePayload {
       accountTotalPointsAt?: string | null
       verificationStatus: string
       taskPointDetails?: TaskPointDetail[]
+      expectedDailyPoints?: number | null
     }
   >
 }
@@ -202,6 +203,8 @@ export interface HealthCheckResult {
   overallValid: boolean
   balance: number
   nickname?: string
+  conflict?: boolean
+  conflictMessage?: string
   cookie: {
     valid: boolean
     balance?: number
@@ -265,16 +268,36 @@ function HealthReportModal({
                   <div className="health-card-title">
                     <strong>{title}</strong>
                     {email && <span className="muted" style={{ fontSize: '12px' }}>({email})</span>}
-                    {report.overallValid ? (
+                    {report.conflict ? (
+                      <span className="badge-tag badge-danger" style={{ background: '#fee2e2', color: '#dc2626' }}>
+                        双轨绑定冲突
+                      </span>
+                    ) : report.overallValid ? (
                       <span className="badge-tag badge-success">正常在线</span>
                     ) : (
                       <span className="badge-tag badge-warning">需要关注</span>
                     )}
                   </div>
                   <div className="health-card-balance">
-                    实时余额: {report.balance > 0 ? `${String(report.balance)} 分` : '—'}
+                    实时余额: {report.conflict ? '数据冲突' : report.balance > 0 ? `${String(report.balance)} 分` : '—'}
                   </div>
                 </div>
+
+                {report.conflict && (
+                  <div
+                    style={{
+                      background: '#fef2f2',
+                      border: '1px solid #f87171',
+                      color: '#991b1b',
+                      borderRadius: '4px',
+                      padding: '8px 12px',
+                      margin: '8px 0 12px',
+                      fontSize: '13px'
+                    }}
+                  >
+                    ⚠️ {report.conflictMessage || '双轨凭据冲突：Cookie 与 Token 对应账号不一致，已拦截历史写入'}
+                  </div>
+                )}
 
                 <div className="health-card-grid">
                   <div className="health-card-col">

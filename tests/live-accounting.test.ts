@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import { SqliteStore } from '../src/infra/SqliteStore.js'
 import { RunViews } from '../src/web/RunViews.js'
+import type { EvidenceSource } from '../src/domain/Evidence.js'
+import { localDateKey } from '../src/domain/DateKey.js'
 
 function snapshot(
   store: SqliteStore,
@@ -8,14 +10,17 @@ function snapshot(
   balance: number,
   time: string,
   runId = 'run',
-  accountId = 'account'
+  accountId = 'account',
+  source: EvidenceSource = 'rsc',
+  provenance?: string
 ) {
   store.ledger.balance(runId, accountId, phase, {
     value: balance,
     availability: 'valid',
     confidence: 1,
-    source: 'rsc',
-    observedAt: time
+    source,
+    observedAt: time,
+    ...(provenance ? { provenance } : {})
   })
 }
 describe('scoped live accounting', () => {
@@ -121,6 +126,73 @@ describe('scoped live accounting', () => {
         unmatchedBalancePoints: null
       })
       expect(views.accountDate('missing', 'account', '2026-09-09').liveBalanceDelta).toBeNull()
+    } finally {
+      store.close()
+    }
+  })
+  it('marks conflict and sets dailyBalanceDelta to null when evidence sources diverge in magnitude', () => {
+    const store = new SqliteStore(':memory:')
+    try {
+      const date = '2026-09-09'
+      snapshot(store, 'start', 12928, `${date}T01:00:00Z`, 'run1', 'account', 'app-dashboard', 'appResponse.balance')
+      snapshot(store, 'live', 1017, `${date}T02:00:00Z`, 'run2', 'account', 'bing-flyout', 'userStatus.availablePoints')
+      snapshot(store, 'end', 12988, `${date}T03:00:00Z`, 'run1', 'account', 'app-dashboard', 'appResponse.balance')
+
+      const views = new RunViews(store)
+      const day = views.day('account', date);
+      expect(day.conflicting).toBe(true)
+      expect(day.dailyBalanceDelta).toBeNull()
+      expect(day.verificationStatus).toBe('conflict')
+      expect(day.openingBalance).toBeNull()
+      expect(day.closingBalance).toBeNull()
+
+      const todayDate = localDateKey()
+      snapshot(store, 'start', 12928, `${todayDate}T01:00:00Z`, 'today-run1', 'account-today', 'app-dashboard')
+      snapshot(store, 'live', 1017, `${todayDate}T02:00:00Z`, 'today-run2', 'account-today', 'bing-flyout')
+      const todayRows = views.today([{
+        accountId: 'account-today',
+        displayAlias: 'Today Account',
+        maskedEmail: 'today***@example.com',
+        runAccountIndex: 1
+      }])
+      expect(todayRows[0]?.conflicting).toBe(true)
+      expect(todayRows[0]?.dailyBalanceDelta).toBeNull()
+      expect(todayRows[0]?.accountTotalPoints).toBeNull()
+      expect(todayRows[0]?.verificationStatus).toBe('conflict')
+    } finally {
+      store.close()
+    }
+  })
+
+  it('calculates dailyBalanceDelta and account total correctly when all observations come from a single source caliber', () => {
+    const store = new SqliteStore(':memory:')
+    try {
+      const date = '2026-09-09'
+      snapshot(store, 'start', 12928, `${date}T01:00:00Z`, 'run1', 'account', 'app-dashboard', 'appResponse.balance')
+      snapshot(store, 'live', 12950, `${date}T01:30:00Z`, 'run1', 'account', 'app-dashboard', 'appResponse.balance')
+      snapshot(store, 'end', 12988, `${date}T02:00:00Z`, 'run1', 'account', 'app-dashboard', 'appResponse.balance')
+
+      const views = new RunViews(store)
+      const day = views.day('account', date)
+      expect(day.conflicting).toBe(false)
+      expect(day.dailyBalanceDelta).toBe(60)
+      expect(day.openingBalance).toBe(12928)
+      expect(day.closingBalance).toBe(12988)
+      expect(day.verificationStatus).toBe('confirmed')
+
+      const todayDate = localDateKey()
+      snapshot(store, 'start', 12928, `${todayDate}T01:00:00Z`, 'run-today', 'account-today', 'app-dashboard')
+      snapshot(store, 'end', 12988, `${todayDate}T02:00:00Z`, 'run-today', 'account-today', 'app-dashboard')
+      const todayRows = views.today([{
+        accountId: 'account-today',
+        displayAlias: 'Today Account',
+        maskedEmail: 'today***@example.com',
+        runAccountIndex: 1
+      }])
+      expect(todayRows[0]?.conflicting).toBe(false)
+      expect(todayRows[0]?.dailyBalanceDelta).toBe(60)
+      expect(todayRows[0]?.accountTotalPoints).toBe(12988)
+      expect(todayRows[0]?.verificationStatus).toBe('confirmed')
     } finally {
       store.close()
     }

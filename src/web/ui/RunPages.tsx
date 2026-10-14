@@ -28,6 +28,7 @@ interface DailyBalance extends PointStatistics {
   verificationStatus: string
   observedFrom: string | null
   observedAt: string | null
+  expectedDailyPoints?: number | null
 }
 interface RunAccount extends PointStatistics {
   accountId: string

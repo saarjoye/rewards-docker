@@ -330,7 +330,9 @@ describe('task numeric accounting', () => {
       migrateRunLedger(db)
       expect({ ...db.prepare('SELECT * FROM balance_observations').get() }).toEqual({
         ...old,
-        task_id: null
+        task_id: null,
+        provenance: null,
+        conflict: 0
       })
       expect(db.prepare('SELECT COUNT(*) AS n FROM schema_version WHERE version=5').get()?.n).toBe(
         1

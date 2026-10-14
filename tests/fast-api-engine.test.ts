@@ -183,4 +183,58 @@ describe('FastApiEngine & extractNicknameFromCookie', () => {
       )
     })
   })
-})
+
+  describe('testAccount dual-track consistency check', () => {
+    it('marks conflict and sets overallValid: false when Cookie and Token balances diverge by > 100', async () => {
+      const engine = new FastApiEngine()
+      vi.spyOn(engine, 'checkCookieStatus').mockResolvedValue({
+        valid: true,
+        balance: 1017,
+        userName: 'cookie-user',
+        message: 'Cookie 有效'
+      })
+      vi.spyOn(engine, 'checkTokenStatus').mockResolvedValue({
+        valid: true,
+        balance: 12928,
+        message: 'Token 有效'
+      })
+
+      const res = await engine.testAccount({
+        accountId: 'acc-1',
+        cookieStr: 'some-cookie',
+        token: { accessToken: 'token-1', expiresAt: '2026-10-15T00:00:00Z' }
+      })
+
+      expect(res.conflict).toBe(true)
+      expect(res.overallValid).toBe(false)
+      expect(res.conflictMessage).toContain('双轨凭据冲突')
+      expect(res.conflictMessage).toContain('1017')
+      expect(res.conflictMessage).toContain('12928')
+    })
+
+    it('marks overallValid: true and conflict: false when Cookie and Token balances are consistent', async () => {
+      const engine = new FastApiEngine()
+      vi.spyOn(engine, 'checkCookieStatus').mockResolvedValue({
+        valid: true,
+        balance: 12928,
+        userName: 'same-user',
+        message: 'Cookie 有效'
+      })
+      vi.spyOn(engine, 'checkTokenStatus').mockResolvedValue({
+        valid: true,
+        balance: 12950,
+        message: 'Token 有效'
+      })
+
+      const res = await engine.testAccount({
+        accountId: 'acc-1',
+        cookieStr: 'some-cookie',
+        token: { accessToken: 'token-1', expiresAt: '2026-10-15T00:00:00Z' }
+      })
+
+      expect(res.conflict).toBeUndefined()
+      expect(res.overallValid).toBe(true)
+      expect(res.balance).toBe(12928)
+    })
+  })
+});

@@ -113,4 +113,15 @@ describe('bounded authentication navigation', () => {
     await Promise.resolve()
     expect(f.close).not.toHaveBeenCalled()
   })
-})
+
+  it('includes network uncommitted hint when navigation fails before page commit', async () => {
+    const f = navigationPage(vi.fn().mockRejectedValue(navigationError('TimeoutError')))
+    const error = await navigateForAuthentication(
+      f.page,
+      REWARDS_URLS.login,
+      new AbortController().signal
+    ).catch((value: unknown) => value)
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toContain('已提交页面：false，网络/代理未连通')
+  })
+});

@@ -46,6 +46,8 @@ export function taskFailure(reason?: string) {
 }
 
 const detailedFailureLabels: Record<string, string> = {
+  'login-navigation-timeout': '认证入口导航超时（网络/代理未连通微软服务器）',
+  'login-navigation-error': '认证入口导航失败（网络或代理连接异常）',
   'offer-not-found-before-activation': '任务链接已失效或不可用',
   'offer-activation-failed': '任务激活失败，页面无响应',
   'offer-submission-rejected': '提交被微软拒绝，可能已过期',

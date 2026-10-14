@@ -1,4 +1,8 @@
-﻿import { AppAuthorizationSession } from '../browser/AppAuthorizationSession.js'
+function isSignalAborted(signal: AbortSignal): boolean {
+  return signal.aborted
+}
+
+import { AppAuthorizationSession } from '../browser/AppAuthorizationSession.js'
 import { randomUUID } from 'node:crypto'
 
 import type { AccountBrowserSlot } from '../browser/BrowserRuntime.js'
@@ -245,8 +249,10 @@ export class ApplicationRunCoordinator {
           return
         }
       }
-      for (const account of selected) {
-        if (controller.signal.aborted) break
+      for (let i = 0; i < selected.length; i++) {
+        const account = selected[i]
+        if (!account) continue
+        if (isSignalAborted(controller.signal)) break
         const status = await this.executeAccount(
           runId,
           localDateKey(),
@@ -258,6 +264,30 @@ export class ApplicationRunCoordinator {
           retryPendingSearch
         )
         results.push(status)
+
+        if (
+          i < selected.length - 1 &&
+          !isSignalAborted(controller.signal) &&
+          !singleAccountMode
+        ) {
+          const isTest = process.env.NODE_ENV === 'test' || Boolean(process.env.VITEST)
+          const delayMs = isTest
+            ? 0
+            : Math.floor(20_000 + Math.random() * 40_000)
+          if (delayMs > 0) {
+            await this.logger
+              .write({
+                level: 'info',
+                event: 'account-interval-delay',
+                runId,
+                accountAlias: account.displayAlias || account.maskedEmail,
+                durationMs: delayMs,
+                message: `账号任务结束，随机间隔 ${String(Math.round(delayMs / 1000))} 秒后执行下一个账号`
+              })
+              .catch(() => undefined)
+            await abortableDelay(delayMs, controller.signal)
+          }
+        }
       }
       const finishedAt = new Date().toISOString()
       if (controller.signal.aborted)
@@ -1154,7 +1184,8 @@ export class ApplicationRunCoordinator {
           attempt,
           ...slot.authenticationContext
         })
-        await navigateForAuthentication(slot.page, REWARDS_URLS.dashboard, context.signal)
+        const timeoutMs = attempt === 1 ? 15_000 : 20_000
+        await navigateForAuthentication(slot.page, REWARDS_URLS.dashboard, context.signal, timeoutMs)
         return slot
       } catch (error) {
         await slot.close().catch(() => undefined)

@@ -152,6 +152,31 @@ export function formatTaskPoints(value: number): string {
   return `${value > 0 ? '+' : ''}${String(value)} 分`
 }
 
+export function calculateExpectedDailyPoints(tasks: readonly TaskPointDetail[]): number | null {
+  if (!tasks.length) return null
+  const seen = new Set<string>()
+  let sum = 0
+  let hasPositive = false
+  for (const task of tasks) {
+    if (task.taskId.startsWith('category-')) continue
+    if (task.isQuestTask && task.reason?.includes('任务包入口')) continue
+    const identity = `${task.businessDate ?? ''}:${task.taskId}`
+    if (seen.has(identity)) continue
+    seen.add(identity)
+
+    const expected =
+      pointAmount(task.expectedPoints) ??
+      (['pc-search', 'mobile-search'].includes(task.type)
+        ? pointAmount(task.progress?.total)
+        : null)
+    if (expected !== null && expected > 0) {
+      sum += expected
+      hasPositive = true
+    }
+  }
+  return hasPositive ? sum : null
+}
+
 export function taskPointNotificationLine(detail: TaskPointDetail): string {
   const progress =
     detail.progress?.total != null

@@ -345,4 +345,49 @@ describe('dashboard parser', () => {
     expect(extractStreakObservation('no streak here')).toBeUndefined()
   })
 
+  it('selects balance strictly by evidence source when userStatus.availablePoints and userInfo.balance diverge', () => {
+    const payload = {
+      dashboard: {
+        userStatus: {
+          isRewardsUser: true,
+          availablePoints: 1017,
+          counters: { pcSearch: [{ pointProgress: 0, pointProgressMax: 60 }] }
+        }
+      },
+      userInfo: {
+        balance: 12928
+      },
+      response: {
+        balance: 12928
+      }
+    }
+
+    const legacy = parseDashboardPayload(payload, 'legacy-getuserinfo')
+    expect(legacy.availablePoints.value).toBe(1017)
+    expect(legacy.availablePoints.source).toBe('legacy-getuserinfo')
+    expect(legacy.availablePoints.provenance).toBe('userStatus.availablePoints')
+
+    const flyout = parseDashboardPayload(
+      {
+        flyoutResult: {
+          userStatus: {
+            isRewardsUser: true,
+            availablePoints: 1074,
+            counters: {}
+          }
+        },
+        userInfo: { balance: 12988 }
+      },
+      'bing-flyout'
+    )
+    expect(flyout.availablePoints.value).toBe(1074)
+    expect(flyout.availablePoints.source).toBe('bing-flyout')
+    expect(flyout.availablePoints.provenance).toBe('userStatus.availablePoints')
+
+    const app = parseDashboardPayload(payload, 'app-dashboard')
+    expect(app.availablePoints.value).toBe(12928)
+    expect(app.availablePoints.source).toBe('app-dashboard')
+    expect(app.availablePoints.provenance).toBe('appResponse.balance')
+  })
+
 })

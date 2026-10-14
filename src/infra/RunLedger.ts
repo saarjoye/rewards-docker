@@ -5,7 +5,7 @@ import type { FieldEvidence, EvidenceSource } from '../domain/Evidence.js'
 import type { SearchEvent, TaskRecord } from '../domain/Task.js'
 import { redactText } from '../security/Redactor.js'
 import { PointCredits, type CreditInput } from './PointCredits.js'
-import { balanceInterval } from './BalanceInterval.js'
+import { balanceInterval, isDifferentCaliber, MAGNITUDE_CONFLICT_THRESHOLD } from './BalanceInterval.js'
 import { taskBoundAccountState } from '../domain/RunOutcome.js'
 
 export interface BalanceObservation {
@@ -18,6 +18,8 @@ export interface BalanceObservation {
   observedAt: string
   businessDate: string
   source: EvidenceSource
+  provenance?: string | null
+  conflict?: boolean
 }
 
 export interface TaskEvidence {
@@ -69,7 +71,8 @@ export function migrateRunLedger(database: DatabaseSync): void {
       CREATE TABLE IF NOT EXISTS balance_observations (
         snapshot_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, account_id TEXT NOT NULL,
         phase TEXT NOT NULL, balance INTEGER NOT NULL CHECK(balance >= 0),
-        observed_at TEXT NOT NULL, business_date TEXT NOT NULL, source TEXT NOT NULL
+        observed_at TEXT NOT NULL, business_date TEXT NOT NULL, source TEXT NOT NULL,
+        task_id TEXT NULL, provenance TEXT NULL, conflict INTEGER NOT NULL DEFAULT 0
       );
       CREATE INDEX IF NOT EXISTS balance_account_day ON balance_observations(account_id, business_date, observed_at);
       CREATE TABLE IF NOT EXISTS task_evidence (
@@ -112,6 +115,11 @@ export function migrateRunLedger(database: DatabaseSync): void {
       database.exec('ALTER TABLE balance_observations ADD COLUMN task_id TEXT NULL')
     database.exec(`CREATE INDEX IF NOT EXISTS balance_task_scope ON balance_observations(run_id, account_id, business_date, task_id, observed_at);
       INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (5, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));`)
+    if (!balanceColumns.some((column) => column.name === 'provenance'))
+      database.exec('ALTER TABLE balance_observations ADD COLUMN provenance TEXT NULL')
+    if (!balanceColumns.some((column) => column.name === 'conflict'))
+      database.exec('ALTER TABLE balance_observations ADD COLUMN conflict INTEGER NOT NULL DEFAULT 0')
+    database.exec(`INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (7, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));`)
     database.exec('COMMIT')
   } catch (error) {
     database.exec('ROLLBACK')
@@ -205,7 +213,8 @@ export class RunLedger {
             value: row.balance,
             source: 'browser-response',
             confidence: 1,
-            observedAt: row.observedAt
+            observedAt: row.observedAt,
+            provenance: 'browser-response.balance'
           },
           row.taskId
         )
@@ -286,7 +295,7 @@ export class RunLedger {
     phase: 'task-before' | 'task-after',
     taskId?: string
   ): void {
-    const latest = this.balances(runId, accountId).at(-1)
+    const latest = this.balances(runId, accountId).filter((row) => !row.conflict).at(-1)
     if (latest)
       this.balance(
         runId,
@@ -297,7 +306,8 @@ export class RunLedger {
           value: latest.balance,
           source: latest.source,
           confidence: 1,
-          observedAt: latest.observedAt
+          observedAt: latest.observedAt,
+          ...(latest.provenance ? { provenance: latest.provenance } : {})
         },
         taskId
       )
@@ -560,6 +570,48 @@ export class RunLedger {
     )
       return
     const observedAt = new Date(evidence.observedAt).toISOString()
+    const businessDate = localDateKey(new Date(observedAt))
+    const provenance = evidence.provenance ?? null
+
+    const sameDay = this.database
+      .prepare(
+        'SELECT snapshot_id, balance, source, provenance, conflict FROM balance_observations WHERE account_id = ? AND business_date = ?'
+      )
+      .all(accountId, businessDate) as Array<{
+        snapshot_id: string
+        balance: number
+        source: string
+        provenance: string | null
+        conflict: number
+      }>
+
+    let isConflict = false
+    const conflictingSameDayIds: string[] = []
+    for (const row of sameDay) {
+      if (
+        isDifferentCaliber(row.source, row.provenance, evidence.source, provenance) &&
+        Math.abs(row.balance - evidence.value) > MAGNITUDE_CONFLICT_THRESHOLD
+      ) {
+        isConflict = true
+        conflictingSameDayIds.push(row.snapshot_id)
+      }
+    }
+
+    if (!isConflict && sameDay.length === 0) {
+      const prior = this.database
+        .prepare(
+          'SELECT balance, source, provenance FROM balance_observations WHERE account_id = ? AND conflict = 0 ORDER BY observed_at DESC LIMIT 1'
+        )
+        .get(accountId) as { balance: number; source: string; provenance: string | null } | undefined
+      if (
+        prior &&
+        isDifferentCaliber(prior.source, prior.provenance, evidence.source, provenance) &&
+        Math.abs(prior.balance - evidence.value) > MAGNITUDE_CONFLICT_THRESHOLD
+      ) {
+        isConflict = true
+      }
+    }
+
     const key = createHash('sha256')
       .update(
         JSON.stringify([
@@ -572,9 +624,10 @@ export class RunLedger {
         ])
       )
       .digest('hex')
+
     this.database
       .prepare(
-        'INSERT OR IGNORE INTO balance_observations(snapshot_id, run_id, account_id, phase, balance, observed_at, business_date, source, task_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT OR IGNORE INTO balance_observations(snapshot_id, run_id, account_id, phase, balance, observed_at, business_date, source, task_id, provenance, conflict) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
       )
       .run(
         key,
@@ -583,18 +636,32 @@ export class RunLedger {
         phase,
         evidence.value,
         observedAt,
-        localDateKey(new Date(observedAt)),
+        businessDate,
         evidence.source,
-        taskId ?? null
+        taskId ?? null,
+        provenance,
+        isConflict ? 1 : 0
       )
+
+    if (isConflict) {
+      this.database
+        .prepare('UPDATE balance_observations SET conflict = 1 WHERE snapshot_id = ?')
+        .run(key)
+      for (const id of conflictingSameDayIds) {
+        this.database
+          .prepare('UPDATE balance_observations SET conflict = 1 WHERE snapshot_id = ?')
+          .run(id)
+      }
+    }
+
     // Task evidence uses a savepoint: announce only after its complete transaction commits.
     if (!this.database.isTransaction) this.changed()
   }
 
   balances(runId?: string, accountId?: string, businessDate?: string): BalanceObservation[] {
     const sql = `SELECT snapshot_id AS snapshotId, run_id AS runId, account_id AS accountId, phase, balance,
-      observed_at AS observedAt, business_date AS businessDate, source, task_id AS taskId FROM balance_observations`
-    return this.database
+      observed_at AS observedAt, business_date AS businessDate, source, task_id AS taskId, provenance, conflict FROM balance_observations`
+    const rows = this.database
       .prepare(
         `${sql} WHERE (? IS NULL OR run_id = ?)
       AND (? IS NULL OR account_id = ?) AND (? IS NULL OR business_date = ?) ORDER BY observed_at`
@@ -606,6 +673,10 @@ export class RunLedger {
         accountId ?? null,
         businessDate ?? null,
         businessDate ?? null
-      ) as unknown as BalanceObservation[]
+      ) as unknown as Array<Omit<BalanceObservation, 'conflict'> & { conflict: number }>
+    return rows.map((row) => ({
+      ...row,
+      conflict: Boolean(row.conflict)
+    }))
   }
 }

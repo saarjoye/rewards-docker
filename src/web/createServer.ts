@@ -617,7 +617,7 @@ export async function createServer(dependencies: WebServerDependencies): Promise
       dependencies.store.notifyAccountsChanged()
     }
 
-    if (result.balance > 0) {
+    if (result.balance > 0 && !result.conflict) {
       const localDate = localDateKey()
       const latest = dependencies.store.getLatestPointsHistory(accountId, localDate)
       dependencies.store.recordPoints({

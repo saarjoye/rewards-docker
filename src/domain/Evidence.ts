@@ -14,6 +14,7 @@ export interface FieldEvidence<T> {
   observedAt: string
   value?: T
   reason?: string
+  provenance?: string
 }
 
 export function createEvidence<T>(input: FieldEvidence<T>): FieldEvidence<T> {

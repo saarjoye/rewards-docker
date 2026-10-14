@@ -13,6 +13,7 @@ import { taskFailure } from '../domain/Presentation.js'
 import {
   taskPointDetail,
   pointAmount,
+  calculateExpectedDailyPoints,
   type TaskPointDetail,
   type TaskPointInput
 } from '../domain/TaskPointDetail.js'
@@ -217,9 +218,12 @@ export class RunViews {
   day(accountId: string, businessDate: string) {
     const balances = this.store.ledger.balances(undefined, accountId, businessDate)
     const interval = balanceInterval(balances)
+    const details = this.taskPointDetails(accountId, businessDate)
+    const expectedDailyPoints = calculateExpectedDailyPoints(details)
     return {
       timezone: 'Asia/Shanghai',
       dailyBalanceDelta: interval.delta,
+      expectedDailyPoints,
       ...interval,
       ...this.store.ledger.credits.reconcile(accountId, interval.delta, businessDate),
       ...liveAccounting(this.store.ledger, accountId, businessDate)
@@ -596,7 +600,7 @@ export class RunViews {
       const day = this.day(account.accountId, date)
       const latest = this.store.database
         .prepare(
-          `SELECT balance, observed_at AS observedAt, source
+          `SELECT balance, observed_at AS observedAt, source, conflict
         FROM balance_observations WHERE account_id=? AND julianday(observed_at)=(
           SELECT MAX(julianday(observed_at)) FROM balance_observations WHERE account_id=?)`
         )
@@ -604,23 +608,30 @@ export class RunViews {
         balance: number
         observedAt: string
         source: string
+        conflict: number
       }[]
-      const valid =
-        latest.length > 0 &&
-        latest.every(
+      const hasConflict =
+        latest.length === 0 ||
+        latest.some((row) => row.conflict === 1) ||
+        (day.conflicting && day.evidenceSources.length > 1) ||
+        !latest.every(
           (row) =>
             Number.isSafeInteger(row.balance) &&
             row.balance >= 0 &&
             row.balance === latest[0]?.balance
         )
+      const valid = !hasConflict
       return {
         ...day,
+        conflicting: day.conflicting || !valid,
+        verificationStatus: valid ? day.verificationStatus : 'conflict',
         accountId: account.accountId,
         accountIndex: account.runAccountIndex,
         accountLabel: account.displayAlias || account.maskedEmail,
         accountTotalPoints: valid ? (latest[0]?.balance ?? null) : null,
         accountTotalPointsAt: valid ? (latest[0]?.observedAt ?? null) : null,
         accountTotalPointsSource: valid ? (latest[0]?.source ?? null) : null,
+        dailyBalanceDelta: valid ? day.dailyBalanceDelta : null,
         taskPointDetails: this.taskPointDetails(account.accountId, date)
       }
     })

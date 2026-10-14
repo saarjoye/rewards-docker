@@ -129,7 +129,7 @@ export async function navigateForAuthentication(
     throw new LoginStateError({
       loginState: 'unknown',
       loginStage: timedOut ? 'login-navigation-timeout' : 'login-navigation-error',
-      message: `${timedOut ? '认证入口导航未在限定时间内结束' : '认证入口导航失败'}，登录状态未确认（原因分类：${failure}；已提交页面：${String(committed)}）`,
+      message: `${timedOut ? '认证入口导航未在限定时间内结束' : '认证入口导航失败'}，登录状态未确认（原因分类：${failure}；已提交页面：${String(committed)}，网络/代理未连通）`,
       navigationFailure: failure,
       navigationCommitted: committed,
       ...current

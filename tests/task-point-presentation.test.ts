@@ -5,6 +5,7 @@ import {
   pointAmount,
   taskPointDetail,
   taskPointAmountLabel,
+  calculateExpectedDailyPoints,
   type TaskPointCredit
 } from '../src/domain/TaskPointDetail.js'
 import { TaskPointTable } from '../src/web/ui/TaskPointTable'
@@ -142,4 +143,95 @@ describe('task point presentation', () => {
     expect(html).not.toContain('查看具体任务与积分依据')
     expect(html).not.toContain('task-points-details')
   })
-})
+
+  describe('calculateExpectedDailyPoints', () => {
+    it('returns null for empty tasks', () => {
+      expect(calculateExpectedDailyPoints([])).toBeNull()
+    })
+
+    it('calculates sum of expected points ignoring category parent entries', () => {
+      const details = [
+        taskPointDetail({
+          taskId: 'category-search',
+          displayName: '分类任务',
+          status: 'discovered',
+          expectedPoints: 90
+        }),
+        taskPointDetail({
+          taskId: 'pc-search',
+          displayName: 'PC 搜索',
+          type: 'pc-search',
+          status: 'discovered',
+          expectedPoints: 60,
+          progress: { completed: 0, total: 60 }
+        }),
+        taskPointDetail({
+          taskId: 'mobile-search',
+          displayName: '移动端搜索',
+          type: 'mobile-search',
+          status: 'discovered',
+          expectedPoints: 30,
+          progress: { completed: 0, total: 30 }
+        }),
+        taskPointDetail({
+          taskId: 'daily-set-1',
+          displayName: '每日任务 1',
+          status: 'discovered',
+          expectedPoints: 10
+        }),
+        taskPointDetail({
+          taskId: 'daily-set-2',
+          displayName: '每日任务 2',
+          status: 'discovered',
+          expectedPoints: 10
+        })
+      ]
+      expect(calculateExpectedDailyPoints(details)).toBe(110)
+    })
+
+    it('deduplicates tasks with same businessDate and taskId', () => {
+      const details = [
+        taskPointDetail({
+          taskId: 'daily-task-1',
+          displayName: '每日任务 1',
+          localDate: '2026-10-14',
+          status: 'discovered',
+          expectedPoints: 10
+        }),
+        taskPointDetail({
+          taskId: 'daily-task-1',
+          displayName: '每日任务 1',
+          localDate: '2026-10-14',
+          status: 'completed',
+          expectedPoints: 10
+        })
+      ]
+      expect(calculateExpectedDailyPoints(details)).toBe(10)
+    })
+
+    it('falls back to progress.total for search tasks when expectedPoints is missing', () => {
+      const details = [
+        taskPointDetail({
+          taskId: 'pc-search',
+          displayName: 'PC 搜索',
+          type: 'pc-search',
+          status: 'discovered',
+          progress: { completed: 0, total: 60 }
+        })
+      ]
+      expect(calculateExpectedDailyPoints(details)).toBe(60)
+    })
+
+    it('returns null when no positive points are expected', () => {
+      const details = [
+        taskPointDetail({
+          taskId: 'zero-task',
+          displayName: '零分任务',
+          status: 'discovered',
+          expectedPoints: 0
+        })
+      ]
+      expect(calculateExpectedDailyPoints(details)).toBeNull()
+    })
+  })
+});

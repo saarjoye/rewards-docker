@@ -32,6 +32,8 @@ export interface HealthCheckResult {
   nickname?: string | undefined
   cookie: CookieStatusResult
   token: TokenStatusResult
+  conflict?: boolean | undefined
+  conflictMessage?: string | undefined
 }
 
 export interface RegionLockResult {
@@ -394,7 +396,21 @@ export class FastApiEngine {
     const balance = cookieRes.balance || tokenRes.balance || 0
     const nickname =
       cookieRes.userName || (input.cookieStr ? extractNicknameFromCookie(input.cookieStr) : undefined)
-    const overallValid = cookieRes.valid || tokenRes.valid
+    let overallValid = cookieRes.valid || tokenRes.valid
+
+    let conflict = false
+    let conflictMessage: string | undefined
+    if (
+      cookieRes.valid &&
+      tokenRes.valid &&
+      cookieRes.balance !== undefined &&
+      tokenRes.balance !== undefined &&
+      Math.abs(cookieRes.balance - tokenRes.balance) > 100
+    ) {
+      conflict = true
+      overallValid = false
+      conflictMessage = `双轨凭据冲突：Cookie 余额 (${String(cookieRes.balance)}) 与 App Token 余额 (${String(tokenRes.balance)}) 偏差过大，可能绑定了不同账号！`
+    }
 
     return {
       accountId: input.accountId,
@@ -402,7 +418,8 @@ export class FastApiEngine {
       balance,
       ...(nickname ? { nickname } : {}),
       cookie: cookieRes,
-      token: tokenRes
+      token: tokenRes,
+      ...(conflict ? { conflict: true, ...(conflictMessage ? { conflictMessage } : {}) } : {})
     }
   }
 

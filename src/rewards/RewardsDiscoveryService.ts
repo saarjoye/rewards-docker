@@ -470,6 +470,7 @@ export class RewardsDiscoveryService {
       progress: valid
         ? { completed: value.completed, total: value.total }
         : { completed: 0, total: null },
+      ...(valid && value.total > 0 ? { expectedPoints: value.total } : {}),
       ...(!valid ? { reason: counter.reason ?? `${type} counter 未确认` } : {}),
       updatedAt: new Date().toISOString()
     }
@@ -496,6 +497,7 @@ export class RewardsDiscoveryService {
       required: true,
       status: !known ? 'unknown' : claimablePoints === 0 ? 'skipped' : 'discovered',
       progress: { completed: known && claimablePoints === 0 ? 1 : 0, total: 1 },
+      ...(known && claimablePoints > 0 ? { expectedPoints: claimablePoints } : {}),
       ...(!known ? { reason: '可领取积分未确认' } : {}),
       updatedAt: new Date().toISOString()
     }

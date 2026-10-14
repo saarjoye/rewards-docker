@@ -35,6 +35,7 @@ function evidence<T>(input: {
   observedAt: string
   value?: T
   reason?: string
+  provenance?: string
 }): FieldEvidence<T> {
   return createEvidence({
     availability: input.availability,
@@ -42,7 +43,8 @@ function evidence<T>(input: {
     confidence: input.confidence,
     observedAt: input.observedAt,
     ...(input.value === undefined ? {} : { value: input.value }),
-    ...(input.reason === undefined ? {} : { reason: input.reason })
+    ...(input.reason === undefined ? {} : { reason: input.reason }),
+    ...(input.provenance === undefined ? {} : { provenance: input.provenance })
   })
 }
 
@@ -57,8 +59,42 @@ function parseBalance(
   userInfo: RecordValue | undefined,
   appResponse: RecordValue | undefined
 ): FieldEvidence<number> {
-  const candidates = [userStatus?.availablePoints, userInfo?.balance, appResponse?.balance]
-  const raw = candidates.find((value) => value !== undefined)
+  let raw: unknown
+  let provenance: string | undefined
+  if (source === 'app-dashboard') {
+    if (appResponse?.balance !== undefined) {
+      raw = appResponse.balance
+      provenance = 'appResponse.balance'
+    } else if (userInfo?.balance !== undefined) {
+      raw = userInfo.balance
+      provenance = 'userInfo.balance'
+    } else if (userStatus?.availablePoints !== undefined) {
+      raw = userStatus.availablePoints
+      provenance = 'userStatus.availablePoints'
+    }
+  } else if (source === 'bing-flyout' || source === 'legacy-getuserinfo') {
+    if (userStatus?.availablePoints !== undefined) {
+      raw = userStatus.availablePoints
+      provenance = 'userStatus.availablePoints'
+    } else if (userInfo?.balance !== undefined) {
+      raw = userInfo.balance
+      provenance = 'userInfo.balance'
+    } else if (appResponse?.balance !== undefined) {
+      raw = appResponse.balance
+      provenance = 'appResponse.balance'
+    }
+  } else {
+    if (userStatus?.availablePoints !== undefined) {
+      raw = userStatus.availablePoints
+      provenance = 'userStatus.availablePoints'
+    } else if (userInfo?.balance !== undefined) {
+      raw = userInfo.balance
+      provenance = 'userInfo.balance'
+    } else if (appResponse?.balance !== undefined) {
+      raw = appResponse.balance
+      provenance = 'appResponse.balance'
+    }
+  }
   if (raw === undefined) return missing(source, observedAt, 'availablePoints missing')
   const value = safeNonNegativeInteger(raw)
   return value === undefined
@@ -67,14 +103,16 @@ function parseBalance(
         source,
         confidence: 0,
         observedAt,
-        reason: 'availablePoints is not a non-negative safe integer'
+        reason: 'availablePoints is not a non-negative safe integer',
+        ...(provenance ? { provenance } : {})
       })
     : evidence({
         availability: 'valid',
         source,
         confidence: source === 'bing-flyout' ? 0.95 : 0.9,
         observedAt,
-        value
+        value,
+        ...(provenance ? { provenance } : {})
       })
 }
 
@@ -847,7 +885,8 @@ export function parseRewardsHtml(
             source: 'rsc',
             confidence: 0.8,
             observedAt,
-            value: points
+            value: points,
+            provenance: 'flight.availablePoints'
           }),
     ...(deploymentId === undefined ? {} : { deploymentId }),
     ...(routeSegment === undefined
