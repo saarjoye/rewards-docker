@@ -618,6 +618,7 @@ export async function createServer(dependencies: WebServerDependencies): Promise
     }
 
     if (result.balance > 0 && !result.conflict) {
+      dependencies.store.ledger.calibrateBalance(accountId, result.balance, 'app-dashboard')
       const localDate = localDateKey()
       const latest = dependencies.store.getLatestPointsHistory(accountId, localDate)
       dependencies.store.recordPoints({

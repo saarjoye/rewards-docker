@@ -404,6 +404,11 @@ export function App(): ReactElement {
   const [state, setState] = useState<StatePayload>()
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [message, setMessage] = useState('')
+  const [calibratingAccount, setCalibratingAccount] = useState<AccountSummary | null>(null)
+  const [calibrateMode, setCalibrateMode] = useState<'remote' | 'manual'>('remote')
+  const [manualBalanceStr, setManualBalanceStr] = useState('')
+  const [calibrating, setCalibrating] = useState(false)
   const [accountMode, setAccountMode] = useState<'continue' | 'account'>('continue')
   const [executionMode, setExecutionMode] = useState<'read-only' | 'mutating'>('read-only')
   const [runAccountIndex, setRunAccountIndex] = useState(1)
@@ -728,6 +733,50 @@ export function App(): ReactElement {
     }
   }
 
+  const executeCalibration = async (): Promise<void> => {
+    if (!calibratingAccount) return
+    setCalibrating(true)
+    setError('')
+    setMessage('')
+    try {
+      let body: { balance?: number } = {}
+      if (calibrateMode === 'manual') {
+        const val = parseInt(manualBalanceStr.trim(), 10)
+        if (isNaN(val) || val < 0) {
+          setError('请输入有效的非负整数积分')
+          setCalibrating(false)
+          return
+        }
+        body = { balance: val }
+      }
+      const data = await requestJson<{ success: boolean; balance: number; message?: string }>(
+        `/api/accounts/${encodeURIComponent(calibratingAccount.accountId)}/calibrate`,
+        {
+          method: 'POST',
+          body: JSON.stringify(body)
+        },
+        csrfToken
+      )
+      setMessage(data.message || `积分校准成功：已回填 ${String(data.balance)} 分`)
+      setCalibratingAccount(null)
+      await loadState()
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '积分校准失败')
+    } finally {
+      setCalibrating(false)
+    }
+  }
+
+  const startCalibration = (accountId: string) => {
+    const account = state?.accounts.find((a) => a.accountId === accountId)
+    if (!account) return
+    setError('')
+    setMessage('')
+    setCalibratingAccount(account)
+    setCalibrateMode('remote')
+    setManualBalanceStr('')
+  }
+
   const openRun = (id: string) => {
     navigate('#run/' + id)
   }
@@ -833,8 +882,8 @@ export function App(): ReactElement {
             {state?.activeRunId ? '运行控制' : '新建运行'}
           </Button>
         </div>
-        <Feedback error={error} />
-        {page === 'overview' && <Overview state={state} openRun={openRun} />}
+        <Feedback error={error} message={message} />
+        {page === 'overview' && <Overview state={state} openRun={openRun} onCalibrateAccount={startCalibration} />}
         {page === 'tasks' && <TasksPage state={state} date={taskDate} onDate={setTaskDate} />}
         <Suspense fallback={<Loading text="页面加载中" />}>
           {(page === 'history' || page === 'calendar') && (
@@ -869,6 +918,14 @@ export function App(): ReactElement {
                 void testAllAccounts()
               }}
               testing={testingHealth}
+              calibrateAccount={(account) => {
+                setError('')
+                setMessage('')
+                setCalibratingAccount(account)
+                setCalibrateMode('remote')
+                setManualBalanceStr('')
+              }}
+              calibrating={calibrating}
             />
           )}
           {page === 'notifications' && (
@@ -985,6 +1042,60 @@ export function App(): ReactElement {
       >
         将删除 {deletingAccount?.displayAlias}（{deletingAccount?.maskedEmail}
         ）的账号配置与加密会话。此操作无法撤销；已有运行及积分历史保留。
+      </Dialog>
+      <Dialog
+        header="校准真实积分并回填"
+        visible={Boolean(calibratingAccount)}
+        onClose={() => {
+          if (!calibrating) {
+            setCalibratingAccount(null)
+            restoreTrigger()
+          }
+        }}
+        confirmBtn={{
+          content: calibrating ? '正在校准...' : '确认校准并回填',
+          loading: calibrating,
+          disabled: calibrating || (calibrateMode === 'manual' && !manualBalanceStr.trim())
+        }}
+        onConfirm={() => void executeCalibration()}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          <p>
+            正在校准账号：<strong>{calibratingAccount?.displayAlias}</strong>
+            <span className="muted">（{calibratingAccount?.maskedEmail}）</span>
+          </p>
+          <div className="form-field">
+            <label>校准方式</label>
+            <Radio.Group
+              value={calibrateMode}
+              onChange={(value) => { setCalibrateMode(value) }}
+              disabled={calibrating}
+              options={[
+                { label: '从微软远程读取实时总积分（推荐）', value: 'remote' },
+                { label: '手动输入微软真实总积分', value: 'manual' }
+              ]}
+            />
+          </div>
+          {calibrateMode === 'remote' ? (
+            <p className="muted" style={{ margin: 0 }}>
+              系统将通过 Cookie / App Token 向微软官方接口获取实时真实总积分，自动清理当日口径冲突与脏观测，消除 [数据冲突] 异常并恢复正常统计。
+            </p>
+          ) : (
+            <div>
+              <Field
+                label="真实总积分"
+                value={manualBalanceStr}
+                onChange={setManualBalanceStr}
+                placeholder="例如 12993"
+                required
+                disabled={calibrating}
+              />
+              <p className="muted" style={{ margin: '4px 0 0 0', fontSize: '12px' }}>
+                当网络异常或接口受限时，可直接输入官网当前真实积分，将作为权威基准直接回填并消除冲突。
+              </p>
+            </div>
+          )}
+        </div>
       </Dialog>
       <Drawer
         header={state?.activeRunId ? '运行控制' : '新建运行'}

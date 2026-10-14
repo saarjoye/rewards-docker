@@ -1255,4 +1255,40 @@ describe('web API', () => {
       store.close()
     }
   })
+
+  it('calibrates account balance and resolves conflict via manual endpoint', async () => {
+    const { app, store, accounts, cookie, csrfToken } = await fixture()
+    const accountId = accounts.create({
+      email: 'calib@example.test',
+      password: 'synthetic-password'
+    })
+    const date = localDateKey()
+    try {
+      const headers = { cookie, 'x-csrf-token': csrfToken }
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/accounts/${accountId}/calibrate`,
+        headers,
+        payload: { balance: 12993 }
+      })
+      expect(res.statusCode).toBe(200)
+      const body = res.json<{ success: boolean; balance: number; message: string }>()
+      expect(body.success).toBe(true)
+      expect(body.balance).toBe(12993)
+
+      const history = store.getLatestPointsHistory(accountId, date)
+      expect(history?.finalPoints).toBe(12993)
+
+      const invalid = await app.inject({
+        method: 'POST',
+        url: `/api/accounts/${accountId}/calibrate`,
+        headers,
+        payload: { balance: -5 }
+      })
+      expect(invalid.statusCode).toBe(400)
+    } finally {
+      await app.close()
+      store.close()
+    }
+  })
 })

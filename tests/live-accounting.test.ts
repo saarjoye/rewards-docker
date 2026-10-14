@@ -197,4 +197,80 @@ describe('scoped live accounting', () => {
       store.close()
     }
   })
+
+  it('calibrates and reconciles balance after a conflict, restoring authoritative points and clearing conflict in today views', () => {
+    const store = new SqliteStore(':memory:')
+    try {
+      const todayDate = localDateKey()
+      snapshot(store, 'start', 12928, `${todayDate}T01:00:00Z`, 'run1', 'account-calib', 'app-dashboard', 'appResponse.balance')
+      snapshot(store, 'live', 1017, `${todayDate}T02:00:00Z`, 'run2', 'account-calib', 'bing-flyout', 'userStatus.availablePoints')
+      snapshot(store, 'end', 12988, `${todayDate}T03:00:00Z`, 'run1', 'account-calib', 'app-dashboard', 'appResponse.balance')
+
+      const views = new RunViews(store)
+      const before = views.today([{
+        accountId: 'account-calib',
+        displayAlias: 'Calib Account',
+        maskedEmail: 'calib***@example.com',
+        runAccountIndex: 1
+      }])[0]
+      expect(before?.conflicting).toBe(true)
+      expect(before?.accountTotalPoints).toBeNull()
+      expect(before?.dailyBalanceDelta).toBeNull()
+      expect(before?.verificationStatus).toBe('conflict')
+
+      const res = store.ledger.calibrateBalance('account-calib', 12993, 'app-dashboard', todayDate)
+      expect(res.cleanedCount).toBe(1)
+
+      const after = views.today([{
+        accountId: 'account-calib',
+        displayAlias: 'Calib Account',
+        maskedEmail: 'calib***@example.com',
+        runAccountIndex: 1
+      }])[0]
+      expect(after?.conflicting).toBe(false)
+      expect(after?.accountTotalPoints).toBe(12993)
+      expect(after?.dailyBalanceDelta).toBe(65)
+      expect(after?.verificationStatus).not.toBe('conflict')
+
+      const day = views.day('account-calib', todayDate)
+      expect(day.conflicting).toBe(false)
+      expect(day.openingBalance).toBe(12928)
+      expect(day.closingBalance).toBe(12993)
+      expect(day.dailyBalanceDelta).toBe(65)
+    } finally {
+      store.close()
+    }
+  })
+
+  it('calibrates balance when only corrupt observations existed, establishing clean baseline', () => {
+    const store = new SqliteStore(':memory:')
+    try {
+      const todayDate = localDateKey()
+      snapshot(store, 'live', 1017, `${todayDate}T02:00:00Z`, 'run2', 'account-only-bad', 'bing-flyout', 'userStatus.availablePoints')
+
+      const views = new RunViews(store)
+      const before = views.today([{
+        accountId: 'account-only-bad',
+        displayAlias: 'Bad Account',
+        maskedEmail: 'bad***@example.com',
+        runAccountIndex: 1
+      }])[0]
+      expect(before?.accountTotalPoints).toBe(1017)
+
+      const res = store.ledger.calibrateBalance('account-only-bad', 12993, 'app-dashboard', todayDate)
+      expect(res.cleanedCount).toBe(1)
+
+      const after = views.today([{
+        accountId: 'account-only-bad',
+        displayAlias: 'Bad Account',
+        maskedEmail: 'bad***@example.com',
+        runAccountIndex: 1
+      }])[0]
+      expect(after?.conflicting).toBe(false)
+      expect(after?.accountTotalPoints).toBe(12993)
+      expect(after?.verificationStatus).toBe('pending')
+    } finally {
+      store.close()
+    }
+  })
 })

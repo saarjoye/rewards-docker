@@ -146,10 +146,12 @@ function PointsTrendCard(): ReactElement {
 
 export function Overview({
   state,
-  openRun
+  openRun,
+  onCalibrateAccount
 }: {
   state: StatePayload | undefined
   openRun: (id: string) => void
+  onCalibrateAccount?: (accountId: string) => void
 }): ReactElement {
   const active = state?.runs.find((row) => row.runId === state.activeRunId)
 
@@ -318,6 +320,20 @@ export function Overview({
                   expected={day.expectedDailyPoints ?? null}
                 />
                 <p className="muted">余额更新：{clockTime(day.accountTotalPointsAt)}</p>
+                {day.verificationStatus === 'conflict' && onCalibrateAccount && (
+                  <div style={{ marginTop: '8px', marginBottom: '8px' }}>
+                    <Button
+                      variant="outline"
+                      theme="primary"
+                      size="small"
+                      onClick={() => {
+                        onCalibrateAccount(day.accountId)
+                      }}
+                    >
+                      校准真实积分并回填
+                    </Button>
+                  </div>
+                )}
                 <details className="account-task-details">
                   <summary>查看任务明细</summary>
                   <TaskPointTable tasks={day.taskPointDetails ?? []} />
@@ -617,7 +633,9 @@ export function AccountsPage({
   manageCredentials,
   testAccount,
   testAllAccounts,
-  testing
+  testing,
+  calibrateAccount,
+  calibrating
 }: {
   accounts: AccountSummary[]
   busy: boolean
@@ -630,6 +648,8 @@ export function AccountsPage({
   testAccount?: (account: AccountSummary) => void
   testAllAccounts?: () => void
   testing?: boolean
+  calibrateAccount?: (account: AccountSummary) => void
+  calibrating?: boolean
 }): ReactElement {
   const [query, setQuery] = useState('')
   const rows = accounts.filter((row) =>
@@ -730,12 +750,23 @@ export function AccountsPage({
                   {testAccount && (
                     <Button
                       variant="text"
-                      disabled={Boolean(busy || testing)}
+                      disabled={Boolean(busy || testing || calibrating)}
                       onClick={() => {
                         testAccount(row)
                       }}
                     >
                       体检
+                    </Button>
+                  )}
+                  {calibrateAccount && (
+                    <Button
+                      variant="text"
+                      disabled={Boolean(busy || testing || calibrating)}
+                      onClick={() => {
+                        calibrateAccount(row)
+                      }}
+                    >
+                      校准
                     </Button>
                   )}
                   {manageCredentials && (

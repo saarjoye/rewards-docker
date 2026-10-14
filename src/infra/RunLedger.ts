@@ -679,4 +679,112 @@ export class RunLedger {
       conflict: Boolean(row.conflict)
     }))
   }
+
+  /**
+   * 手动/权威校准账号积分
+   * 清理当日偏离过大或口径冲突的异常脏观测，将留存合法观测重置为无冲突，并写入权威余额观测
+   */
+  calibrateBalance(
+    accountId: string,
+    balance: number,
+    source: EvidenceSource = 'app-dashboard',
+    date?: string
+  ): { cleanedCount: number; snapshotId: string } {
+    if (!Number.isSafeInteger(balance) || balance < 0) {
+      throw new RangeError('Balance must be a non-negative safe integer')
+    }
+    const businessDate = date ?? localDateKey(new Date())
+    const observedAt = new Date().toISOString()
+    const provenance = 'calibration'
+
+    const tx = () => {
+      // 1. 查询当日所有观测
+      const sameDayRows = this.database
+        .prepare(
+          'SELECT snapshot_id, source, provenance, balance FROM balance_observations WHERE account_id = ? AND business_date = ?'
+        )
+        .all(accountId, businessDate) as Array<{
+        snapshot_id: string
+        source: string
+        provenance: string | null
+        balance: number
+      }>
+
+      // 2. 识别异常脏观测（口径冲突或量级偏离过大）并清理
+      const dirtyRows = sameDayRows.filter((row) => {
+        const diffCaliber = isDifferentCaliber(row.source, row.provenance, source, provenance)
+        const diffMagnitude = Math.abs(row.balance - balance) > MAGNITUDE_CONFLICT_THRESHOLD
+        return diffCaliber || diffMagnitude
+      })
+
+      if (dirtyRows.length > 0) {
+        const deleteStmt = this.database.prepare(
+          'DELETE FROM balance_observations WHERE snapshot_id = ?'
+        )
+        for (const row of dirtyRows) {
+          deleteStmt.run(row.snapshot_id)
+        }
+      }
+
+      // 3. 将当日留存的合法观测 conflict 标记重置为 0
+      this.database
+        .prepare(
+          'UPDATE balance_observations SET conflict = 0 WHERE account_id = ? AND business_date = ?'
+        )
+        .run(accountId, businessDate)
+
+      // 4. 寻找最近的合法 runId（若当日有运行记录），或使用校准标识
+      const recentRun = this.database
+        .prepare(
+          'SELECT run_id FROM balance_observations WHERE account_id = ? AND business_date = ? ORDER BY observed_at DESC LIMIT 1'
+        )
+        .get(accountId, businessDate) as { run_id: string } | undefined
+
+      let runId = recentRun?.run_id
+      if (!runId) {
+        const lifecycleRun = this.database
+          .prepare(
+            'SELECT run_id FROM account_lifecycle WHERE account_id = ? ORDER BY updated_at DESC LIMIT 1'
+          )
+          .get(accountId) as { run_id: string } | undefined
+        runId = lifecycleRun?.run_id ?? ('calibration-' + businessDate)
+      }
+
+      const snapshotId = createHash('sha256')
+        .update(JSON.stringify([runId, accountId, 'live', observedAt, source, 'calibration']))
+        .digest('hex')
+
+      this.database
+        .prepare(
+          `INSERT OR REPLACE INTO balance_observations(
+            snapshot_id, run_id, account_id, phase, balance, observed_at, business_date, source, task_id, provenance, conflict
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 0)`
+        )
+        .run(
+          snapshotId,
+          runId,
+          accountId,
+          'live',
+          balance,
+          observedAt,
+          businessDate,
+          source,
+          provenance
+        )
+
+      return { cleanedCount: dirtyRows.length, snapshotId }
+    }
+
+    const inTx = this.database.isTransaction
+    if (!inTx) this.database.exec('BEGIN')
+    try {
+      const res = tx()
+      if (!inTx) this.database.exec('COMMIT')
+      if (!inTx) this.changed()
+      return res
+    } catch (err) {
+      if (!inTx) this.database.exec('ROLLBACK')
+      throw err
+    }
+  }
 }
