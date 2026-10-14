@@ -869,8 +869,19 @@ export function parseRewardsHtml(
     }),
     ...dailyLinks
   ]).filter((offer) => matchesDailyBusinessDate(offer, businessDate))
+  const userStatusMatch = normalized.match(/"userStatus"\s*:\s*\{[^}]*?"availablePoints"\s*:\s*(\d+)/)
+  const cardIdx = normalized.indexOf('"activityCards"')
+  const promoIdx = normalized.indexOf('"promotions"')
+  const cutIdx = Math.min(
+    cardIdx === -1 ? normalized.length : cardIdx,
+    promoIdx === -1 ? normalized.length : promoIdx
+  )
+  const safeScope = normalized.substring(0, cutIdx)
+  const safeMatches = [...safeScope.matchAll(/"availablePoints"\s*:\s*(\d+)/g)]
   const pointsMatches = [...normalized.matchAll(/"availablePoints"\s*:\s*(\d+)/g)]
-  const points = safeNonNegativeInteger(pointsMatches.at(-1)?.[1])
+  const points = safeNonNegativeInteger(
+    userStatusMatch?.[1] ?? safeMatches[0]?.[1] ?? pointsMatches[0]?.[1] ?? pointsMatches.at(-1)?.[1]
+  )
   const deploymentId =
     html.match(/[?&](?:amp;)?dpl=([A-Za-z0-9._-]+)/i)?.[1] ??
     normalized.match(/"buildId":"([A-Za-z0-9._-]+)"/)?.[1]

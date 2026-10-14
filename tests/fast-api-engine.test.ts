@@ -187,6 +187,69 @@ describe('FastApiEngine & extractNicknameFromCookie', () => {
       expect(res.balance).toBeUndefined()
     })
 
+    it('prioritizes official authoritative api/getuserinfo JSON response for balance and todayPoints', async () => {
+      const mockFetch = vi.fn((url: string | URL | Request) => {
+        const u = urlToString(url)
+        if (u.includes('api/getuserinfo')) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                userStatus: {
+                  availablePoints: 13150,
+                  currentStreak: 12,
+                  counters: {
+                    dailyPoint: [{ pointProgress: 222, pointProgressMax: 300 }],
+                    pcSearch: [{ pointProgress: 60, pointProgressMax: 60 }]
+                  }
+                }
+              }),
+              {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' }
+              }
+            )
+          )
+        }
+        return Promise.resolve(new Response('<html></html>', { status: 200 }))
+      })
+
+      const engine = new FastApiEngine(mockFetch)
+      const res = await engine.checkCookieStatus('N=saarjoye; session=abc')
+      expect(res.valid).toBe(true)
+      expect(res.balance).toBe(13150)
+      expect(res.todayPoints).toBe(222)
+      expect(res.streakDays).toBe(12)
+      expect(res.pcSearch).toBe('60/60')
+      expect(res.message).toContain('积分: 13150')
+      expect(res.message).toContain('今日: +222')
+    })
+
+    it('extracts comma-formatted balance (e.g. 13,150) and todayPoints (222) from HTML text anchors', async () => {
+      const html = `
+        <html>
+          <body>
+            <div>可用积分: 13,150</div>
+            <div>今日获得: +222</div>
+            <div>每日连续打卡 20 天</div>
+          </body>
+        </html>
+      `
+      const mockFetch = vi.fn((url: string | URL | Request) => {
+        const u = urlToString(url)
+        if (u.includes('api/getuserinfo')) {
+          return Promise.resolve(new Response('not found', { status: 404 }))
+        }
+        return Promise.resolve(new Response(html, { status: 200 }))
+      })
+
+      const engine = new FastApiEngine(mockFetch)
+      const res = await engine.checkCookieStatus('N=saarjoye; session=abc')
+      expect(res.valid).toBe(true)
+      expect(res.balance).toBe(13150)
+      expect(res.todayPoints).toBe(222)
+      expect(res.streakDays).toBe(20)
+    })
+
     it('returns invalid on 401', async () => {
       const mockFetch = vi.fn(() => Promise.resolve(new Response('unauthorized', { status: 401 })))
       const engine = new FastApiEngine(mockFetch)
@@ -320,5 +383,32 @@ describe('FastApiEngine & extractNicknameFromCookie', () => {
       expect(res.overallValid).toBe(true)
       expect(res.balance).toBe(12993)
     })
-  })
+
+
+    it('self-heals and avoids false conflict when Cookie balance was misattributed to todayPoints (e.g. 222 vs 13150)', async () => {
+      const engine = new FastApiEngine()
+      vi.spyOn(engine, 'checkCookieStatus').mockResolvedValue({
+        valid: true,
+        balance: 222,
+        todayPoints: 222,
+        userName: 'cookie-user',
+        message: 'Cookie 有效'
+      })
+      vi.spyOn(engine, 'checkTokenStatus').mockResolvedValue({
+        valid: true,
+        balance: 13150,
+        message: 'Token 有效'
+      })
+
+      const res = await engine.testAccount({
+        accountId: 'acc-1',
+        cookieStr: 'some-cookie',
+        token: { accessToken: 'token-1', expiresAt: '2026-10-15T00:00:00Z' }
+      })
+
+      expect(res.conflict).toBeUndefined()
+      expect(res.overallValid).toBe(true)
+      expect(res.balance).toBe(13150)
+      expect(res.todayPoints).toBe(222)
+    })  })
 });
