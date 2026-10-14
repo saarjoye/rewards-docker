@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { localDateKey } from '../src/domain/DateKey.js'
+import { balanceInterval } from '../src/infra/BalanceInterval.js'
 import { EncryptedSessionStore } from '../src/auth/EncryptedSessionStore.js'
 import { AccountSecretStore } from '../src/infra/AccountSecretStore.js'
 import { AdminAuthStore } from '../src/infra/AdminAuthStore.js'
@@ -1269,15 +1270,21 @@ describe('web API', () => {
         method: 'POST',
         url: `/api/accounts/${accountId}/calibrate`,
         headers,
-        payload: { balance: 12993 }
+        payload: { balance: 12993, todayPoints: 275 }
       })
       expect(res.statusCode).toBe(200)
-      const body = res.json<{ success: boolean; balance: number; message: string }>()
+      const body = res.json<{ success: boolean; balance: number; message: string; todayPoints?: number }>()
       expect(body.success).toBe(true)
       expect(body.balance).toBe(12993)
+      expect(body.todayPoints).toBe(275)
 
       const history = store.getLatestPointsHistory(accountId, date)
       expect(history?.finalPoints).toBe(12993)
+      expect(history?.initialPoints).toBe(12993 - 275)
+
+      const interval = balanceInterval(store.ledger.balances(undefined, accountId, date))
+      expect(interval.delta).toBe(275)
+      expect(interval.conflicting).toBe(false)
 
       const invalid = await app.inject({
         method: 'POST',

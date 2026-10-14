@@ -11,6 +11,7 @@ export const USER_AGENTS = {
 export interface CookieStatusResult {
   valid: boolean
   balance?: number
+  todayPoints?: number
   userName?: string
   streakDays?: number
   stamps?: { progress: number; max: number }
@@ -21,6 +22,7 @@ export interface CookieStatusResult {
 export interface TokenStatusResult {
   valid: boolean
   balance?: number
+  todayPoints?: number
   readProgress?: string
   message: string
   refreshedToken?: AppToken
@@ -30,6 +32,7 @@ export interface HealthCheckResult {
   accountId: string
   overallValid: boolean
   balance: number
+  todayPoints?: number
   nickname?: string | undefined
   cookie: CookieStatusResult
   token: TokenStatusResult
@@ -77,6 +80,36 @@ export function extractNicknameFromCookie(cookieStr: string): string | undefined
 
 export function cookieItemsToString(cookies: Array<{ name: string; value: string }>): string {
   return cookies.map((c) => `${c.name}=${c.value}`).join('; ')
+}
+
+export function extractBalancedJsonObject(str: string, searchKey: string): Record<string, unknown> | undefined {
+  const idx = str.indexOf(searchKey)
+  if (idx === -1) return undefined
+  const braceIdx = str.indexOf('{', idx + searchKey.length)
+  if (braceIdx === -1) return undefined
+  let depth = 0
+  let end = -1
+  for (let i = braceIdx; i < str.length && i < braceIdx + 50_000; i++) {
+    if (str[i] === '{') depth++
+    else if (str[i] === '}') {
+      depth--
+      if (depth === 0) {
+        end = i + 1
+        break
+      }
+    }
+  }
+  if (end !== -1) {
+    try {
+      const parsed = JSON.parse(str.substring(braceIdx, end))
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>
+      }
+    } catch {
+      // ignore JSON parse error
+    }
+  }
+  return undefined
 }
 
 export class FastApiEngine {
@@ -191,45 +224,61 @@ export class FastApiEngine {
 
       if (isAuthValid) {
         let balance: number | undefined
+        let todayPoints: number | undefined
         let pcProgress = 0
         let pcMax = 60
         let streakDays = 0
         const userName = extractNicknameFromCookie(trimmed) ?? ''
 
-        // 提取 PC 搜索配额与 pointsCounters 内部结构
-        const pcIdx = clean.indexOf('"pointsCounters"')
-        if (pcIdx !== -1) {
-          const braceIdx = clean.indexOf('{', pcIdx)
-          if (braceIdx !== -1) {
-            let depth = 0
-            let end = braceIdx
-            for (let i = braceIdx; i < clean.length && i < braceIdx + 1000; i++) {
-              if (clean[i] === '{') depth++
-              else if (clean[i] === '}') {
-                depth--
-                if (depth === 0) {
-                  end = i + 1
-                  break
-                }
-              }
+        // 1. 尝试从 userStatus 结构中直接提取权威余额与今日得分
+        const userStatusObj = extractBalancedJsonObject(clean, '"userStatus"')
+        if (userStatusObj) {
+          const rawAvail = userStatusObj.availablePoints
+          if (typeof rawAvail === 'number' && Number.isSafeInteger(rawAvail) && rawAvail >= 0) {
+            balance = rawAvail
+          }
+          const counters = userStatusObj.counters as Record<string, unknown> | undefined
+          if (counters && Array.isArray(counters.dailyPoint) && counters.dailyPoint[0]) {
+            const dp = counters.dailyPoint[0] as Record<string, unknown>
+            const rawProgress = dp.pointProgress ?? dp.progress
+            if (typeof rawProgress === 'number' && Number.isSafeInteger(rawProgress) && rawProgress >= 0) {
+              todayPoints = rawProgress
             }
-            try {
-              const pts = JSON.parse(clean.substring(braceIdx, end)) as {
-                pc?: { max?: number; progress?: number; pointProgress?: number; pointProgressMax?: number }
-                totalPoints?: number
-                balance?: number
-              }
-              pcMax = pts.pc?.max ?? pts.pc?.pointProgressMax ?? 60
-              pcProgress = pts.pc?.progress ?? pts.pc?.pointProgress ?? 0
-              if (pts.totalPoints != null && pts.totalPoints > 0) balance = pts.totalPoints
-              else if (pts.balance != null && pts.balance > 0) balance = pts.balance
-            } catch {
-              // ignore JSON parse
-            }
+          }
+          if (counters && Array.isArray(counters.pcSearch) && counters.pcSearch[0]) {
+            const pc = counters.pcSearch[0] as Record<string, unknown>
+            if (typeof pc.pointProgress === 'number') pcProgress = pc.pointProgress
+            if (typeof pc.pointProgressMax === 'number') pcMax = pc.pointProgressMax
+          }
+          const streakInfo = userStatusObj.streakInfo as Record<string, unknown> | undefined
+          const rawStreak = streakInfo?.currentStreak ?? userStatusObj.currentStreak ?? userStatusObj.streakDays
+          if (typeof rawStreak === 'number') streakDays = rawStreak
+        }
+
+        // 2. 尝试从 pointsCounters 内部结构提取
+        const pointsCountersObj = extractBalancedJsonObject(clean, '"pointsCounters"')
+        if (pointsCountersObj) {
+          const pts = pointsCountersObj as {
+            pc?: { max?: number; progress?: number; pointProgress?: number; pointProgressMax?: number }
+            totalPoints?: number
+            balance?: number
+            dailyPoint?: { progress?: number; pointProgress?: number }
+          }
+          if (pts.pc) {
+            pcMax = pts.pc.max ?? pts.pc.pointProgressMax ?? pcMax
+            pcProgress = pts.pc.progress ?? pts.pc.pointProgress ?? pcProgress
+          }
+          if (balance === undefined) {
+            if (pts.totalPoints != null && pts.totalPoints > 0) balance = pts.totalPoints
+            else if (pts.balance != null && pts.balance > 0) balance = pts.balance
+          }
+          if (todayPoints === undefined && pts.dailyPoint) {
+            const dpVal = pts.dailyPoint.pointProgress ?? pts.dailyPoint.progress
+            if (typeof dpVal === 'number' && dpVal >= 0) todayPoints = dpVal
           }
         }
 
-        // 兜底提取 PC 搜索配额
+        // 3. 兜底提取 PC 搜索配额
         if (pcProgress === 0 && pcMax === 60) {
           const pcMatch =
             clean.match(/"pcSearch"\s*:\s*\[\s*\{[^}]*?"pointProgress"\s*:\s*(\d+)[^}]*?"pointProgressMax"\s*:\s*(\d+)/) ||
@@ -240,28 +289,54 @@ export class FastApiEngine {
           }
         }
 
-        // 提取余额：在 Flight 流或 HTML 中按优先级提取 availablePoints、totalPoints、balance
+        // 4. 正则安全兜底提取余额（仅在 activityCards 之前的安全区域提取，彻底杜绝把底部活动卡片 222 分当成余额）
         if (balance === undefined) {
-          const availableMatches = [...clean.matchAll(/"availablePoints"\s*:\s*["']?(\d+)["']?/g)]
-          const totalMatches = [...clean.matchAll(/"totalPoints"\s*:\s*["']?(\d+)["']?/g)]
-          const balMatches = [...clean.matchAll(/"balance"\s*:\s*["']?(\d+)["']?/g)]
-
-          const raw = availableMatches.at(-1)?.[1] ?? totalMatches.at(-1)?.[1] ?? balMatches.at(-1)?.[1]
+          const userStatusMatch = clean.match(/"userStatus"\s*:\s*\{[^}]*?"availablePoints"\s*:\s*["']?(\d+)["']?/)
+          if (userStatusMatch && userStatusMatch[1]) {
+            balance = parseInt(userStatusMatch[1], 10)
+          }
+        }
+        if (balance === undefined) {
+          const cardIdx = clean.indexOf('"activityCards"')
+          const promoIdx = clean.indexOf('"promotions"')
+          const cutIdx = Math.min(
+            cardIdx === -1 ? clean.length : cardIdx,
+            promoIdx === -1 ? clean.length : promoIdx
+          )
+          const safeScope = clean.substring(0, cutIdx)
+          const totalMatch = safeScope.match(/"totalPoints"\s*:\s*["']?(\d+)["']?/)
+          const availMatch = safeScope.match(/"availablePoints"\s*:\s*["']?(\d+)["']?/)
+          const balMatch = safeScope.match(/"balance"\s*:\s*["']?(\d+)["']?/)
+          const raw = totalMatch?.[1] ?? availMatch?.[1] ?? balMatch?.[1]
           if (raw !== undefined) {
             balance = parseInt(raw, 10)
           }
         }
 
-        // 提取连续签到
-        const cleanText = clean.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ')
-        const streakMatch =
-          cleanText.match(/(?:每日连续打卡|连续打卡)\s*(\d+)/) ||
-          clean.match(/"(?:streakDays|streakCount|currentStreak)"\s*:\s*(\d+)/)
-        if (streakMatch && streakMatch[1]) {
-          streakDays = parseInt(streakMatch[1], 10)
+        // 5. 正则安全兜底提取今日获得积分
+        if (todayPoints === undefined) {
+          const dailyMatch =
+            clean.match(/"dailyPoint"\s*:\s*\[\s*\{[^}]*?"pointProgress"\s*:\s*(\d+)/) ||
+            clean.match(/"dailyPoint"\s*:\s*\{[^}]*?"pointProgress"\s*:\s*(\d+)/) ||
+            clean.match(/(?:今日获得|今日积分|今日已得)\s*[:：+]?\s*(\d+)/) ||
+            clean.match(/"todayPoints"\s*:\s*["']?(\d+)["']?/)
+          if (dailyMatch && dailyMatch[1]) {
+            todayPoints = parseInt(dailyMatch[1], 10)
+          }
         }
 
-        // 提取印章进度
+        // 6. 提取连续签到
+        if (streakDays === 0) {
+          const cleanText = clean.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ')
+          const streakMatch =
+            cleanText.match(/(?:每日连续打卡|连续打卡)\s*(\d+)/) ||
+            clean.match(/"(?:streakDays|streakCount|currentStreak)"\s*:\s*(\d+)/)
+          if (streakMatch && streakMatch[1]) {
+            streakDays = parseInt(streakMatch[1], 10)
+          }
+        }
+
+        // 7. 提取印章进度
         let stampsProgress = 0
         let stampsMax = 12
         const stampMatch =
@@ -272,14 +347,21 @@ export class FastApiEngine {
           stampsProgress = parseInt(stampMatch[2], 10) || 0
         }
 
+        const msgParts = ['网页端在线']
+        if (balance !== undefined) msgParts.push(`积分: ${String(balance)}`)
+        if (todayPoints !== undefined) msgParts.push(`今日: +${String(todayPoints)}`)
+        msgParts.push(`连签: ${String(streakDays)}天`)
+        msgParts.push(`搜索: ${String(pcProgress)}/${String(pcMax)}`)
+
         return {
           valid: true,
           ...(balance !== undefined ? { balance } : {}),
+          ...(todayPoints !== undefined ? { todayPoints } : {}),
           userName,
           streakDays,
           stamps: { progress: stampsProgress, max: stampsMax },
           pcSearch: `${String(pcProgress)}/${String(pcMax)}`,
-          message: `网页端在线 | 积分: ${balance !== undefined ? String(balance) : '—'} | 连签: ${String(streakDays)}天 | 搜索: ${String(pcProgress)}/${String(pcMax)}`
+          message: msgParts.join(' | ')
         }
       }
 
@@ -371,11 +453,24 @@ export class FastApiEngine {
           ? `${String(readTask.attributes?.progress || 0)}/${String(readTask.attributes?.max || 30)}`
           : '就绪'
 
+        let todayPoints: number | undefined
+        const rawDp =
+          (data.response as Record<string, unknown>).dailyPoints ??
+          (data.response as Record<string, unknown>).todayPoints
+        if (rawDp !== undefined && Number.isFinite(Number(rawDp))) {
+          todayPoints = Number(rawDp)
+        }
+
+        const msgParts = ['移动端在线', `积分: ${String(balance)}`]
+        if (todayPoints !== undefined) msgParts.push(`今日: +${String(todayPoints)}`)
+        msgParts.push(`阅读进度: ${readProg}`)
+
         return {
           valid: true,
           balance,
+          ...(todayPoints !== undefined ? { todayPoints } : {}),
           readProgress: readProg,
-          message: `移动端在线 | 积分: ${String(balance)} | 阅读进度: ${readProg}`,
+          message: msgParts.join(' | '),
           ...(refreshed ? { refreshedToken: refreshed } : {})
         }
       }
@@ -411,6 +506,7 @@ export class FastApiEngine {
     ])
 
     const balance = cookieRes.balance ?? tokenRes.balance ?? 0
+    const todayPoints = cookieRes.todayPoints ?? tokenRes.todayPoints
     const nickname =
       cookieRes.userName || (input.cookieStr ? extractNicknameFromCookie(input.cookieStr) : undefined)
     let overallValid = cookieRes.valid || tokenRes.valid
@@ -433,6 +529,7 @@ export class FastApiEngine {
       accountId: input.accountId,
       overallValid,
       balance,
+      ...(todayPoints !== undefined ? { todayPoints } : {}),
       ...(nickname ? { nickname } : {}),
       cookie: cookieRes,
       token: tokenRes,

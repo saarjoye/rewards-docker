@@ -149,6 +149,29 @@ describe('FastApiEngine & extractNicknameFromCookie', () => {
       expect(res.stamps?.progress).toBe(6)
     })
 
+    it('extracts real balance and todayPoints from userStatus and does not get confused by activityCards reward points (e.g. 222)', async () => {
+      const flightPayload = JSON.stringify(
+        '1:{"userStatus":{"availablePoints":13150,"counters":{"dailyPoint":[{"pointProgress":275,"pointProgressMax":300}],"pcSearch":[{"pointProgress":30,"pointProgressMax":60}]},"streakInfo":{"currentStreak":15}},"activityCards":[{"name":"card1","availablePoints":222}]}'
+      )
+      const html = `
+        <html>
+          <body>
+            <div>每日连续打卡 15 天</div>
+            <script>self.__next_f.push([1,${flightPayload}])</script>
+          </body>
+        </html>
+      `
+      const mockFetch = vi.fn(() => Promise.resolve(new Response(html, { status: 200 })))
+      const engine = new FastApiEngine(mockFetch)
+      const res = await engine.checkCookieStatus('N=saarjoye; _EDGE_S=F=1')
+      expect(res.valid).toBe(true)
+      expect(res.balance).toBe(13150)
+      expect(res.todayPoints).toBe(275)
+      expect(res.balance).not.toBe(222)
+      expect(res.pcSearch).toBe('30/60')
+      expect(res.streakDays).toBe(15)
+    })
+
     it('does not mistake Bing search counter rc=65 for points when balance is absent from html', async () => {
       const html = `
         <html>

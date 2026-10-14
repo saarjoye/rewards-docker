@@ -688,7 +688,8 @@ export class RunLedger {
     accountId: string,
     balance: number,
     source: EvidenceSource = 'app-dashboard',
-    date?: string
+    date?: string,
+    todayPoints?: number
   ): { cleanedCount: number; snapshotId: string } {
     if (!Number.isSafeInteger(balance) || balance < 0) {
       throw new RangeError('Balance must be a non-negative safe integer')
@@ -750,8 +751,59 @@ export class RunLedger {
         runId = lifecycleRun?.run_id ?? ('calibration-' + businessDate)
       }
 
+      if (todayPoints !== undefined && Number.isSafeInteger(todayPoints) && todayPoints >= 0) {
+        const openingBalance = Math.max(0, balance - todayPoints)
+        const startObservedAt = `${businessDate}T00:00:01.000Z`
+        const startSnapshotId = createHash('sha256')
+          .update(JSON.stringify([runId, accountId, 'start', startObservedAt, source, provenance]))
+          .digest('hex')
+
+        this.database
+          .prepare(
+            `INSERT OR REPLACE INTO balance_observations(
+              snapshot_id, run_id, account_id, phase, balance, observed_at, business_date, source, task_id, provenance, conflict
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 0)`
+          )
+          .run(
+            startSnapshotId,
+            runId,
+            accountId,
+            'start',
+            openingBalance,
+            startObservedAt,
+            businessDate,
+            source,
+            provenance
+          )
+
+        const endObservedAt = observedAt
+        const endSnapshotId = createHash('sha256')
+          .update(JSON.stringify([runId, accountId, 'end', endObservedAt, source, provenance]))
+          .digest('hex')
+
+        this.database
+          .prepare(
+            `INSERT OR REPLACE INTO balance_observations(
+              snapshot_id, run_id, account_id, phase, balance, observed_at, business_date, source, task_id, provenance, conflict
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 0)`
+          )
+          .run(
+            endSnapshotId,
+            runId,
+            accountId,
+            'end',
+            balance,
+            endObservedAt,
+            businessDate,
+            source,
+            provenance
+          )
+
+        return { cleanedCount: dirtyRows.length, snapshotId: endSnapshotId }
+      }
+
       const snapshotId = createHash('sha256')
-        .update(JSON.stringify([runId, accountId, 'live', observedAt, source, 'calibration']))
+        .update(JSON.stringify([runId, accountId, 'live', observedAt, source, provenance]))
         .digest('hex')
 
       this.database

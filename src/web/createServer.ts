@@ -618,13 +618,13 @@ export async function createServer(dependencies: WebServerDependencies): Promise
     }
 
     if (result.balance > 0 && !result.conflict) {
-      dependencies.store.ledger.calibrateBalance(accountId, result.balance, 'app-dashboard')
+      dependencies.store.ledger.calibrateBalance(accountId, result.balance, 'app-dashboard', undefined, result.todayPoints)
       const localDate = localDateKey()
       const latest = dependencies.store.getLatestPointsHistory(accountId, localDate)
       dependencies.store.recordPoints({
         accountId,
         localDate,
-        initialPoints: latest?.initialPoints ?? result.balance,
+        initialPoints: result.todayPoints !== undefined ? Math.max(0, result.balance - result.todayPoints) : (latest?.initialPoints ?? result.balance),
         finalPoints: result.balance,
         status: latest?.status ?? 'success',
         balanceConfirmed: true,
@@ -655,20 +655,24 @@ export async function createServer(dependencies: WebServerDependencies): Promise
     const { accountId } = z.object({ accountId: z.uuid() }).parse(request.params)
     const body = z
       .object({
-        balance: z.number().int().nonnegative().optional()
+        balance: z.number().int().nonnegative().optional(),
+        todayPoints: z.number().int().nonnegative().optional()
       })
       .optional()
       .parse(request.body ?? {})
 
     try {
       if (body?.balance !== undefined) {
-        dependencies.store.ledger.calibrateBalance(accountId, body.balance, 'app-dashboard')
+        dependencies.store.ledger.calibrateBalance(accountId, body.balance, 'app-dashboard', undefined, body.todayPoints)
         const localDate = localDateKey()
         const latest = dependencies.store.getLatestPointsHistory(accountId, localDate)
+        const initialPoints = body.todayPoints !== undefined
+          ? Math.max(0, body.balance - body.todayPoints)
+          : (latest?.initialPoints ?? body.balance)
         dependencies.store.recordPoints({
           accountId,
           localDate,
-          initialPoints: latest?.initialPoints ?? body.balance,
+          initialPoints,
           finalPoints: body.balance,
           status: latest?.status ?? 'success',
           balanceConfirmed: true,
@@ -678,17 +682,17 @@ export async function createServer(dependencies: WebServerDependencies): Promise
           success: true,
           accountId,
           balance: body.balance,
-          message: '积分校准成功：已回填 ' + String(body.balance) + ' 分并清除冲突标记'
+          todayPoints: body.todayPoints,
+          message:
+            '积分校准成功：已回填 ' +
+            String(body.balance) +
+            ' 分' +
+            (body.todayPoints !== undefined ? ('（今日获得 +' + String(body.todayPoints) + ' 分）') : '') +
+            ' 并清除冲突标记'
         }
       }
 
       const result = await testSingleAccount(accountId)
-      if (result.conflict) {
-        return await reply.code(409).send({
-          error: 'dual-track-conflict',
-          message: result.conflictMessage ?? '双轨凭据冲突，请检查账号绑定一致性'
-        })
-      }
       if (result.balance <= 0) {
         return await reply.code(400).send({
           error: 'balance-unavailable',
@@ -696,12 +700,35 @@ export async function createServer(dependencies: WebServerDependencies): Promise
         })
       }
 
+      // 无论体检是否存在微弱双轨差异，手动触发校准时均强制执行权威回填与历史脏数据清洗
+      dependencies.store.ledger.calibrateBalance(accountId, result.balance, 'app-dashboard', undefined, result.todayPoints)
+      const localDate = localDateKey()
+      const latest = dependencies.store.getLatestPointsHistory(accountId, localDate)
+      const initialPoints = result.todayPoints !== undefined
+        ? Math.max(0, result.balance - result.todayPoints)
+        : (latest?.initialPoints ?? result.balance)
+      dependencies.store.recordPoints({
+        accountId,
+        localDate,
+        initialPoints,
+        finalPoints: result.balance,
+        status: latest?.status ?? 'success',
+        balanceConfirmed: true,
+        recordedAt: new Date().toISOString()
+      })
+
       return {
         success: true,
         accountId,
         balance: result.balance,
+        todayPoints: result.todayPoints,
         nickname: result.nickname,
-        message: '积分校准成功：已从远程读取真实积分 ' + String(result.balance) + ' 分并回填，冲突已清除',
+        message:
+          '积分校准成功：已从远程读取真实积分 ' +
+          String(result.balance) +
+          ' 分' +
+          (result.todayPoints !== undefined ? ('（今日获得 +' + String(result.todayPoints) + ' 分）') : '') +
+          ' 并写入系统，历史异常已清洗',
         healthResult: result
       }
     } catch (error) {

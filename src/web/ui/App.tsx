@@ -408,6 +408,7 @@ export function App(): ReactElement {
   const [calibratingAccount, setCalibratingAccount] = useState<AccountSummary | null>(null)
   const [calibrateMode, setCalibrateMode] = useState<'remote' | 'manual'>('remote')
   const [manualBalanceStr, setManualBalanceStr] = useState('')
+  const [manualTodayPointsStr, setManualTodayPointsStr] = useState('')
   const [calibrating, setCalibrating] = useState(false)
   const [accountMode, setAccountMode] = useState<'continue' | 'account'>('continue')
   const [executionMode, setExecutionMode] = useState<'read-only' | 'mutating'>('read-only')
@@ -739,7 +740,7 @@ export function App(): ReactElement {
     setError('')
     setMessage('')
     try {
-      let body: { balance?: number } = {}
+      let body: { balance?: number; todayPoints?: number } = {}
       if (calibrateMode === 'manual') {
         const val = parseInt(manualBalanceStr.trim(), 10)
         if (isNaN(val) || val < 0) {
@@ -747,7 +748,13 @@ export function App(): ReactElement {
           setCalibrating(false)
           return
         }
-        body = { balance: val }
+        body.balance = val
+        if (manualTodayPointsStr.trim()) {
+          const tVal = parseInt(manualTodayPointsStr.trim(), 10)
+          if (!isNaN(tVal) && tVal >= 0) {
+            body.todayPoints = tVal
+          }
+        }
       }
       const data = await requestJson<{ success: boolean; balance: number; message?: string }>(
         `/api/accounts/${encodeURIComponent(calibratingAccount.accountId)}/calibrate`,
@@ -775,6 +782,7 @@ export function App(): ReactElement {
     setCalibratingAccount(account)
     setCalibrateMode('remote')
     setManualBalanceStr('')
+    setManualTodayPointsStr('')
   }
 
   const openRun = (id: string) => {
@@ -1078,10 +1086,10 @@ export function App(): ReactElement {
           </div>
           {calibrateMode === 'remote' ? (
             <p className="muted" style={{ margin: 0 }}>
-              系统将通过 Cookie / App Token 向微软官方接口获取实时真实总积分，自动清理当日口径冲突与脏观测，消除 [数据冲突] 异常并恢复正常统计。
+              系统将通过 Cookie / App Token 向微软官方接口获取实时真实总积分与今日已获积分，直接写入项目并重置开盘基准，自动清理口径冲突与历史脏观测，消除 [数据冲突] 异常并恢复正常统计。
             </p>
           ) : (
-            <div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               <Field
                 label="真实总积分"
                 value={manualBalanceStr}
@@ -1090,8 +1098,15 @@ export function App(): ReactElement {
                 required
                 disabled={calibrating}
               />
-              <p className="muted" style={{ margin: '4px 0 0 0', fontSize: '12px' }}>
-                当网络异常或接口受限时，可直接输入官网当前真实积分，将作为权威基准直接回填并消除冲突。
+              <Field
+                label="今日已获得积分（选填）"
+                value={manualTodayPointsStr}
+                onChange={setManualTodayPointsStr}
+                placeholder="例如 275（不填则默认今日增长为 0）"
+                disabled={calibrating}
+              />
+              <p className="muted" style={{ margin: 0, fontSize: '12px' }}>
+                当网络异常或接口受限时，可直接输入官网当前真实积分与今日已获积分，将作为权威基准直接写入系统并清除冲突。
               </p>
             </div>
           )}
