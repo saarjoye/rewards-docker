@@ -20,7 +20,7 @@ export function sanitizeStorageState(state: BrowserStorageState): BrowserStorage
   }
 }
 
-const IDENTITY_COOKIE_NAMES = new Set(['WLS', '.MSA.Auth', 'SRCHUID', 'USRLOC'])
+const IDENTITY_COOKIE_NAMES = new Set(['WLS', 'MUID', 'SRCHUID', 'ANON'])
 
 export function computeSessionIdentityHash(
   cookies: readonly { name: string; value: string }[]
