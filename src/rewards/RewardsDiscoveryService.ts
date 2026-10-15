@@ -148,7 +148,7 @@ export class RewardsDiscoveryService {
           verification: {
             valid: false,
             failedStage: 'bing',
-            reason: identity.reason ?? '????????????'
+            reason: identity.reason ?? '会话身份与预期不一致'
           }
         }
       }

@@ -59,7 +59,7 @@ function requireAuthCookiePresence(cookies: readonly CookieItem[]): void {
   const { hasAuthCookies } = validateAuthCookiePresence(cookies)
   if (!hasAuthCookies) {
     throw new Error(
-      '??? Cookie ???? Cookie???? WLS/.MSA.Auth/SRCHUID/ANON/USRLOC ????? HttpOnly ?? Cookie??? domain ?? bing.com/rewards.bing.com/live.com????????????? Cookie????????/OAuth?'
+      '缺少认证 Cookie：需包含 WLS/.MSA.Auth/SRCHUID/ANON/USRLOC 之一（HttpOnly 或普通 Cookie），且 domain 覆盖 bing.com/rewards.bing.com/live.com。请重新导入 Cookie 或使用 OAuth 登录。'
     )
   }
 }
@@ -349,7 +349,7 @@ export class SessionImportManager {
     const { hasAuthCookies, authCookieNames } = validateAuthCookiePresence(cookies)
     if (!hasAuthCookies) {
       throw new Error(
-        '??? Cookie ???? Cookie???? WLS/.MSA.Auth/SRCHUID/ANON/USRLOC ????? HttpOnly ?? Cookie??? domain ?? bing.com/rewards.bing.com/live.com????????????? Cookie????????/OAuth?'
+        '缺少认证 Cookie：需包含 WLS/.MSA.Auth/SRCHUID/ANON/USRLOC 之一（HttpOnly 或普通 Cookie），且 domain 覆盖 bing.com/rewards.bing.com/live.com。请重新导入 Cookie 或使用 OAuth 登录。'
       )
     }
     const validatedAt = new Date().toISOString()

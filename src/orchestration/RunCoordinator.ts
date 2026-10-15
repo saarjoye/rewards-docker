@@ -1077,8 +1077,8 @@ export class ApplicationRunCoordinator {
         )
       }
     )
-    await resources.desktopClient.computeAndStoreIdentityHash().catch(() => undefined)
     await login.login(resources.desktop.page, credentials, context.signal)
+    await resources.desktopClient.computeAndStoreIdentityHash().catch(() => undefined)
     const desktopObservation = await this.verifyBrowserSession(
       resources.desktop,
       resources.desktopClient,
@@ -1115,8 +1115,8 @@ export class ApplicationRunCoordinator {
           )
         }
       )
-      await resources.mobileClient.computeAndStoreIdentityHash().catch(() => undefined)
       await login.login(resources.mobile.page, credentials, context.signal)
+      await resources.mobileClient.computeAndStoreIdentityHash().catch(() => undefined)
       await this.verifyBrowserSession(
         resources.mobile,
         resources.mobileClient,

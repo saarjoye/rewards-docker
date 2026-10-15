@@ -20,7 +20,7 @@ export function sanitizeStorageState(state: BrowserStorageState): BrowserStorage
   }
 }
 
-const IDENTITY_COOKIE_NAMES = new Set(['WLS', 'MUID', 'SRCHUID', 'ANON'])
+const IDENTITY_COOKIE_NAMES = new Set(['WLS', '.MSA.Auth', 'SRCHUID', 'USRLOC'])
 
 export function computeSessionIdentityHash(
   cookies: readonly { name: string; value: string }[]
@@ -40,7 +40,7 @@ export function validateSessionIdentity(
   if (!expectedHash) return { valid: true }
   const actualHash = computeSessionIdentityHash(actualCookies)
   if (actualHash !== expectedHash) {
-    return { valid: false, reason: '???????????????????????' }
+    return { valid: false, reason: '会话身份与预期不一致' }
   }
   return { valid: true }
 }
@@ -84,7 +84,9 @@ export class BrowserRuntime {
     if (stored && expectedIdentityHash) {
       const identity = validateSessionIdentity(expectedIdentityHash, stored.payload.cookies)
       if (!identity.valid) {
-        throw new Error(`?????????${identity.reason ?? '???????'}?account ${accountId} / slot ${slot}?`)
+        throw new Error(
+          `会话身份校验失败：${identity.reason ?? '会话身份与预期不一致'}（account ${accountId} / slot ${slot}）`
+        )
       }
     }
     const storageState = stored ? sanitizeStorageState(stored.payload) : undefined
