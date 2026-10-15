@@ -101,6 +101,19 @@ function location(page: Page): { url: string; host: string; path: string } {
 export class LoginController {
   constructor(private readonly logger: StructuredLogger) {}
 
+  /**
+   * Whether the most recent login() call actually drove the sign-in UI.
+   *
+   * A session that is already authenticated returns without touching the cookie jar,
+   * so its identity fingerprint still describes the live session. Callers use this to
+   * decide whether a pre-login fingerprint is still a valid comparison target.
+   */
+  private lastLoginInteractionStarted = false
+
+  get authenticationInteractionStarted(): boolean {
+    return this.lastLoginInteractionStarted
+  }
+
   async detectCurrentState(page: Page): Promise<LoginStateSnapshot> {
     // Inspect usable controls directly; DOMContentLoaded may be delayed by unrelated scripts.
     const current = location(page)
@@ -223,6 +236,7 @@ export class LoginController {
       await navigateForAuthentication(page, REWARDS_URLS.login, signal, deadline - Date.now())
     }
 
+    this.lastLoginInteractionStarted = false
     const submittedStates = new Set<LoginState>()
     let authenticationInteractionStarted = false
     let previousState: LoginState | undefined
@@ -328,7 +342,10 @@ export class LoginController {
 
       signal.throwIfAborted()
       if (!submittedStates.has(snapshot.state)) {
-        if (snapshot.state !== 'unknown') authenticationInteractionStarted = true
+        if (snapshot.state !== 'unknown') {
+          authenticationInteractionStarted = true
+          this.lastLoginInteractionStarted = true
+        }
         await this.handleState(page, snapshot.state, credentials, () => {
           signal.throwIfAborted()
           submittedStates.add(snapshot.state)

@@ -1230,8 +1230,17 @@ export class ApplicationRunCoordinator {
     if (!verified.verification.valid) {
       await navigateForAuthentication(slot.page, REWARDS_URLS.bingSignIn, signal)
       await login.login(slot.page, credentials, signal)
+      // A repair login that really drove the sign-in UI rewrites the identity cookies,
+      // so the previous target no longer describes the live session. A no-op repair
+      // (the session was already authenticated) keeps the original target, which is what
+      // lets a silent account switch during verification still be rejected.
+      let repairTarget = targetIdentityHash
+      if (login.authenticationInteractionStarted) {
+        await client.computeAndStoreIdentityHash().catch(() => undefined)
+        repairTarget = client.expectedIdentityHash
+      }
       verified = await discovery.verifyAuthenticated(client, signal, {
-        ...(targetIdentityHash === undefined ? {} : { targetIdentityHash })
+        ...(repairTarget === undefined ? {} : { targetIdentityHash: repairTarget })
       })
     }
     if (!verified.verification.valid) {
