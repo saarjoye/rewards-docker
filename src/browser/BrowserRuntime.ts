@@ -1,4 +1,5 @@
-﻿import patchright, {
+import { createHash } from 'node:crypto'
+import patchright, {
   type Browser,
   type BrowserContext,
   type BrowserContextOptions,
@@ -17,6 +18,31 @@ export function sanitizeStorageState(state: BrowserStorageState): BrowserStorage
     ...state,
     cookies: state.cookies.filter((cookie) => cookie.name !== IDENTITY_POISON_COOKIE)
   }
+}
+
+const IDENTITY_COOKIE_NAMES = new Set(['WLS', 'MUID', 'SRCHUID', 'ANON'])
+
+export function computeSessionIdentityHash(
+  cookies: readonly { name: string; value: string }[]
+): string | undefined {
+  const parts = cookies
+    .filter((cookie) => IDENTITY_COOKIE_NAMES.has(cookie.name))
+    .map((cookie) => `${cookie.name}=${cookie.value}`)
+    .sort()
+  if (parts.length === 0) return undefined
+  return createHash('sha256').update(parts.join('&')).digest('hex')
+}
+
+export function validateSessionIdentity(
+  expectedHash: string | undefined,
+  actualCookies: readonly { name: string; value: string }[]
+): { valid: boolean; reason?: string } {
+  if (!expectedHash) return { valid: true }
+  const actualHash = computeSessionIdentityHash(actualCookies)
+  if (actualHash !== expectedHash) {
+    return { valid: false, reason: '???????????????????????' }
+  }
+  return { valid: true }
 }
 
 export interface AccountBrowserSlot {
@@ -52,6 +78,15 @@ export class BrowserRuntime {
     const reusedBrowser = this.browser?.isConnected() === true
     const browser = await this.getBrowser()
     const stored = await this.options.sessions.read<BrowserStorageState>(accountId, slot)
+    const expectedIdentityHash = stored
+      ? (stored.payload as BrowserStorageState & { meta?: { identityHash?: string } }).meta?.identityHash
+      : undefined
+    if (stored && expectedIdentityHash) {
+      const identity = validateSessionIdentity(expectedIdentityHash, stored.payload.cookies)
+      if (!identity.valid) {
+        throw new Error(`?????????${identity.reason ?? '???????'}?account ${accountId} / slot ${slot}?`)
+      }
+    }
     const storageState = stored ? sanitizeStorageState(stored.payload) : undefined
     const mobile = slot === 'web-mobile'
     const contextOptions: BrowserContextOptions = {
@@ -81,11 +116,16 @@ export class BrowserRuntime {
       authenticationContext: { reusedBrowser, restoredSession: Boolean(stored) },
       close: async () => context.close(),
       commitVerified: async () => {
+        const payload = sanitizeStorageState(await context.storageState())
+        const identityHash = computeSessionIdentityHash(payload.cookies)
         const session: StoredSession<BrowserStorageState> = {
           accountId,
           slot,
           validatedAt: new Date().toISOString(),
-          payload: sanitizeStorageState(await context.storageState())
+          payload: {
+            ...payload,
+            ...(identityHash ? { meta: { identityHash } } : {})
+          }
         }
         await this.options.sessions.commitVerified(session, true)
       }

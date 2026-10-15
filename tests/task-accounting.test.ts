@@ -39,7 +39,7 @@ function fixture() {
       runId,
       accountId,
       phase,
-      { value, observedAt: at, availability: 'valid', confidence: 1, source: 'bing-flyout' },
+      { value, observedAt: at, availability: 'valid', confidence: 1, source: 'bing-flyout', provenance: 'userStatus.availablePoints' },
       taskId
     )
   }
@@ -116,6 +116,7 @@ describe('task numeric accounting', () => {
         value: 17607,
         observedAt: '2026-09-09T08:16:48Z',
         source: 'app-dashboard',
+        provenance: 'appResponse.balance',
         confidence: 1,
         availability: 'valid'
       })
@@ -124,6 +125,7 @@ describe('task numeric accounting', () => {
         value: 17608,
         observedAt: '2026-09-09T08:17:48Z',
         source: 'app-dashboard',
+        provenance: 'appResponse.balance',
         confidence: 1,
         availability: 'valid'
       })

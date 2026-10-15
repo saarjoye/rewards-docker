@@ -601,10 +601,13 @@ export class RunViews {
       const latest = this.store.database
         .prepare(
           `SELECT balance, observed_at AS observedAt, source, conflict
-        FROM balance_observations WHERE account_id=? AND julianday(observed_at)=(
-          SELECT MAX(julianday(observed_at)) FROM balance_observations WHERE account_id=?)`
-        )
-        .all(account.accountId, account.accountId) as {
+        FROM balance_observations
+        WHERE account_id=? AND business_date=? AND conflict = 0
+          AND julianday(observed_at)=(
+            SELECT MAX(julianday(observed_at)) FROM balance_observations
+            WHERE account_id=? AND business_date=? AND conflict = 0)
+          `)
+        .all(account.accountId, date, account.accountId, date) as {
         balance: number
         observedAt: string
         source: string

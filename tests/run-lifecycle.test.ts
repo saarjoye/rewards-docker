@@ -120,7 +120,7 @@ describe('run lifecycle durability', () => {
       expect(store.getLatestPointsHistory('synthetic-0', '2026-09-08')).toMatchObject({
         initialPoints: 200,
         finalPoints: 180,
-        gainedPoints: -20
+        gainedPoints: null
       })
       expect(store.listAccountRuns('old').map((row) => row.status)).toEqual([
         'success',

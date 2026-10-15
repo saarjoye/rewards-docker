@@ -555,7 +555,8 @@ describe('web API', () => {
         observedAt: at,
         availability: 'valid',
         confidence: 1,
-        source: 'bing-flyout'
+        source: 'bing-flyout',
+        provenance: 'userStatus.availablePoints',
       })
       store.ledger.credits.record({
         runId,
@@ -604,6 +605,7 @@ describe('web API', () => {
         store.ledger.balance(runId, accountId, 'start', {
           value: 5804,
           source: 'rsc',
+          provenance: 'userStatus.availablePoints',
           confidence: 1,
           availability: 'valid',
           observedAt: start
@@ -612,6 +614,7 @@ describe('web API', () => {
           store.ledger.balance(runId, accountId, 'end', {
             value: 5804,
             source: 'rsc',
+            provenance: 'userStatus.availablePoints',
             confidence: 1,
             availability: 'valid',
             observedAt: end
@@ -620,6 +623,7 @@ describe('web API', () => {
           store.ledger.balance(runId, accountId, 'live', {
             value: 5909,
             source: 'rsc',
+            provenance: 'userStatus.availablePoints',
             confidence: 1,
             availability: 'valid',
             observedAt: `${date}T01:00:00Z`
@@ -704,6 +708,7 @@ describe('web API', () => {
           availability: 'valid',
           value,
           source: 'bing-flyout',
+          provenance: 'userStatus.availablePoints',
           confidence: 1,
           observedAt
         })
@@ -898,6 +903,7 @@ describe('web API', () => {
           value,
           availability: 'valid',
           source: 'bing-flyout',
+          provenance: 'userStatus.availablePoints',
           confidence: 0.9,
           observedAt: `2026-09-08T00:0${String(index)}:00Z`
         })

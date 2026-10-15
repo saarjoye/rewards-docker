@@ -36,7 +36,8 @@ const balance = (value: number, observedAt: string): FieldEvidence<number> => ({
   observedAt,
   source: 'rsc',
   availability: 'valid',
-  confidence: 1
+  confidence: 1,
+  provenance: 'userStatus.availablePoints'
 })
 afterEach(() => {
   vi.restoreAllMocks()

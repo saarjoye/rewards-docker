@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, type ReactElement } from 'react'
+import { useState, useEffect, type ReactElement } from 'react'
 import { Card } from 'tdesign-react/es/card/index.js'
 import { DatePicker } from 'tdesign-react/es/date-picker/index.js'
 import { Empty } from 'tdesign-react/es/empty/index.js'
@@ -318,6 +318,9 @@ export function Overview({
                   today={day.dailyBalanceDelta}
                   total={day.accountTotalPoints ?? null}
                   expected={day.expectedDailyPoints ?? null}
+                  conflict={day.verificationStatus === 'conflict'}
+                  todaySource={day.dailyBalanceDeltaSource ?? null}
+                  totalSource={day.accountTotalPointsSource ?? null}
                 />
                 <p className="muted">余额更新：{clockTime(day.accountTotalPointsAt)}</p>
                 {day.verificationStatus === 'conflict' && onCalibrateAccount && (
@@ -420,28 +423,37 @@ export function Overview({
 export function AccountPointTotals({
   today,
   total,
-  expected
+  expected,
+  conflict = false,
+  todaySource,
+  totalSource
 }: {
   today: number | null
   total: number | null
   expected?: number | null
+  conflict?: boolean
+  todaySource?: string | null
+  totalSource?: string | null
 }): ReactElement {
   const diff =
-    today !== null && expected !== null && expected !== undefined
+    !conflict && today !== null && expected !== null && expected !== undefined
       ? expected - today
       : null
   const isFulfilled =
+    !conflict &&
     today !== null &&
     expected !== null &&
     expected !== undefined &&
     today >= expected &&
     expected > 0
+  const sourceLabel = (source: string | null | undefined): string | null =>
+    source ? `来源：${source}` : null
   return (
     <dl className="account-point-totals">
       <div>
         <dt>今日得分</dt>
         <dd>
-          {points(today)}
+          {conflict ? '数据冲突 / 待复核' : points(today)}
           {expected !== null && expected !== undefined && expected > 0 ? (
             <span
               style={{
@@ -470,11 +482,23 @@ export function AccountPointTotals({
               未满分 (差 {diff} 分)
             </span>
           ) : null}
+          {sourceLabel(todaySource) ? (
+            <span className="muted" style={{ marginLeft: '6px', fontSize: '11px' }}>
+              {sourceLabel(todaySource)}
+            </span>
+          ) : null}
         </dd>
       </div>
       <div>
         <dt>账号总分</dt>
-        <dd>{total === null ? '—' : `${String(total)} 分`}</dd>
+        <dd>
+          {conflict ? '数据冲突 / 待复核' : total === null ? '—' : `${String(total)} 分`}
+          {sourceLabel(totalSource) ? (
+            <span className="muted" style={{ marginLeft: '6px', fontSize: '11px' }}>
+              {sourceLabel(totalSource)}
+            </span>
+          ) : null}
+        </dd>
       </div>
     </dl>
   )

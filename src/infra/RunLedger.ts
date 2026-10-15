@@ -566,16 +566,17 @@ export class RunLedger {
       !Number.isFinite(evidence.confidence) ||
       evidence.confidence < 0.8 ||
       !Number.isFinite(Date.parse(evidence.observedAt)) ||
-      !/(Z|[+-]\d{2}:\d{2})$/.test(evidence.observedAt)
+      !/(Z|[+-]\d{2}:\d{2})$/.test(evidence.observedAt) ||
+      !evidence.provenance
     )
       return
     const observedAt = new Date(evidence.observedAt).toISOString()
     const businessDate = localDateKey(new Date(observedAt))
-    const provenance = evidence.provenance ?? null
+    const provenance = evidence.provenance
 
     const sameDay = this.database
       .prepare(
-        'SELECT snapshot_id, balance, source, provenance, conflict FROM balance_observations WHERE account_id = ? AND business_date = ?'
+        'SELECT snapshot_id, balance, source, provenance, conflict FROM balance_observations WHERE account_id = ? AND business_date = ? ORDER BY observed_at'
       )
       .all(accountId, businessDate) as Array<{
         snapshot_id: string
@@ -587,14 +588,26 @@ export class RunLedger {
 
     let isConflict = false
     const conflictingSameDayIds: string[] = []
+
     for (const row of sameDay) {
-      if (
-        isDifferentCaliber(row.source, row.provenance, evidence.source, provenance) &&
-        Math.abs(row.balance - evidence.value) > MAGNITUDE_CONFLICT_THRESHOLD
-      ) {
+      if (isDifferentCaliber(row.source, row.provenance, evidence.source, provenance)) {
         isConflict = true
-        conflictingSameDayIds.push(row.snapshot_id)
+        if (row.provenance !== 'calibration') conflictingSameDayIds.push(row.snapshot_id)
       }
+    }
+
+    // Once an explicit calibration baseline exists for the day, a later
+    // observation that is wildly outside that baseline is quarantined instead
+    // of being allowed to replace the authoritative total in today() views.
+    const calibrationBaseline = sameDay
+      .filter((row) => row.provenance === 'calibration' && row.conflict !== 1)
+      .at(-1)
+    if (
+      !isConflict &&
+      calibrationBaseline &&
+      Math.abs(calibrationBaseline.balance - evidence.value) > MAGNITUDE_CONFLICT_THRESHOLD
+    ) {
+      isConflict = true
     }
 
     if (!isConflict && sameDay.length === 0) {
@@ -603,11 +616,7 @@ export class RunLedger {
           'SELECT balance, source, provenance FROM balance_observations WHERE account_id = ? AND conflict = 0 ORDER BY observed_at DESC LIMIT 1'
         )
         .get(accountId) as { balance: number; source: string; provenance: string | null } | undefined
-      if (
-        prior &&
-        isDifferentCaliber(prior.source, prior.provenance, evidence.source, provenance) &&
-        Math.abs(prior.balance - evidence.value) > MAGNITUDE_CONFLICT_THRESHOLD
-      ) {
+      if (prior && isDifferentCaliber(prior.source, prior.provenance, evidence.source, provenance)) {
         isConflict = true
       }
     }
@@ -649,7 +658,9 @@ export class RunLedger {
         .run(key)
       for (const id of conflictingSameDayIds) {
         this.database
-          .prepare('UPDATE balance_observations SET conflict = 1 WHERE snapshot_id = ?')
+          .prepare(
+            "UPDATE balance_observations SET conflict = 1 WHERE snapshot_id = ? AND (provenance IS NULL OR provenance != 'calibration')"
+          )
           .run(id)
       }
     }
@@ -681,60 +692,60 @@ export class RunLedger {
   }
 
   /**
-   * 手动/权威校准账号积分
-   * 清理当日偏离过大或口径冲突的异常脏观测，将留存合法观测重置为无冲突，并写入权威余额观测
-   */
+   * 鎵嬪姩/鏉冨▉鏍″噯璐﹀彿绉垎
+   * 娓呯悊褰撴棩鍋忕杩囧ぇ鎴栧彛寰勫啿绐佺殑寮傚父鑴忚娴嬶紝灏嗙暀瀛樺悎娉曡娴嬮噸缃负鏃犲啿绐侊紝骞跺啓鍏ユ潈濞佷綑棰濊娴?   */
   calibrateBalance(
     accountId: string,
     balance: number,
     source: EvidenceSource = 'app-dashboard',
     date?: string,
-    todayPoints?: number
-  ): { cleanedCount: number; snapshotId: string } {
+    todayPoints?: number,
+    observedAtTime?: string
+  ): { cleanedCount: number; conflictCount: number; snapshotId: string } {
     if (!Number.isSafeInteger(balance) || balance < 0) {
       throw new RangeError('Balance must be a non-negative safe integer')
     }
+    if (todayPoints !== undefined && (!Number.isSafeInteger(todayPoints) || todayPoints < 0 || balance < todayPoints)) {
+      throw new RangeError('todayPoints must be a non-negative safe integer not greater than balance')
+    }
     const businessDate = date ?? localDateKey(new Date())
-    const observedAt = new Date().toISOString()
+    const observedAt = observedAtTime ?? new Date().toISOString()
     const provenance = 'calibration'
 
     const tx = () => {
-      // 1. 查询当日所有观测
       const sameDayRows = this.database
         .prepare(
-          'SELECT snapshot_id, source, provenance, balance FROM balance_observations WHERE account_id = ? AND business_date = ?'
+          'SELECT snapshot_id, source, provenance, balance, conflict FROM balance_observations WHERE account_id = ? AND business_date = ? ORDER BY observed_at'
         )
         .all(accountId, businessDate) as Array<{
         snapshot_id: string
         source: string
         provenance: string | null
         balance: number
+        conflict: number
       }>
 
-      // 2. 识别异常脏观测（口径冲突或量级偏离过大）并清理
-      const dirtyRows = sameDayRows.filter((row) => {
-        const diffCaliber = isDifferentCaliber(row.source, row.provenance, source, provenance)
-        const diffMagnitude = Math.abs(row.balance - balance) > MAGNITUDE_CONFLICT_THRESHOLD
-        return diffCaliber || diffMagnitude
-      })
+      // Never physically delete observations. Quarantine rows that disagree
+      // with the authoritative calibration baseline, and keep nearby rows as
+      // clean history so the calibrated interval can reconcile the day.
+      const conflictingRows = sameDayRows.filter(
+        (row) =>
+          row.provenance !== 'calibration' &&
+          (isDifferentCaliber(row.source, row.provenance, source, provenance) ||
+            Math.abs(row.balance - balance) > MAGNITUDE_CONFLICT_THRESHOLD)
+      )
+      const sameCaliberRows = sameDayRows.filter(
+        (row) =>
+          row.provenance !== 'calibration' &&
+          !isDifferentCaliber(row.source, row.provenance, source, provenance) &&
+          Math.abs(row.balance - balance) <= MAGNITUDE_CONFLICT_THRESHOLD
+      )
+      const updateStmt = this.database.prepare(
+        'UPDATE balance_observations SET conflict = ? WHERE snapshot_id = ?'
+      )
+      for (const row of conflictingRows) updateStmt.run(1, row.snapshot_id)
+      for (const row of sameCaliberRows) updateStmt.run(0, row.snapshot_id)
 
-      if (dirtyRows.length > 0) {
-        const deleteStmt = this.database.prepare(
-          'DELETE FROM balance_observations WHERE snapshot_id = ?'
-        )
-        for (const row of dirtyRows) {
-          deleteStmt.run(row.snapshot_id)
-        }
-      }
-
-      // 3. 将当日留存的合法观测 conflict 标记重置为 0
-      this.database
-        .prepare(
-          'UPDATE balance_observations SET conflict = 0 WHERE account_id = ? AND business_date = ?'
-        )
-        .run(accountId, businessDate)
-
-      // 4. 寻找最近的合法 runId（若当日有运行记录），或使用校准标识
       const recentRun = this.database
         .prepare(
           'SELECT run_id FROM balance_observations WHERE account_id = ? AND business_date = ? ORDER BY observed_at DESC LIMIT 1'
@@ -799,7 +810,7 @@ export class RunLedger {
             provenance
           )
 
-        return { cleanedCount: dirtyRows.length, snapshotId: endSnapshotId }
+        return { cleanedCount: conflictingRows.length, conflictCount: conflictingRows.length, snapshotId: endSnapshotId }
       }
 
       const snapshotId = createHash('sha256')
@@ -824,7 +835,7 @@ export class RunLedger {
           provenance
         )
 
-      return { cleanedCount: dirtyRows.length, snapshotId }
+      return { cleanedCount: conflictingRows.length, conflictCount: conflictingRows.length, snapshotId }
     }
 
     const inTx = this.database.isTransaction
@@ -839,4 +850,5 @@ export class RunLedger {
       throw err
     }
   }
+
 }

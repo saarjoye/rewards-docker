@@ -61,12 +61,12 @@ describe('SessionImportManager and credential helpers', () => {
     it('parses Cookie-Editor JSON array format', () => {
       const json = JSON.stringify([
         {
-          name: 'MUID',
-          value: '1234567890',
+          name: 'WLS',
+          value: 'ts=1&t=synthetic-user',
           domain: '.bing.com',
           path: '/',
           secure: true,
-          httpOnly: false,
+          httpOnly: true,
           sameSite: 'Lax'
         },
         {
@@ -80,8 +80,8 @@ describe('SessionImportManager and credential helpers', () => {
       const cookies = parseAndNormalizeCookies(json)
       expect(cookies).toHaveLength(2)
       expect(cookies[0]).toMatchObject({
-        name: 'MUID',
-        value: '1234567890',
+        name: 'WLS',
+        value: 'ts=1&t=synthetic-user',
         domain: '.bing.com',
         path: '/'
       })
@@ -92,8 +92,8 @@ describe('SessionImportManager and credential helpers', () => {
       const json = JSON.stringify({
         cookies: [
           {
-            name: '_EDGE_S',
-            value: 'SID=abc',
+            name: 'SRCHUID',
+            value: 'synthetic-guid',
             domain: '.bing.com',
             path: '/'
           }
@@ -103,20 +103,20 @@ describe('SessionImportManager and credential helpers', () => {
 
       const cookies = parseAndNormalizeCookies(json)
       expect(cookies).toHaveLength(1)
-      expect(cookies[0]?.name).toBe('_EDGE_S')
+      expect(cookies[0]?.name).toBe('SRCHUID')
     })
 
     it('parses Netscape tab-delimited format', () => {
       const netscape = [
         '# Netscape HTTP Cookie File',
-        '.bing.com\tTRUE\t/\tTRUE\t1790000000\tMUID\t99887766'
+        '.bing.com\tTRUE\t/\tTRUE\t1790000000\tSRCHUID\t99887766-guid'
       ].join('\n')
 
       const cookies = parseAndNormalizeCookies(netscape)
       expect(cookies).toHaveLength(1)
       expect(cookies[0]).toMatchObject({
-        name: 'MUID',
-        value: '99887766',
+        name: 'SRCHUID',
+        value: '99887766-guid',
         domain: '.bing.com',
         path: '/',
         secure: true
@@ -124,12 +124,12 @@ describe('SessionImportManager and credential helpers', () => {
     })
 
     it('parses HTTP Cookie header format string', () => {
-      const header = 'MUID=1234; _U=token5678; SRCHD=AF=NOFORM'
+      const header = 'SRCHUID=guid-1234; _U=token5678'
       const cookies = parseAndNormalizeCookies(header)
       expect(cookies.length).toBeGreaterThan(0)
-      const muidItem = cookies.find((c) => c.name === 'MUID' && c.domain === '.bing.com')
+      const muidItem = cookies.find((c) => c.name === 'SRCHUID' && c.domain === '.bing.com')
       expect(muidItem).toBeDefined()
-      expect(muidItem?.value).toBe('1234')
+      expect(muidItem?.value).toBe('guid-1234')
     })
 
     it('throws when text has no valid cookies', () => {
@@ -236,12 +236,12 @@ describe('SessionImportManager and credential helpers', () => {
     it('persists and reports web session cookies', async () => {
       const cookies = [
         {
-          name: 'MUID',
-          value: 'test-value',
+          name: 'SRCHUID',
+          value: 'test-guid',
           domain: '.bing.com',
           path: '/',
           expires: -1,
-          httpOnly: false,
+          httpOnly: true,
           secure: true,
           sameSite: 'Lax' as const
         }

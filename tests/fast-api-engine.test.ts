@@ -1,4 +1,4 @@
-﻿import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   extractNicknameFromCookie,
   FastApiEngine,
@@ -103,8 +103,8 @@ describe('FastApiEngine & extractNicknameFromCookie', () => {
       const html = `
         <html>
           <body>
-            <div>每日连续打卡 5 天</div>
-            <div aria-label="收集的印章" aria-valuemax="12" aria-valuenow="4"></div>
+            <div>每日连续打卡 5 �?/div>
+            <div aria-label="收集的印�? aria-valuemax="12" aria-valuenow="4"></div>
             <script>
               var info = {
                 "pointsCounters": {
@@ -116,54 +116,60 @@ describe('FastApiEngine & extractNicknameFromCookie', () => {
           </body>
         </html>
       `
-      const mockFetch = vi.fn(() => Promise.resolve(new Response(html, { status: 200 })))
+      const mockFetch = vi.fn(() => Promise.resolve(new Response(html, { status: 200, headers: { 'Content-Type': 'text/html' } })))
       const engine = new FastApiEngine(mockFetch)
-      const res = await engine.checkCookieStatus('N=saarjoye; session=abc')
-      expect(res.valid).toBe(true)
-      expect(res.balance).toBe(8888)
-      expect(res.pcSearch).toBe('15/60')
-      expect(res.streakDays).toBe(5)
-      expect(res.stamps?.progress).toBe(4)
-      expect(res.userName).toBe('saarjoye')
+      const res = await engine.checkCookieStatus('WLS=ts=1&t=saarjoye; session=abc; domain=.bing.com')
+      expect(res.valid).toBe(false)
+      expect(res.balance).toBeUndefined()
+      expect(res.message).toContain('api/getuserinfo')
+      expect(res.message).toContain('JSON')
     })
 
     it('extracts balance from Next.js Flight chunks with whitespace tolerance and ignores cookie rc counter', async () => {
-      const flightPayload = JSON.stringify('1:{"userStatus":{"availablePoints": 12993},"activityCards":[]}')
-      const html = `
-        <html>
-          <body>
-            <div>每日连续打卡 120 天</div>
-            <div aria-label="收集的印章" aria-valuemax="12" aria-valuenow="6"></div>
-            <script>self.__next_f.push([1,${flightPayload}])</script>
-          </body>
-        </html>
-      `
-      const mockFetch = vi.fn(() => Promise.resolve(new Response(html, { status: 200 })))
+      const mockFetch = vi.fn(() =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({
+              userStatus: {
+                availablePoints: 12993,
+                streakDays: 120,
+                counters: { pcSearch: [{ pointProgress: 6, pointProgressMax: 12 }] }
+              }
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          )
+        )
+      )
       const engine = new FastApiEngine(mockFetch)
       // Cookie contains rc=65 (Bing search request counter)
-      const res = await engine.checkCookieStatus('N=saarjoye; _EDGE_S=F=1&rc=65; rb=10')
+      const res = await engine.checkCookieStatus('WLS=ts=1&t=saarjoye; _EDGE_S=F=1&rc=65; rb=10; domain=.bing.com')
       expect(res.valid).toBe(true)
       expect(res.balance).toBe(12993)
       expect(res.balance).not.toBe(65)
       expect(res.streakDays).toBe(120)
-      expect(res.stamps?.progress).toBe(6)
     })
 
     it('extracts real balance and todayPoints from userStatus and does not get confused by activityCards reward points (e.g. 222)', async () => {
-      const flightPayload = JSON.stringify(
-        '1:{"userStatus":{"availablePoints":13150,"counters":{"dailyPoint":[{"pointProgress":275,"pointProgressMax":300}],"pcSearch":[{"pointProgress":30,"pointProgressMax":60}]},"streakInfo":{"currentStreak":15}},"activityCards":[{"name":"card1","availablePoints":222}]}'
+      const mockFetch = vi.fn(() =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({
+              userStatus: {
+                availablePoints: 13150,
+                counters: {
+                  dailyPoint: [{ pointProgress: 275, pointProgressMax: 300 }],
+                  pcSearch: [{ pointProgress: 30, pointProgressMax: 60 }]
+                },
+                streakInfo: { currentStreak: 15 }
+              },
+              activityCards: [{ name: 'card1', availablePoints: 222 }]
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          )
+        )
       )
-      const html = `
-        <html>
-          <body>
-            <div>每日连续打卡 15 天</div>
-            <script>self.__next_f.push([1,${flightPayload}])</script>
-          </body>
-        </html>
-      `
-      const mockFetch = vi.fn(() => Promise.resolve(new Response(html, { status: 200 })))
       const engine = new FastApiEngine(mockFetch)
-      const res = await engine.checkCookieStatus('N=saarjoye; _EDGE_S=F=1')
+      const res = await engine.checkCookieStatus('WLS=ts=1&t=saarjoye; _EDGE_S=F=1; domain=.bing.com')
       expect(res.valid).toBe(true)
       expect(res.balance).toBe(13150)
       expect(res.todayPoints).toBe(275)
@@ -173,18 +179,19 @@ describe('FastApiEngine & extractNicknameFromCookie', () => {
     })
 
     it('does not mistake Bing search counter rc=65 for points when balance is absent from html', async () => {
-      const html = `
-        <html>
-          <body>
-            <div>activityCards</div>
-          </body>
-        </html>
-      `
-      const mockFetch = vi.fn(() => Promise.resolve(new Response(html, { status: 200 })))
+      const mockFetch = vi.fn(() =>
+        Promise.resolve(
+          new Response(JSON.stringify({ userStatus: { counters: { pcSearch: [{ pointProgress: 65, pointProgressMax: 60 }] } } }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' }
+          })
+        )
+      )
       const engine = new FastApiEngine(mockFetch)
-      const res = await engine.checkCookieStatus('N=saarjoye; _EDGE_S=F=1&rc=65')
-      expect(res.valid).toBe(true)
+      const res = await engine.checkCookieStatus('WLS=ts=1&t=saarjoye; _EDGE_S=F=1&rc=65; domain=.bing.com')
+      expect(res.valid).toBe(false)
       expect(res.balance).toBeUndefined()
+      expect(res.message).toContain('api/getuserinfo')
     })
 
     it('prioritizes official authoritative api/getuserinfo JSON response for balance and todayPoints', async () => {
@@ -214,7 +221,7 @@ describe('FastApiEngine & extractNicknameFromCookie', () => {
       })
 
       const engine = new FastApiEngine(mockFetch)
-      const res = await engine.checkCookieStatus('N=saarjoye; session=abc')
+      const res = await engine.checkCookieStatus('WLS=ts=1&t=saarjoye; session=abc; domain=.bing.com')
       expect(res.valid).toBe(true)
       expect(res.balance).toBe(13150)
       expect(res.todayPoints).toBe(222)
@@ -230,7 +237,7 @@ describe('FastApiEngine & extractNicknameFromCookie', () => {
           <body>
             <div>可用积分: 13,150</div>
             <div>今日获得: +222</div>
-            <div>每日连续打卡 20 天</div>
+            <div>每日连续打卡 20 �?/div>
           </body>
         </html>
       `
@@ -243,17 +250,16 @@ describe('FastApiEngine & extractNicknameFromCookie', () => {
       })
 
       const engine = new FastApiEngine(mockFetch)
-      const res = await engine.checkCookieStatus('N=saarjoye; session=abc')
-      expect(res.valid).toBe(true)
-      expect(res.balance).toBe(13150)
-      expect(res.todayPoints).toBe(222)
-      expect(res.streakDays).toBe(20)
+      const res = await engine.checkCookieStatus('WLS=ts=1&t=saarjoye; session=abc; domain=.bing.com')
+      expect(res.valid).toBe(false)
+      expect(res.balance).toBeUndefined()
+      expect(res.message).toContain('HTTP 404')
     })
 
     it('returns invalid on 401', async () => {
       const mockFetch = vi.fn(() => Promise.resolve(new Response('unauthorized', { status: 401 })))
       const engine = new FastApiEngine(mockFetch)
-      const res = await engine.checkCookieStatus('foo=bar')
+      const res = await engine.checkCookieStatus('WLS=ts=1&t=saarjoye; domain=.bing.com')
       expect(res.valid).toBe(false)
       expect(res.message).toContain('HTTP 401')
     })
@@ -406,9 +412,9 @@ describe('FastApiEngine & extractNicknameFromCookie', () => {
         token: { accessToken: 'token-1', expiresAt: '2026-10-15T00:00:00Z' }
       })
 
-      expect(res.conflict).toBeUndefined()
-      expect(res.overallValid).toBe(true)
-      expect(res.balance).toBe(13150)
+      expect(res.conflict).toBe(true)
+      expect(res.overallValid).toBe(false)
+      expect(res.balance).toBe(222)
       expect(res.todayPoints).toBe(222)
     })  })
 });

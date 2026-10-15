@@ -62,40 +62,27 @@ function parseBalance(
   let raw: unknown
   let provenance: string | undefined
   if (source === 'app-dashboard') {
-    if (appResponse?.balance !== undefined) {
-      raw = appResponse.balance
-      provenance = 'appResponse.balance'
-    } else if (userInfo?.balance !== undefined) {
-      raw = userInfo.balance
-      provenance = 'userInfo.balance'
-    } else if (userStatus?.availablePoints !== undefined) {
-      raw = userStatus.availablePoints
-      provenance = 'userStatus.availablePoints'
-    }
-  } else if (source === 'bing-flyout' || source === 'legacy-getuserinfo') {
-    if (userStatus?.availablePoints !== undefined) {
-      raw = userStatus.availablePoints
-      provenance = 'userStatus.availablePoints'
-    } else if (userInfo?.balance !== undefined) {
-      raw = userInfo.balance
-      provenance = 'userInfo.balance'
-    } else if (appResponse?.balance !== undefined) {
-      raw = appResponse.balance
-      provenance = 'appResponse.balance'
-    }
+    raw = appResponse?.balance
+    provenance = raw === undefined ? undefined : 'appResponse.balance'
+  } else if (source === 'browser-response') {
+    raw = appResponse?.balance
+    provenance = raw === undefined ? undefined : 'browser-response.balance'
   } else {
-    if (userStatus?.availablePoints !== undefined) {
-      raw = userStatus.availablePoints
-      provenance = 'userStatus.availablePoints'
-    } else if (userInfo?.balance !== undefined) {
-      raw = userInfo.balance
-      provenance = 'userInfo.balance'
-    } else if (appResponse?.balance !== undefined) {
-      raw = appResponse.balance
-      provenance = 'appResponse.balance'
-    }
+    // bing-flyout / legacy-getuserinfo / rsc share the same authoritative
+    // userStatus.availablePoints field; userInfo.balance and appResponse.balance
+    // are total-balance caliber and must never be mixed in here.
+    raw = userStatus?.availablePoints
+    provenance = raw === undefined ? undefined : 'userStatus.availablePoints'
   }
-  if (raw === undefined) return missing(source, observedAt, 'availablePoints missing')
+  if (raw === undefined) {
+    const authority =
+      source === 'app-dashboard'
+        ? 'appResponse.balance'
+        : source === 'browser-response'
+          ? 'browser-response.balance'
+          : 'userStatus.availablePoints'
+    return missing(source, observedAt, authority + ' missing')
+  }
   const value = safeNonNegativeInteger(raw)
   return value === undefined
     ? evidence({
@@ -103,7 +90,7 @@ function parseBalance(
         source,
         confidence: 0,
         observedAt,
-        reason: 'availablePoints is not a non-negative safe integer',
+        reason: 'balance is not a non-negative safe integer',
         ...(provenance ? { provenance } : {})
       })
     : evidence({
@@ -115,7 +102,6 @@ function parseBalance(
         ...(provenance ? { provenance } : {})
       })
 }
-
 function parseRewardsUser(
   source: EvidenceSource,
   observedAt: string,
@@ -869,19 +855,48 @@ export function parseRewardsHtml(
     }),
     ...dailyLinks
   ]).filter((offer) => matchesDailyBusinessDate(offer, businessDate))
-  const userStatusMatch = normalized.match(/"userStatus"\s*:\s*\{[^}]*?"availablePoints"\s*:\s*(\d+)/)
-  const cardIdx = normalized.indexOf('"activityCards"')
-  const promoIdx = normalized.indexOf('"promotions"')
-  const cutIdx = Math.min(
-    cardIdx === -1 ? normalized.length : cardIdx,
-    promoIdx === -1 ? normalized.length : promoIdx
-  )
-  const safeScope = normalized.substring(0, cutIdx)
-  const safeMatches = [...safeScope.matchAll(/"availablePoints"\s*:\s*(\d+)/g)]
-  const pointsMatches = [...normalized.matchAll(/"availablePoints"\s*:\s*(\d+)/g)]
-  const points = safeNonNegativeInteger(
-    userStatusMatch?.[1] ?? safeMatches[0]?.[1] ?? pointsMatches[0]?.[1] ?? pointsMatches.at(-1)?.[1]
-  )
+  // 1. 优先从 userStatus 作用域提取可用积分（支持带逗号千分位，如 13,150 或 13150，支持嵌套对象跨度）
+  const userStatusIdx = normalized.indexOf('"userStatus"')
+  let points: number | undefined
+  if (userStatusIdx !== -1) {
+    const userScope = normalized.substring(userStatusIdx, userStatusIdx + 2500)
+    const userStatusMatch = userScope.match(/"availablePoints"\s*:\s*["']?([0-9,]+)["']?/)
+    if (userStatusMatch?.[1]) {
+      const rawNum = parseInt(userStatusMatch[1].replace(/,/g, ''), 10)
+      if (Number.isSafeInteger(rawNum) && rawNum >= 0) points = rawNum
+    }
+  }
+
+  // 2. 文本语义强锚点（例如页面直接渲染的中文或英文余额）
+  if (points === undefined) {
+    const textMatch = normalized.match(
+      /(?:可用积分|当前积分|账户总分|总积分|Available\s+points)[\s\S]{0,100}?([0-9,]{1,10})/i
+    )
+    if (textMatch?.[1]) {
+      const rawNum = parseInt(textMatch[1].replace(/,/g, ''), 10)
+      if (Number.isSafeInteger(rawNum) && rawNum >= 0) points = rawNum
+    }
+  }
+
+  // 3. 安全区域兜底提取（严格限定在 activityCards 之前，严禁跨越到活动卡片列表以免提取到 222 等单卡奖励）
+  if (points === undefined) {
+    const cardIdx = normalized.indexOf('"activityCards"')
+    const promoIdx = normalized.indexOf('"promotions"')
+    const cutIdx = Math.min(
+      cardIdx === -1 ? normalized.length : cardIdx,
+      promoIdx === -1 ? normalized.length : promoIdx
+    )
+    const safeScope = normalized.substring(0, cutIdx)
+    const safeMatches = [...safeScope.matchAll(/"availablePoints"\s*:\s*["']?([0-9,]+)["']?/g)]
+    const totalMatches = [...safeScope.matchAll(/"totalPoints"\s*:\s*["']?([0-9,]+)["']?/g)]
+    const balMatches = [...safeScope.matchAll(/"balance"\s*:\s*["']?([0-9,]+)["']?/g)]
+    const candidate = safeMatches[0]?.[1] ?? totalMatches[0]?.[1] ?? balMatches[0]?.[1]
+    if (candidate) {
+      const rawNum = parseInt(candidate.replace(/,/g, ''), 10)
+      if (Number.isSafeInteger(rawNum) && rawNum >= 0) points = rawNum
+    }
+  }
+
   const deploymentId =
     html.match(/[?&](?:amp;)?dpl=([A-Za-z0-9._-]+)/i)?.[1] ??
     normalized.match(/"buildId":"([A-Za-z0-9._-]+)"/)?.[1]

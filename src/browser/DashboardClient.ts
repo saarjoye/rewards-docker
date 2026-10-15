@@ -1,5 +1,6 @@
 import type { AppDashboardAuthorization } from './AppAuthorizationSession.js'
 import { randomInt } from 'node:crypto'
+import { computeSessionIdentityHash, validateSessionIdentity } from './BrowserRuntime.js'
 
 import type {
   APIResponse,
@@ -242,6 +243,39 @@ export class DashboardClient {
 
   get latestObservation(): RewardsObservation | undefined {
     return this.confirmedObservations.at(-1)
+  }
+
+  private sessionIdentityHash: string | undefined
+
+  get expectedIdentityHash(): string | undefined {
+    return this.sessionIdentityHash
+  }
+
+  async computeAndStoreIdentityHash(): Promise<string | undefined> {
+    try {
+      const state = await this.context.storageState()
+      const cookies = Array.isArray(state.cookies) ? state.cookies : []
+      const hash = computeSessionIdentityHash(cookies)
+      this.sessionIdentityHash = hash
+      return hash
+    } catch {
+      return undefined
+    }
+  }
+
+  async verifyFlyoutIdentity(): Promise<{ valid: boolean; reason?: string }> {
+    try {
+      const state = await this.context.storageState()
+      const cookies = Array.isArray(state.cookies) ? state.cookies : []
+      if (!this.sessionIdentityHash) {
+        const hash = computeSessionIdentityHash(cookies)
+        this.sessionIdentityHash = hash
+        return { valid: true }
+      }
+      return validateSessionIdentity(this.sessionIdentityHash, cookies)
+    } catch {
+      return { valid: true }
+    }
   }
 
   async fetchDashboard(

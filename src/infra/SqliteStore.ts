@@ -372,14 +372,22 @@ export class SqliteStore {
     balanceConfirmed: boolean
     recordedAt: string
   }): void {
-    const balanceConfirmed =
-      input.balanceConfirmed &&
+    const hasValidBounds =
       Number.isSafeInteger(input.initialPoints) &&
       (input.initialPoints ?? -1) >= 0 &&
       Number.isSafeInteger(input.finalPoints) &&
       (input.finalPoints ?? -1) >= 0
+    // Negative growth must come from an explicit redemption source; the current
+    // signature has none, so do not fabricate a negative gained value.
+    const canConfirm =
+      input.balanceConfirmed &&
+      hasValidBounds &&
+      input.finalPoints !== undefined &&
+      input.initialPoints !== undefined &&
+      input.finalPoints >= input.initialPoints
+    const balanceConfirmed = canConfirm
     const gained =
-      balanceConfirmed && input.finalPoints !== undefined && input.initialPoints !== undefined
+      canConfirm && input.finalPoints !== undefined && input.initialPoints !== undefined
         ? input.finalPoints - input.initialPoints
         : null
     this.database

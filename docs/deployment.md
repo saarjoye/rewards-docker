@@ -1,12 +1,12 @@
-﻿# Next 发布与部署
+# Next 发布与部署
 
 Next 单应用沿用 `ghcr.io/saarjoye/mrs-core` 镜像名，替代旧版 Core/Web 双容器。**不是旧 Core 的接口兼容更新：旧 Web 依赖 3010 控制接口，不能继续搭配新版镜像。**
 
 ## 发布和切换
 
-现有仓库的 `main` 分支通过 `.github/workflows/docker-image.yml` 构建。先执行离线测试、类型检查、ESLint、构建和 Compose 校验，再构建 `linux/amd64` 与 `linux/arm64` 候选镜像。候选镜像使用空数据、禁用外部网络做启动健康检查；成功后才更新 `5.0.0-next.43` 与 `latest`。完整提交固定标签为 `sha-<完整提交号>`。
+现有仓库的 `main` 分支通过 `.github/workflows/docker-image.yml` 构建。先执行离线测试、类型检查、ESLint、构建和 Compose 校验，再构建 `linux/amd64` 与 `linux/arm64` 候选镜像。候选镜像使用空数据、禁用外部网络做启动健康检查；成功后才更新 `5.0.0-next.44` 与 `latest`。完整提交固定标签为 `sha-<完整提交号>`。
 
-## next.43 官方权威接口优先解析与双轨智能自愈（当前版本）
+## next.44 积分口径隔离、会话身份校验与 Cookie 体检修复（当前版本）
 
 ### 官方接口权威解析与双轨智能自愈
 
@@ -17,7 +17,7 @@ Next 单应用沿用 `ghcr.io/saarjoye/mrs-core` 镜像名，替代旧版 Core/W
 
 ### 升级与验证
 
-应用镜像为 ghcr.io/saarjoye/mrs-core:5.0.0-next.43，候选健康验证成功后同步
+应用镜像为 ghcr.io/saarjoye/mrs-core:5.0.0-next.44，候选健康验证成功后同步
 更新 latest。升级无需新增配置、迁移或依赖安装；保留原 Compose、持久卷、
 主密钥、账号、调度及任务证据。绑定目录仍需允许 UID/GID 1000:1000 写入。
 

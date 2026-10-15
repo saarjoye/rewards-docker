@@ -7,7 +7,7 @@ import { localDateKey } from '../src/domain/DateKey.js'
 import { AccountPointTotals } from '../src/web/ui/ConsolePages'
 
 describe('overview daily earnings and total balance', () => {
-  it('keeps account totals independent from daily changes and retains yesterday totals', () => {
+  it('keeps account totals independent from daily changes and excludes observations outside the business day', () => {
     const store = new SqliteStore(':memory:')
     try {
       const accounts = ['a', 'b', 'c'].map((accountId, index) => ({
@@ -23,14 +23,15 @@ describe('overview daily earnings and total balance', () => {
           observedAt,
           source: 'bing-flyout',
           availability: 'valid',
-          confidence: 1
+          confidence: 1,
+          provenance: 'userStatus.availablePoints'
         }); }
       balance('a', 17500, `${date}T00:00:00Z`)
       balance('a', 17607, `${date}T01:00:00Z`)
       balance('b', 5000, '2025-01-01T00:00:00Z')
       const rows = new RunViews(store).today(accounts)
       expect(rows[0]).toMatchObject({ dailyBalanceDelta: 107, accountTotalPoints: 17607 })
-      expect(rows[1]).toMatchObject({ dailyBalanceDelta: null, accountTotalPoints: 5000 })
+      expect(rows[1]).toMatchObject({ dailyBalanceDelta: null, accountTotalPoints: null })
       expect(rows[2]).toMatchObject({ dailyBalanceDelta: null, accountTotalPoints: null })
       balance('a', 17608, `${date}T01:00:00Z`, 'other')
       expect(new RunViews(store).today(accounts)[0]?.accountTotalPoints).toBeNull()

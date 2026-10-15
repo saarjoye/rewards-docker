@@ -544,6 +544,7 @@ describe('search dashboard observation', () => {
         availability: 'valid',
         value: 100,
         source: 'bing-flyout',
+        provenance: 'userStatus.availablePoints',
         confidence: 1,
         observedAt: original.updatedAt
       })

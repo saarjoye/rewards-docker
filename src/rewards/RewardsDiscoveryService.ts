@@ -126,7 +126,8 @@ export class RewardsDiscoveryService {
 
   async verifyAuthenticated(
     client: DashboardClient,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    options?: { targetIdentityHash?: string | undefined }
   ): Promise<{
     verification: LoginVerificationResult
     observation?: RewardsObservation
@@ -137,6 +138,20 @@ export class RewardsDiscoveryService {
       flyout = await client.fetchFlyout(deadline, signal)
       if (flyout?.rewardsUser.availability === 'valid' && flyout.rewardsUser.value === true) break
       if (attempt < 3) await delay(attempt * 750, signal)
+    }
+    if (options?.targetIdentityHash) {
+      const identity = await client.verifyFlyoutIdentity().catch(
+        (): { valid: boolean; reason?: string } => ({ valid: true })
+      )
+      if (!identity.valid) {
+        return {
+          verification: {
+            valid: false,
+            failedStage: 'bing',
+            reason: identity.reason ?? '????????????'
+          }
+        }
+      }
     }
     const flyoutConfirmsProfile =
       flyout?.rewardsUser.availability === 'valid' &&

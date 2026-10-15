@@ -66,6 +66,7 @@ function seed(store: SqliteStore, days: number, runsPerDay = 2, tasksPerAccount 
             availability: 'valid',
             confidence: 1,
             source: 'bing-flyout',
+            provenance: 'userStatus.availablePoints',
             observedAt: startedAt,
             value: 100 + run * 10
           })
@@ -73,6 +74,7 @@ function seed(store: SqliteStore, days: number, runsPerDay = 2, tasksPerAccount 
             availability: 'valid',
             confidence: 1,
             source: 'bing-flyout',
+            provenance: 'userStatus.availablePoints',
             observedAt: endedAt,
             value: 110 + run * 10
           })

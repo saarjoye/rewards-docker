@@ -406,6 +406,9 @@ describe('App Dashboard discovery fault isolation', () => {
           dashboard: {
             userStatus: { isRewardsUser: true, availablePoints: 100 },
             appActivities: []
+          },
+          response: {
+            balance: 100
           }
         })
       )
@@ -427,7 +430,10 @@ describe('App Dashboard discovery fault isolation', () => {
     input.get.mockResolvedValue(
       response(
         200,
-        JSON.stringify({ dashboard: { userStatus: { isRewardsUser: true, availablePoints: 100 } } })
+        JSON.stringify({
+          dashboard: { userStatus: { isRewardsUser: true, availablePoints: 100 } },
+          response: { balance: 100 }
+        })
       )
     )
     await expect(input.execute('discover')).resolves.toEqual({ status: 'completed' })

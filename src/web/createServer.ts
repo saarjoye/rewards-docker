@@ -1,4 +1,4 @@
-﻿import { writeFile } from 'node:fs/promises'
+import { writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 
 import cookie from '@fastify/cookie'
@@ -128,6 +128,71 @@ function getSessionToken(request: FastifyRequest): string | undefined {
 export async function createServer(dependencies: WebServerDependencies): Promise<FastifyInstance> {
   const views = new RunViews(dependencies.store)
   const sessionImport = new SessionImportManager(dependencies.sessions)
+  const historyTotalDeviationLimit = 5000
+  const historyTotalDeviationRatio = 0.5
+
+  const totalBalanceConflictsWithHistory = (accountId: string, balance: number, businessDate: string): boolean => {
+    const latest = dependencies.store.ledger
+      .balances(undefined, accountId, businessDate)
+      .filter(
+        (row) =>
+          !row.conflict &&
+          row.provenance !== 'calibration' &&
+          row.source !== 'bing-flyout' &&
+          row.provenance !== 'userStatus.availablePoints'
+      )
+      .at(-1)
+    if (!latest) return false
+    const diff = Math.abs(balance - latest.balance)
+    return (
+      diff > historyTotalDeviationLimit &&
+      diff > Math.max(latest.balance, balance, 1) * historyTotalDeviationRatio
+    )
+  }
+
+  const writeAuthoritativeBalance = (
+    accountId: string,
+    balance: number,
+    todayPoints?: number
+  ): { wrote: boolean; conflict?: string } => {
+    if (!Number.isSafeInteger(balance) || balance <= 0) {
+      return { wrote: false, conflict: '余额必须为正整数' }
+    }
+    if (todayPoints !== undefined) {
+      if (!Number.isSafeInteger(todayPoints) || todayPoints < 0) {
+        return { wrote: false, conflict: '今日获得积分必须为非负整数' }
+      }
+      if (balance < todayPoints) {
+        return { wrote: false, conflict: '余额不能小于今日获得积分' }
+      }
+      if (balance === todayPoints) {
+        return { wrote: false, conflict: '余额与当日计数器相同，疑似把今日得分当作总分' }
+      }
+    }
+    const businessDate = localDateKey()
+    if (totalBalanceConflictsWithHistory(accountId, balance, businessDate)) {
+      return {
+        wrote: false,
+        conflict: `余额 ${String(balance)} 与已有最新观测偏差过大，仅标记冲突不落库`
+      }
+    }
+    dependencies.store.ledger.calibrateBalance(accountId, balance, 'app-dashboard', undefined, todayPoints)
+    const latest = dependencies.store.getLatestPointsHistory(accountId, businessDate)
+    dependencies.store.recordPoints({
+      accountId,
+      localDate: businessDate,
+      initialPoints:
+        todayPoints !== undefined
+          ? Math.max(0, balance - todayPoints)
+          : (latest?.initialPoints ?? balance),
+      finalPoints: balance,
+      status: latest?.status ?? 'success',
+      balanceConfirmed: true,
+      recordedAt: new Date().toISOString()
+    })
+    return { wrote: true }
+  }
+
   const app = Fastify({ logger: false, bodyLimit: 64 * 1024 })
   const streams = new Set<() => void>()
   let stateRevision = 0
@@ -617,19 +682,12 @@ export async function createServer(dependencies: WebServerDependencies): Promise
       dependencies.store.notifyAccountsChanged()
     }
 
-    if (result.balance > 0 && !result.conflict) {
-      dependencies.store.ledger.calibrateBalance(accountId, result.balance, 'app-dashboard', undefined, result.todayPoints)
-      const localDate = localDateKey()
-      const latest = dependencies.store.getLatestPointsHistory(accountId, localDate)
-      dependencies.store.recordPoints({
-        accountId,
-        localDate,
-        initialPoints: result.todayPoints !== undefined ? Math.max(0, result.balance - result.todayPoints) : (latest?.initialPoints ?? result.balance),
-        finalPoints: result.balance,
-        status: latest?.status ?? 'success',
-        balanceConfirmed: true,
-        recordedAt: new Date().toISOString()
-      })
+    // 体检默认只读。仅当 App Token 侧已确认权威余额时才允许自动回填，
+    // 且写入前还需通过口径守卫；否则仅返回健康检查结果，绝不写库。
+    const tokenBalanceConfirmed = result.token.valid && result.token.balance !== undefined
+    if (tokenBalanceConfirmed && !result.conflict && result.token.balance !== undefined) {
+      const write = writeAuthoritativeBalance(accountId, result.token.balance, result.token.todayPoints)
+      if (!write.wrote && write.conflict) result.conflict = true
     }
 
     return result
@@ -663,21 +721,13 @@ export async function createServer(dependencies: WebServerDependencies): Promise
 
     try {
       if (body?.balance !== undefined) {
-        dependencies.store.ledger.calibrateBalance(accountId, body.balance, 'app-dashboard', undefined, body.todayPoints)
-        const localDate = localDateKey()
-        const latest = dependencies.store.getLatestPointsHistory(accountId, localDate)
-        const initialPoints = body.todayPoints !== undefined
-          ? Math.max(0, body.balance - body.todayPoints)
-          : (latest?.initialPoints ?? body.balance)
-        dependencies.store.recordPoints({
-          accountId,
-          localDate,
-          initialPoints,
-          finalPoints: body.balance,
-          status: latest?.status ?? 'success',
-          balanceConfirmed: true,
-          recordedAt: new Date().toISOString()
-        })
+        const write = writeAuthoritativeBalance(accountId, body.balance, body.todayPoints)
+        if (!write.wrote) {
+          return await reply.code(400).send({
+            error: 'calibrate-rejected',
+            message: write.conflict ?? '积分校准被口径守卫拒绝'
+          })
+        }
         return {
           success: true,
           accountId,
@@ -700,22 +750,21 @@ export async function createServer(dependencies: WebServerDependencies): Promise
         })
       }
 
-      // 无论体检是否存在微弱双轨差异，手动触发校准时均强制执行权威回填与历史脏数据清洗
-      dependencies.store.ledger.calibrateBalance(accountId, result.balance, 'app-dashboard', undefined, result.todayPoints)
-      const localDate = localDateKey()
-      const latest = dependencies.store.getLatestPointsHistory(accountId, localDate)
-      const initialPoints = result.todayPoints !== undefined
-        ? Math.max(0, result.balance - result.todayPoints)
-        : (latest?.initialPoints ?? result.balance)
-      dependencies.store.recordPoints({
-        accountId,
-        localDate,
-        initialPoints,
-        finalPoints: result.balance,
-        status: latest?.status ?? 'success',
-        balanceConfirmed: true,
-        recordedAt: new Date().toISOString()
-      })
+      // 手动触发校准等同于权威回填：只有 App Token 侧确认过权威余额才允许写库。
+      // Cookie 侧读数不足以下发校准，避免把今日计数器再次当总积分落库。
+      if (!result.token.valid || result.token.balance === undefined) {
+        return await reply.code(400).send({
+          error: 'calibrate-requires-token-balance',
+          message: '未从 App Token 确认权威余额，无法执行校准'
+        })
+      }
+      const write = writeAuthoritativeBalance(accountId, result.token.balance, result.token.todayPoints)
+      if (!write.wrote) {
+        return await reply.code(400).send({
+          error: 'calibrate-rejected',
+          message: write.conflict ?? '积分校准被口径守卫拒绝'
+        })
+      }
 
       return {
         success: true,

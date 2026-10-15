@@ -102,6 +102,8 @@ export interface StatePayload {
       dailyBalanceDelta: number | null
       accountTotalPoints?: number | null
       accountTotalPointsAt?: string | null
+      accountTotalPointsSource?: string | null
+      dailyBalanceDeltaSource?: string | null
       verificationStatus: string
       taskPointDetails?: TaskPointDetail[]
       expectedDailyPoints?: number | null

@@ -117,7 +117,8 @@ describe('persistent enterprise notifications', () => {
               observedAt,
               availability: 'valid',
               confidence: 1,
-              source: 'rsc'
+              source: 'rsc',
+              provenance: 'userStatus.availablePoints',
             })
           }
         }
@@ -534,7 +535,8 @@ it('restores per-task notification amounts, start/end balances and elapsed time 
         observedAt,
         availability: 'valid',
         confidence: 1,
-        source: 'rsc'
+        source: 'rsc',
+        provenance: 'userStatus.availablePoints',
       })
     }
     for (const [taskId, name, type, expected, earned] of [
@@ -725,7 +727,8 @@ it('shows every recorded module score without statuses or search progress', asyn
         observedAt,
         availability: 'valid',
         confidence: 1,
-        source: 'rsc'
+        source: 'rsc',
+        provenance: 'userStatus.availablePoints',
       })
     }
     for (const [taskId, type, amount] of [
@@ -912,6 +915,7 @@ it('recovers category scores from isolated task balance windows without creditin
           availability: 'valid',
           confidence: 1,
           source: 'rsc',
+          provenance: 'userStatus.availablePoints',
           observedAt: `2026-09-09T00:00:01.${millis}Z`
         },
         taskId

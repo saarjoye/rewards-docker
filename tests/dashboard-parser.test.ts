@@ -20,11 +20,13 @@ describe('dashboard parser', () => {
               pcSearch: [{ pointProgress: 0, pointProgressMax: 60 }]
             }
           }
-        }
+        },
+        userInfo: { balance: 14202 }
       },
       'legacy-getuserinfo'
     )
     expect(parsed.availablePoints.value).toBe(14202)
+    expect(parsed.availablePoints.provenance).toBe('userStatus.availablePoints')
     expect(parsed.market).toMatchObject({ availability: 'valid', value: 'CN' })
     expect(parsed.pcSearch).toMatchObject({
       availability: 'valid',
@@ -389,5 +391,22 @@ describe('dashboard parser', () => {
     expect(app.availablePoints.source).toBe('app-dashboard')
     expect(app.availablePoints.provenance).toBe('appResponse.balance')
   })
+
+
+  it('parses available points with thousands separators in userStatus', () => {
+    const chunk = JSON.stringify('x:{"userStatus":{"availablePoints":"13,150"}}');
+    const html = '<script>self.__next_f.push([1,' + chunk + '])</script>';
+    const parsed = parseRewardsHtml(html);
+    expect(parsed.availablePoints.availability).toBe('valid');
+    expect(parsed.availablePoints.value).toBe(13150);
+  });
+
+  it('does not extract points from activityCards or promotions when availablePoints is missing', () => {
+    const chunk = JSON.stringify('x:{"promotions":[],"activityCards":[{"id":"card1","availablePoints":222}]}');
+    const html = '<script>self.__next_f.push([1,' + chunk + '])</script>';
+    const parsed = parseRewardsHtml(html);
+    expect(parsed.availablePoints.availability).toBe('missing');
+    expect(parsed.availablePoints.value).toBeUndefined();
+  });
 
 })

@@ -1,4 +1,4 @@
-﻿import { extractNicknameFromCookie } from './FastApiEngine.js'
+import { extractNicknameFromCookie } from './FastApiEngine.js'
 import type { AppToken } from '../browser/AppOAuthClient.js'
 import type { BrowserStorageState } from '../browser/BrowserRuntime.js'
 import type { EncryptedSessionStore } from './EncryptedSessionStore.js'
@@ -26,6 +26,41 @@ export interface CredentialsStatus {
     desktopCookieCount: number
     mobileCookieCount: number
     validatedAt?: string | undefined
+  }
+}
+
+export interface WebSessionMeta {
+  hasAuthCookies: boolean
+  authCookieNames: string[]
+  identityHash?: string
+}
+
+export type VerifiedWebSessionPayload = BrowserStorageState & {
+  meta?: WebSessionMeta
+}
+
+const AUTH_COOKIE_NAMES = new Set(['WLS', '.MSA.Auth', 'SRCHUID', 'ANON', 'USRLOC'])
+
+export function validateAuthCookiePresence(
+  cookies: readonly CookieItem[]
+): { hasAuthCookies: boolean; authCookieNames: string[] } {
+  const authCookieNames = [
+    ...new Set(
+      cookies
+        .filter((cookie) => AUTH_COOKIE_NAMES.has(cookie.name))
+        .filter((cookie) => /(^|\.)(bing\.com|rewards\.bing\.com|live\.com)$/i.test(cookie.domain))
+        .map((cookie) => cookie.name)
+    )
+  ]
+  return { hasAuthCookies: authCookieNames.length > 0, authCookieNames }
+}
+
+function requireAuthCookiePresence(cookies: readonly CookieItem[]): void {
+  const { hasAuthCookies } = validateAuthCookiePresence(cookies)
+  if (!hasAuthCookies) {
+    throw new Error(
+      '??? Cookie ???? Cookie???? WLS/.MSA.Auth/SRCHUID/ANON/USRLOC ????? HttpOnly ?? Cookie??? domain ?? bing.com/rewards.bing.com/live.com????????????? Cookie????????/OAuth?'
+    )
   }
 }
 
@@ -222,7 +257,10 @@ export function parseAndNormalizeCookies(rawInput: string): CookieItem[] {
         })
       }
 
-      if (result.length > 0) return result
+      if (result.length > 0) {
+        requireAuthCookiePresence(result)
+        return result
+      }
     } catch (error) {
       if (error instanceof Error && error.message.includes('Cookie')) throw error
       // JSON parse failed, try next formats
@@ -257,7 +295,10 @@ export function parseAndNormalizeCookies(rawInput: string): CookieItem[] {
       }
     }
   }
-  if (netscapeItems.length > 0) return netscapeItems
+  if (netscapeItems.length > 0) {
+    requireAuthCookiePresence(netscapeItems)
+    return netscapeItems
+  }
 
   // Case 3: Semicolon-separated HTTP Cookie Header string
   const pairs = trimmed.split(';')
@@ -305,13 +346,20 @@ export class SessionImportManager {
   }
 
   async saveWebSessionCookies(accountId: string, cookies: CookieItem[]): Promise<void> {
+    const { hasAuthCookies, authCookieNames } = validateAuthCookiePresence(cookies)
+    if (!hasAuthCookies) {
+      throw new Error(
+        '??? Cookie ???? Cookie???? WLS/.MSA.Auth/SRCHUID/ANON/USRLOC ????? HttpOnly ?? Cookie??? domain ?? bing.com/rewards.bing.com/live.com????????????? Cookie????????/OAuth?'
+      )
+    }
     const validatedAt = new Date().toISOString()
-    const storageState: BrowserStorageState = {
+    const storageState: VerifiedWebSessionPayload = {
       cookies,
       origins: [
         { origin: 'https://rewards.bing.com', localStorage: [] },
         { origin: 'https://www.bing.com', localStorage: [] }
-      ]
+      ],
+      meta: { hasAuthCookies, authCookieNames }
     }
 
     await this.sessions.commitVerified(
@@ -346,7 +394,10 @@ export class SessionImportManager {
     const oauthBound = Boolean(oauthSession?.payload.accessToken)
     const desktopCookies = desktopSession?.payload.cookies ?? []
     const mobileCookies = mobileSession?.payload.cookies ?? []
-    const webBound = desktopCookies.length > 0 || mobileCookies.length > 0
+    const desktopMeta = (desktopSession?.payload as VerifiedWebSessionPayload | undefined)?.meta
+    const mobileMeta = (mobileSession?.payload as VerifiedWebSessionPayload | undefined)?.meta
+    const webBound =
+      Boolean(desktopMeta?.hasAuthCookies) || Boolean(mobileMeta?.hasAuthCookies)
 
     return {
       accountId,

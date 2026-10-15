@@ -1,4 +1,4 @@
-import { DatabaseSync } from 'node:sqlite'
+﻿import { DatabaseSync } from 'node:sqlite'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -57,7 +57,8 @@ function balance(
     observedAt: at,
     source: 'bing-flyout',
     confidence: 0.9,
-    availability: 'valid'
+    availability: 'valid',
+    provenance: 'userStatus.availablePoints'
   })
 }
 

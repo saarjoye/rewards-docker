@@ -37,6 +37,7 @@ function setup(before = 5312, after = 5517) {
       availability: 'valid',
       value,
       source: 'bing-flyout',
+      provenance: 'userStatus.availablePoints',
       confidence: 1,
       observedAt
     })
@@ -60,6 +61,7 @@ describe('strict credit reconciliation', () => {
           availability: 'valid',
           value,
           source: 'bing-flyout',
+          provenance: 'userStatus.availablePoints',
           confidence: 1,
           observedAt
         })
@@ -193,6 +195,7 @@ describe('strict credit reconciliation', () => {
             availability: 'valid',
             value,
             source: 'bing-flyout',
+            provenance: 'userStatus.availablePoints',
             confidence: 1,
             observedAt
           },

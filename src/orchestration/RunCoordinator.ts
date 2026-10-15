@@ -1077,6 +1077,7 @@ export class ApplicationRunCoordinator {
         )
       }
     )
+    await resources.desktopClient.computeAndStoreIdentityHash().catch(() => undefined)
     await login.login(resources.desktop.page, credentials, context.signal)
     const desktopObservation = await this.verifyBrowserSession(
       resources.desktop,
@@ -1114,6 +1115,7 @@ export class ApplicationRunCoordinator {
           )
         }
       )
+      await resources.mobileClient.computeAndStoreIdentityHash().catch(() => undefined)
       await login.login(resources.mobile.page, credentials, context.signal)
       await this.verifyBrowserSession(
         resources.mobile,
@@ -1221,11 +1223,16 @@ export class ApplicationRunCoordinator {
     signal: AbortSignal
   ): Promise<RewardsObservation | undefined> {
     const discovery = new RewardsDiscoveryService()
-    let verified = await discovery.verifyAuthenticated(client, signal)
+    const targetIdentityHash = client.expectedIdentityHash
+    let verified = await discovery.verifyAuthenticated(client, signal, {
+      ...(targetIdentityHash === undefined ? {} : { targetIdentityHash })
+    })
     if (!verified.verification.valid) {
       await navigateForAuthentication(slot.page, REWARDS_URLS.bingSignIn, signal)
       await login.login(slot.page, credentials, signal)
-      verified = await discovery.verifyAuthenticated(client, signal)
+      verified = await discovery.verifyAuthenticated(client, signal, {
+        ...(targetIdentityHash === undefined ? {} : { targetIdentityHash })
+      })
     }
     if (!verified.verification.valid) {
       throw new LoginStateError({

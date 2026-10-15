@@ -189,7 +189,8 @@ describe('task points in account views', () => {
             observedAt: date + 'T' + time + 'Z',
             availability: 'valid',
             confidence: 1,
-            source: 'bing-flyout'
+            source: 'bing-flyout',
+            provenance: 'userStatus.availablePoints',
           },
           item.taskId
         )
@@ -205,7 +206,8 @@ describe('task points in account views', () => {
           observedAt: date + 'T08:00:30Z',
           availability: 'valid',
           confidence: 1,
-          source: 'bing-flyout'
+          source: 'bing-flyout',
+          provenance: 'userStatus.availablePoints',
         },
         'other-task'
       )

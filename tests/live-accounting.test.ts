@@ -14,13 +14,24 @@ function snapshot(
   source: EvidenceSource = 'rsc',
   provenance?: string
 ) {
+  const defaultProvenance =
+    provenance ??
+    (source === 'app-dashboard'
+      ? 'appResponse.balance'
+      : source === 'bing-flyout'
+        ? 'userStatus.availablePoints'
+        : source === 'browser-response'
+          ? 'browser-response.balance'
+          : source === 'legacy-getuserinfo'
+            ? 'userInfo.balance'
+            : 'flight.availablePoints')
   store.ledger.balance(runId, accountId, phase, {
     value: balance,
     availability: 'valid',
     confidence: 1,
     source,
     observedAt: time,
-    ...(provenance ? { provenance } : {})
+    provenance: defaultProvenance
   })
 }
 describe('scoped live accounting', () => {
@@ -218,8 +229,16 @@ describe('scoped live accounting', () => {
       expect(before?.dailyBalanceDelta).toBeNull()
       expect(before?.verificationStatus).toBe('conflict')
 
-      const res = store.ledger.calibrateBalance('account-calib', 12993, 'app-dashboard', todayDate)
+      const res = store.ledger.calibrateBalance(
+        'account-calib',
+        12993,
+        'app-dashboard',
+        todayDate,
+        undefined,
+        `${todayDate}T04:00:00.000Z`
+      )
       expect(res.cleanedCount).toBe(1)
+      expect(res.conflictCount).toBe(1)
 
       const after = views.today([{
         accountId: 'account-calib',
@@ -273,4 +292,79 @@ describe('scoped live accounting', () => {
       store.close()
     }
   })
+
+  it('accepts calibration -> availablePoints as one total caliber when the daily delta is plausible', () => {
+    const store = new SqliteStore(':memory:')
+    try {
+      const todayDate = localDateKey()
+      // User calibrates account: total points 13150, today points 222 (opening: 12928, end: 13150)
+      store.ledger.calibrateBalance('acc-1', 13150, 'app-dashboard', todayDate, 222, `${todayDate}T08:00:00.000Z`)
+
+      const views = new RunViews(store)
+      const afterCalib = views.today([{
+        accountId: 'acc-1',
+        displayAlias: 'Test Account',
+        maskedEmail: 'test***@example.com',
+        runAccountIndex: 1
+      }])[0]
+      expect(afterCalib?.conflicting).toBe(false)
+      expect(afterCalib?.accountTotalPoints).toBe(13150)
+      expect(afterCalib?.dailyBalanceDelta).toBe(222)
+
+      // A later total reading arrives from Bing flyout. Because availablePoints
+      // is a total-caliber field, it must extend the calibrated interval rather
+      // than being rejected as a different caliber.
+      snapshot(store, 'end', 13174, `${todayDate}T09:00:00Z`, 'task-run-1', 'acc-1', 'bing-flyout', 'userStatus.availablePoints')
+
+      const day = views.day('acc-1', todayDate)
+      expect(day.conflicting).toBe(false)
+      expect(day.openingBalance).toBe(12928)
+      expect(day.closingBalance).toBe(13174)
+      expect(day.dailyBalanceDelta).toBe(246)
+      expect(day.verificationStatus).toBe('confirmed')
+
+      const today = views.today([{
+        accountId: 'acc-1',
+        displayAlias: 'Test Account',
+        maskedEmail: 'test***@example.com',
+        runAccountIndex: 1
+      }])[0]
+      expect(today?.conflicting).toBe(false)
+      expect(today?.accountTotalPoints).toBe(13174)
+      expect(today?.dailyBalanceDelta).toBe(246)
+      expect(today?.verificationStatus).toBe('confirmed')
+    } finally {
+      store.close()
+    }
+  })
+
+  it('quarantines and rejects wild anomalous observations from poisoning a calibrated account', () => {
+    const store = new SqliteStore(':memory:')
+    try {
+      const todayDate = localDateKey()
+      // Calibrate account to 13150 with today points 222
+      store.ledger.calibrateBalance('acc-wild', 13150, 'app-dashboard', todayDate, 222)
+
+      // Wild corrupt observations arrive (e.g. 222 misattributed to balance or 1017).
+      // These are from a different caliber and are quarantined as conflict instead
+      // of poisoning the calibrated total.
+      snapshot(store, 'live', 222, `${todayDate}T10:00:00Z`, 'wild-run', 'acc-wild', 'rsc', 'flight.availablePoints')
+      snapshot(store, 'live', 1017, `${todayDate}T10:05:00Z`, 'wild-run', 'acc-wild', 'bing-flyout', 'userStatus.availablePoints')
+
+      const views = new RunViews(store)
+      const today = views.today([{
+        accountId: 'acc-wild',
+        displayAlias: 'Wild Account',
+        maskedEmail: 'wild***@example.com',
+        runAccountIndex: 1
+      }])[0]
+      expect(today?.conflicting).toBe(false)
+      expect(today?.accountTotalPoints).toBe(13150)
+      expect(today?.dailyBalanceDelta).toBe(222)
+      expect(today?.verificationStatus).not.toBe('conflict')
+    } finally {
+      store.close()
+    }
+  })
+
 })
