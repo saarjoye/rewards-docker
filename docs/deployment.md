@@ -4,9 +4,29 @@ Next 单应用沿用 `ghcr.io/saarjoye/mrs-core` 镜像名，替代旧版 Core/W
 
 ## 发布和切换
 
-现有仓库的 `main` 分支通过 `.github/workflows/docker-image.yml` 构建。先执行离线测试、类型检查、ESLint、构建和 Compose 校验，再构建 `linux/amd64` 与 `linux/arm64` 候选镜像。候选镜像使用空数据、禁用外部网络做启动健康检查；成功后才更新 `5.0.0-next.45` 与 `latest`。完整提交固定标签为 `sha-<完整提交号>`。
+现有仓库的 `main` 分支通过 `.github/workflows/docker-image.yml` 构建。先执行离线测试、类型检查、ESLint、构建和 Compose 校验，再构建 `linux/amd64` 与 `linux/arm64` 候选镜像。候选镜像使用空数据、禁用外部网络做启动健康检查；成功后才更新 `5.0.0-next.46` 与 `latest`。完整提交固定标签为 `sha-<完整提交号>`。
 
-## next.45 修复无存量会话登录失败并恢复镜像发布（当前版本）
+## next.46 修复会话身份指纹误报与业务日校准时间（当前版本）
+
+### 稳定会话身份锚点
+
+- 以 flyout/dashboard 响应中的 `ruid` 为主锚点，归一化 `hk-`、`usw-` 等可变地区前缀，只比较稳定段；
+- 以 `.MSA.Auth` 中的稳定身份声明作为辅助锚点；
+- WLS、SRCHUID、域分片 MUID 等易失 Cookie 不再参与身份判定，Cookie 罐抖动不再误判；
+- 真实 `ruid` 或身份段变化仍判定为不一致，并映射为 `bing-session-error`。
+
+### 业务日校准时间
+
+- 修正 `calibrateBalance()` 将上海业务日零点写入成 UTC 零点的问题；
+- 避免上海时间 00:00–08:00 校准时开收盘时间倒置。
+
+### 升级与验证
+
+应用镜像为 ghcr.io/saarjoye/mrs-core:5.0.0-next.46，候选健康验证成功后同步
+更新 latest。升级无需新增配置、迁移或依赖安装；保留原 Compose、持久卷、
+主密钥、账号、调度及任务证据。
+
+## next.45 修复无存量会话登录失败并恢复镜像发布（历史版本）
 
 ### 会话身份校验与登录修复
 
@@ -14,12 +34,6 @@ Next 单应用沿用 `ghcr.io/saarjoye/mrs-core` 镜像名，替代旧版 Core/W
 - 修复登录仅在确实驱动登录 UI 时条件重取基线，避免陈旧基线导致 `bing-session-error`，同时保留验证窗口内的静默换号检测；
 - 保持既有身份指纹 Cookie 集合兼容存量会话，并恢复会话校验及 Cookie 导入失败的中文错误信息；
 - 清理已无引用的保留策略、类型与脚本，修复发布门禁的 lint 错误。
-
-### 升级与验证
-
-应用镜像为 ghcr.io/saarjoye/mrs-core:5.0.0-next.45，候选健康验证成功后同步
-更新 latest。升级无需新增配置、迁移或依赖安装；保留原 Compose、持久卷、
-主密钥、账号、调度及任务证据。
 
 ## next.44 积分口径隔离、会话身份校验与 Cookie 体检修复（历史版本）
 
