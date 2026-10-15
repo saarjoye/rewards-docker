@@ -764,7 +764,7 @@ export class RunLedger {
 
       if (todayPoints !== undefined && Number.isSafeInteger(todayPoints) && todayPoints >= 0) {
         const openingBalance = Math.max(0, balance - todayPoints)
-        const startObservedAt = `${businessDate}T00:00:01.000Z`
+        const startObservedAt = new Date(`${businessDate}T00:00:01+08:00`).toISOString()
         const startSnapshotId = createHash('sha256')
           .update(JSON.stringify([runId, accountId, 'start', startObservedAt, source, provenance]))
           .digest('hex')
