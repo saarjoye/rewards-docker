@@ -1,5 +1,4 @@
 import type { CanonicalTaskType, TaskProgress, TaskRecord } from './Task.js'
-import { publicText } from './Presentation.js'
 
 export interface TaskPointInput {
   taskId: string
