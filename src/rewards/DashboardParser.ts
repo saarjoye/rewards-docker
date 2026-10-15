@@ -1,6 +1,8 @@
 import { createEvidence, type EvidenceSource, type FieldEvidence } from '../domain/Evidence.js'
 import { localDateKey } from '../domain/DateKey.js'
 import type { RewardOffer, RewardsObservation, SearchQuota } from './RewardsModel.js'
+import type { RewardsIdentityAnchor } from '../domain/SessionIdentity.js'
+import { normalizeRewardsRuid } from '../domain/SessionIdentity.js'
 
 type RecordValue = Record<string, unknown>
 
@@ -101,6 +103,32 @@ function parseBalance(
         value,
         ...(provenance ? { provenance } : {})
       })
+}
+function parseIdentityAnchor(
+  envelope: RecordValue,
+  root: RecordValue,
+  appResponse: RecordValue | undefined
+): RewardsIdentityAnchor | undefined {
+  const scopes = [
+    asRecord(envelope.userInfo),
+    asRecord(root.userInfo),
+    root,
+    envelope,
+    appResponse
+  ]
+  const queue = scopes.flatMap((scope) => (scope ? [{ value: scope, depth: 0 }] : []))
+  for (const item of queue) {
+    for (const [key, raw] of Object.entries(item.value)) {
+      if (key.toLowerCase() === 'ruid') {
+        const value = stringValue(raw)
+        const normalized = value ? normalizeRewardsRuid(value) : undefined
+        if (normalized) return { ruid: normalized }
+      }
+      const child = asRecord(raw)
+      if (child && item.depth < 3) queue.push({ value: child, depth: item.depth + 1 })
+    }
+  }
+  return undefined
 }
 function parseRewardsUser(
   source: EvidenceSource,
@@ -567,6 +595,7 @@ export function parseDashboardPayload(
   const offers = appResponse
     ? collectAppOffers(appResponse, observedAt)
     : collectDashboardOffers(root, source, businessDate)
+  const identityAnchor = parseIdentityAnchor(envelope, root, appResponse)
 
   return {
     source,
@@ -576,7 +605,8 @@ export function parseDashboardPayload(
     pcSearch: searchCounter(counters, 'pcSearch', sourceName, observedAt),
     mobileSearch: searchCounter(counters, 'mobileSearch', sourceName, observedAt),
     offers: uniqueOffers(offers),
-    topLevelFields: Object.keys(envelope).sort()
+    topLevelFields: Object.keys(envelope).sort(),
+    ...(identityAnchor ? { identityAnchor } : {})
   }
 }
 

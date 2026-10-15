@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { BrowserContext, Page } from 'patchright'
+import type { APIResponse, BrowserContext, Page } from 'patchright'
 
 import type { EncryptedSessionStore } from '../src/auth/EncryptedSessionStore.js'
 import { AppOAuthClient } from '../src/browser/AppOAuthClient.js'
@@ -109,6 +109,58 @@ function browserSlot(slot: 'web-desktop' | 'web-mobile'): {
     pageClose,
     commitVerified,
     close
+  }
+}
+
+function msaAuthValue(account: string): string {
+  return Buffer.from(JSON.stringify({ cid: account }), 'utf8').toString('base64')
+}
+
+function flyoutPayload(ruid: string): Record<string, unknown> {
+  return {
+    flyoutResult: {
+      userStatus: {
+        isRewardsUser: true,
+        availablePoints: 100,
+        counters: {}
+      },
+      userInfo: { ruid }
+    }
+  }
+}
+
+function flyoutResponse(payload: unknown): APIResponse {
+  return {
+    status: () => 200,
+    ok: () => true,
+    headers: () => ({ 'content-type': 'application/json' }),
+    url: () =>
+      'https://www.bing.com/rewards/panelflyout/getuserinfo?channel=BingFlyout&partnerId=BingRewards',
+    text: () => Promise.resolve(JSON.stringify(payload)),
+    dispose: () => Promise.resolve()
+  } as unknown as APIResponse
+}
+
+function identitySlot(
+  slot: 'web-desktop' | 'web-mobile',
+  context: BrowserContext
+): { value: AccountBrowserSlot; commitVerified: ReturnType<typeof vi.fn> } {
+  const goto = vi.fn().mockResolvedValue(null)
+  const commitVerified = vi.fn().mockResolvedValue(undefined)
+  const page = {
+    goto,
+    close: vi.fn().mockResolvedValue(undefined),
+    url: vi.fn().mockReturnValue('https://rewards.bing.com/dashboard')
+  } as unknown as Page
+  return {
+    value: {
+      slot,
+      context,
+      page,
+      close: vi.fn().mockResolvedValue(undefined),
+      commitVerified
+    },
+    commitVerified
   }
 }
 
@@ -590,6 +642,94 @@ describe('coordinator authentication recovery', () => {
     expect(mobile.goto).toHaveBeenCalledTimes(2)
     expect(mobile.commitVerified).not.toHaveBeenCalled()
     expect(oauthRead).not.toHaveBeenCalled()
+  })
+
+  it('rejects a real account switch through the real identity anchor and coordinator', async () => {
+    const cookies: Array<{ name: string; value: string; domain: string; path: string }> = [
+      { name: '.MSA.Auth', value: msaAuthValue('synthetic-account-a'), domain: '.bing.com', path: '/' },
+      { name: 'WLS', value: 'C=x&N=y', domain: '.bing.com', path: '/' }
+    ]
+    const switchToAccountB = () => {
+      cookies.splice(
+        0,
+        cookies.length,
+        { name: '.MSA.Auth', value: msaAuthValue('synthetic-account-b'), domain: '.bing.com', path: '/' },
+        { name: 'WLS', value: 'C=&N=', domain: '.bing.com', path: '/' }
+      )
+    }
+    const context = {
+      storageState: vi.fn().mockImplementation(() => ({ cookies: [...cookies], origins: [] })),
+      request: {
+        get: vi.fn().mockImplementation(() => {
+          switchToAccountB()
+          return Promise.resolve(flyoutResponse(flyoutPayload('usw-ACCOUNT-B-SYNTHETIC')))
+        })
+      }
+    } as unknown as BrowserContext
+    const desktop = identitySlot('web-desktop', context)
+    const openSlot = vi.fn().mockResolvedValue(desktop.value)
+    const login = vi.spyOn(LoginController.prototype, 'login').mockResolvedValue(undefined)
+    const config = {
+      ...DEFAULT_CONFIG,
+      tasks: {
+        ...DEFAULT_CONFIG.tasks,
+        mobileSearch: false,
+        appActivities: false,
+        appCheckIn: false,
+        readToEarn: false
+      }
+    }
+
+    await expect(
+      invokeAuthenticate(authenticationCoordinator({ openSlot, config }))
+    ).rejects.toMatchObject({ name: 'LoginStateError', loginStage: 'bing-session-error' })
+    expect(login).toHaveBeenCalledTimes(2)
+    expect(desktop.commitVerified).not.toHaveBeenCalled()
+  })
+
+  it('completes a no-op repair login without a stale identity baseline', async () => {
+    // A volatile WLS cookie is present so the deprecated fingerprint baseline is
+    // defined; the flyout request clears it, exactly like the production incident.
+    const cookies: Array<{ name: string; value: string; domain: string; path: string }> = [
+      { name: 'WLS', value: 'C=x&N=y', domain: '.bing.com', path: '/' },
+      { name: '.MSA.Auth', value: msaAuthValue('synthetic-account-a'), domain: '.bing.com', path: '/' }
+    ]
+    let flyoutCalls = 0
+    const context = {
+      storageState: vi.fn().mockImplementation(() => ({ cookies: [...cookies], origins: [] })),
+      request: {
+        get: vi.fn().mockImplementation(() => {
+          flyoutCalls += 1
+          const wls = cookies.find((cookie) => cookie.name === 'WLS')
+          if (wls) wls.value = 'C=&N='
+          // First verification: three transient empty flyouts force the repair branch.
+          if (flyoutCalls <= 3) return Promise.resolve(undefined)
+          return Promise.resolve(
+            flyoutResponse(flyoutPayload('hk-4022697D86736F337E815ABE68F2291F4EDF7AD3'))
+          )
+        })
+      }
+    } as unknown as BrowserContext
+    const desktop = identitySlot('web-desktop', context)
+    const openSlot = vi.fn().mockResolvedValue(desktop.value)
+    const login = vi.spyOn(LoginController.prototype, 'login').mockResolvedValue(undefined)
+    vi.spyOn(DashboardClient.prototype, 'fetchDashboard').mockResolvedValue(observation())
+    const config = {
+      ...DEFAULT_CONFIG,
+      tasks: {
+        ...DEFAULT_CONFIG.tasks,
+        mobileSearch: false,
+        appActivities: false,
+        appCheckIn: false,
+        readToEarn: false
+      }
+    }
+
+    await expect(
+      invokeAuthenticate(authenticationCoordinator({ openSlot, config }))
+    ).resolves.toEqual({ status: 'completed' })
+    expect(login).toHaveBeenCalledTimes(2)
+    expect(desktop.commitVerified).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -1151,7 +1291,8 @@ describe('runtime task discovery', () => {
     const fetchDashboard = vi.fn().mockResolvedValue(confirmed)
     const client = {
       fetchFlyout,
-      fetchDashboard
+      fetchDashboard,
+      ensureSessionIdentityAnchor: vi.fn().mockResolvedValue(undefined)
     } as unknown as DashboardClient
     const result = await new RewardsDiscoveryService().verifyAuthenticated(client)
     expect(result.verification.valid).toBe(true)
@@ -1174,7 +1315,8 @@ describe('runtime task discovery', () => {
     const fetchDashboard = vi.fn().mockResolvedValue(confirmed)
     const client = {
       fetchFlyout: vi.fn().mockResolvedValue(incomplete),
-      fetchDashboard
+      fetchDashboard,
+      ensureSessionIdentityAnchor: vi.fn().mockResolvedValue(undefined)
     } as unknown as DashboardClient
 
     const result = await new RewardsDiscoveryService().verifyAuthenticated(client)

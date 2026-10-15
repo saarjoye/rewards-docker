@@ -1,5 +1,6 @@
 import type { CanonicalTaskType, QuestTaskContext } from '../domain/Task.js'
 import type { FieldEvidence } from '../domain/Evidence.js'
+import type { RewardsIdentityAnchor } from '../domain/SessionIdentity.js'
 
 export interface SearchQuota {
   completed: number
@@ -53,6 +54,7 @@ export interface RewardsObservation {
   mobileSearch: FieldEvidence<SearchQuota>
   offers: readonly RewardOffer[]
   topLevelFields: readonly string[]
+  identityAnchor?: RewardsIdentityAnchor
 }
 
 export interface RewardsDiscoverySnapshot {

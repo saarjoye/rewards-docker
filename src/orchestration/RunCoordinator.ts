@@ -1078,7 +1078,7 @@ export class ApplicationRunCoordinator {
       }
     )
     await login.login(resources.desktop.page, credentials, context.signal)
-    await resources.desktopClient.computeAndStoreIdentityHash().catch(() => undefined)
+    await resources.desktopClient.computeAndStoreIdentityAnchor().catch(() => undefined)
     const desktopObservation = await this.verifyBrowserSession(
       resources.desktop,
       resources.desktopClient,
@@ -1116,7 +1116,7 @@ export class ApplicationRunCoordinator {
         }
       )
       await login.login(resources.mobile.page, credentials, context.signal)
-      await resources.mobileClient.computeAndStoreIdentityHash().catch(() => undefined)
+      await resources.mobileClient.computeAndStoreIdentityAnchor().catch(() => undefined)
       await this.verifyBrowserSession(
         resources.mobile,
         resources.mobileClient,
@@ -1223,24 +1223,20 @@ export class ApplicationRunCoordinator {
     signal: AbortSignal
   ): Promise<RewardsObservation | undefined> {
     const discovery = new RewardsDiscoveryService()
-    const targetIdentityHash = client.expectedIdentityHash
+    const targetIdentityAnchor = client.expectedIdentityAnchor
     let verified = await discovery.verifyAuthenticated(client, signal, {
-      ...(targetIdentityHash === undefined ? {} : { targetIdentityHash })
+      ...(targetIdentityAnchor === undefined ? {} : { targetIdentityAnchor })
     })
     if (!verified.verification.valid) {
       await navigateForAuthentication(slot.page, REWARDS_URLS.bingSignIn, signal)
       await login.login(slot.page, credentials, signal)
-      // A repair login that really drove the sign-in UI rewrites the identity cookies,
-      // so the previous target no longer describes the live session. A no-op repair
-      // (the session was already authenticated) keeps the original target, which is what
-      // lets a silent account switch during verification still be rejected.
-      let repairTarget = targetIdentityHash
-      if (login.authenticationInteractionStarted) {
-        await client.computeAndStoreIdentityHash().catch(() => undefined)
-        repairTarget = client.expectedIdentityHash
-      }
+      // Never replace the stable ruid/.MSA.Auth target with a fresh cookie snapshot
+      // here. A repair login that actually switched accounts must still be rejected;
+      // when no stable target existed before the repair, the next verification
+      // establishes one from the response body instead of trusting the cookie jar.
+      const repairTarget = client.expectedIdentityAnchor ?? targetIdentityAnchor
       verified = await discovery.verifyAuthenticated(client, signal, {
-        ...(repairTarget === undefined ? {} : { targetIdentityHash: repairTarget })
+        ...(repairTarget === undefined ? {} : { targetIdentityAnchor: repairTarget })
       })
     }
     if (!verified.verification.valid) {

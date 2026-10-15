@@ -35,6 +35,21 @@ describe('dashboard parser', () => {
     expect(parsed.mobileSearch.availability).toBe('missing')
   })
 
+  it('normalizes a region-prefixed ruid into a stable identity anchor', () => {
+    const parsed = parseDashboardPayload(
+      {
+        flyoutResult: {
+          userStatus: { isRewardsUser: true, availablePoints: 1, counters: {} },
+          userInfo: { ruid: 'hk-4022697D86736F337E815ABE68F2291F4EDF7AD3' }
+        }
+      },
+      'bing-flyout'
+    )
+    expect(parsed.identityAnchor).toEqual({
+      ruid: '4022697D86736F337E815ABE68F2291F4EDF7AD3'
+    })
+  })
+
   it('keeps missing and invalid market evidence distinct', () => {
     const missing = parseDashboardPayload(
       { dashboard: { userStatus: { isRewardsUser: true, availablePoints: 1, counters: {} } } },

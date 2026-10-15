@@ -2,6 +2,7 @@ import { verifyLogin, type LoginVerificationResult } from '../auth/LoginVerifica
 import { createEvidence, selectTrustedEvidence, type FieldEvidence } from '../domain/Evidence.js'
 import { createTaskId, type QuestTaskContext, type TaskRecord } from '../domain/Task.js'
 import { DashboardClient } from '../browser/DashboardClient.js'
+import type { RewardsIdentityAnchor } from '../domain/SessionIdentity.js'
 import { sameOfferUrl } from '../browser/OfferMatching.js'
 import { TaskRegistry } from './TaskRegistry.js'
 import type {
@@ -127,7 +128,7 @@ export class RewardsDiscoveryService {
   async verifyAuthenticated(
     client: DashboardClient,
     signal?: AbortSignal,
-    options?: { targetIdentityHash?: string | undefined }
+    options?: { targetIdentityAnchor?: RewardsIdentityAnchor | undefined }
   ): Promise<{
     verification: LoginVerificationResult
     observation?: RewardsObservation
@@ -139,10 +140,11 @@ export class RewardsDiscoveryService {
       if (flyout?.rewardsUser.availability === 'valid' && flyout.rewardsUser.value === true) break
       if (attempt < 3) await delay(attempt * 750, signal)
     }
-    if (options?.targetIdentityHash) {
-      const identity = await client.verifyFlyoutIdentity().catch(
-        (): { valid: boolean; reason?: string } => ({ valid: true })
-      )
+    // With no comparison target this is the first observation of the session, so
+    // capture a stable anchor instead of gating: the same flyout that established
+    // the anchor can never disprove it. Only an explicit target gates identity.
+    if (options?.targetIdentityAnchor) {
+      const identity = await client.verifyFlyoutIdentity(flyout, options.targetIdentityAnchor)
       if (!identity.valid) {
         return {
           verification: {
@@ -152,6 +154,8 @@ export class RewardsDiscoveryService {
           }
         }
       }
+    } else {
+      await client.ensureSessionIdentityAnchor(flyout)
     }
     const flyoutConfirmsProfile =
       flyout?.rewardsUser.availability === 'valid' &&

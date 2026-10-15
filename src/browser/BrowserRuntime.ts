@@ -81,6 +81,10 @@ export class BrowserRuntime {
     const expectedIdentityHash = stored
       ? (stored.payload as BrowserStorageState & { meta?: { identityHash?: string } }).meta?.identityHash
       : undefined
+    // Integrity check on the persisted payload only: the hash and the cookies it
+    // covers are read from the same stored blob, so this can never detect an
+    // account switch. Live account-switch detection is enforced during flyout
+    // verification (see DashboardClient.verifyFlyoutIdentity).
     if (stored && expectedIdentityHash) {
       const identity = validateSessionIdentity(expectedIdentityHash, stored.payload.cookies)
       if (!identity.valid) {

@@ -1,6 +1,11 @@
 import type { AppDashboardAuthorization } from './AppAuthorizationSession.js'
 import { randomInt } from 'node:crypto'
-import { computeSessionIdentityHash, validateSessionIdentity } from './BrowserRuntime.js'
+import type { RewardsIdentityAnchor } from '../domain/SessionIdentity.js'
+import {
+  createSessionIdentityAnchor,
+  mergeSessionIdentityAnchors,
+  validateSessionIdentityAnchor
+} from '../domain/SessionIdentity.js'
 
 import type {
   APIResponse,
@@ -245,36 +250,58 @@ export class DashboardClient {
     return this.confirmedObservations.at(-1)
   }
 
-  private sessionIdentityHash: string | undefined
+  private sessionIdentityAnchor: RewardsIdentityAnchor | undefined
 
-  get expectedIdentityHash(): string | undefined {
-    return this.sessionIdentityHash
+  get expectedIdentityAnchor(): RewardsIdentityAnchor | undefined {
+    return this.sessionIdentityAnchor
   }
 
-  async computeAndStoreIdentityHash(): Promise<string | undefined> {
+  async computeAndStoreIdentityAnchor(
+    observation?: RewardsObservation
+  ): Promise<RewardsIdentityAnchor | undefined> {
     try {
       const state = await this.context.storageState()
       const cookies = Array.isArray(state.cookies) ? state.cookies : []
-      const hash = computeSessionIdentityHash(cookies)
-      this.sessionIdentityHash = hash
-      return hash
+      const anchor = createSessionIdentityAnchor(observation?.identityAnchor, cookies)
+      this.sessionIdentityAnchor = anchor
+      return anchor
     } catch {
       return undefined
     }
   }
 
-  async verifyFlyoutIdentity(): Promise<{ valid: boolean; reason?: string }> {
+  async ensureSessionIdentityAnchor(
+    observation?: RewardsObservation
+  ): Promise<RewardsIdentityAnchor | undefined> {
+    // Merge any response-body ruid we just observed into the existing anchor. A
+    // stable anchor already established from an earlier flyout is never replaced
+    // by a later one; the merged value only fills in a missing field.
+    if (this.sessionIdentityAnchor) {
+      const merged = mergeSessionIdentityAnchors(
+        this.sessionIdentityAnchor,
+        observation?.identityAnchor
+      )
+      if (merged) this.sessionIdentityAnchor = merged
+      return this.sessionIdentityAnchor
+    }
+    return this.computeAndStoreIdentityAnchor(observation)
+  }
+
+  async verifyFlyoutIdentity(
+    observation?: RewardsObservation,
+    expected: RewardsIdentityAnchor | undefined = this.sessionIdentityAnchor
+  ): Promise<{ valid: boolean; reason?: string }> {
     try {
       const state = await this.context.storageState()
       const cookies = Array.isArray(state.cookies) ? state.cookies : []
-      if (!this.sessionIdentityHash) {
-        const hash = computeSessionIdentityHash(cookies)
-        this.sessionIdentityHash = hash
-        return { valid: true }
-      }
-      return validateSessionIdentity(this.sessionIdentityHash, cookies)
-    } catch {
+      const actual = createSessionIdentityAnchor(observation?.identityAnchor, cookies)
+      const identity = validateSessionIdentityAnchor(expected, actual)
+      if (!identity.valid) return identity
+      if (identity.updated) this.sessionIdentityAnchor = identity.updated
+      else if (!this.sessionIdentityAnchor && actual) this.sessionIdentityAnchor = actual
       return { valid: true }
+    } catch {
+      return { valid: false, reason: '会话身份与预期不一致' }
     }
   }
 
