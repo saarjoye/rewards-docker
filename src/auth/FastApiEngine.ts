@@ -96,36 +96,6 @@ export function cookieItemsToString(cookies: Array<{ name: string; value: string
   return cookies.map((c) => `${c.name}=${c.value}`).join('; ')
 }
 
-export function extractBalancedJsonObject(str: string, searchKey: string): Record<string, unknown> | undefined {
-  const idx = str.indexOf(searchKey)
-  if (idx === -1) return undefined
-  const braceIdx = str.indexOf('{', idx + searchKey.length)
-  if (braceIdx === -1) return undefined
-  let depth = 0
-  let end = -1
-  for (let i = braceIdx; i < str.length && i < braceIdx + 50_000; i++) {
-    if (str[i] === '{') depth++
-    else if (str[i] === '}') {
-      depth--
-      if (depth === 0) {
-        end = i + 1
-        break
-      }
-    }
-  }
-  if (end !== -1) {
-    try {
-      const parsed: unknown = JSON.parse(str.substring(braceIdx, end))
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        return parsed as Record<string, unknown>
-      }
-    } catch {
-      // ignore JSON parse error
-    }
-  }
-  return undefined
-}
-
 export class FastApiEngine {
   constructor(private readonly fetchImpl: typeof fetch = globalThis.fetch) {}
 

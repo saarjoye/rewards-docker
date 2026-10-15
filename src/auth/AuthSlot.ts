@@ -10,8 +10,3 @@ export interface AuthSlotState {
   failureStage?: string
   message?: string
 }
-
-export function assertAuthSlot(value: string): asserts value is AuthSlot {
-  if (!AUTH_SLOTS.includes(value as AuthSlot))
-    throw new TypeError(`Unknown authentication slot: ${value}`)
-}

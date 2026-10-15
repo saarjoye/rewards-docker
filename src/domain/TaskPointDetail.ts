@@ -176,12 +176,3 @@ export function calculateExpectedDailyPoints(tasks: readonly TaskPointDetail[]):
   }
   return hasPositive ? sum : null
 }
-
-export function taskPointNotificationLine(detail: TaskPointDetail): string {
-  const progress =
-    detail.progress?.total != null
-      ? ` | 进度 ${String(detail.progress.completed)}/${String(detail.progress.total)}`
-      : ''
-  const reason = detail.reason ? `：${publicText(detail.reason).replace(/\s+/g, ' ')}` : ''
-  return `- ${publicText(detail.displayName).replace(/\s+/g, ' ')}：${taskPointAmountLabel(detail)} | ${taskPointStateLabel(detail.status)}${progress}${reason}`
-}

@@ -19,7 +19,6 @@
     "start": "node dist/server/index.js",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "vitest run tests/e2e",
     "verify:accounts": "node --env-file=.env --import tsx scripts/three-account-readonly.ts",
     "verify:app-readonly": "node --env-file=.env --import tsx scripts/app-offer-readonly.ts",
     "verify:full-account": "node --env-file=.env --import tsx scripts/single-account-full-run.ts",

@@ -41,13 +41,7 @@ export const applicationConfigSchema = z.object({
     })
     .refine((value) => value.delayMaxSeconds >= value.delayMinSeconds, {
       message: 'delayMaxSeconds must be greater than or equal to delayMinSeconds'
-    }),
-  retention: z.object({
-    logsDays: z.number().int().min(1).max(365),
-    diagnosticsHours: z.number().int().min(1).max(168),
-    dailyBackups: z.number().int().min(1).max(31),
-    weeklyBackups: z.number().int().min(1).max(52)
-  })
+    })
 })
 
 export type ApplicationConfig = z.infer<typeof applicationConfigSchema>
@@ -80,8 +74,7 @@ export const DEFAULT_CONFIG: ApplicationConfig = applicationConfigSchema.parse({
     clickResult: false,
     resultVisitSeconds: 8,
     stagnantLimit: 10
-  },
-  retention: { logsDays: 30, diagnosticsHours: 24, dailyBackups: 7, weeklyBackups: 4 }
+  }
 })
 
 export async function loadConfig(path: string): Promise<ApplicationConfig> {

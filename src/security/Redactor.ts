@@ -20,18 +20,6 @@ export function maskEmail(value: string): string {
   return `${visible}***@${domain}`
 }
 
-export function sanitizeUrl(value: string): string {
-  try {
-    const url = new URL(value)
-    for (const key of [...url.searchParams.keys()]) {
-      if (SENSITIVE_KEYS.has(key.toLowerCase())) url.searchParams.set(key, '[redacted]')
-    }
-    return url.toString()
-  } catch {
-    return '[invalid-url]'
-  }
-}
-
 export function safePath(value: string): string {
   try {
     const url = new URL(value)
