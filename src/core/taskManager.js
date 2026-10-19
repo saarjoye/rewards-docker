@@ -71,36 +71,67 @@ export class TaskManager {
     let claimablePoints = 0;
     let flightChunks = '';
     let earnHtml = '';
+    let earnText = '';
     let dashHtml = '';
+    let dashText = '';
 
     try {
-      log('访问 https://rewards.bing.com/earn 页面获取今日成效看板...');
-      await page.goto('https://rewards.bing.com/earn', { waitUntil: 'domcontentloaded', timeout: 35000 });
-      await new Promise((r) => setTimeout(r, 2000));
-      earnHtml = await page.content();
-      const earnText = await page.evaluate(() => document.body ? document.body.innerText : '').catch(() => '');
-      flightChunks = concatFlightChunks(earnHtml);
+      // 1. 请求 /earn 页面
+      try {
+        log('访问 https://rewards.bing.com/earn 页面获取今日成效看板...');
+        await page.goto('https://rewards.bing.com/earn', { waitUntil: 'domcontentloaded', timeout: 35000 });
+        await new Promise((r) => setTimeout(r, 2500));
+        earnHtml = await page.content();
+        earnText = await page.evaluate(() => document.body ? document.body.innerText : '').catch(() => '');
+        flightChunks = concatFlightChunks(earnHtml);
 
-      todayPoints = extractOfficialTodayPoints(flightChunks, `${earnHtml}\n${earnText}`);
-      streakDays = extractOfficialStreakDays(flightChunks, `${earnHtml}\n${earnText}`);
-      log(`权威今日积分: ${todayPoints !== null ? todayPoints + ' 分' : '未捕获'}, 连续打卡: ${streakDays} 天`);
+        todayPoints = extractOfficialTodayPoints(flightChunks, `${earnHtml}\n${earnText}`);
+        streakDays = extractOfficialStreakDays(flightChunks, `${earnHtml}\n${earnText}`);
+        balance = extractOfficialBalance(flightChunks, `${earnHtml}\n${earnText}`);
 
-      log('访问 https://rewards.bing.com/dashboard 页面获取资产总额与待领抽屉...');
-      await page.goto('https://rewards.bing.com/dashboard', { waitUntil: 'domcontentloaded', timeout: 35000 });
-      await new Promise((r) => setTimeout(r, 2000));
-      dashHtml = await page.content();
-      const dashText = await page.evaluate(() => document.body ? document.body.innerText : '').catch(() => '');
+        // 保存实时无头视口截屏供 Web 控制台投影
+        const shotPath = path.join(DATA_DIR, 'latest_screencast.png');
+        await page.screenshot({ path: shotPath }).catch(() => {});
+      } catch (e) {
+        log(`访问 /earn 发生异常: ${e.message}，将通过 /dashboard 页面兜底`);
+      }
 
-      balance = extractOfficialBalance(flightChunks, `${dashHtml}\n${dashText}`);
-      claimablePoints = extractOfficialClaimablePoints(flightChunks, `${dashHtml}\n${dashText}`);
-      log(`可用积分余额: ${balance !== null ? balance + ' 分' : '未捕获'}, 待领额外积分: ${claimablePoints} 分`);
+      // 2. 请求 /dashboard 页面 (包含资产总额、待领抽屉、今日积分与连胜天数)
+      try {
+        log('访问 https://rewards.bing.com/dashboard 页面获取资产总额与待领抽屉...');
+        await page.goto('https://rewards.bing.com/dashboard', { waitUntil: 'domcontentloaded', timeout: 35000 });
+        await new Promise((r) => setTimeout(r, 2500));
+        dashHtml = await page.content();
+        dashText = await page.evaluate(() => document.body ? document.body.innerText : '').catch(() => '');
+        const dashFlight = concatFlightChunks(dashHtml);
+        const combinedDash = `${dashFlight}\n${dashHtml}\n${dashText}`;
+
+        if (balance === null) {
+          balance = extractOfficialBalance(dashFlight, combinedDash);
+        }
+        if (todayPoints === null) {
+          todayPoints = extractOfficialTodayPoints(dashFlight, combinedDash);
+        }
+        if (!streakDays) {
+          streakDays = extractOfficialStreakDays(dashFlight, combinedDash);
+        }
+        claimablePoints = extractOfficialClaimablePoints(dashFlight, combinedDash);
+
+        // 刷新最新视口截图
+        const shotPath = path.join(DATA_DIR, 'latest_screencast.png');
+        await page.screenshot({ path: shotPath }).catch(() => {});
+      } catch (e) {
+        log(`访问 /dashboard 异常: ${e.message}`);
+      }
+
+      log(`权威数据采集结果 - 可用余额: ${balance !== null ? balance + ' 分' : '未捕获'}, 今日已增: ${todayPoints !== null ? todayPoints + ' 分' : '0 分'}, 连续打卡: ${streakDays} 天, 待领额外: ${claimablePoints} 分`);
     } catch (e) {
       log(`官网看板数据同步异常: ${e.message}`);
     } finally {
       await page.close().catch(() => {});
     }
 
-    const rawOffers = extractOfferObjects(flightChunks);
+    const rawOffers = extractOfferObjects(flightChunks || dashHtml);
     const parsedCards = [];
     for (const chunk of rawOffers) {
       try {
@@ -112,9 +143,9 @@ export class TaskManager {
     const taskBoard = buildUnifiedTaskBoard(
       {
         stampsProgress: streakDays % 7,
-        bingSearchCompleted: false,
-        dailySetCompleted: 0,
-        bingAppCompleted: false,
+        bingSearchCompleted: todayPoints >= 60,
+        dailySetCompleted: todayPoints >= 30 ? 3 : Math.floor(todayPoints / 10),
+        bingAppCompleted: todayPoints >= 10,
         levelDailySetDays: Math.min(streakDays, 7),
         levelBingDays: Math.min(streakDays, 7),
         levelBingAppDays: Math.min(streakDays, 7)

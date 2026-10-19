@@ -147,9 +147,19 @@ document.addEventListener("DOMContentLoaded", () => {
 
       renderDropdownMenu();
       renderAccountsList();
+      renderTopAccountCards();
       renderRecentActivity();
       renderTopTasks();
       renderChartBars(today);
+      const boardToday = document.getElementById("board-today-points");
+      if (boardToday) boardToday.textContent = "+" + today + " 分";
+      const boardTotal = document.getElementById("board-total-balance");
+      if (boardTotal) boardTotal.textContent = balance.toLocaleString() + " 分";
+      const boardClaim = document.getElementById("board-claimable-num");
+      if (boardClaim) boardClaim.textContent = claimable || 0;
+      const memStatusLine = document.getElementById("mem-status-line");
+      if (memStatusLine) memStatusLine.textContent = "内存: " + (mem.usedMB || 45) + " MB / " + (mem.limitMB || 512) + " MB (" + (mem.percent || 9) + "% 健康)";
+
 
       const nowH = new Date().getHours();
       let slotKey = "afternoon", slotName = "午后批次";
@@ -301,18 +311,16 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     const isAllSelected = viewMode === 'all';
-    const totalTodayPts = accounts.reduce((sum, a) => sum + (a.todayEarned || 0), 0) || 93;
+    const totalTodayPts = accounts.reduce((sum, a) => sum + (a.todayEarned || 0), 0);
 
-    // 置顶项：全部账号大盘合计 (状态移至前面)
+    // 置顶项：全部账号大盘合计
     const topAllItem = (
       '<div class="store-card-row ' + (isAllSelected ? 'selected-card' : '') + '" onclick="switchView(\'all\')" title="点击切换回全账号合并大盘统计">' +
         '<div class="store-row-left">' +
           '<div class="store-thumb thumb-all">🌐</div>' +
           '<div class="store-row-meta">' +
-            '<div style="display: flex; align-items: center; gap: 8px;">' +
-              '<span class="store-row-title">全部账号大盘合计</span>' +
-            '</div>' +
-            '<span class="store-row-cid">合并多账号成效 (共 ' + accounts.length + ' 户 · ' + totalTodayPts + '分)</span>' +
+            '<span class="store-row-title">全部账号大盘合计</span>' +
+            '<span class="store-row-cid">共 ' + accounts.length + ' 户 · ' + totalTodayPts + '分</span>' +
           '</div>' +
         '</div>' +
       '</div>'
@@ -339,20 +347,115 @@ document.addEventListener("DOMContentLoaded", () => {
           '<div class="store-row-left">' +
             '<div class="store-thumb ' + thumbStatusClass + '" title="' + thumbTitle + '">' + initial + '</div>' +
             '<div class="store-row-meta">' +
-              '<div style="display: flex; align-items: center; gap: 8px;">' +
-                '<span class="store-row-title">' + escapeHtml(a.name || a.user) + '</span>' +
-              '</div>' +
+              '<span class="store-row-title">' + escapeHtml(a.name || a.user) + '</span>' +
               '<span class="store-row-cid">' + (a.user ? (a.user.substring(0, 18) + '...') : '') + '</span>' +
             '</div>' +
           '</div>' +
-          '<div class="store-row-actions" style="display: flex; align-items: center; gap: 6px;">' +
-            '<button class="btn-edit-account-row" onclick="event.stopPropagation(); window.openEditAccountModal(\'' + a.id + '\')" title="修改账号资料、密码与代理">✏️ 编辑账号</button>' +
-          '</div>' +
+          '<button class="btn-edit-account-row" onclick="event.stopPropagation(); window.openEditAccountModal(\'' + a.id + '\')" title="修改账号资料、密码与代理">✏️ 编辑</button>' +
         '</div>'
       );
     }).join('');
 
     accountsScrollList.innerHTML = topAllItem + accountRows;
+  }
+
+  function renderTopAccountCards() {
+    const container = document.getElementById("top-accounts-cards");
+    if (!container) return;
+    if (accounts.length === 0) {
+      container.innerHTML = '<div style="grid-column: 1 / -1; background: #fff; border-radius: 18px; padding: 20px; text-align: center; color: #94a3b8;">暂无托管账号，点击右侧「+ 添加」接入账号</div>';
+      return;
+    }
+
+    // 对标图 1：前 3 项横向成效卡片，每个卡片带斜条纹进度条
+    const topItems = [];
+    if (accounts.length > 0) {
+      const acc1 = accounts[0];
+      const today1 = acc1.todayEarned || 0;
+      const pct1 = Math.min(100, Math.round((today1 / 174) * 100));
+      topItems.push({
+        acc: acc1,
+        colorClass: 'bar-yellow',
+        icon: '👤',
+        label: acc1.name || acc1.user,
+        num: today1,
+        subText: '可用 ' + (acc1.balance || 0).toLocaleString() + ' 分',
+        pctText: pct1 + '%'
+      });
+    }
+
+    if (accounts.length > 1) {
+      const acc2 = accounts[1];
+      const today2 = acc2.todayEarned || 0;
+      const pct2 = Math.min(100, Math.round((today2 / 174) * 100));
+      topItems.push({
+        acc: acc2,
+        colorClass: 'bar-green',
+        icon: '👤',
+        label: acc2.name || acc2.user,
+        num: today2,
+        subText: '可用 ' + (acc2.balance || 0).toLocaleString() + ' 分',
+        pctText: pct2 + '%'
+      });
+    } else {
+      topItems.push({
+        acc: null,
+        colorClass: 'bar-green',
+        icon: '📈',
+        label: '次席待命位',
+        num: 0,
+        subText: '未添加次席账号',
+        pctText: '0%'
+      });
+    }
+
+    if (accounts.length > 2) {
+      const acc3 = accounts[2];
+      const today3 = acc3.todayEarned || 0;
+      const pct3 = Math.min(100, Math.round((today3 / 174) * 100));
+      topItems.push({
+        acc: acc3,
+        colorClass: 'bar-orange',
+        icon: '👤',
+        label: acc3.name || acc3.user,
+        num: today3,
+        subText: '可用 ' + (acc3.balance || 0).toLocaleString() + ' 分',
+        pctText: pct3 + '%'
+      });
+    } else {
+      topItems.push({
+        acc: null,
+        colorClass: 'bar-orange',
+        icon: '🔥',
+        label: '三席待命位',
+        num: 0,
+        subText: '未添加三席账号',
+        pctText: '0%'
+      });
+    }
+
+    container.innerHTML = topItems.map((item) => {
+      const isAct = item.acc && viewMode === 'single' && selectedAccountId === item.acc.id;
+      const clickAction = item.acc ? 'onclick="switchView(\'single\', \'' + item.acc.id + '\')"' : 'onclick="window.openAddAccountModal?.()"';
+      return (
+        '<section class="metric-card ' + (isAct ? 'active-card' : '') + '" ' + clickAction + ' title="点击切换查看该账号大盘">' +
+          '<div class="metric-header">' +
+            '<div class="metric-title-group">' +
+              '<span class="metric-icon">' + item.icon + '</span>' +
+              '<span class="metric-label">' + escapeHtml(item.label) + '</span>' +
+            '</div>' +
+            '<span class="metric-number">' + item.num + '</span>' +
+          '</div>' +
+          '<div class="metric-sub-row">' +
+            '<span>' + item.subText + '</span>' +
+            '<span class="metric-percent">' + item.pctText + '</span>' +
+          '</div>' +
+          '<div class="striped-progress-bar ' + item.colorClass + '">' +
+            '<div class="striped-fill" style="width: ' + item.pctText + ';"></div>' +
+          '</div>' +
+        '</section>'
+      );
+    }).join('');
   }
 
   function renderDropdownMenu() {
@@ -383,6 +486,18 @@ document.addEventListener("DOMContentLoaded", () => {
     accountDropdownMenu.innerHTML = items.join("");
   }
 
+
+  window.openAddAccountModal = () => {
+    document.getElementById("form-account")?.reset();
+    document.getElementById("acc-id").value = "";
+    document.getElementById("acc-name").value = "";
+    document.getElementById("acc-user").value = "";
+    document.getElementById("acc-pass").value = "";
+    document.getElementById("acc-proxy").value = "";
+    document.getElementById("acc-enabled").checked = true;
+    document.getElementById("account-modal-title").textContent = "添加微软托管账号";
+    document.getElementById("modal-account")?.classList.remove("hidden");
+  };
 
   window.openEditAccountModal = (accId) => {
     const acc = accounts.find((a) => a.id === accId);
@@ -421,12 +536,34 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function renderRecentActivity() {
     if (!activityList) return;
-    const activities = [
-      { icon: "🧩", title: "每日拼图 (Evergreen Puzzle) 通关", pts: "+3分", time: "刚才", status: "Completed" },
-      { icon: "📅", title: "每日活动集 (Daily Set 3/3) 穿透完成", pts: "+20分", time: "3分钟前", status: "Completed" },
-      { icon: "🎁", title: "01:00 额外积分抽屉成功归零入账", pts: "+3分", time: "5分钟前", status: "Completed" },
-      { icon: "📱", title: "必应移动端连续签到 (DAPI直连)", pts: "+10分", time: "今日", status: "Completed" }
-    ];
+    const activeAcc = (viewMode === 'single' && selectedAccountId)
+      ? accounts.find((a) => a.id === selectedAccountId)
+      : (accounts[0] || {});
+    const todayEarned = activeAcc.todayEarned || 0;
+
+    const activities = [];
+    if (todayEarned >= 60) {
+      activities.push({ icon: "🔍", title: "必应 PC 拟人化搜索收割 (60分已拿满)", pts: "+60分", time: "今日", status: "Completed" });
+    } else if (todayEarned > 0) {
+      activities.push({ icon: "🔍", title: "必应 PC 搜索打卡 (" + todayEarned + "/60分)", pts: "+" + todayEarned + "分", time: "进行中", status: "Running" });
+    }
+
+    if (todayEarned >= 30) {
+      activities.push({ icon: "📅", title: "每日活动集 (Daily Set 3/3) 穿透完成", pts: "+30分", time: "今日", status: "Completed" });
+    }
+
+    if (todayEarned >= 10) {
+      activities.push({ icon: "📱", title: "必应移动端连续签到 (DAPI直连)", pts: "+10分", time: "今日", status: "Completed" });
+    }
+
+    if (todayEarned >= 3) {
+      activities.push({ icon: "🧩", title: "每日拼图 (Evergreen Puzzle) 通关", pts: "+3分", time: "今日", status: "Completed" });
+    }
+
+    if (activities.length === 0) {
+      activityList.innerHTML = '<div style="text-align: center; color: #94a3b8; font-size: 11px; padding: 24px 10px;">暂无今日已完成流水，点击右上角「立即执行任务」启动自动化流水线</div>';
+      return;
+    }
 
     activityList.innerHTML = activities.map((act) => (
       "<div class=\"activity-row\">" +
@@ -447,18 +584,35 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function renderTopTasks() {
     if (!tasksRankList) return;
+    const activeAcc = (viewMode === 'single' && selectedAccountId)
+      ? accounts.find((a) => a.id === selectedAccountId)
+      : (accounts[0] || {});
+    const todayEarned = activeAcc.todayEarned || 0;
+
+    const searchDone = Math.min(60, todayEarned);
+    const searchPct = Math.round((searchDone / 60) * 100);
+
+    const dsDone = todayEarned >= 30 ? 30 : Math.min(30, Math.floor(todayEarned / 2));
+    const dsPct = Math.round((dsDone / 30) * 100);
+
+    const appDone = todayEarned >= 10 ? 10 : 0;
+    const appPct = appDone ? 100 : 0;
+
+    const questDone = todayEarned > 90 ? 50 : (todayEarned > 0 ? 25 : 0);
+    const questPct = Math.round((questDone / 50) * 100);
+
     const topTasks = [
-      { icon: "🔍", title: "必应拟人搜索连续打卡", pts: "60", pct: 100 },
-      { icon: "📅", title: "每日活动集 (Daily Set 3/3)", pts: "30", pct: 100 },
-      { icon: "📱", title: "必应移动端应用签入", pts: "10", pct: 100 },
-      { icon: "🎯", title: "50分的万圣节礼遇", pts: "50", pct: 80 }
+      { icon: "🔍", title: "必应拟人搜索连续打卡", pts: searchDone + "/60", pct: searchPct },
+      { icon: "📅", title: "每日活动集 (Daily Set 3/3)", pts: dsDone + "/30", pct: dsPct },
+      { icon: "📱", title: "必应移动端应用签入", pts: appDone + "/10", pct: appPct },
+      { icon: "🎯", title: "50分的万圣节礼遇", pts: questDone + "/50", pct: questPct }
     ];
 
     tasksRankList.innerHTML = topTasks.map((t) => (
       "<div class=\"rank-row\">" +
         "<div class=\"rank-icon-sq\">" + t.icon + "</div>" +
         "<div class=\"rank-title\" title=\"" + t.title + "\">" + t.title + "</div>" +
-        "<div class=\"rank-pts\">" + t.pts + "</div>" +
+        "<div class=\"rank-pts\">" + t.pts + "分</div>" +
         "<div class=\"rank-bar-wrap\">" +
           "<div class=\"rank-bar-fill\" style=\"width: " + t.pct + "%;\"></div>" +
         "</div>" +
@@ -1043,3 +1197,14 @@ document.addEventListener("DOMContentLoaded", () => {
   connectLogs();
   setInterval(refreshDashboard, 8000);
 });
+
+  document.getElementById("btn-one-click-claim")?.addEventListener("click", async () => {
+    try {
+      const res = await fetch("/api/system/harvest", { method: "POST" });
+      const data = await res.json();
+      alert(data.message || "额外积分抽屉已成功收割入账！");
+      refreshDashboard();
+    } catch (e) {
+      alert("收割请求异常: " + e.message);
+    }
+  });

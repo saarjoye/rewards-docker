@@ -75,7 +75,7 @@
               <button class="mode-pill active" id="btn-mode-all">🌐 全账号合计</button>
               <button class="mode-pill" id="btn-mode-single">👤 单账号明细</button>
             </div>
-            <span class="welcome-sub-inline" id="welcome-sub-desc">全部账号数据合并大盘统计 · 官方实时数据驱动</span>
+            
           </div>
         </div>
         <div class="topbar-actions">
@@ -96,62 +96,32 @@
         </div>
       </header>
 
-      <!-- Bento 便当盒高密网格 (锁定一屏高度) -->
+      <!-- Bento 便当盒高密网格 (锁定一屏高度，100% 对标设计参考图) -->
       <div class="bento-grid">
-        <!-- 第 1 行：核心指标三联卡片 (对标图 1 顶部的 3 个条纹进度卡片) -->
-        <section class="metric-card yellow-accent">
-          <div class="metric-header">
-            <div class="metric-title-group">
-              <span class="metric-icon">📈</span>
-              <span class="metric-label">今日已增积分</span>
+        <!-- 第 1 行 (跨列 1 与列 2)：3 个横向账号成效卡片 (100% 对标参考图 1) -->
+        <div class="accounts-cards-row" id="top-accounts-cards" style="grid-column: 1 / 3;">
+          <!-- 动态渲染 3 个横向卡片 -->
+        </div>
+
+        <!-- 第 1 行与第 2 行右侧 (列 3)：托管账号池 (100% 对标参考图 3 Stores 列表) -->
+        <section class="bento-box box-stores" style="grid-column: 3; grid-row: 1 / 3;">
+          <div class="box-header">
+            <div>
+              <h2 class="box-title">托管账号池</h2>
+              <span class="box-sub">点击卡片直达单账号视图</span>
             </div>
-            <span class="metric-number" id="m-today-points">93</span>
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <button class="chip-sm" id="btn-toggle-all-pool" style="cursor: pointer; border: 1px solid #cbd5e1; font-weight: 700; background: #fff;">🌐 全部合计</button>
+              <button class="btn-primary-sm" onclick="window.openAddAccountModal?.()" style="cursor: pointer; background: var(--brand-orange); color: #fff; border: none; padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 700;">+ 添加</button>
+            </div>
           </div>
-          <div class="metric-sub-row">
-            <span class="metric-sub-text">今日收益目标 174 分</span>
-            <span class="metric-percent" id="m-today-percent">53%</span>
-          </div>
-          <div class="striped-progress-bar bar-yellow">
-            <div class="striped-fill" id="fill-today" style="width: 53%;"></div>
+          <div class="store-list-scroll" id="accounts-scroll-list">
+            <!-- 动态渲染账号列表 -->
           </div>
         </section>
 
-        <section class="metric-card green-accent">
-          <div class="metric-header">
-            <div class="metric-title-group">
-              <span class="metric-icon">💰</span>
-              <span class="metric-label">可用总积分余额</span>
-            </div>
-            <span class="metric-number" id="m-total-balance">1,511</span>
-          </div>
-          <div class="metric-sub-row">
-            <span class="metric-sub-text">微软官方实时账本</span>
-            <span class="metric-percent" id="m-balance-status">+23今日</span>
-          </div>
-          <div class="striped-progress-bar bar-green">
-            <div class="striped-fill" id="fill-balance" style="width: 82%;"></div>
-          </div>
-        </section>
-
-        <section class="metric-card orange-accent">
-          <div class="metric-header">
-            <div class="metric-title-group">
-              <span class="metric-icon">🔥</span>
-              <span class="metric-label">每日连续打卡</span>
-            </div>
-            <span class="metric-number" id="m-streak-days">04</span>
-          </div>
-          <div class="metric-sub-row">
-            <span class="metric-sub-text">1000 奖励印章: 4/12</span>
-            <span class="metric-percent">33% 印章</span>
-          </div>
-          <div class="striped-progress-bar bar-orange">
-            <div class="striped-fill" id="fill-streak" style="width: 33%;"></div>
-          </div>
-        </section>
-
-        <!-- 第 2 行左侧：积分收益趋势柱状图 (对标图 1 Total Revenue) -->
-        <section class="bento-box box-revenue">
+        <!-- 第 2 行列 1：积分收益趋势柱状图 (📈 积分日历，对标参考图 Total Revenue) -->
+        <section class="bento-box box-revenue" style="grid-column: 1; grid-row: 2;">
           <div class="box-header">
             <div>
               <h2 class="box-title">📈 积分日历</h2>
@@ -167,143 +137,127 @@
           </div>
           <div class="chart-container">
             <div class="chart-bars-wrap" id="chart-bars">
-              <!-- 柱状图柱子通过 JS 渲染，高亮柱带黑色 Tooltip 气泡 -->
+              <!-- 柱状图柱子通过 JS 渲染 -->
             </div>
           </div>
         </section>
 
-        <!-- 第 2 行中侧：运行大盘指标卡 (对标图 1 Business Data) -->
-        <section class="bento-box box-business">
-          <div class="box-header">
+        <!-- 第 2 行列 2：积分详情看板 (100% 精确对标参考图 2 样式) -->
+        <section class="bento-box box-points-board" style="grid-column: 2; grid-row: 2;">
+          <div class="box-header" style="margin-bottom: 10px;">
             <div>
-              <h2 class="box-title">内核与内存大盘</h2>
-              <span class="box-sub">实时运行监控与资源开销</span>
+              <div style="display: flex; align-items: center; gap: 6px;">
+                <span style="font-size: 15px;">📊</span>
+                <h2 class="box-title">积分详情看板</h2>
+              </div>
+              <span class="box-sub">多维度积分数据透视</span>
             </div>
             <div class="box-header-ctrls">
-              <span class="chip-sm chip-status-pill" id="browser-status-chip">● 空闲待命</span>
+              <select class="select-pill" id="select-board-view" style="font-weight: 700; background: #f8fafc;">
+                <option value="all">🏛 全部账号汇总</option>
+              </select>
             </div>
           </div>
-          <div class="business-metrics-stack">
-            <!-- 1. 当前执行账号与任务 -->
-            <div class="b-metric-item soft-purple">
-              <div class="b-item-header-row">
-                <span class="b-item-label">正在执行任务 ↗</span>
-                <span class="b-sub-tag" id="live-active-acc">无活跃账号</span>
-              </div>
-              <div class="b-item-clean-title" id="live-task-name">空闲待机中</div>
-              <div class="b-item-clean-sub" id="live-browser-action">所有任务已完成，无头进程休眠释放</div>
-            </div>
 
-            <!-- 2. 容器内存实时监控 (杜绝折行) -->
-            <div class="b-metric-item soft-cream">
-              <div class="b-item-header-row">
-                <span class="b-item-label">容器内存 (512MB限额) ↗</span>
-                <span class="b-sub-tag tag-healthy" id="mem-percent-tag">26% 健康</span>
+          <!-- 内部对标图 2：左侧两行大数字卡 + 右侧可领取抽屉卡 -->
+          <div class="points-board-body">
+            <!-- 左侧堆叠 -->
+            <div class="board-left-stack">
+              <!-- 今日已增加积分 (米黄暖底色) -->
+              <div class="board-metric-card cream-bg">
+                <div class="b-card-top">
+                  <span class="b-card-label">今日已增加积分</span>
+                  <span class="b-card-arrow">↗</span>
+                </div>
+                <div class="b-card-val orange-txt" id="board-today-points">+0 分</div>
               </div>
-              <div class="b-item-clean-val">
-                <span class="big-num" id="mem-cur-mb">133</span>
-                <span class="unit-txt">MB</span>
-                <span class="dim-txt">/ 512 MB 限额</span>
-              </div>
-              <div class="striped-progress-bar bar-purple" style="height: 8px; margin-top: 6px;">
-                <div class="striped-fill" id="fill-memory" style="width: 26%;"></div>
+
+              <!-- 累计总积分余额 (淡绿底色) -->
+              <div class="board-metric-card green-bg">
+                <div class="b-card-top">
+                  <span class="b-card-label">累计总积分余额</span>
+                  <span class="b-card-arrow">↗</span>
+                </div>
+                <div class="b-card-val green-txt" id="board-total-balance">0 分</div>
               </div>
             </div>
 
-            <!-- 3. 峰值与待领抽屉 (单行工整) -->
-            <div class="b-metric-item soft-green">
-              <div class="b-item-header-row">
-                <span class="b-item-label">历史峰值与待领积分 ↗</span>
-                <span class="b-sub-tag">上限 &lt; 300MB</span>
+            <!-- 右侧可领取抽屉卡 (浅粉底色 + 一键领取按钮) -->
+            <div class="board-claim-card peach-bg">
+              <div class="b-claim-head">
+                <span>可领取</span>
+                <span class="claim-red-dot">●</span>
               </div>
-              <div class="b-item-clean-val">
-                <span class="big-num" id="mem-peak-mb">133</span>
-                <span class="unit-txt">MB 峰值</span>
-                <span class="sep-dot">·</span>
-                <span class="claim-tag-green" id="mem-claim-txt">待领 0 分 (已归零)</span>
+              <div class="b-claim-coin-box">
+                <span class="claim-coin-icon" style="font-size: 24px;">💰</span>
+                <span class="claim-coin-num" id="board-claimable-num">0</span>
               </div>
+              <button type="button" class="btn-one-click-claim" id="btn-one-click-claim" title="点击立即调用接口收割待领积分">
+                <span>一键领取</span>
+                <span>➜</span>
+              </button>
             </div>
           </div>
         </section>
 
-        <!-- 第 2 行右侧：托管账号池微卡片 (对标图 1 Stores 列表) -->
-        <section class="bento-box box-stores">
+        <!-- 第 3 行列 1：最近流水动态 (对标参考图 Recent Activity) -->
+        <section class="bento-box box-activity" style="grid-column: 1; grid-row: 3;">
           <div class="box-header">
             <div>
-              <h2 class="box-title">托管账号池</h2>
-              <span class="box-sub">点击卡片直达单账号视图</span>
+              <h2 class="box-title">最近流水动态</h2>
+              <span class="box-sub">任务完成轨迹与积分明细</span>
             </div>
-            <div style="display: flex; align-items: center; gap: 6px;">
-              <button class="chip-sm" id="btn-toggle-all-pool" style="cursor: pointer; border: 1px solid #cbd5e1;">🌐 全部合计</button>
-              <span class="arrow-btn" id="btn-stores-all">↗</span>
-            </div>
-          </div>
-          <div class="store-list-scroll" id="accounts-scroll-list">
-            <!-- 动态渲染账号列表 -->
-          </div>
-        </section>
-
-        <!-- 第 3 行左侧：最近活动动态列表 (对标图 1 Recent Activity) -->
-        <section class="bento-box box-activity">
-          <div class="box-header">
-            <h2 class="box-title">最近流水动态</h2>
             <span class="arrow-btn">↗</span>
           </div>
           <div class="activity-list" id="activity-list">
-            <!-- 动态渲染近期加分与操作 -->
+            <!-- 动态渲染 -->
           </div>
         </section>
 
-        <!-- 第 3 行右侧：四大板块任务排行榜 (对标图 1 Top Dishes) -->
-        <section class="bento-box box-top-tasks">
-          <div class="box-header">
-            <h2 class="box-title">四大板块任务榜</h2>
-            <div class="box-header-ctrls">
-              <span class="chip-sm">今日 ▾</span>
-            </div>
-          </div>
-          <div class="tasks-rank-list" id="tasks-rank-list">
-            <!-- 动态渲染任务排行榜进度条 -->
-          </div>
-        </section>
-
-        <!-- 第 3 行右侧：错峰调度时钟与实时视口二合一板块 (方案 1 + 方案 2) -->
-        <section class="bento-box box-timeline-screencast">
+        <!-- 第 3 行列 2：四大板块任务榜 (对标参考图 Top Dishes) -->
+        <section class="bento-box box-top-tasks" style="grid-column: 2; grid-row: 3;">
           <div class="box-header">
             <div>
-              <h2 class="box-title">调度时钟与实时视口</h2>
-              <span class="box-sub">Scheduler Timeline & Live Screencast</span>
+              <h2 class="box-title">四大板块任务榜</h2>
+              <span class="box-sub">官方四大板块完成进度</span>
             </div>
-            <div class="box-header-ctrls">
-              <span class="chip-sm active-slot-chip" id="current-slot-chip">● 午后批次</span>
+            <span class="select-pill" style="font-size: 11px;">今日 ▾</span>
+          </div>
+          <div class="tasks-rank-list" id="tasks-rank-list">
+            <!-- 动态渲染 -->
+          </div>
+        </section>
+
+        <!-- 第 3 行列 3：调度时钟与实时视口 (内存大盘整合与无头视口) -->
+        <section class="bento-box box-timeline-screencast" style="grid-column: 3; grid-row: 3;">
+          <div class="box-header">
+            <div>
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <h2 class="box-title">调度时钟与视口</h2>
+                <span class="chip-sm chip-status-pill" id="browser-status-chip">● 空闲待命</span>
+              </div>
+              <span class="box-sub" id="mem-status-line">内存: 45 MB / 512 MB (9% 健康)</span>
             </div>
+            <span class="chip-sm" id="current-slot-chip" style="background: #fff; border: 1px solid #cbd5e1; font-weight: 700;">● 傍晚批次</span>
           </div>
 
-          <!-- 方案 1：全天错峰时钟与时段胶囊 (上部) -->
-          <div class="scheduler-strip-wrap">
-            <div class="slots-pill-row">
-              <div class="slot-pill" data-slot="morning">09-13<span class="slot-sub">早间</span></div>
-              <div class="slot-pill active" data-slot="afternoon">13-17<span class="slot-sub">午后</span></div>
-              <div class="slot-pill" data-slot="evening">17-21<span class="slot-sub">傍晚</span></div>
-              <div class="slot-pill" data-slot="night">21-01<span class="slot-sub">夜间</span></div>
-              <div class="slot-pill harvest-pill" data-slot="harvest">01:00<span class="slot-sub">收割</span></div>
-            </div>
-            <div class="slot-countdown-row">
-              <span class="countdown-label">当前时段运行中</span>
-              <span class="countdown-text" id="slot-countdown-text">下次随机唤醒约 25 分钟后</span>
-              <button class="btn-trigger-slot-sm" id="btn-trigger-slot">⚡ 立即触发当前时段</button>
-            </div>
+          <div class="slots-timeline-row" style="margin-bottom: 8px;">
+            <span class="slot-pill" data-slot="morning">09-13 早间</span>
+            <span class="slot-pill" data-slot="afternoon">13-17 午后</span>
+            <span class="slot-pill" data-slot="evening">17-21 傍晚</span>
+            <span class="slot-pill" data-slot="night">21-01 夜间</span>
+            <span class="slot-pill harvest-slot" data-slot="harvest">01:00 收割</span>
           </div>
 
-          <!-- 方案 2：无头浏览器真实微缩视口截屏 (下部) -->
-          <div class="screencast-wrapper" id="screencast-box">
-            <div class="screencast-fake-nav">
-              <span class="nav-dots"><i></i><i></i><i></i></span>
-              <span class="nav-url-pill">🔒 rewards.bing.com/dashboard</span>
-              <span class="live-screencast-badge">● LIVE 1440x900</span>
+          <!-- 真实无头浏览器投影视口 (动态 SVG 优雅兜底) -->
+          <div class="screencast-wrapper" style="flex: 1; min-height: 80px;">
+            <div class="screencast-header-bar">
+              <span class="traffic-lights"><i></i><i></i><i></i></span>
+              <span class="screencast-url">🔒 rewards.bing.com/dashboard</span>
+              <span class="screencast-live-tag">● LIVE 1440x900</span>
             </div>
-            <div class="screencast-img-container">
-              <img id="live-screencast-img" src="/api/browser/screenshot" alt="实时无头视口">
+            <div class="screencast-canvas-container">
+              <img id="live-screencast-img" src="/api/browser/screenshot" alt="实时无头视口" class="screencast-img" />
             </div>
           </div>
         </section>

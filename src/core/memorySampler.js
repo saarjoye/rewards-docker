@@ -1,6 +1,5 @@
 ﻿import fs from 'fs';
 import path from 'path';
-import os from 'os';
 
 function readText(filePath) {
   try {
@@ -17,16 +16,24 @@ function statValue(statText, key) {
 }
 
 export function sampleContainerMemory() {
+  const containerLimitMB = 512;
+
   // 1. Linux / Docker cgroup v2 探测
   const cgroupV2Path = '/sys/fs/cgroup';
   const currentPath = path.join(cgroupV2Path, 'memory.current');
   const maxPath = path.join(cgroupV2Path, 'memory.max');
+  const statPath = path.join(cgroupV2Path, 'memory.stat');
 
   if (fs.existsSync(currentPath)) {
-    const curBytes = Number(readText(currentPath)) || 0;
+    const statText = readText(statPath);
+    // 在 Linux cgroup v2 中，anon 是容器内真实进程所占用的常驻内存，排除可释放的文件缓存 PageCache
+    const anonBytes = statValue(statText, 'anon');
+    const nodeRss = process.memoryUsage().rss;
+    const realBytes = anonBytes > 0 ? Math.max(anonBytes, nodeRss) : nodeRss;
+
     const maxRaw = readText(maxPath);
-    const maxBytes = maxRaw && maxRaw !== 'max' ? Number(maxRaw) : 512 * 1024 * 1024;
-    const curMB = Math.round(curBytes / (1024 * 1024));
+    const maxBytes = maxRaw && maxRaw !== 'max' ? Number(maxRaw) : containerLimitMB * 1024 * 1024;
+    const curMB = Math.round(realBytes / (1024 * 1024));
     const maxMB = Math.round(maxBytes / (1024 * 1024));
     const percent = Math.min(100, Math.round((curMB / maxMB) * 100));
 
@@ -39,11 +46,26 @@ export function sampleContainerMemory() {
     };
   }
 
-  // 2. 本地 Node.js 进程内存采样 (Windows / macOS)
+  // 2. Linux / Docker cgroup v1 探测
+  const cgroupV1Stat = '/sys/fs/cgroup/memory/memory.stat';
+  if (fs.existsSync(cgroupV1Stat)) {
+    const statText = readText(cgroupV1Stat);
+    const rssBytes = statValue(statText, 'total_rss') || statValue(statText, 'rss') || process.memoryUsage().rss;
+    const curMB = Math.round(rssBytes / (1024 * 1024));
+    const percent = Math.min(100, Math.round((curMB / containerLimitMB) * 100));
+    return {
+      type: 'cgroup_v1',
+      usedMB: curMB,
+      limitMB: containerLimitMB,
+      percent,
+      status: percent > 85 ? 'danger' : percent > 65 ? 'warning' : 'healthy'
+    };
+  }
+
+  // 3. 本地 Node.js 进程内存采样 (Windows / macOS)
   const nodeMem = process.memoryUsage();
   const rssMB = Math.round(nodeMem.rss / (1024 * 1024));
   const heapUsedMB = Math.round(nodeMem.heapUsed / (1024 * 1024));
-  const containerLimitMB = 512; // 默认对标 Docker 512MB 限制
   const percent = Math.min(100, Math.round((rssMB / containerLimitMB) * 100));
 
   return {

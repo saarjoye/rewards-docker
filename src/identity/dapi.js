@@ -24,7 +24,7 @@ export class DapiClient {
 
   async getValidToken() {
     if (!this.tokens || !this.tokens.accessToken) {
-      throw new Error('未配置移动端 Access Token');
+      throw new Error('未配置移动端 Access Token，需先执行自主登录换取');
     }
 
     // 检查 Token 是否在 5 分钟内过期
@@ -75,6 +75,10 @@ export class DapiClient {
       proxy: this.account.proxy
     });
 
+    if (res && (res.error || res.status === 'error')) {
+      throw new Error(res.error?.message || res.message || 'DAPI 返回业务错误');
+    }
+
     return res;
   }
 
@@ -112,14 +116,17 @@ export class DapiClient {
         await this.submitActivity('ENUS_readarticle3_30points');
         successCount++;
         logger.log('📰', `已完成第 ${i}/${targetArticles} 篇新闻阅读打卡`, '', this.account.name);
-        // 拟人化抖动间隔 (2.5 ~ 4.5 秒)
         await new Promise((r) => setTimeout(r, 2500 + Math.random() * 2000));
       } catch (e) {
         logger.log('⚠️', `第 ${i} 篇新闻上报异常: ${e.message}`, '', this.account.name);
       }
     }
 
-    logger.log('✅', `新闻资讯阅读任务结束，共成功上报 ${successCount}/${targetArticles} 篇`, '', this.account.name);
-    return { success: true, count: successCount };
+    if (successCount > 0) {
+      logger.log('✅', `新闻资讯阅读任务结束，共成功上报 ${successCount}/${targetArticles} 篇`, '', this.account.name);
+    } else {
+      logger.log('⚠️', `新闻资讯阅读任务未上报成功 (需确认移动端 Token 授权是否有效)`, '', this.account.name);
+    }
+    return { success: successCount > 0, count: successCount };
   }
 }

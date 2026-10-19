@@ -20,7 +20,7 @@ export function extractOfficialTodayPoints(flightText = '', html = '') {
   const patterns = [
     // 文本行模式：今日积分 \n 70
     /今日积分\s*[:\n\r]+\s*([0-9,]+)/i,
-    /今日积分[^0-9]{1,40}?([0-9,]+)/i,
+    /今日积分[^0-9]{1,120}?([0-9,]+)/i,
     // Flight Chunks 模式
     /["']text-pageHeader["'][^}]*?children\s*:\s*["']?([0-9,]+)["']?/i,
     /今日积分[^0-9]{1,100}?class=["'][^"']*?text-pageHeader[^"']*?["'][^>]*?>([0-9,]+)</i,
@@ -45,7 +45,7 @@ export function extractOfficialStreakDays(flightText = '', html = '') {
   const combined = `${flightText}\n${html}`;
   const patterns = [
     /每日连续打卡\s*[:\n\r]+\s*([0-9,]+)/i,
-    /每日连续打卡[^0-9]{1,40}?([0-9,]+)/i,
+    /每日连续打卡[^0-9]{1,120}?([0-9,]+)/i,
     /每日连续打卡[^0-9]{1,100}?class=["'][^"']*?text-pageHeader[^"']*?["'][^>]*?>([0-9,]+)</i,
     /"streakDays"\s*:\s*([0-9]+)/i,
     /"dailyStreakDays"\s*:\s*([0-9]+)/i
@@ -67,7 +67,7 @@ export function extractOfficialBalance(flightText = '', html = '') {
   const combined = `${flightText}\n${html}`;
   const patterns = [
     /可用积分\s*[:\n\r]+\s*([0-9,]+)/i,
-    /可用积分[^0-9]{1,40}?([0-9,]+)/i,
+    /可用积分[^0-9]{1,120}?([0-9,]+)/i,
     /可用积分[^0-9]{1,100}?class=["'][^"']*?text-pageHeader[^"']*?["'][^>]*?>([0-9,]+)</i,
     /"availablePoints"\s*:\s*([0-9]+)/i,
     /"balance"\s*:\s*([0-9]+)/i

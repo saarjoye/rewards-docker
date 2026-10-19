@@ -397,8 +397,16 @@ export function createServer() {
     }
   });
 
-  // 11. 获取无头浏览器实时视口微缩截屏
+  // 11. 获取无头浏览器实时视口微缩截屏 (动态 SVG 优雅兜底，杜绝 404 碎图)
   app.get('/api/browser/screenshot', (req, res) => {
+    const latestShot = path.join(DATA_DIR, 'latest_screencast.png');
+    if (fs.existsSync(latestShot)) {
+      res.setHeader('Content-Type', 'image/png');
+      res.setHeader('Cache-Control', 'no-cache');
+      return res.sendFile(latestShot);
+    }
+
+    // 检查历史候选截屏
     const candidatePaths = [
       path.join(DATA_DIR, 'after_black_claim_clicked.png'),
       path.join(DATA_DIR, 'drawer_wait_4s.png'),
@@ -412,7 +420,34 @@ export function createServer() {
         return res.sendFile(p);
       }
     }
-    res.status(404).send('No screenshot');
+
+    // 动态生成高清暗黑视口占位图 (SVG，绝对不碎图)
+    res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache');
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900">
+      <defs>
+        <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stop-color="#0b1120"/>
+          <stop offset="100%" stop-color="#020617"/>
+        </linearGradient>
+      </defs>
+      <rect width="100%" height="100%" fill="url(#bgGrad)"/>
+      <rect x="0" y="0" width="100%" height="48" fill="#1e293b"/>
+      <circle cx="30" cy="24" r="6" fill="#ef4444"/>
+      <circle cx="48" cy="24" r="6" fill="#f59e0b"/>
+      <circle cx="66" cy="24" r="6" fill="#10b981"/>
+      <rect x="120" y="10" width="1200" height="28" rx="6" fill="#0f172a"/>
+      <text x="720" y="29" font-family="-apple-system, BlinkMacSystemFont, 'Microsoft YaHei', sans-serif" font-size="12" fill="#64748b" text-anchor="middle">
+        🔒 https://rewards.bing.com/dashboard (微软官方实时控制台)
+      </text>
+      <text x="720" y="440" font-family="-apple-system, BlinkMacSystemFont, 'Microsoft YaHei', sans-serif" font-size="28" font-weight="700" fill="#94a3b8" text-anchor="middle">
+        🖥️ 无头浏览器处于空闲休眠状态 (0 进程占用)
+      </text>
+      <text x="720" y="485" font-family="-apple-system, BlinkMacSystemFont, 'Microsoft YaHei', sans-serif" font-size="15" fill="#475569" text-anchor="middle">
+        点击右上角「立即执行任务」或开启定时巡检，将在此处以 1440×900 实时投影执行视口
+      </text>
+    </svg>`;
+    return res.send(svg.trim());
   });
 
   // 12. SSE 实时日志推流

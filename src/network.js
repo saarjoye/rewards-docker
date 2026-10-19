@@ -24,7 +24,7 @@ export class NetworkClient {
       headers: { ...headers },
       data,
       timeout,
-      validateStatus: () => true // 捕获全部状态码以自行处理
+      validateStatus: () => true // 捕获全部状态码以严格校验
     };
 
     if (proxy) {
@@ -39,9 +39,19 @@ export class NetworkClient {
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
         const response = await axios(config);
+        if (response.status < 200 || response.status >= 300) {
+          const errMsg = typeof response.data === 'string'
+            ? response.data
+            : (response.data?.error?.message || response.data?.error || response.data?.message || `HTTP ${response.status}`);
+          throw new Error(`HTTP ${response.status}: ${errMsg}`);
+        }
         return response.data;
       } catch (err) {
         lastError = err;
+        // 401 / 403 / 404 等业务错误不需要重试，直接抛出
+        if (err.message && (err.message.includes('HTTP 401') || err.message.includes('HTTP 403') || err.message.includes('HTTP 404'))) {
+          throw err;
+        }
         if (attempt < retries) {
           const backoff = Math.pow(2, attempt) * 1000 + Math.random() * 500;
           await new Promise((r) => setTimeout(r, backoff));
