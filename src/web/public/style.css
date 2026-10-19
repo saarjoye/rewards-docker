@@ -2007,3 +2007,39 @@ button, input, select, textarea {
   color: #991b1b !important;
 }
 
+
+
+/* 动态多账号横向卡片容器：支持 1~N 个账号自动等分与平滑横滑 */
+.accounts-cards-row {
+  display: flex !important;
+  gap: 12px !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  align-items: stretch !important;
+  height: 100% !important;
+  padding-bottom: 2px !important;
+}
+
+.accounts-cards-row::-webkit-scrollbar {
+  height: 4px;
+}
+.accounts-cards-row::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+
+.accounts-cards-row .metric-card {
+  flex: 1 1 0 !important;
+  min-width: 200px !important;
+  max-width: 100% !important;
+  flex-shrink: 0 !important;
+}
+
+.bar-blue .striped-fill {
+  background: repeating-linear-gradient(-45deg, #0284c7, #0284c7 6px, #38bdf8 6px, #38bdf8 12px) !important;
+}
+
+.bar-purple .striped-fill {
+  background: repeating-linear-gradient(-45deg, #8b5cf6, #8b5cf6 6px, #a78bfa 6px, #a78bfa 12px) !important;
+}
+

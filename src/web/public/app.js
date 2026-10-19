@@ -363,95 +363,46 @@ document.addEventListener("DOMContentLoaded", () => {
     const container = document.getElementById("top-accounts-cards");
     if (!container) return;
     if (accounts.length === 0) {
-      container.innerHTML = '<div style="grid-column: 1 / -1; background: #fff; border-radius: 18px; padding: 20px; text-align: center; color: #94a3b8;">暂无托管账号，点击右侧「+ 添加」接入账号</div>';
+      container.innerHTML = '<div style="background: #fff; border-radius: 18px; padding: 20px; text-align: center; color: #94a3b8; width: 100%;">暂无托管账号，点击右侧「+ 添加」接入账号</div>';
       return;
     }
 
-    // 对标图 1：前 3 项横向成效卡片，每个卡片带斜条纹进度条
-    const topItems = [];
-    if (accounts.length > 0) {
-      const acc1 = accounts[0];
-      const today1 = acc1.todayEarned || 0;
-      const pct1 = Math.min(100, Math.round((today1 / 174) * 100));
-      topItems.push({
-        acc: acc1,
-        colorClass: 'bar-yellow',
-        icon: '👤',
-        label: acc1.name || acc1.user,
-        num: today1,
-        subText: '可用 ' + (acc1.balance || 0).toLocaleString() + ' 分',
-        pctText: pct1 + '%'
-      });
-    }
+    const colorClasses = ['bar-yellow', 'bar-green', 'bar-orange', 'bar-blue', 'bar-purple'];
 
-    if (accounts.length > 1) {
-      const acc2 = accounts[1];
-      const today2 = acc2.todayEarned || 0;
-      const pct2 = Math.min(100, Math.round((today2 / 174) * 100));
-      topItems.push({
-        acc: acc2,
-        colorClass: 'bar-green',
-        icon: '👤',
-        label: acc2.name || acc2.user,
-        num: today2,
-        subText: '可用 ' + (acc2.balance || 0).toLocaleString() + ' 分',
-        pctText: pct2 + '%'
-      });
-    } else {
-      topItems.push({
-        acc: null,
-        colorClass: 'bar-green',
-        icon: '📈',
-        label: '次席待命位',
-        num: 0,
-        subText: '未添加次席账号',
-        pctText: '0%'
-      });
-    }
+    container.innerHTML = accounts.map((acc, idx) => {
+      const today = acc.todayEarned || 0;
+      const balance = (acc.balance || 0).toLocaleString();
+      const pct = Math.min(100, Math.round((today / 174) * 100));
+      const colorClass = colorClasses[idx % colorClasses.length];
+      const isAct = viewMode === 'single' && selectedAccountId === acc.id;
 
-    if (accounts.length > 2) {
-      const acc3 = accounts[2];
-      const today3 = acc3.todayEarned || 0;
-      const pct3 = Math.min(100, Math.round((today3 / 174) * 100));
-      topItems.push({
-        acc: acc3,
-        colorClass: 'bar-orange',
-        icon: '👤',
-        label: acc3.name || acc3.user,
-        num: today3,
-        subText: '可用 ' + (acc3.balance || 0).toLocaleString() + ' 分',
-        pctText: pct3 + '%'
-      });
-    } else {
-      topItems.push({
-        acc: null,
-        colorClass: 'bar-orange',
-        icon: '🔥',
-        label: '三席待命位',
-        num: 0,
-        subText: '未添加三席账号',
-        pctText: '0%'
-      });
-    }
+      // 智能识别账号显示名称：优先使用自定义名称；若重名或默认则展示邮箱前缀以资区分
+      let displayName = acc.name || '';
+      if (!displayName || displayName === '默认账号') {
+        if (acc.user) {
+          displayName = acc.user.includes('@') ? acc.user.split('@')[0] : acc.user;
+        } else {
+          displayName = '账号 ' + (idx + 1);
+        }
+      }
 
-    container.innerHTML = topItems.map((item) => {
-      const isAct = item.acc && viewMode === 'single' && selectedAccountId === item.acc.id;
-      const clickAction = item.acc ? 'onclick="switchView(\'single\', \'' + item.acc.id + '\')"' : 'onclick="window.openAddAccountModal?.()"';
+      const subLabel = '可用 ' + balance + ' 分';
+
       return (
-        '<section class="metric-card ' + (isAct ? 'active-card' : '') + '" ' + clickAction + ' title="点击切换查看该账号大盘">' +
+        '<section class="metric-card ' + (isAct ? 'active-card' : '') + '" onclick="switchView(\'single\', \'' + acc.id + '\')" title="点击切换查看 [' + escapeHtml(displayName) + '] 独立看板">' +
           '<div class="metric-header">' +
             '<div class="metric-title-group">' +
-              '<span class="metric-icon">' + item.icon + '</span>' +
-              '<span class="metric-label">' + escapeHtml(item.label) + '</span>' +
+              '<span class="metric-icon">👤</span>' +
+              '<span class="metric-label" title="' + escapeHtml(acc.name || acc.user) + '">' + escapeHtml(displayName) + '</span>' +
             '</div>' +
-            '<span class="metric-number">' + item.num + '</span>' +
+            '<span class="metric-number">' + today + '</span>' +
           '</div>' +
           '<div class="metric-sub-row">' +
-            '<span>' + item.subText + '</span>' +
-            '<span class="metric-percent">' + item.pctText + '</span>' +
+            '<span>' + subLabel + '</span>' +
+            '<span class="metric-percent">' + pct + '%</span>' +
           '</div>' +
-          '<div class="striped-progress-bar ' + item.colorClass + '">' +
-            '<div class="striped-fill" style="width: ' + item.pctText + ';"></div>' +
+          '<div class="striped-progress-bar ' + colorClass + '">' +
+            '<div class="striped-fill" style="width: ' + pct + '%;"></div>' +
           '</div>' +
         '</section>'
       );
