@@ -14,7 +14,7 @@ services:
       - PORT=5308
       - DATA_DIR=/app/data
     volumes:
-      - ./data:/app/data
+      - /docker/home/rewards-v3:/app/data
     deploy:
       resources:
         limits:
