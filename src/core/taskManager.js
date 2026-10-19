@@ -8,6 +8,7 @@ import browserManager from '../browser/browser.js';
 import {
   performHumanizedSearch,
   penetrateDailySetActivities,
+  penetrateDailyActivities,
   penetratePunchCardQuest,
   penetratePuzzleSpotlight,
   harvestClaimablePointsWithVirtualPointer,
@@ -298,19 +299,24 @@ export class TaskManager {
             const page = await context.newPage();
 
             try {
-              // Daily Set
+              // 【板块 1: 连续打卡任务 (Streaks)】
               if (taskScope === 'all' || taskScope === 'dailySet') {
+                this.currentTaskSection = '板块 1: 连续打卡';
                 this.currentTaskName = '每日活动集 (Daily Set 3/3 弹窗点击)';
-                log('执行板块 1: 每日活动集 (Daily Set 3/3) 真实弹窗点击与答题...');
+                log('>>> 执行【板块 1: 连续打卡任务 (Streaks)】每日活动集 (Daily Set 3/3)...');
                 await penetrateDailySetActivities(page, { accountPrefix: account.name });
               }
 
               if (this.shouldStop) throw new Error('任务已被用户主动中断');
 
-              // Quests
+              // 【板块 2: 升级活动 (Level Up)】随日常打卡与搜索自动达成
+              log('>>> 检查【板块 2: 升级活动 (Level Up)】(随日常打卡与搜索自动驱动累积)...');
+
+              // 【板块 3: 任务 (Punch Cards / Quests)】
               if (taskScope === 'all' || taskScope === 'quests') {
+                this.currentTaskSection = '板块 3: 打孔卡任务';
                 this.currentTaskName = '多步任务打孔卡 (Punch Cards)';
-                log('执行板块 3: 检查并推进多步打孔卡任务...');
+                log('>>> 执行【板块 3: 任务 (Punch Cards / Quests)】多步打孔卡...');
                 const questCards = (initialData.parsedCards || []).filter(
                   (c) => c.isPunchCard || c.isQuest || (c.destination && c.destination.includes('/quest/'))
                 );
@@ -324,16 +330,12 @@ export class TaskManager {
 
               if (this.shouldStop) throw new Error('任务已被用户主动中断');
 
-              // Puzzle
-              if (taskScope === 'all' || taskScope === 'puzzle') {
-                this.currentTaskName = '每日拼图通关 (Evergreen Puzzle)';
-                log('执行板块 4: 检查并推进日常拼图...');
-                const puzzleCard = (initialData.parsedCards || []).find(
-                  (c) => (c.title || c.name || '').includes('拼图') || (c.destination && c.destination.includes('imagepuzzle'))
-                );
-                if (puzzleCard && puzzleCard.destination) {
-                  await penetratePuzzleSpotlight(page, puzzleCard.destination, { accountPrefix: account.name });
-                }
+              // 【板块 4: 日常任务 (Daily Activities)】(含 Veggie burgers, Fossil favorites, 完成此拼图等全量活动)
+              if (taskScope === 'all' || taskScope === 'puzzle' || taskScope === 'dailyActivities') {
+                this.currentTaskSection = '板块 4: 日常任务';
+                this.currentTaskName = '日常任务穿透打卡 (Daily Activities)';
+                log('>>> 执行【板块 4: 日常任务 (Daily Activities)】日常活动与拼图全量穿透...');
+                await penetrateDailyActivities(page, { accountPrefix: account.name });
               }
 
               if (this.shouldStop) throw new Error('任务已被用户主动中断');
@@ -342,11 +344,19 @@ export class TaskManager {
               if (taskScope === 'all' || taskScope === 'search') {
                 this.currentTaskName = '必应 PC 拟人搜索收割 (跑满 60 分)';
                 log('执行板块 1-核心: 必应 PC 拟人化搜索收割 (跑满 60 分)...');
-                const stagnationGuard = new SearchStagnationGuard(3, account.name);
-                stagnationGuard.recordObservation(initialData.todayPoints);
 
-                const searchCfg = configManager.get().searchSettings || {};
+                const fullCfg = configManager.get();
+                const taskOpts = fullCfg.taskOptions || {};
+                const searchCfg = fullCfg.searchSettings || {};
                 const maxSearches = searchCfg.maxDailySearches || 30;
+
+                // 严格以用户在配置中心设定的节奏为准 (例如 18s + 6s，停滞 10 次)
+                const baseSec = Number(taskOpts.baseIntervalSec) || 18;
+                const jitterSec = Number(taskOpts.randomJitterSec) || 6;
+                const stagnationThreshold = Number(taskOpts.stagnationLimit) || 10;
+
+                const stagnationGuard = new SearchStagnationGuard(stagnationThreshold, account.name);
+                stagnationGuard.recordObservation(initialData.todayPoints);
 
                 for (let i = 1; i <= maxSearches; i++) {
                   if (this.shouldStop) {
@@ -357,15 +367,13 @@ export class TaskManager {
 
                   const word = getRandomSearchWord();
                   this.currentTaskName = `必应 PC 搜索 (第 ${i}/${maxSearches} 轮: "${word}")`;
-                  log(`正在执行第 ${i}/${maxSearches} 轮搜索...`);
-                  await performHumanizedSearch(page, word, { accountPrefix: account.name });
+                  log(`正在执行第 ${i}/${maxSearches} 轮搜索: "${word}"...`);
+                  page = await performHumanizedSearch(page, word, { accountPrefix: account.name });
 
-                  const minSec = searchCfg.searchIntervalMinSec || 60;
-                  const maxSec = searchCfg.searchIntervalMaxSec || 180;
-                  const jitter = Math.random() * (searchCfg.jitterMaxSec || 30);
-                  const intervalSec = minSec + Math.random() * (maxSec - minSec) + jitter;
-                  log(`[风控防线] 拟人搜索退避睡眠 ${Math.round(intervalSec)} 秒，防 15 分钟冷却限流...`);
-                  await new Promise((r) => setTimeout(r, intervalSec * 1000));
+                  // 精准拟人睡眠：基础秒数 + [0, 随机浮动秒数]，杜绝硬编码 168 秒
+                  const sleepSec = baseSec + Math.random() * jitterSec;
+                  log(`[风控防线] 拟人搜索间隔退避 ${sleepSec.toFixed(1)} 秒 (基础 ${baseSec}s + 浮动 ${jitterSec}s)...`);
+                  await new Promise((r) => setTimeout(r, sleepSec * 1000));
 
                   if (i % 3 === 0 || i === maxSearches) {
                     const checkData = await this.fetchOfficialDashboard(context, account);

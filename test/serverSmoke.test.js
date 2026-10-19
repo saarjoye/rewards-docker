@@ -30,7 +30,7 @@ test('Express WebUI 与 API 基础服务烟雾测试', async () => {
     const loginRes = await fetch(`http://127.0.0.1:${port}/login.html`);
     assert.equal(loginRes.status, 200);
     const loginHtml = await loginRes.text();
-    assert.ok(loginHtml.includes('安全网关'));
+    assert.ok(loginHtml.includes('Rewards自动任务系统'));
   } finally {
     configManager.get().admin = origAdmin;
     configManager.save();

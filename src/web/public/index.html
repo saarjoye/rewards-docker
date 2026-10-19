@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Microsoft Rewards 自动化平台 - Bento 控制台 (v3.0)</title>
+  <title>Microsoft Rewards 自动任务系统 (v6.0)</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -13,7 +13,7 @@
       <div class="sidebar-top">
         <div class="brand">
           <div class="brand-logo-sq">🎁</div>
-          <span class="brand-name">Rewards<span class="brand-dot">.v3</span></span>
+          <span class="brand-name">Rewards<span class="brand-dot">.v6</span></span>
         </div>
 
         <div class="store-selector-wrap">
@@ -84,7 +84,7 @@
           <button class="pill-btn" id="btn-open-terminal">实时日志</button>
           
           <button class="btn-run-tasks-emerald" id="btn-run-active-task">🚀 立即执行任务</button>
-          <button class="btn-primary-orange" id="btn-add-account">+ 添加账号</button>
+          
           <div class="user-chip">
             <div class="user-avatar-sm">管</div>
             <div class="user-meta-sm">
@@ -98,27 +98,10 @@
 
       <!-- Bento 便当盒高密网格 (锁定一屏高度，100% 对标设计参考图) -->
       <div class="bento-grid">
-        <!-- 第 1 行 (跨列 1 与列 2)：3 个横向账号成效卡片 (100% 对标参考图 1) -->
-        <div class="accounts-cards-row" id="top-accounts-cards" style="grid-column: 1 / 3;">
-          <!-- 动态渲染 3 个横向卡片 -->
+        <!-- 第 1 行 (跨越整行全宽 100%)：全量账号成效卡片横条 (对标图 1 与用户箭头标注) -->
+        <div class="accounts-cards-row" id="top-accounts-cards" style="grid-column: 1 / -1;">
+          <!-- 动态渲染所有 4 户乃至更多账号卡片 -->
         </div>
-
-        <!-- 第 1 行与第 2 行右侧 (列 3)：托管账号池 (100% 对标参考图 3 Stores 列表) -->
-        <section class="bento-box box-stores" style="grid-column: 3; grid-row: 1 / 3;">
-          <div class="box-header">
-            <div>
-              <h2 class="box-title">托管账号池</h2>
-              <span class="box-sub">点击卡片直达单账号视图</span>
-            </div>
-            <div style="display: flex; align-items: center; gap: 6px;">
-              <button class="chip-sm" id="btn-toggle-all-pool" style="cursor: pointer; border: 1px solid #cbd5e1; font-weight: 700; background: #fff;">🌐 全部合计</button>
-              <button class="btn-primary-sm" onclick="window.openAddAccountModal?.()" style="cursor: pointer; background: var(--brand-orange); color: #fff; border: none; padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 700;">+ 添加</button>
-            </div>
-          </div>
-          <div class="store-list-scroll" id="accounts-scroll-list">
-            <!-- 动态渲染账号列表 -->
-          </div>
-        </section>
 
         <!-- 第 2 行列 1：积分收益趋势柱状图 (📈 积分日历，对标参考图 Total Revenue) -->
         <section class="bento-box box-revenue" style="grid-column: 1; grid-row: 2;">
@@ -189,7 +172,7 @@
                 <span class="claim-red-dot">●</span>
               </div>
               <div class="b-claim-coin-box">
-                <span class="claim-coin-icon" style="font-size: 24px;">💰</span>
+                <span class="claim-coin-icon" style="font-size: 26px;">💰</span>
                 <span class="claim-coin-num" id="board-claimable-num">0</span>
               </div>
               <button type="button" class="btn-one-click-claim" id="btn-one-click-claim" title="点击立即调用接口收割待领积分">
@@ -200,6 +183,23 @@
           </div>
         </section>
 
+        <!-- 第 2 行列 3 (用户红框标注位置)：托管账号池 (向下移动至此独立卡片) -->
+        <section class="bento-box box-stores" style="grid-column: 3; grid-row: 2;">
+          <div class="box-header">
+            <div>
+              <h2 class="box-title">托管账号池</h2>
+              <span class="box-sub">点击卡片直达单账号视图</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <button class="chip-sm" id="btn-toggle-all-pool" style="cursor: pointer; border: 1px solid #cbd5e1; font-weight: 700; background: #fff;">🌐 全部合计</button>
+              <button class="btn-primary-sm" onclick="window.openAddAccountModal?.()" style="cursor: pointer; background: var(--brand-orange); color: #fff; border: none; padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 700;">+ 添加</button>
+            </div>
+          </div>
+          <div class="store-list-scroll" id="accounts-scroll-list">
+            <!-- 动态渲染账号列表 -->
+          </div>
+        </section>
+
         <!-- 第 3 行列 1：最近流水动态 (对标参考图 Recent Activity) -->
         <section class="bento-box box-activity" style="grid-column: 1; grid-row: 3;">
           <div class="box-header">
@@ -207,58 +207,78 @@
               <h2 class="box-title">最近流水动态</h2>
               <span class="box-sub">任务完成轨迹与积分明细</span>
             </div>
-            <span class="arrow-btn">↗</span>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span class="chip-sm active-acc-pill" id="activity-active-account" style="background: #e2e8f0; color: #1e293b; font-weight: 700; border-radius: 6px; padding: 2px 8px; font-size: 11px;">全部账号合计</span>
+              <span class="arrow-btn">↗</span>
+            </div>
           </div>
           <div class="activity-list" id="activity-list">
-            <!-- 动态渲染 -->
+            <!-- 动态渲染流水记录 -->
           </div>
         </section>
 
-        <!-- 第 3 行列 2：四大板块任务榜 (对标参考图 Top Dishes) -->
+        <!-- 第 3 行列 2：四大板块任务榜 (对标参考图 Top Dishes，支持全部账号累计求和) -->
         <section class="bento-box box-top-tasks" style="grid-column: 2; grid-row: 3;">
           <div class="box-header">
             <div>
               <h2 class="box-title">四大板块任务榜</h2>
-              <span class="box-sub">官方四大板块完成进度</span>
+              <span class="box-sub" id="tasks-rank-sub">官方四大板块完成进度</span>
             </div>
-            <span class="select-pill" style="font-size: 11px;">今日 ▾</span>
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <span class="select-pill" id="tasks-scope-tag" style="font-size: 11px; font-weight: 700; background: #f8fafc;">今日 ▾</span>
+            </div>
           </div>
           <div class="tasks-rank-list" id="tasks-rank-list">
-            <!-- 动态渲染 -->
+            <!-- 动态渲染四大板块任务进度条 -->
           </div>
         </section>
 
-        <!-- 第 3 行列 3：调度时钟与实时视口 (内存大盘整合与无头视口) -->
-        <section class="bento-box box-timeline-screencast" style="grid-column: 3; grid-row: 3;">
-          <div class="box-header">
-            <div>
-              <div style="display: flex; align-items: center; gap: 8px;">
-                <h2 class="box-title">调度时钟与视口</h2>
-                <span class="chip-sm chip-status-pill" id="browser-status-chip">● 空闲待命</span>
+        <!-- 第 3 行列 3：无头浏览器工作状态监控 (100% 精确对标图 2) -->
+        <section class="bento-box box-browser-monitor" style="grid-column: 3; grid-row: 3;">
+          <div class="box-header" style="margin-bottom: 6px;">
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <span style="font-size: 15px;">🖥️</span>
+              <div>
+                <h2 class="box-title" style="font-size: 14px;">无头浏览器工作状态监控</h2>
+                <span class="box-sub">Playwright / Chromium 拟人引擎</span>
               </div>
-              <span class="box-sub" id="mem-status-line">内存: 45 MB / 512 MB (9% 健康)</span>
             </div>
-            <span class="chip-sm" id="current-slot-chip" style="background: #fff; border: 1px solid #cbd5e1; font-weight: 700;">● 傍晚批次</span>
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <span class="chip-sm chip-status-pill" id="browser-status-chip">● 空闲休眠中 (0 MB)</span>
+              <button type="button" class="chip-sm" id="btn-test-single-search" style="cursor: pointer; background: #fff; border: 1px solid #cbd5e1; font-weight: 700; color: #1e293b; display: flex; align-items: center; gap: 3px;" title="立即发起 1 轮测试搜索验证">
+                <span>🔍</span> <span>测试搜索</span>
+              </button>
+            </div>
           </div>
 
-          <div class="slots-timeline-row" style="margin-bottom: 8px;">
-            <span class="slot-pill" data-slot="morning">09-13 早间</span>
-            <span class="slot-pill" data-slot="afternoon">13-17 午后</span>
-            <span class="slot-pill" data-slot="evening">17-21 傍晚</span>
-            <span class="slot-pill" data-slot="night">21-01 夜间</span>
-            <span class="slot-pill harvest-slot" data-slot="harvest">01:00 收割</span>
+          <!-- 5 维实时状态指标表 (对标图 2) -->
+          <div class="browser-monitor-grid">
+            <div class="b-mon-cell">
+              <span class="b-mon-lbl">当前活动账号</span>
+              <span class="b-mon-val" id="mon-active-acc">--</span>
+            </div>
+            <div class="b-mon-cell">
+              <span class="b-mon-lbl">实时输入关键词</span>
+              <span class="b-mon-val orange-txt" id="mon-active-kw">--</span>
+            </div>
+            <div class="b-mon-cell">
+              <span class="b-mon-lbl">本次补分轮次</span>
+              <span class="b-mon-val bold-txt" id="mon-search-rounds">0 / 0</span>
+            </div>
+            <div class="b-mon-cell">
+              <span class="b-mon-lbl">距离下次搜索</span>
+              <span class="b-mon-val" id="mon-next-interval">--</span>
+            </div>
+            <div class="b-mon-cell">
+              <span class="b-mon-lbl">容器内存占用</span>
+              <span class="b-mon-val bold-txt" id="mon-mem-usage">-- MB</span>
+            </div>
           </div>
 
-          <!-- 真实无头浏览器投影视口 (动态 SVG 优雅兜底) -->
-          <div class="screencast-wrapper" style="flex: 1; min-height: 80px;">
-            <div class="screencast-header-bar">
-              <span class="traffic-lights"><i></i><i></i><i></i></span>
-              <span class="screencast-url">🔒 rewards.bing.com/dashboard</span>
-              <span class="screencast-live-tag">● LIVE 1440x900</span>
-            </div>
-            <div class="screencast-canvas-container">
-              <img id="live-screencast-img" src="/api/browser/screenshot" alt="实时无头视口" class="screencast-img" />
-            </div>
+          <!-- 底部状态横幅 (对标图 2 绿色指示框) -->
+          <div class="browser-status-callout" id="mon-status-callout">
+            <span class="callout-bar"></span>
+            <span id="mon-callout-text">浏览器当前处于空闲休眠状态，内存完全释放 (0 内存占用)</span>
           </div>
         </section>
       </div>
@@ -270,7 +290,7 @@
     <div class="modal-card">
       <div class="modal-head">
         <h3 class="modal-h3" id="account-modal-title">添加微软托管账号</h3>
-        <button class="modal-close-x" id="close-account-modal">&times;</button>
+        
       </div>
       <form id="form-account">
         <input type="hidden" id="acc-id">
@@ -296,8 +316,8 @@
           <label for="acc-enabled">启用此账号参与 4 大时段错峰自动调度</label>
         </div>
         <div class="modal-foot">
-          <button type="button" class="btn-cancel" id="cancel-account-modal">取消</button>
           <button type="submit" class="btn-confirm-orange">保存并启动自主登录</button>
+          <button type="button" class="btn-cancel" id="cancel-account-modal">取消</button>
         </div>
       </form>
     </div>
@@ -308,7 +328,7 @@
     <div class="modal-card">
       <div class="modal-head">
         <h3 class="modal-h3">企业微信应用消息推送设置</h3>
-        <button class="modal-close-x" id="close-wework-modal">&times;</button>
+        
       </div>
       <form id="form-wework">
         <div class="f-checkbox">
@@ -352,7 +372,7 @@
         <div class="header-tags">
           <button class="btn-sm-ghost" id="btn-toggle-scroll">暂停滚动</button>
           <button class="btn-sm-ghost" id="btn-clear-logs">清空屏幕</button>
-          <button class="modal-close-x" id="close-logs-modal">&times;</button>
+          
         </div>
       </div>
       <div class="terminal-dark-box" id="log-terminal">
@@ -371,7 +391,7 @@
           <span style="font-size: 20px;">⏳</span>
           <h3 class="modal-h3">官网同步</h3>
         </div>
-        <button class="modal-close-x" id="close-sync-modal">&times;</button>
+        
       </div>
 
       <div class="sync-status-box">
@@ -421,7 +441,7 @@
           <span style="font-size: 20px;">🔍</span>
           <h3 class="modal-h3">微软账号登录状态体检</h3>
         </div>
-        <button class="modal-close-x" id="close-health-modal">&times;</button>
+        
       </div>
 
       <!-- 体检范围切换 (对标图 8 顶部) -->
@@ -508,7 +528,7 @@
           <span style="font-size: 20px;">⚙️</span>
           <h3 class="modal-h3">全局配置中心</h3>
         </div>
-        <button class="modal-close-x" id="close-global-modal">&times;</button>
+        
       </div>
 
       <!-- 五大 Tab 标签栏 (对标图 1) -->
@@ -741,7 +761,7 @@
     <div class="modal-card">
       <div class="modal-head">
         <h3 class="modal-h3">🚀 启动自动化任务</h3>
-        <button class="modal-close-x" id="close-run-modal">&times;</button>
+        
       </div>
       <form id="form-run-tasks">
         <div class="f-group">

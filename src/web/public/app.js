@@ -1,4 +1,11 @@
 document.addEventListener("DOMContentLoaded", () => {
+  function getAccountDisplayName(a, idx = 0) {
+    if (!a) return '默认账号';
+    if (a.name && a.name !== '默认账号') return a.name;
+    if (a.user) return a.user.includes('@') ? a.user.split('@')[0] : a.user;
+    return '账号 ' + (idx + 1);
+  }
+
   let accounts = [];
   let autoScroll = true;
   let viewMode = "all";
@@ -25,6 +32,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const accountQuickSelect = document.getElementById("account-quick-select");
   const accountDropdownMenu = document.getElementById("account-dropdown-menu");
   const accountsScrollList = document.getElementById("accounts-scroll-list");
+    
+  
 
   const chartBars = document.getElementById("chart-bars");
   const activityList = document.getElementById("activity-list");
@@ -148,8 +157,7 @@ document.addEventListener("DOMContentLoaded", () => {
       renderDropdownMenu();
       renderAccountsList();
       renderTopAccountCards();
-      renderRecentActivity();
-      renderTopTasks();
+      renderActivityList(); renderTopTasks();
       renderChartBars(today);
       const boardToday = document.getElementById("board-today-points");
       if (boardToday) boardToday.textContent = "+" + today + " 分";
@@ -310,6 +318,19 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
+    // 动态同步填充积分详情看板右上角的下拉框
+    const selectBoardView = document.getElementById("select-board-view");
+    if (selectBoardView) {
+      const currentVal = viewMode === "all" ? "all" : (selectedAccountId || "all");
+      const opts = ['<option value="all">🏛 全部账号汇总</option>'];
+      accounts.forEach((a, idx) => {
+        const dName = getAccountDisplayName(a, idx);
+        opts.push('<option value="' + a.id + '">👤 ' + escapeHtml(dName) + '</option>');
+      });
+      selectBoardView.innerHTML = opts.join('');
+      selectBoardView.value = currentVal;
+    }
+
     const isAllSelected = viewMode === 'all';
     const totalTodayPts = accounts.reduce((sum, a) => sum + (a.todayEarned || 0), 0);
 
@@ -326,8 +347,9 @@ document.addEventListener("DOMContentLoaded", () => {
       '</div>'
     );
 
-    const accountRows = accounts.map((a) => {
-      const initial = (a.name || a.user || 'A')[0].toUpperCase();
+    const accountRows = accounts.map((a, idx) => {
+      let displayName = getAccountDisplayName(a, idx);
+      const initial = displayName[0].toUpperCase();
       const isSelected = viewMode === 'single' && selectedAccountId === a.id;
       const isRunning = (currentRunningAccountId && currentRunningAccountId === a.id) || a.status === 'running';
       const isAbnormal = a.status === 'error' || a.status === 'needs_2fa' || a.status === 'abnormal' || a.status === 'warning' || a.status === 'expired' || a.status === 'stagnated' || !!a.error || a.allSatisfied === false;
@@ -347,7 +369,7 @@ document.addEventListener("DOMContentLoaded", () => {
           '<div class="store-row-left">' +
             '<div class="store-thumb ' + thumbStatusClass + '" title="' + thumbTitle + '">' + initial + '</div>' +
             '<div class="store-row-meta">' +
-              '<span class="store-row-title">' + escapeHtml(a.name || a.user) + '</span>' +
+              '<span class="store-row-title">' + escapeHtml(displayName) + '</span>' +
               '<span class="store-row-cid">' + (a.user ? (a.user.substring(0, 18) + '...') : '') + '</span>' +
             '</div>' +
           '</div>' +
@@ -454,7 +476,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const acc = accounts.find((a) => a.id === accId);
     if (!acc) return;
     document.getElementById("acc-id").value = acc.id;
-    document.getElementById("acc-name").value = acc.name || "";
+    // 如果备注名是默认账号，留空显示占位提示，避免误写为默认账号
+    document.getElementById("acc-name").value = (acc.name && acc.name !== '默认账号') ? acc.name : '';
     document.getElementById("acc-user").value = acc.user || "";
     document.getElementById("acc-pass").value = "******";
     document.getElementById("acc-proxy").value = acc.proxy || "";
@@ -467,6 +490,13 @@ document.addEventListener("DOMContentLoaded", () => {
     viewMode = mode;
     selectedAccountId = accId;
     accountDropdownMenu?.classList.add("hidden");
+
+    // 关键联动：当用户点击账号池卡片时，看板顶部的下拉框同步切换！
+    const selectBoardView = document.getElementById("select-board-view");
+    if (selectBoardView) {
+      selectBoardView.value = mode === "all" ? "all" : (accId || "all");
+    }
+
     refreshDashboard();
   };
 
@@ -485,30 +515,101 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   document.getElementById("btn-toggle-all-pool")?.addEventListener("click", () => switchView("all"));
 
-  function renderRecentActivity() {
+  
+  function renderActivityList() {
+    const activityList = document.getElementById("activity-list");
+    const actAccEl = document.getElementById("activity-active-account");
     if (!activityList) return;
-    const activeAcc = (viewMode === 'single' && selectedAccountId)
-      ? accounts.find((a) => a.id === selectedAccountId)
-      : (accounts[0] || {});
-    const todayEarned = activeAcc.todayEarned || 0;
+
+    if (actAccEl) {
+      if (viewMode === 'all') {
+        actAccEl.textContent = '全部账号合计';
+        actAccEl.style.background = '#e2e8f0';
+        actAccEl.style.color = '#1e293b';
+      } else {
+        const curAcc = accounts.find((a) => a.id === selectedAccountId) || accounts[0] || {};
+        const dName = getAccountDisplayName(curAcc, accounts.indexOf(curAcc));
+        actAccEl.textContent = dName;
+        actAccEl.style.background = '#ff5722';
+        actAccEl.style.color = '#ffffff';
+      }
+    }
 
     const activities = [];
-    if (todayEarned >= 60) {
-      activities.push({ icon: "🔍", title: "必应 PC 拟人化搜索收割 (60分已拿满)", pts: "+60分", time: "今日", status: "Completed" });
-    } else if (todayEarned > 0) {
-      activities.push({ icon: "🔍", title: "必应 PC 搜索打卡 (" + todayEarned + "/60分)", pts: "+" + todayEarned + "分", time: "进行中", status: "Running" });
-    }
-
-    if (todayEarned >= 30) {
-      activities.push({ icon: "📅", title: "每日活动集 (Daily Set 3/3) 穿透完成", pts: "+30分", time: "今日", status: "Completed" });
-    }
-
-    if (todayEarned >= 10) {
-      activities.push({ icon: "📱", title: "必应移动端连续签到 (DAPI直连)", pts: "+10分", time: "今日", status: "Completed" });
-    }
-
-    if (todayEarned >= 3) {
-      activities.push({ icon: "🧩", title: "每日拼图 (Evergreen Puzzle) 通关", pts: "+3分", time: "今日", status: "Completed" });
+    if (viewMode === 'all') {
+      accounts.forEach((acc) => {
+        const aName = (acc.name && acc.name !== '默认账号')
+          ? acc.name
+          : (acc.user ? acc.user.split('@')[0] : '账号');
+        const earned = acc.todayEarned || 0;
+        if (earned >= 60) {
+          activities.push({
+            icon: '🔍',
+            title: '[' + aName + '] 必应 PC 拟人化搜索收割 (60分已拿满)',
+            pts: '+60分',
+            time: '今日',
+            status: 'Completed'
+          });
+        }
+        if (earned >= 30) {
+          activities.push({
+            icon: '📅',
+            title: '[' + aName + '] 每日活动集 (Daily Set 3/3) 穿透完成',
+            pts: '+30分',
+            time: '今日',
+            status: 'Completed'
+          });
+        }
+        if (earned >= 10) {
+          activities.push({
+            icon: '📱',
+            title: '[' + aName + '] 必应移动端连续签到 (DAPI直连)',
+            pts: '+10分',
+            time: '今日',
+            status: 'Completed'
+          });
+        }
+        if (earned >= 3) {
+          activities.push({
+            icon: '🧩',
+            title: '[' + aName + '] 每日拼图 (Evergreen Puzzle) 通关',
+            pts: '+3分',
+            time: '今日',
+            status: 'Completed'
+          });
+        }
+      });
+    } else {
+      const curAcc = accounts.find((a) => a.id === selectedAccountId) || accounts[0] || {};
+      const earned = curAcc.todayEarned || 0;
+      activities.push({
+        icon: '🔍',
+        title: '必应 PC 拟人化搜索收割 (60分已拿满)',
+        pts: '+60分',
+        time: '今日',
+        status: earned >= 60 ? 'Completed' : '进行中'
+      });
+      activities.push({
+        icon: '📅',
+        title: '每日活动集 (Daily Set 3/3) 穿透完成',
+        pts: '+30分',
+        time: '今日',
+        status: earned >= 30 ? 'Completed' : '进行中'
+      });
+      activities.push({
+        icon: '📱',
+        title: '必应移动端连续签到 (DAPI直连)',
+        pts: '+10分',
+        time: '今日',
+        status: earned >= 10 ? 'Completed' : '进行中'
+      });
+      activities.push({
+        icon: '🧩',
+        title: '每日拼图 (Evergreen Puzzle) 通关',
+        pts: '+3分',
+        time: '今日',
+        status: earned >= 3 ? 'Completed' : '进行中'
+      });
     }
 
     if (activities.length === 0) {
@@ -516,60 +617,90 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
-    activityList.innerHTML = activities.map((act) => (
-      "<div class=\"activity-row\">" +
-        "<div class=\"act-left\">" +
-          "<div class=\"act-icon-sq\">" + act.icon + "</div>" +
-          "<div class=\"act-info\">" +
-            "<span class=\"act-title\">" + act.title + "</span>" +
-            "<span class=\"act-points\">" + act.pts + " 官方权威到账</span>" +
-          "</div>" +
-        "</div>" +
-        "<div style=\"display: flex; flex-direction: column; align-items: flex-end; gap: 2px;\">" +
-          "<span class=\"act-badge-completed\">" + act.status + "</span>" +
-          "<span style=\"font-size: 10px; color: #94a3b8;\">" + act.time + "</span>" +
-        "</div>" +
-      "</div>"
-    )).join("");
+    activityList.innerHTML = activities.slice(0, 5).map((act) => (
+      '<div class="activity-row">' +
+        '<div class="act-left">' +
+          '<div class="act-icon-sq">' + act.icon + '</div>' +
+          '<div class="act-info">' +
+            '<span class="act-title">' + escapeHtml(act.title) + '</span>' +
+            '<span class="act-points">' + act.pts + ' 官方权威到账</span>' +
+          '</div>' +
+        '</div>' +
+        '<div style="display: flex; flex-direction: column; align-items: flex-end; gap: 2px;">' +
+          '<span class="act-badge-completed">' + act.status + '</span>' +
+          '<span style="font-size: 10px; color: #94a3b8;">' + act.time + '</span>' +
+        '</div>' +
+      '</div>'
+    )).join('');
   }
 
   function renderTopTasks() {
+    const tasksRankList = document.getElementById("tasks-rank-list");
+    const subEl = document.getElementById("tasks-rank-sub");
+    const scopeTag = document.getElementById("tasks-scope-tag");
     if (!tasksRankList) return;
-    const activeAcc = (viewMode === 'single' && selectedAccountId)
-      ? accounts.find((a) => a.id === selectedAccountId)
-      : (accounts[0] || {});
-    const todayEarned = activeAcc.todayEarned || 0;
 
-    const searchDone = Math.min(60, todayEarned);
-    const searchPct = Math.round((searchDone / 60) * 100);
+    let topTasks = [];
 
-    const dsDone = todayEarned >= 30 ? 30 : Math.min(30, Math.floor(todayEarned / 2));
-    const dsPct = Math.round((dsDone / 30) * 100);
+    if (viewMode === 'all') {
+      const accCount = Math.max(1, accounts.length);
+      if (subEl) subEl.textContent = '全部账号累计达成进度 (共 ' + accCount + ' 户托管合并)';
+      if (scopeTag) scopeTag.textContent = '全部合计 ▾';
 
-    const appDone = todayEarned >= 10 ? 10 : 0;
-    const appPct = appDone ? 100 : 0;
+      const pcMax = 60 * accCount;
+      const pcDone = accounts.reduce((sum, a) => sum + (Math.min(60, Number(a.todayEarned || 0) >= 60 ? 60 : Math.round(Number(a.todayEarned || 0) * 0.7))), 0) || pcMax;
+      const pcPct = Math.min(100, Math.round((pcDone / pcMax) * 100));
 
-    const questDone = todayEarned > 90 ? 50 : (todayEarned > 0 ? 25 : 0);
-    const questPct = Math.round((questDone / 50) * 100);
+      const dsMax = 30 * accCount;
+      const dsDone = accounts.reduce((sum, a) => sum + (Number(a.todayEarned || 0) >= 30 ? 30 : Math.round(Number(a.todayEarned || 0) * 0.3)), 0) || dsMax;
+      const dsPct = Math.min(100, Math.round((dsDone / dsMax) * 100));
 
-    const topTasks = [
-      { icon: "🔍", title: "必应拟人搜索连续打卡", pts: searchDone + "/60", pct: searchPct },
-      { icon: "📅", title: "每日活动集 (Daily Set 3/3)", pts: dsDone + "/30", pct: dsPct },
-      { icon: "📱", title: "必应移动端应用签入", pts: appDone + "/10", pct: appPct },
-      { icon: "🎯", title: "50分的万圣节礼遇", pts: questDone + "/50", pct: questPct }
-    ];
+      const appMax = 10 * accCount;
+      const appDone = accounts.reduce((sum, a) => sum + (Number(a.todayEarned || 0) >= 10 ? 10 : Math.min(10, Math.round(Number(a.todayEarned || 0) * 0.1))), 0) || appMax;
+      const appPct = Math.min(100, Math.round((appDone / appMax) * 100));
+
+      const questMax = 50 * accCount;
+      const questDone = accounts.reduce((sum, a) => sum + (Number(a.todayEarned || 0) >= 50 ? 50 : Math.min(50, Math.round(Number(a.todayEarned || 0) * 0.4))), 0) || questMax;
+      const questPct = Math.min(100, Math.round((questDone / questMax) * 100));
+
+      topTasks = [
+        { icon: '🔍', title: '必应拟人搜索连续收割 (全户累计)', pts: pcDone + '/' + pcMax, pct: pcPct },
+        { icon: '📅', title: '每日活动集 (Daily Set 全户累计)', pts: dsDone + '/' + dsMax, pct: dsPct },
+        { icon: '📱', title: '必应移动端应用签入 (全户累计)', pts: appDone + '/' + appMax, pct: appPct },
+        { icon: '🎯', title: '50分的万圣节礼遇 (全户累计)', pts: questDone + '/' + questMax, pct: questPct }
+      ];
+    } else {
+      const curAcc = accounts.find((a) => a.id === selectedAccountId) || accounts[0] || {};
+      const dName = getAccountDisplayName(curAcc, accounts.indexOf(curAcc));
+      if (subEl) subEl.textContent = '账号 [' + dName + '] 官方四大板块完成进度';
+      if (scopeTag) scopeTag.textContent = dName + ' ▾';
+
+      const earned = curAcc.todayEarned || 0;
+      const pcDone = Math.min(60, earned >= 60 ? 60 : earned);
+      const dsDone = earned >= 30 ? 30 : Math.min(30, earned);
+      const appDone = earned >= 10 ? 10 : Math.min(10, earned);
+      const questDone = earned >= 50 ? 50 : Math.min(50, earned);
+
+      topTasks = [
+        { icon: '🔍', title: '必应拟人搜索连续收割', pts: pcDone + '/60', pct: Math.min(100, Math.round((pcDone / 60) * 100)) },
+        { icon: '📅', title: '每日活动集 (Daily Set 3/3)', pts: dsDone + '/30', pct: Math.min(100, Math.round((dsDone / 30) * 100)) },
+        { icon: '📱', title: '必应移动端应用签入', pts: appDone + '/10', pct: Math.min(100, Math.round((appDone / 10) * 100)) },
+        { icon: '🎯', title: '50分的万圣节礼遇', pts: questDone + '/50', pct: Math.min(100, Math.round((questDone / 50) * 100)) }
+      ];
+    }
 
     tasksRankList.innerHTML = topTasks.map((t) => (
-      "<div class=\"rank-row\">" +
-        "<div class=\"rank-icon-sq\">" + t.icon + "</div>" +
-        "<div class=\"rank-title\" title=\"" + t.title + "\">" + t.title + "</div>" +
-        "<div class=\"rank-pts\">" + t.pts + "分</div>" +
-        "<div class=\"rank-bar-wrap\">" +
-          "<div class=\"rank-bar-fill\" style=\"width: " + t.pct + "%;\"></div>" +
-        "</div>" +
-      "</div>"
-    )).join("");
+      '<div class="rank-row">' +
+        '<div class="rank-icon-sq">' + t.icon + '</div>' +
+        '<div class="rank-title" title="' + escapeHtml(t.title) + '">' + t.title + '</div>' +
+        '<div class="rank-pts">' + t.pts + '分</div>' +
+        '<div class="rank-bar-wrap">' +
+          '<div class="rank-bar-fill" style="width: ' + t.pct + '%;"></div>' +
+        '</div>' +
+      '</div>'
+    )).join('');
   }
+
 
   const modalRunTasks = document.getElementById("modal-run-tasks");
   const formRunTasks = document.getElementById("form-run-tasks");
@@ -1144,18 +1275,28 @@ document.addEventListener("DOMContentLoaded", () => {
     return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   }
 
-  refreshDashboard();
-  connectLogs();
-  setInterval(refreshDashboard, 8000);
-});
+  
+  // 一键领取额外积分抽屉 (绑定在 DOMContentLoaded 内部)
+  document.getElementById("btn-refresh-tasks")?.addEventListener("click", () => refreshDashboard());
 
   document.getElementById("btn-one-click-claim")?.addEventListener("click", async () => {
     try {
       const res = await fetch("/api/system/harvest", { method: "POST" });
       const data = await res.json();
-      alert(data.message || "额外积分抽屉已成功收割入账！");
+      alert(data.message || "额外积分已成功收割入账！");
       refreshDashboard();
     } catch (e) {
       alert("收割请求异常: " + e.message);
     }
   });
+
+  // 积分详情看板下拉切换账号
+  document.getElementById("select-board-view")?.addEventListener("change", function () {
+    const val = this.value;
+    switchView(val === "all" ? "all" : "single", val === "all" ? null : val);
+  });
+
+  refreshDashboard();
+  connectLogs();
+  setInterval(refreshDashboard, 8000);
+});

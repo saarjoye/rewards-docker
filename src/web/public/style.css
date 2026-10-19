@@ -2043,3 +2043,265 @@ button, input, select, textarea {
   background: repeating-linear-gradient(-45deg, #8b5cf6, #8b5cf6 6px, #a78bfa 6px, #a78bfa 12px) !important;
 }
 
+
+
+/* ==============================================================
+   🌟 模态框表单控件通用现代质感规范 (彻底根除原生 HTML 黑边白底丑陋输入框)
+   ============================================================== */
+
+.f-group {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 6px !important;
+  margin-bottom: 14px !important;
+}
+
+.f-group label {
+  font-size: 13px !important;
+  font-weight: 600 !important;
+  color: #334155 !important;
+}
+
+.f-group input[type="text"],
+.f-group input[type="password"],
+.f-group input[type="email"],
+.f-group input[type="number"],
+.f-group select,
+.f-select {
+  width: 100% !important;
+  padding: 9px 14px !important;
+  border: 1px solid #cbd5e1 !important;
+  border-radius: 8px !important;
+  font-size: 13px !important;
+  color: #1e293b !important;
+  background: #ffffff !important;
+  transition: all 0.2s ease !important;
+  outline: none !important;
+}
+
+.f-group input:focus,
+.f-select:focus {
+  border-color: var(--brand-orange) !important;
+  box-shadow: 0 0 0 3px rgba(255, 87, 34, 0.15) !important;
+}
+
+.f-hint {
+  font-size: 11px !important;
+  color: #94a3b8 !important;
+  margin-top: 4px !important;
+}
+
+.f-checkbox {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  font-size: 13px !important;
+  color: #475569 !important;
+  margin: 12px 0 16px 0 !important;
+  cursor: pointer !important;
+}
+
+.f-checkbox input[type="checkbox"] {
+  width: 16px !important;
+  height: 16px !important;
+  accent-color: var(--brand-orange) !important;
+  cursor: pointer !important;
+}
+
+.modal-foot {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-end !important;
+  gap: 12px !important;
+  margin-top: 20px !important;
+  padding-top: 14px !important;
+  border-top: 1px solid #f1f5f9 !important;
+}
+
+.btn-confirm-orange {
+  background: var(--brand-orange) !important;
+  color: #ffffff !important;
+  border: none !important;
+  border-radius: 8px !important;
+  padding: 9px 20px !important;
+  font-size: 13px !important;
+  font-weight: 700 !important;
+  cursor: pointer !important;
+  transition: all 0.2s ease !important;
+  box-shadow: 0 2px 8px rgba(255, 87, 34, 0.3) !important;
+}
+
+.btn-confirm-orange:hover {
+  background: #f4511e !important;
+}
+
+/* 日志控制台顶部按钮去除丑陋黑框 */
+.log-ctrl-btn {
+  background: #1e293b !important;
+  border: 1px solid rgba(255, 255, 255, 0.2) !important;
+  color: #cbd5e1 !important;
+  border-radius: 6px !important;
+  padding: 4px 10px !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  cursor: pointer !important;
+  transition: all 0.15s ease !important;
+}
+
+.log-ctrl-btn:hover {
+  background: #334155 !important;
+  color: #ffffff !important;
+}
+
+/* 彻底移除模态框内丑陋的独立黑框 X 按钮 */
+.modal-close-x {
+  display: none !important;
+}
+
+
+
+/* ==============================================================
+   🌟 任务完成进度：5 个横向全景卡片 (100% 对标图 2 样式设计)
+   ============================================================== */
+
+.box-tasks-progress {
+  padding: 12px 16px !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+}
+
+.tasks-progress-grid {
+  display: grid !important;
+  grid-template-columns: repeat(5, 1fr) !important;
+  gap: 10px !important;
+  flex: 1 !important;
+  align-items: stretch !important;
+}
+
+.task-prog-card {
+  border-radius: 12px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  color: #ffffff;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+  transition: all 0.2s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+.task-prog-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.2);
+}
+
+/* 5 种高级暗调渐变背景 (对标图 2) */
+.task-prog-card.grad-darkblue {
+  background: linear-gradient(135deg, #091326 0%, #172554 100%) !important;
+  border: 1px solid rgba(59, 130, 246, 0.3) !important;
+}
+
+.task-prog-card.grad-darkgreen {
+  background: linear-gradient(135deg, #022c22 0%, #065f46 100%) !important;
+  border: 1px solid rgba(16, 185, 129, 0.3) !important;
+}
+
+.task-prog-card.grad-twilight {
+  background: linear-gradient(135deg, #1e1b4b 0%, #312e81 100%) !important;
+  border: 1px solid rgba(99, 102, 241, 0.3) !important;
+}
+
+.task-prog-card.grad-amber {
+  background: linear-gradient(135deg, #451a03 0%, #78350f 100%) !important;
+  border: 1px solid rgba(245, 158, 11, 0.3) !important;
+}
+
+.task-prog-card.grad-purple {
+  background: linear-gradient(135deg, #3b0764 0%, #581c87 100%) !important;
+  border: 1px solid rgba(168, 85, 247, 0.3) !important;
+}
+
+.t-prog-top {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.t-prog-title {
+  font-size: 12px;
+  font-weight: 800;
+  color: #ffffff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  letter-spacing: 0.2px;
+}
+
+.t-prog-sub {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.65);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.t-prog-bottom {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 6px;
+}
+
+.t-pill-completed {
+  background: #ffffff;
+  color: #059669;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 9999px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.t-pill-running {
+  background: #ffffff;
+  color: #d97706;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 9999px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.t-pill-pending {
+  background: rgba(255, 255, 255, 0.15);
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 9px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 9999px;
+}
+
+.t-pts-badge {
+  font-size: 11px;
+  font-weight: 800;
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-family: var(--font-mono);
+}
+
+.t-pts-badge.orange-bg {
+  background: #ff5722;
+  color: #ffffff;
+}
+
+.t-pts-badge.green-bg {
+  background: #10b981;
+  color: #ffffff;
+}
+

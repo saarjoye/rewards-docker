@@ -108,6 +108,8 @@ export class BrowserManager {
       '--disable-setuid-sandbox',
       '--renderer-process-limit=1',
       '--disable-dev-shm-usage',
+      '--no-zygote',
+      '--disable-features=IsolateOrigins,site-per-process',
       '--disable-gpu',
       '--disable-software-rasterizer',
       '--disable-breakpad',

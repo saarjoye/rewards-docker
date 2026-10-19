@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>系统登录 - Microsoft Rewards 自动化平台</title>
+  <title>Rewards自动任务系统</title>
   <style>
     :root {
       --bg: #eceff2;
@@ -134,9 +134,9 @@
   <div class="login-card">
     <div class="brand">
       <div class="brand-logo">🎁</div>
-      <h1>Rewards<span class="brand-dot">.v3</span> 安全网关</h1>
+      <h1>Rewards自动任务系统</h1>
     </div>
-    <p class="subtitle" id="page-subtitle">正在检测系统安全登录状态...</p>
+    <p class="subtitle hidden" id="page-subtitle" style="display:none;"></p>
 
     <form id="auth-form" class="hidden" autocomplete="off">
       <div class="form-group">
@@ -182,7 +182,7 @@
 
       function showSetupMode() {
         initialized = false;
-        subtitleEl.textContent = '首次启动，请初始化设置平台管理员账号与密码。';
+        subtitleEl.textContent = ''; subtitleEl.style.display = 'none';
         hintEl.textContent = '账号长度 3-64 位；密码至少 6 位，用于保护控制台安全。';
         confirmField.classList.remove('hidden');
         confirmInput.required = true;
@@ -192,7 +192,7 @@
 
       function showLoginMode(username) {
         initialized = true;
-        subtitleEl.textContent = username ? ('管理员：' + username + '，请输入密码进入。') : '请输入管理员账号与密码登录系统。';
+        subtitleEl.textContent = ''; subtitleEl.style.display = 'none';
         hintEl.textContent = '会话采用安全 HttpOnly 加密签名，有效期 7 天。';
         confirmField.classList.add('hidden');
         confirmInput.required = false;

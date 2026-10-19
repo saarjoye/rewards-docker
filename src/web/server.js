@@ -181,27 +181,42 @@ export function createServer() {
   app.post('/api/sync/official', async (req, res) => {
     try {
       const { accountId } = req.body || {};
-      const account = configManager.getAccount(accountId) || configManager.getAccounts()[0];
-      if (!account) return res.status(404).json({ success: false, message: '未找到可用账号' });
+      const allAccounts = configManager.getAccounts().filter((a) => a.enabled);
+      if (allAccounts.length === 0) return res.status(404).json({ success: false, message: '未找到可用账号' });
 
-      const session = readBrowserSession(account.id) || {};
-      const cookies = session.cookies || [];
+      const targetAccounts = (accountId && accountId !== 'all')
+        ? [configManager.getAccount(accountId)].filter(Boolean)
+        : allAccounts;
 
-      // 异步触发同步并在后台回写
-      browserManager.withBrowser({ proxy: account.proxy, cookies, headless: true }, async (browser, context) => {
-        const data = await taskManager.fetchOfficialDashboard(context, account);
-        configManager.upsertAccount({
-          id: account.id,
-          balance: data.balance,
-          todayEarned: data.todayPoints,
-          streakDays: data.streakDays,
-          claimablePoints: data.claimablePoints
-        });
-      }).catch((e) => {
-        logger.log('⚠️', `官网数据同步异常: ${e.message}`);
+      // 异步在后台依序同步每一个账号，绝不只同步第 1 个账号！
+      (async () => {
+        for (const account of targetAccounts) {
+          try {
+            const session = readBrowserSession(account.id) || {};
+            const cookies = session.cookies || [];
+            await browserManager.withBrowser({ proxy: account.proxy, cookies, headless: true }, async (browser, context) => {
+              const data = await taskManager.fetchOfficialDashboard(context, account);
+              configManager.upsertAccount({
+                id: account.id,
+                balance: data.balance,
+                todayEarned: data.todayPoints,
+                streakDays: data.streakDays,
+                claimablePoints: data.claimablePoints
+              });
+            });
+            await new Promise((r) => setTimeout(r, 2000));
+          } catch (err) {
+            logger.log('⚠️', `账号 [${account.name}] 官网数据同步异常: ${err.message}`);
+          }
+        }
+      })();
+
+      res.json({
+        success: true,
+        message: targetAccounts.length > 1
+          ? `已在后台启动全部 ${targetAccounts.length} 个账号的官方数据同步`
+          : `已在后台启动账号 [${targetAccounts[0].name}] 的官方数据同步`
       });
-
-      res.json({ success: true, message: '已在后台启动从微软官网同步真实完成度' });
     } catch (e) {
       res.status(500).json({ success: false, message: e.message });
     }
@@ -231,6 +246,10 @@ export function createServer() {
       currentTaskSection: taskManager.currentTaskSection || '',
       currentTaskName: taskManager.currentTaskName || '',
       browserState,
+      network: cfg.network || {},
+      taskOptions: cfg.taskOptions || {},
+      scheduler: cfg.scheduler || {},
+      searchSettings: cfg.searchSettings || {},
       notify: cfg.notify,
       accounts
     });
@@ -247,7 +266,7 @@ export function createServer() {
       const accId = id || `acc_${Date.now()}`;
       const saved = configManager.upsertAccount({
         id: accId,
-        name: name || user,
+        name: (name && name !== '默认账号') ? name : (user.includes('@') ? user.split('@')[0] : user),
         user,
         pass,
         proxy,
