@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.0.4",
-  "description": "Microsoft Rewards 自动化平台 (v6.0.4 官方多账号全功能驱动)",
+  "version": "6.0.5",
+  "description": "Microsoft Rewards 自动化平台 (v6.0.5 全端自适应与多账号全驱动)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {

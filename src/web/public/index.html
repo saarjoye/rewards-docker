@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Rewards 自动任务系统 (v6.0.4)</title>
+  <title>Rewards 自动任务系统 (v6.0.5)</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -13,7 +13,7 @@
       <div class="sidebar-top">
         <div class="brand">
           <div class="brand-logo-sq">🎁</div>
-          <span class="brand-name">Rewards<span class="brand-dot">.v6.0.4</span></span>
+          <span class="brand-name">Rewards<span class="brand-dot">.v6.0.5</span></span>
         </div>
 
         <div class="store-selector-wrap">
@@ -63,6 +63,18 @@
 
     <!-- 2. 主仪表盘区域 (对标图 1 Bento Grid 便当盒排版) -->
     <main class="main-viewport">
+      <!-- 移动端专属顶部精简导航栏 (<=992px 自动显示，桌面端自动隐藏) -->
+      <div class="mobile-top-nav">
+        <button type="button" class="mobile-hamburger-btn" id="btn-toggle-mobile-menu" aria-label="切换菜单">
+          <span style="font-size: 20px;">☰</span>
+        </button>
+        <div class="mobile-nav-brand">
+          <span style="font-size: 18px;">🎁</span>
+          <span class="mobile-nav-title">Rewards<span class="brand-dot">.v6.0.5</span></span>
+        </div>
+        <button type="button" class="mobile-quick-btn" id="btn-mobile-quick-run">🚀 执行</button>
+      </div>
+      <div class="mobile-sidebar-mask hidden" id="mobile-sidebar-mask"></div>
       <!-- 顶部 Header 栏 -->
       <header class="topbar">
         <div class="topbar-welcome">

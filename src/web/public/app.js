@@ -1181,6 +1181,36 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("close-account-modal")?.addEventListener("click", () => modalAccount?.classList.add("hidden"));
   document.getElementById("cancel-account-modal")?.addEventListener("click", () => modalAccount?.classList.add("hidden"));
 
+  
+  // 移动端汉堡侧边栏与遮罩交互绑定
+  const mobileSidebar = document.querySelector(".sidebar");
+  const mobileMask = document.getElementById("mobile-sidebar-mask");
+  const toggleMobileMenu = () => {
+    const isOpen = mobileSidebar?.classList.toggle("mobile-sidebar-open");
+    if (isOpen) {
+      mobileMask?.classList.remove("hidden");
+      mobileMask?.classList.add("active");
+    } else {
+      mobileMask?.classList.remove("active");
+      mobileMask?.classList.add("hidden");
+    }
+  };
+  const closeMobileMenu = () => {
+    mobileSidebar?.classList.remove("mobile-sidebar-open");
+    mobileMask?.classList.remove("active");
+    mobileMask?.classList.add("hidden");
+  };
+
+  document.getElementById("btn-toggle-mobile-menu")?.addEventListener("click", toggleMobileMenu);
+  mobileMask?.addEventListener("click", closeMobileMenu);
+  document.getElementById("btn-mobile-quick-run")?.addEventListener("click", () => {
+    document.getElementById("btn-run-active-task")?.click();
+  });
+
+  document.querySelectorAll(".sidebar-menu .menu-item, .sidebar-bottom .action-link-btn").forEach((item) => {
+    item.addEventListener("click", closeMobileMenu);
+  });
+
   document.getElementById("btn-open-terminal")?.addEventListener("click", () => modalLogs?.classList.remove("hidden"));
   document.getElementById("close-logs-modal")?.addEventListener("click", () => modalLogs?.classList.add("hidden"));
 
