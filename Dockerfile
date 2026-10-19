@@ -2,6 +2,11 @@
 
 WORKDIR /app
 
+ENV TZ=Asia/Shanghai
+ENV PORT=5308
+ENV DATA_DIR=/app/data
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
 # 安装 Chromium 运行时必需的系统依赖库与中文字体支持
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -41,15 +46,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tzdata \
     && rm -rf /var/lib/apt/lists/*
 
-ENV TZ=Asia/Shanghai
-ENV PORT=5308
-ENV DATA_DIR=/app/data
-
 COPY package*.json ./
 RUN npm install --omit=dev
 
-# 安装内置 Patchright Chromium
-RUN npx patchright-core install chromium || true
+# 安装内置 Patchright Chromium 到系统共享目录
+RUN npx patchright-core install chromium
 
 COPY . .
 

@@ -2,11 +2,11 @@
 
 services:
   rewards-v3:
-    build: .
-    image: rewards-automation-v3:latest
+    image: ghcr.io/saarjoye/rewards-docker:latest
     container_name: rewards-v3
     restart: unless-stopped
-    shm_size: "1gb"
+    shm_size: 1gb
+    mem_limit: 512m
     ports:
       - "5308:5308"
     environment:
@@ -15,7 +15,3 @@ services:
       - DATA_DIR=/app/data
     volumes:
       - /docker/home/rewards-v3:/app/data
-    deploy:
-      resources:
-        limits:
-          memory: 512M
