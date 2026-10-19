@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.0.8",
-  "description": "Microsoft Rewards 自动化平台 (v6.0.8 全局防换行深度根除与Bento视觉标准统一)",
+  "version": "6.0.9",
+  "description": "Microsoft Rewards 自动化平台 (v6.0.9 智能轮询收割额外积分与全端防换行增强)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {
