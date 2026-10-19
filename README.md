@@ -95,7 +95,7 @@
 ```bash
 docker compose up -d
 ```
-控制台端口为 `5308`，运行数据自动持久化至 `./data` 目录。
+控制台端口为 `5308`，运行数据持久化至宿主机目录（如 `/docker/home/rewards-v3` 或 `./data`）。
 
 ---
 
