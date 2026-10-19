@@ -1,4 +1,4 @@
-﻿name: Build and Publish Docker Image
+name: Build and Publish Docker Image
 
 on:
   push:
@@ -36,7 +36,7 @@ jobs:
           images: ghcr.io/${{ github.repository }}
           tags: |
             type=raw,value=latest
-            type=raw,value=v3.0.0
+            type=raw,value=v6.0.0
             type=sha,format=short
 
       - name: Build and push Docker image

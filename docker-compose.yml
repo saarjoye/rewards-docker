@@ -1,9 +1,9 @@
-﻿version: "3.8"
+version: "3.8"
 
 services:
   rewards-v3:
     image: ghcr.io/saarjoye/rewards-docker:latest
-    container_name: rewards-v3
+    container_name: rewards
     restart: unless-stopped
     shm_size: 1gb
     mem_limit: 512m

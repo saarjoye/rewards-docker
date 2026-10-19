@@ -1,4 +1,4 @@
-﻿import configManager from './config.js';
+import configManager from './config.js';
 import logger from './logger.js';
 import scheduler from './scheduler.js';
 import { createServer } from './web/server.js';
@@ -6,7 +6,7 @@ import { createServer } from './web/server.js';
 async function bootstrap() {
   console.log(`
   ==============================================================
-  🎁 Microsoft Rewards 全自动化架构平台 (v3.0 重构标准版)
+  🎁 Microsoft Rewards 全自动化架构平台 (v6.0 全新架构标准版)
   ==============================================================
   `);
 
