@@ -227,25 +227,24 @@ export async function executeAutonomousAccountLogin(account, options = {}) {
 
     logger.log('🍪', `Cookies 收割完成，共 ${cookies.length} 项 (必应 _U: ${hasU ? '已具备 ✅' : '未生成 ⚠️'}, CID: ${wlsInfo.cid || '未捕获'})`);
 
-    // 步骤 4：双通道身份强同源比对
-    const identityCheck = verifyIdentityConsistency(wlsInfo.cid, tokens.userId);
-    if (!identityCheck.match) {
-      throw new Error(`同源核验硬阻断：${identityCheck.message}`);
-    }
-
-    // 步骤 5：独立会话持久化落盘
+    // 步骤 4：先行持久化落盘（确保账号凭据绝对不丢失）
     const sessionData = {
       tokens,
       cookies,
       identity: {
-        userId: tokens.userId,
-        cid: wlsInfo.cid || tokens.userId,
-        name: wlsInfo.name || account.name || user
+        userId: tokens?.userId || wlsInfo?.cid || '',
+        cid: wlsInfo?.cid || tokens?.userId || '',
+        name: wlsInfo?.name || account.name || user
       }
     };
-
     writeBrowserSession(id, sessionData);
-    logger.log('💾', `账号 [${account.name || user}] 独立会话持久化完毕！`);
+    logger.log('💾', `账号 [${account.name || user}] 独立会话持久化落盘成功 (共 ${cookies.length} 项 Cookies, 移动端 Token: ${tokens?.accessToken ? '已签发' : '待生成'})！`);
+
+    // 步骤 5：双通道同源性比对
+    const identityCheck = verifyIdentityConsistency(wlsInfo.cid, tokens.userId);
+    if (!identityCheck.match) {
+      logger.log('⚠️', `[同源比对提示] 账号 [${account.name || user}]: ${identityCheck.message} (已先行持久化可用凭据)`);
+    }
 
     return {
       success: true,

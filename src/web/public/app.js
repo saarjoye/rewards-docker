@@ -875,17 +875,36 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  // 账号健康体检 (对标图 8)
+  // 账号健康体检 (支持单账号四维深度体检与全部账号矩阵扫描)
+
   async function openHealthCheckModal() {
     modalHealthCheck?.classList.remove("hidden");
     const selAcc = document.getElementById("health-select-account");
     if (selAcc) {
       selAcc.innerHTML = accounts
-        .map((a) => `<option value="${a.id}">${escapeHtml(a.name || a.user)}</option>`)
+        .map((a, idx) => {
+          const dName = getAccountDisplayName(a, idx);
+          return '<option value="' + a.id + '">' + escapeHtml(dName) + (a.user ? ' (' + escapeHtml(a.user) + ')' : '') + '</option>';
+        })
         .join("");
       if (selectedAccountId) selAcc.value = selectedAccountId;
     }
-    runHealthCheck();
+
+    // 重置为待命状态，绝不一打开就检测，杜绝误触锁定账号
+    document.getElementById("btn-start-health-check").style.display = "inline-block";
+    document.getElementById("btn-re-check").style.display = "none";
+    const bannerTitle = document.getElementById("health-summary-title");
+    const bannerSub = document.getElementById("health-summary-sub");
+    if (bannerTitle) {
+      bannerTitle.textContent = "等待开始检测";
+      bannerTitle.style.color = "#475569";
+    }
+    if (bannerSub) {
+      bannerSub.textContent = "请确认体检范围后点击下方「▶ 开始检测」按钮 (避免误触占用账号锁)";
+    }
+    document.getElementById("health-summary-banner").style.background = "#f8fafc";
+    document.getElementById("health-summary-banner").style.borderColor = "#e2e8f0";
+    document.getElementById("health-status-icon").className = "health-status-circle";
   }
 
   async function runHealthCheck() {
@@ -894,22 +913,14 @@ document.addEventListener("DOMContentLoaded", () => {
     const bannerTitle = document.getElementById("health-summary-title");
     const bannerSub = document.getElementById("health-summary-sub");
 
-    const hCookieTag = document.getElementById("h-cookie-tag");
-    const hCookieDesc = document.getElementById("h-cookie-desc");
-    const hOauthTag = document.getElementById("h-oauth-tag");
-    const hOauthDesc = document.getElementById("h-oauth-desc");
-    const hNetTag = document.getElementById("h-net-tag");
-    const hNetDesc = document.getElementById("h-net-desc");
-
-    const hBalance = document.getElementById("h-quota-balance");
-    const hSearch = document.getElementById("h-quota-search");
-    const hNews = document.getElementById("h-quota-news");
-
-    if (hCookieTag) hCookieTag.textContent = "检测中...";
-    if (hOauthTag) hOauthTag.textContent = "检测中...";
-    if (hNetTag) hNetTag.textContent = "检测中...";
+    const singleView = document.getElementById("health-single-view");
+    const allView = document.getElementById("health-all-view");
 
     const targetId = document.getElementById("health-select-account")?.value || (accounts[0] && accounts[0].id);
+
+    bannerTitle.textContent = "正在全面体检微软授权与网络通道...";
+    bannerTitle.style.color = "#0284c7";
+    bannerSub.textContent = "正在读取持久化 Cookies、换取移动端 Token 状态并探测出口 IP 归属...";
 
     try {
       const res = await fetch("/api/health/check", {
@@ -920,62 +931,158 @@ document.addEventListener("DOMContentLoaded", () => {
       const data = await res.json();
       if (!data.success) throw new Error(data.message || "体检失败");
 
-      const r = data.report || {};
-      const c = r.cookieHealth || {};
-      const o = r.oauthHealth || {};
-      const n = r.netHealth || {};
-      const q = r.quotaHealth || {};
+      if (healthScope === 'single') {
+        // 单账号模式
+        singleView?.classList.remove("hidden");
+        allView?.classList.add("hidden");
 
-      if (hCookieTag) {
-        hCookieTag.textContent = c.healthy ? "已授权有效" : "待自愈补齐";
-        hCookieTag.className = c.healthy ? "h-status-tag" : "h-status-tag warning";
-      }
-      if (hCookieDesc) hCookieDesc.textContent = c.detail || "--";
+        const r = data.report || {};
+        const c = r.cookieHealth || {};
+        const o = r.oauthHealth || {};
+        const n = r.netHealth || {};
+        const q = r.quotaHealth || {};
 
-      if (hOauthTag) {
-        hOauthTag.textContent = o.healthy ? "授权有效" : "待补齐";
-        hOauthTag.className = o.healthy ? "h-status-tag" : "h-status-tag warning";
-      }
-      if (hOauthDesc) hOauthDesc.textContent = o.detail || "--";
+        const hCookieTag = document.getElementById("h-cookie-tag");
+        const hCookieDesc = document.getElementById("h-cookie-desc");
+        const hOauthTag = document.getElementById("h-oauth-tag");
+        const hOauthDesc = document.getElementById("h-oauth-desc");
+        const hNetTag = document.getElementById("h-net-tag");
+        const hNetDesc = document.getElementById("h-net-desc");
 
-      if (hNetTag) {
-        hNetTag.textContent = n.isCN ? "中国大陆出口" : (n.success ? "非CN出口" : "探测超时");
-        hNetTag.className = n.isCN ? "h-status-tag" : "h-status-tag warning";
-      }
-      if (hNetDesc) hNetDesc.textContent = n.message + " · IP: " + n.ip;
+        const hBalance = document.getElementById("h-quota-balance");
 
-      if (hBalance) hBalance.textContent = (q.balance || 0).toLocaleString() + " 分";
-      if (hSearch) hSearch.textContent = "配额 60 分 (30轮)";
-      if (hNews) hNews.textContent = "配额 30 分 (10篇)";
+        if (hCookieTag) {
+          hCookieTag.textContent = c.healthy ? "已授权有效" : "待自愈补齐";
+          hCookieTag.className = c.healthy ? "h-status-tag ok" : "h-status-tag err";
+        }
+        if (hCookieDesc) hCookieDesc.textContent = c.detail || "--";
 
-      if (r.allSatisfied) {
-        if (banner) {
+        if (hOauthTag) {
+          hOauthTag.textContent = o.healthy ? "授权有效" : "待补齐";
+          hOauthTag.className = o.healthy ? "h-status-tag ok" : "h-status-tag warn";
+        }
+        if (hOauthDesc) hOauthDesc.textContent = o.detail || "--";
+
+        if (hNetTag) {
+          hNetTag.textContent = n.isCN ? "中国大陆出口" : (n.success ? "非CN出口" : "探测超时");
+          hNetTag.className = n.isCN ? "h-status-tag ok" : "h-status-tag warn";
+        }
+        if (hNetDesc) hNetDesc.textContent = (n.message || "") + " · IP: " + (n.ip || "");
+
+        if (hBalance) hBalance.textContent = (q.balance || 0).toLocaleString() + " 分";
+
+        if (r.allSatisfied) {
           banner.style.background = "#f0fdf4";
           banner.style.borderColor = "#bbf7d0";
-        }
-        if (bannerIcon) bannerIcon.className = "health-status-circle green";
-        if (bannerTitle) {
+          bannerIcon.className = "health-status-circle green";
           bannerTitle.textContent = "账号体检全部通过";
           bannerTitle.style.color = "#15803d";
-        }
-        if (bannerSub) bannerSub.textContent = "账号 [" + r.accountName + "] 双通道凭据与出口 IP 全部满足任务执行条件！";
-      } else {
-        if (banner) {
+          bannerSub.textContent = "账号 [" + r.accountName + "] 双通道凭据与出口 IP 全部满足任务执行条件！";
+        } else {
           banner.style.background = "#fffbeb";
           banner.style.borderColor = "#fef3c7";
-        }
-        if (bannerIcon) bannerIcon.className = "health-status-circle red";
-        if (bannerTitle) {
-          bannerTitle.textContent = "体检状态存在待自愈项";
+          bannerIcon.className = "health-status-circle red";
+          bannerTitle.textContent = "账号登录状态存在异常";
           bannerTitle.style.color = "#b45309";
+          const reasons = [];
+          if (!c.healthy) reasons.push("缺少必应 _U Cookie");
+          if (!o.healthy) reasons.push("缺少移动端 Token");
+          if (!n.isCN) reasons.push("出口非中国大陆 IP");
+          bannerSub.textContent = "账号 [" + r.accountName + "] 检测到: " + reasons.join("、") + "，建议点击右下方「开始执行」触发自动自愈。";
         }
-        if (bannerSub) bannerSub.textContent = "账号 [" + r.accountName + "] 缺少部分凭据，启动任务时将由无头浏览器自动自愈补齐。";
+      } else {
+        // 全部账号模式：矩阵式详细展现
+        singleView?.classList.add("hidden");
+        allView?.classList.remove("hidden");
+
+        const reports = data.reports || [];
+        const total = reports.length;
+        const passed = reports.filter((rp) => rp.allSatisfied).length;
+        const failed = total - passed;
+
+        if (failed === 0) {
+          banner.style.background = "#f0fdf4";
+          banner.style.borderColor = "#bbf7d0";
+          bannerIcon.className = "health-status-circle green";
+          bannerTitle.textContent = "全部 " + total + " 个托管账号体检全量通过！";
+          bannerTitle.style.color = "#15803d";
+          bannerSub.textContent = "所有账号的 Web Cookie 与移动端 OAuth 授权全部有效，任务流水线可全自动执行！";
+        } else {
+          banner.style.background = "#fff8f8";
+          banner.style.borderColor = "#fecaca";
+          bannerIcon.className = "health-status-circle red";
+          bannerTitle.textContent = "体检发现 " + failed + " 个账号登录状态异常！";
+          bannerTitle.style.color = "#b91c1c";
+          const failNames = reports.filter((rp) => !rp.allSatisfied).map((rp) => rp.accountName).join(", ");
+          bannerSub.textContent = "存在登录态异常的账号: [" + failNames + "]，可点击对应卡片右侧的「立即登录修复」！";
+        }
+
+        allView.innerHTML = reports.map((rp) => {
+          const isOk = rp.allSatisfied;
+          const c = rp.cookieHealth || {};
+          const o = rp.oauthHealth || {};
+          const n = rp.netHealth || {};
+          const q = rp.quotaHealth || {};
+
+          return (
+            '<div class="health-all-card ' + (isOk ? '' : 'error') + '">' +
+              '<div class="health-all-head">' +
+                '<div class="health-all-title-grp">' +
+                  '<span style="font-size: 16px;">' + (isOk ? '👤' : '⚠️') + '</span>' +
+                  '<span class="health-all-name">' + escapeHtml(rp.accountName) + '</span>' +
+                  '<span class="health-all-badge ' + (isOk ? 'ok' : 'err') + '">' + (isOk ? '✔ 状态就绪' : '✖ 存在凭据异常') + '</span>' +
+                '</div>' +
+                (!isOk ? '<button type="button" class="btn-sm-repair" onclick="window.triggerAccountRepair(\'' + rp.accountId + '\')">🔑 立即登录修复</button>' : '') +
+              '</div>' +
+              '<div class="health-all-grid">' +
+                '<div class="item-cell">' +
+                  '<span>💻 网页 Cookie:</span>' +
+                  '<span class="' + (c.healthy ? 'val-ok' : 'val-err') + '">' + (c.healthy ? '✔ 完备 (含_U)' : '✖ 缺少 _U 凭据') + '</span>' +
+                '</div>' +
+                '<div class="item-cell">' +
+                  '<span>📱 移动 Token:</span>' +
+                  '<span class="' + (o.healthy ? 'val-ok' : 'val-err') + '">' + (o.healthy ? '✔ 有效' : '✖ 待换取') + '</span>' +
+                '</div>' +
+                '<div class="item-cell">' +
+                  '<span>🌐 出口 IP:</span>' +
+                  '<span class="' + (n.isCN ? 'val-ok' : 'val-err') + '">' + (n.isCN ? '中国大陆' : '非 CN') + '</span>' +
+                '</div>' +
+                '<div class="item-cell">' +
+                  '<span>📊 可用积分:</span>' +
+                  '<span style="font-weight: 700; color: #0284c7;">' + (q.balance || 0).toLocaleString() + ' 分</span>' +
+                '</div>' +
+              '</div>' +
+            '</div>'
+          );
+        }).join('');
       }
-    } catch (err) {
-      if (bannerTitle) bannerTitle.textContent = "体检请求异常";
-      if (bannerSub) bannerSub.textContent = err.message;
+    } catch (e) {
+      banner.style.background = "#fff8f8";
+      banner.style.borderColor = "#fecaca";
+      bannerIcon.className = "health-status-circle red";
+      bannerTitle.textContent = "体检执行异常";
+      bannerTitle.style.color = "#b91c1c";
+      bannerSub.textContent = e.message;
     }
   }
+
+  window.triggerAccountRepair = async (accId) => {
+    const acc = accounts.find((a) => a.id === accId);
+    if (!acc) return;
+    if (!confirm("是否立即启动账号 [" + (acc.name || acc.user) + "] 的后台自主登录与凭据收割？")) return;
+    try {
+      const res = await fetch("/api/accounts/" + accId + "/login", { method: "POST" });
+      const data = await res.json();
+      alert(data.message || "自主登录已在后台启动，可在「实时日志」中查看全过程！");
+      setTimeout(() => runHealthCheck(), 3000);
+    } catch (e) {
+      alert("启动修复异常: " + e.message);
+    }
+  };
+
+  const closeHealthModal = () => modalHealthCheck?.classList.add("hidden");
+  document.getElementById("btn-health-confirm")?.addEventListener("click", closeHealthModal);
+  document.getElementById("close-health-modal-x")?.addEventListener("click", closeHealthModal);
 
   document.getElementById("btn-start-health-check")?.addEventListener("click", () => {
     document.getElementById("btn-start-health-check").style.display = "none";
@@ -989,12 +1096,14 @@ document.addEventListener("DOMContentLoaded", () => {
     healthScope = "single";
     this.classList.add("active");
     document.getElementById("btn-health-all")?.classList.remove("active");
+    document.getElementById("health-select-account").style.display = "inline-block";
     runHealthCheck();
   });
   document.getElementById("btn-health-all")?.addEventListener("click", function () {
     healthScope = "all";
     this.classList.add("active");
     document.getElementById("btn-health-single")?.classList.remove("active");
+    document.getElementById("health-select-account").style.display = "none";
     runHealthCheck();
   });
 

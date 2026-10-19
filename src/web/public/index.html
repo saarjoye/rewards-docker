@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Rewards 自动任务系统 (v6.0.5)</title>
+  <title>Rewards 自动任务系统 (v6.0.6)</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -13,7 +13,7 @@
       <div class="sidebar-top">
         <div class="brand">
           <div class="brand-logo-sq">🎁</div>
-          <span class="brand-name">Rewards<span class="brand-dot">.v6.0.5</span></span>
+          <span class="brand-name">Rewards<span class="brand-dot">.v6.0.6</span></span>
         </div>
 
         <div class="store-selector-wrap">
@@ -70,7 +70,7 @@
         </button>
         <div class="mobile-nav-brand">
           <span style="font-size: 18px;">🎁</span>
-          <span class="mobile-nav-title">Rewards<span class="brand-dot">.v6.0.5</span></span>
+          <span class="mobile-nav-title">Rewards<span class="brand-dot">.v6.0.6</span></span>
         </div>
         <button type="button" class="mobile-quick-btn" id="btn-mobile-quick-run">🚀 执行</button>
       </div>
@@ -456,23 +456,23 @@
 
   <!-- 模态框 6：账号健康体检 (对标图 8) -->
   <div id="modal-health-check" class="modal-backdrop hidden">
-    <div class="modal-card modal-card-lg">
-      <div class="modal-head">
+    <div class="modal-card modal-card-lg" style="max-height: 88vh; overflow-y: auto;">
+      <div class="modal-head" style="display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #e2e8f0; padding-bottom: 10px;">
         <div style="display: flex; align-items: center; gap: 8px;">
           <span style="font-size: 20px;">🔍</span>
           <h3 class="modal-h3">微软账号登录状态体检</h3>
         </div>
-        
+        <button type="button" class="modal-close-pill" id="close-health-modal-x" title="关闭窗口">✕ 关闭</button>
       </div>
 
-      <!-- 体检范围切换 (对标图 8 顶部) -->
-      <div class="health-scope-row">
+      <!-- 体检范围切换 -->
+      <div class="health-scope-row" style="margin-top: 12px;">
         <span class="health-scope-label">体检范围</span>
         <div class="health-scope-pills">
-          <button class="scope-pill active" id="btn-health-single">单个账号</button>
-          <button class="scope-pill" id="btn-health-all">全部账号</button>
+          <button type="button" class="scope-pill active" id="btn-health-single">单个账号</button>
+          <button type="button" class="scope-pill" id="btn-health-all">全部账号</button>
         </div>
-        <select class="f-select-sm" id="health-select-account" style="margin-left: 8px;">
+        <select class="select-pill" id="health-select-account" style="margin-left: 8px; font-weight: 700; background: #ffffff;">
           <!-- 动态填充账号 -->
         </select>
       </div>
@@ -480,19 +480,19 @@
       <!-- 诊断状态大标头 -->
       <div class="health-summary-banner" id="health-summary-banner" style="background: #f8fafc; border-color: #e2e8f0;">
         <div class="health-status-circle" id="health-status-icon" style="background: #94a3b8;"></div>
-        <div>
+        <div style="flex: 1;">
           <div class="health-summary-title" id="health-summary-title" style="color: #475569;">等待开始检测</div>
           <div class="health-summary-sub" id="health-summary-sub">请确认体检范围后点击下方「▶ 开始检测」按钮 (避免误触占用账号锁)</div>
         </div>
       </div>
 
-      <!-- 四维诊断列表卡片 (对标图 8) -->
-      <div class="health-cards-stack">
+      <!-- 视图 1：单账号深度四维诊断卡片 -->
+      <div id="health-single-view" class="health-cards-stack">
         <!-- 1. 必应网页端 Cookie -->
         <div class="health-card-item">
           <div class="h-card-top">
-            <div class="h-card-name"><span class="h-icon">💻</span> 必应网页端 Cookie</div>
-            <span class="h-status-tag" id="h-cookie-tag">检测中</span>
+            <div class="h-card-name"><span class="h-icon">💻</span> 必应网页端 Cookie (Web Session)</div>
+            <span class="h-status-tag" id="h-cookie-tag">待检测</span>
           </div>
           <div class="h-card-desc" id="h-cookie-desc">--</div>
         </div>
@@ -500,8 +500,8 @@
         <!-- 2. 移动端 App 授权 (DAPI) -->
         <div class="health-card-item">
           <div class="h-card-top">
-            <div class="h-card-name"><span class="h-icon">📱</span> 移动端 App 授权 (DAPI)</div>
-            <span class="h-status-tag" id="h-oauth-tag">检测中</span>
+            <div class="h-card-name"><span class="h-icon">📱</span> 移动端 App 授权 (DAPI OAuth Token)</div>
+            <span class="h-status-tag" id="h-oauth-tag">待检测</span>
           </div>
           <div class="h-card-desc" id="h-oauth-desc">--</div>
         </div>
@@ -510,7 +510,7 @@
         <div class="health-card-item">
           <div class="h-card-top">
             <div class="h-card-name"><span class="h-icon">🌐</span> 容器出口 IP 与国区防风控</div>
-            <span class="h-status-tag" id="h-net-tag">检测中</span>
+            <span class="h-status-tag" id="h-net-tag">待检测</span>
           </div>
           <div class="h-card-desc" id="h-net-desc">--</div>
         </div>
@@ -523,23 +523,27 @@
           </div>
           <div class="h-quota-col">
             <span class="h-quota-lbl">PC 搜索配额状态</span>
-            <span class="h-quota-val" id="h-quota-search">--</span>
+            <span class="h-quota-val" id="h-quota-search">配额 60 分 (30轮)</span>
           </div>
           <div class="h-quota-col">
             <span class="h-quota-lbl">新闻阅读任务进度</span>
-            <span class="h-quota-val" id="h-quota-news">--</span>
+            <span class="h-quota-val" id="h-quota-news">配额 30 分 (10篇)</span>
           </div>
         </div>
       </div>
 
-      <div class="modal-foot" style="justify-content: flex-end; gap: 10px; margin-top: 18px;">
-        <button type="button" class="btn-primary-blue" id="btn-start-health-check" style="background: linear-gradient(135deg, #0284c7, #0369a1); font-weight: 700;">▶ 开始检测</button>
-        <button type="button" class="btn-cancel" id="btn-re-check" style="display: none;">🔄 重新检测</button>
-        <button type="button" class="btn-cancel" id="btn-health-confirm">关闭</button>
+      <!-- 视图 2：全部账号体检明细矩阵 (全部账号模式时显示) -->
+      <div id="health-all-view" class="health-all-list hidden" style="display: flex; flex-direction: column; gap: 10px;">
+        <!-- 动态渲染全部账号体检清单 -->
+      </div>
+
+      <div class="modal-foot" style="justify-content: flex-end; gap: 10px; margin-top: 18px; border-top: 1px solid #e2e8f0; padding-top: 12px;">
+        <button type="button" class="btn-primary-blue" id="btn-start-health-check" style="background: linear-gradient(135deg, #0284c7, #0369a1); font-weight: 700; color: #fff; border: none; padding: 8px 18px; border-radius: 8px; cursor: pointer;">▶ 开始检测</button>
+        <button type="button" class="btn-cancel" id="btn-re-check" style="display: none; font-weight: 700;">🔄 重新检测</button>
+        <button type="button" class="btn-cancel" id="btn-health-confirm" style="font-weight: 700;">关闭</button>
       </div>
     </div>
   </div>
-
 
   <!-- 模态框 7：全局配置中心 (对标图 1-6) -->
   <div id="modal-global-config" class="modal-backdrop hidden">
