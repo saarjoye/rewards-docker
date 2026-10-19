@@ -47,6 +47,14 @@ document.addEventListener("DOMContentLoaded", () => {
       if (!data.success) return;
 
       accounts = data.accounts || [];
+      
+      // 状态迁移监测：检测到从运行中(isBusy: true)变为结束(false)的瞬间，立即二次强制刷新
+      if (lastWasBusy && !data.isBusy) {
+        lastWasBusy = false;
+        setTimeout(() => refreshDashboard(), 800);
+      }
+      lastWasBusy = !!data.isBusy;
+
       const primaryAcc = accounts[0] || { id: "test_live_account", name: "桂林", user: "user@example.com", todayEarned: 93, balance: 1511, streakDays: 4, claimablePoints: 0 };
 
       let today = 0, balance = 0, streak = 0, claimable = 0;
@@ -1442,7 +1450,12 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function connectLogs() {
-    const evtSource = new EventSource("/api/logs/stream");
+    let evtSource = null;
+    try {
+      evtSource = new EventSource("/api/logs/stream");
+    } catch {}
+    if (!evtSource) return;
+
     evtSource.onmessage = (e) => {
       try {
         const item = JSON.parse(e.data);
@@ -1451,9 +1464,26 @@ document.addEventListener("DOMContentLoaded", () => {
         div.textContent = item.raw;
         logTerminal?.appendChild(div);
         if (autoScroll && logTerminal) logTerminal.scrollTop = logTerminal.scrollHeight;
+
+        // 关键事件驱动：一旦监听到任务完成、积分变动或权威数据采集日志，毫秒级即刻触发大盘刷新！
+        const rawText = item.raw || "";
+        if (
+          rawText.includes("任务执行完成") ||
+          rawText.includes("权威数据采集结果") ||
+          rawText.includes("已成功领取") ||
+          rawText.includes("对账完毕") ||
+          rawText.includes("已全部同步") ||
+          rawText.includes("对账确认") ||
+          rawText.includes("收割完毕") ||
+          rawText.includes("真实数据回写成功")
+        ) {
+          refreshDashboard();
+          // 并在 1.2 秒后进行二次复核回验，确保官方最终积分 100% 实时上屏
+          setTimeout(() => refreshDashboard(), 1200);
+        }
       } catch {}
     };
-    evtSource.onerror = () => setTimeout(connectLogs, 5000);
+    evtSource.onerror = () => setTimeout(connectLogs, 4000);
   }
 
   document.getElementById("btn-toggle-scroll")?.addEventListener("click", function () {
@@ -1507,5 +1537,27 @@ document.addEventListener("DOMContentLoaded", () => {
 
   refreshDashboard();
   connectLogs();
-  setInterval(refreshDashboard, 8000);
+  
+  // 自适应动态节拍调度器 (执行任务期间 2 秒高频刷新，空闲期间 4 秒平稳巡检，任务结束瞬间毫秒级即时更新)
+  let lastWasBusy = false;
+  let previousRecordedToday = null;
+
+  async function adaptivePollingCycle() {
+    try {
+      await refreshDashboard();
+    } catch {}
+
+    // 根据后台任务繁忙状态自适应调整轮询节拍
+    const nextInterval = lastWasBusy ? 2000 : 4000;
+    setTimeout(adaptivePollingCycle, nextInterval);
+  }
+
+  // 挂载到全局供大盘状态变更钩子调用
+  window.triggerImmediatePointsUpdate = () => {
+    refreshDashboard();
+    setTimeout(() => refreshDashboard(), 1000);
+  };
+
+  setTimeout(adaptivePollingCycle, 2000);
+
 });
