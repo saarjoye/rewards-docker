@@ -1,0 +1,20 @@
+﻿version: "3.8"
+
+services:
+  rewards-v3:
+    build: .
+    image: rewards-automation-v3:latest
+    container_name: rewards-v3
+    restart: unless-stopped
+    ports:
+      - "5308:5308"
+    environment:
+      - TZ=Asia/Shanghai
+      - PORT=5308
+      - DATA_DIR=/app/data
+    volumes:
+      - ./data:/app/data
+    deploy:
+      resources:
+        limits:
+          memory: 512M

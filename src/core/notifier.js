@@ -1,0 +1,181 @@
+﻿import configManager, { SECRET_PLACEHOLDER } from '../config.js';
+import networkClient from '../network.js';
+import logger from '../logger.js';
+
+const WEWORK_DEFAULT_BASE_URL = 'https://qyapi.weixin.qq.com';
+const TOKEN_REFRESH_AHEAD_MS = 5 * 60 * 1000;
+const TOKEN_ERROR_CODES = new Set([40014, 42001, 42007, 42009]);
+
+export function buildWeWorkAppBaseUrl(raw) {
+  const value = String(raw || '').trim();
+  if (!value) return WEWORK_DEFAULT_BASE_URL;
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error('企业微信应用 Base URL 格式无效，必须包含合法协议与域名');
+  }
+  if (url.protocol !== 'https:') throw new Error('企业微信应用 Base URL 必须使用 HTTPS 协议');
+  if (url.username || url.password) throw new Error('企业微信应用 Base URL 不能包含账号密码');
+  if (url.search || url.hash) throw new Error('企业微信应用 Base URL 不能包含查询参数或片段');
+  const prefix = url.pathname.replace(/\/+$/, '');
+  return `${url.origin}${prefix}`;
+}
+
+export function buildWeWorkAppTokenUrl(baseUrl, corpId, secret) {
+  const base = buildWeWorkAppBaseUrl(baseUrl);
+  const id = encodeURIComponent(String(corpId || '').trim());
+  const key = encodeURIComponent(String(secret || '').trim());
+  return `${base}/cgi-bin/gettoken?corpid=${id}&corpsecret=${key}`;
+}
+
+export function buildWeWorkAppSendUrl(baseUrl, accessToken) {
+  const base = buildWeWorkAppBaseUrl(baseUrl);
+  return `${base}/cgi-bin/message/send?access_token=${encodeURIComponent(String(accessToken || '').trim())}`;
+}
+
+export class Notifier {
+  constructor() {
+    this.tokenCache = new Map();
+  }
+
+  getCacheKey(cfg) {
+    return `${buildWeWorkAppBaseUrl(cfg.baseUrl)}|${cfg.corpId}|${cfg.secret}`;
+  }
+
+  async getAccessToken(cfg, forceRefresh = false) {
+    const key = this.getCacheKey(cfg);
+    const now = Date.now();
+
+    if (!forceRefresh) {
+      const cached = this.tokenCache.get(key);
+      if (cached && cached.expiresAt > now + TOKEN_REFRESH_AHEAD_MS) {
+        return cached.token;
+      }
+    }
+
+    const tokenUrl = buildWeWorkAppTokenUrl(cfg.baseUrl, cfg.corpId, cfg.secret);
+    const res = await networkClient.request({
+      url: tokenUrl,
+      method: 'GET',
+      headers: { 'Content-Type': 'application/json' }
+    });
+
+    const data = typeof res === 'string' ? JSON.parse(res) : res;
+    if (!data || Number(data.errcode) !== 0 || !data.access_token) {
+      throw new Error(`企业微信应用获取 Token 失败: ${data?.errmsg || '未知响应'}`);
+    }
+
+    const expiresIn = Math.max(60, Number(data.expires_in) || 7200);
+    this.tokenCache.set(key, {
+      token: data.access_token,
+      expiresAt: now + expiresIn * 1000
+    });
+
+    return data.access_token;
+  }
+
+  async sendWeWorkApp(cfg, title, content) {
+    if (!cfg || !cfg.corpId || !cfg.agentId || !cfg.secret) {
+      throw new Error('企业微信应用缺少必要配置 (CorpID, AgentId 或 Secret)');
+    }
+
+    const baseUrl = buildWeWorkAppBaseUrl(cfg.baseUrl);
+    let token = await this.getAccessToken(cfg);
+
+    const payload = {
+      touser: cfg.toUser || '@all',
+      msgtype: 'markdown',
+      agentid: Number(cfg.agentId),
+      markdown: {
+        content: `### 🎁 ${title}\n\n${content}\n\n> 🤖 来自 Microsoft Rewards 自动化托管平台`
+      },
+      safe: 0
+    };
+
+    const sendUrl = buildWeWorkAppSendUrl(baseUrl, token);
+    let res = await networkClient.request({
+      url: sendUrl,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      data: JSON.stringify(payload)
+    });
+
+    let data = typeof res === 'string' ? JSON.parse(res) : res;
+
+    // Token 过期或非法自动重试 1 次
+    if (data && TOKEN_ERROR_CODES.has(Number(data.errcode))) {
+      logger.log('🔄', '企业微信 Token 已失效，自动刷新重试推送...');
+      token = await this.getAccessToken(cfg, true);
+      const retryUrl = buildWeWorkAppSendUrl(baseUrl, token);
+      res = await networkClient.request({
+        url: retryUrl,
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        data: JSON.stringify(payload)
+      });
+      data = typeof res === 'string' ? JSON.parse(res) : res;
+    }
+
+    if (!data || Number(data.errcode) !== 0) {
+      throw new Error(`企业微信应用消息发送失败: ${data?.errmsg || '网络或参数异常'}`);
+    }
+
+    logger.log('📢', `「企业微信应用」消息推送成功！(反代: ${baseUrl})`);
+    return true;
+  }
+
+  /**
+   * 推送每日任务结算与 01:00 对账战报
+   */
+  async sendSettlementReport(account, stats = {}) {
+    const cfg = configManager.get().notify?.weworkApp;
+    if (!cfg || !cfg.enabled || !cfg.corpId || !cfg.secret) {
+      return false;
+    }
+
+    const title = `Rewards 每日对账战报 - ${account.name || account.user}`;
+    const content = [
+      `> **托管账号**：\`${account.user}\``,
+      `> **今日真实已增**：\`+${stats.todayEarned || 0} 分\``,
+      `> **账户可用总额**：\`${(stats.balance || 0).toLocaleString()} 分\``,
+      `> **连续打卡天数**：\`${stats.streakDays || 0} 天\``,
+      `> **待领抽屉积分**：\`${stats.claimablePoints || 0} 分 (01:00已收割)\``,
+      `> **执行状态**：\`全部板块已成功对标官网\``
+    ].join('\n\n');
+
+    try {
+      await this.sendWeWorkApp(cfg, title, content);
+      return true;
+    } catch (e) {
+      logger.log('🔴', `企业微信战报推送失败: ${e.message}`, '', account.name);
+      return false;
+    }
+  }
+
+  /**
+   * 测试连通性
+   */
+  async testChannel(cfgOverrides = {}) {
+    const saved = configManager.get().notify?.weworkApp || {};
+    let secret = cfgOverrides.secret;
+    if (!secret || secret === SECRET_PLACEHOLDER) {
+      secret = saved.secret;
+    }
+
+    const merged = {
+      ...saved,
+      ...cfgOverrides,
+      secret,
+      enabled: true
+    };
+
+    const title = '企业微信应用测试连通性';
+    const content = `如果你收到此消息，说明你的企业微信应用与反代通道配置已 100% 连通就绪！\n\n> **反代地址**：\`${merged.baseUrl || WEWORK_DEFAULT_BASE_URL}\`\n> **接收人**：\`${merged.toUser || '@all'}\``;
+
+    return await this.sendWeWorkApp(merged, title, content);
+  }
+}
+
+export const notifier = new Notifier();
+export default notifier;

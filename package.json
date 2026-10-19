@@ -1,0 +1,29 @@
+﻿{
+  "name": "rewards-automation-v3",
+  "version": "3.0.0",
+  "description": "Microsoft Rewards 全自动化架构平台 (v3.0 账号密码全托管与真实数据驱动)",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node --test"
+  },
+  "keywords": [
+    "microsoft-rewards",
+    "rewards-v3",
+    "automation",
+    "patchright",
+    "webui"
+  ],
+  "author": "saarjoye",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.7.9",
+    "express": "^4.21.2",
+    "https-proxy-agent": "^7.0.6",
+    "node-cron": "^3.0.3",
+    "patchright-core": "^1.64.0",
+    "socks-proxy-agent": "^8.0.5"
+  }
+}

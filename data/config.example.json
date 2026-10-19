@@ -1,0 +1,80 @@
+﻿{
+  "server": {
+    "port": 5308
+  },
+  "scheduler": {
+    "enabled": true,
+    "peakSlots": [
+      "09:00-13:00",
+      "13:00-17:00",
+      "17:00-21:00",
+      "21:00-01:00"
+    ],
+    "randomJitterMinutes": 45,
+    "midnightHarvest": true
+  },
+  "network": {
+    "enabled": false,
+    "proxyUrl": "",
+    "lockChinaIp": true
+  },
+  "taskOptions": {
+    "dailyCheckIn": true,
+    "bingSearch": true,
+    "dailySet": true,
+    "newsReading": true,
+    "promosQuiz": true,
+    "weeklyQuest": true,
+    "manualRerun": true,
+    "pacingPreset": "fast",
+    "baseIntervalSec": 18,
+    "randomJitterSec": 6,
+    "stagnationLimit": 10,
+    "theme": "auto",
+    "engine": "playwright"
+  },
+  "searchSettings": {
+    "maxDailySearches": 30,
+    "searchesPerSlot": 8,
+    "stagnationLimit": 3,
+    "typingDelayMinMs": 35,
+    "typingDelayMaxMs": 75,
+    "searchIntervalMinSec": 15,
+    "searchIntervalMaxSec": 40,
+    "jitterMaxSec": 30,
+    "typingDelayMs": 40
+  },
+  "admin": {
+    "initialized": false,
+    "username": "admin",
+    "salt": "",
+    "passwordHash": "",
+    "sessionSecret": ""
+  },
+  "notify": {
+    "weworkApp": {
+      "enabled": false,
+      "baseUrl": "https://qyapi.weixin.qq.com",
+      "corpId": "",
+      "agentId": "",
+      "secret": "",
+      "toUser": "@all"
+    }
+  },
+  "accounts": [
+    {
+      "id": "acc_sample",
+      "name": "示例账号",
+      "user": "your_email@outlook.com",
+      "pass": "your_password",
+      "proxy": "",
+      "enabled": true,
+      "status": "ready",
+      "balance": 0,
+      "todayEarned": 0,
+      "streakDays": 0,
+      "claimablePoints": 0,
+      "lastRun": null
+    }
+  ]
+}

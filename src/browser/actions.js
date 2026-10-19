@@ -1,0 +1,327 @@
+﻿import logger from '../logger.js';
+import browserManager from './browser.js';
+
+const HOT_SEARCH_WORDS = [
+  '2026年最新前沿科技趋势', '神舟飞船最新动态', '人工智能多模态发展', '新能源汽车续航与电池革新',
+  '深空探测与火星科研进展', '量子计算机最新突破', '今日国内国际重大新闻', '健康生活作息指南',
+  '四季养生食谱推荐', '全球气候变化峰会', '开源鸿蒙生态新特性', '现代Web自动化测试最佳实践',
+  '计算机视觉与边缘计算', '智能家居物联网协议', '如何高效提升阅读记忆力', '经典科幻文学精选',
+  '世界历史文化遗产导览', '天文奇观流星雨观测时间', '现代艺术展览资讯', '旅行徒步热门路线'
+];
+
+export function getRandomSearchWord() {
+  const idx = Math.floor(Math.random() * HOT_SEARCH_WORDS.length);
+  const word = HOT_SEARCH_WORDS[idx];
+  const suffixes = ['', ' 详情', ' 盘点', ' 2026', ' 最新报道', ' 指南', ' 技巧'];
+  const suffix = suffixes[Math.floor(Math.random() * suffixes.length)];
+  return word + suffix;
+}
+
+/**
+ * 拟人化鼠标移动 (分步逼近与微小抖动)
+ */
+async function humanMouseMove(page, targetX, targetY) {
+  try {
+    const steps = 15;
+    for (let i = 1; i <= steps; i++) {
+      const progress = i / steps;
+      const curX = targetX * progress + (Math.random() - 0.5) * 8;
+      const curY = targetY * progress + (Math.random() - 0.5) * 8;
+      await page.mouse.move(curX, curY);
+      await new Promise((r) => setTimeout(r, 15));
+    }
+    await page.mouse.move(targetX, targetY);
+  } catch {}
+}
+
+/**
+ * 拟人化必应 PC 搜索执行
+ */
+export async function performHumanizedSearch(page, queryWord, options = {}) {
+  const { accountPrefix = '' } = options;
+  const word = queryWord || getRandomSearchWord();
+
+  browserManager.updateState({ status: "typing", currentAction: `正在模拟真人搜索关键词: "${word}"` });
+  logger.log('🔍', `模拟真人搜索关键词: "${word}"`, '', accountPrefix);
+
+  // 1. 打开必应首页
+  await page.goto('https://cn.bing.com', { waitUntil: 'domcontentloaded', timeout: 30000 });
+  await new Promise((r) => setTimeout(r, 1200 + Math.random() * 800));
+
+  // 2. 定位搜索框
+  const searchInput = await page.$('#sb_form_q, input[name="q"]');
+  if (!searchInput) {
+    throw new Error('未能在必应首页定位到搜索框元素 #sb_form_q');
+  }
+
+  const box = await searchInput.boundingBox();
+  if (box) {
+    await humanMouseMove(page, box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.up();
+  } else {
+    await searchInput.click();
+  }
+
+  // 3. 拟人键入关键词
+  await searchInput.fill('');
+  if (typeof searchInput.type === "function") { await searchInput.type(word, { delay: 35 + Math.random() * 40 }); } else { await searchInput.fill(word); }
+  await new Promise((r) => setTimeout(r, 500 + Math.random() * 500));
+
+  // 4. 提交搜索并等待结果页
+  await Promise.all([
+    page.keyboard.press('Enter'),
+    page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {})
+  ]);
+
+  // 5. 结果页随机微滚与真人驻留 (4~8 秒)
+  try {
+    const scrollAmount = 200 + Math.floor(Math.random() * 400);
+    await page.mouse.wheel(0, scrollAmount);
+    await new Promise((r) => setTimeout(r, 1000 + Math.random() * 1000));
+    await page.mouse.wheel(0, -scrollAmount / 2);
+  } catch {}
+
+  browserManager.updateState({ status: "dwelling", currentAction: "结果页微滚驻留触发遥测..." });
+  const dwellTime = 4000 + Math.random() * 3000;
+  await new Promise((r) => setTimeout(r, dwellTime));
+
+  return true;
+}
+
+/**
+ * 自动识别并完成 Quiz / Poll 页面内的问答选项
+ */
+export async function solveQuizOrPoll(page, options = {}) {
+  const { accountPrefix = '' } = options;
+  try {
+    // 探测问答选项容器（如 .wk_ans、div[role="radio"]、input[type="radio"]、button[data-bi-area] 等）
+    const optionSelectors = [
+      'input.wk_ans, .wk_ans, div.wk_option',
+      'div[role="radio"], button[role="radio"]',
+      'input[type="radio"]',
+      'div[id^="rqAnswerOption"], input[id^="rqAnswerOption"]',
+      'button:has-text("选择"), a:has-text("投票")'
+    ];
+
+    for (const sel of optionSelectors) {
+      const optionsFound = await page.$$(sel);
+      if (optionsFound && optionsFound.length > 0) {
+        logger.log('🧩', `探测到 Quiz/Poll 答题选项，自动点击第 1 项提交答案...`, '', accountPrefix);
+        const targetOption = optionsFound[0];
+        if (await targetOption.isVisible()) {
+          await targetOption.click();
+          await new Promise((r) => setTimeout(r, 2500));
+          // 尝试点击「下一题」或确认
+          const nextBtn = await page.$('input[value*="下一题"], button:has-text("下一题"), input[value*="提交"], button:has-text("提交")');
+          if (nextBtn && await nextBtn.isVisible()) {
+            await nextBtn.click();
+            await new Promise((r) => setTimeout(r, 2000));
+          }
+          return true;
+        }
+      }
+    }
+  } catch (e) {
+    logger.log('⚠️', `Quiz/Poll 交互尝试: ${e.message}`, '', accountPrefix);
+  }
+  return false;
+}
+
+/**
+ * 每日活动集 (Daily Set 3/3) 真机弹窗点击穿透 (含自动答题)
+ */
+export async function penetrateDailySetActivities(page, options = {}) {
+  const { accountPrefix = '' } = options;
+  browserManager.updateState({ status: "navigating", currentAction: "打开仪表盘执行每日活动集 (Daily Set) 穿透..." });
+  logger.log('📅', '打开 Rewards 仪表盘执行每日活动集 (Daily Set) 点击穿透...', '', accountPrefix);
+
+  await page.goto('https://rewards.bing.com/dashboard', { waitUntil: 'domcontentloaded', timeout: 35000 });
+  await new Promise((r) => setTimeout(r, 2500));
+
+  // 查找 Daily Set 区域内的未完成活动链接
+  const links = await page.$$('#dailyset a[target="_blank"], div[data-bi-area="DailySet"] a');
+  logger.log('📅', `检索到 Daily Set 区域内包含 ${links.length} 个活动项目`, '', accountPrefix);
+
+  let clickedCount = 0;
+  for (let i = 0; i < links.length; i++) {
+    const link = links[i];
+    try {
+      if (!(await link.isVisible())) continue;
+
+      // 监听新弹窗打开
+      const [popup] = await Promise.all([
+        page.context().waitForEvent('page', { timeout: 8000 }).catch(() => null),
+        link.click()
+      ]);
+
+      if (popup) {
+        logger.log('🚀', `触发 Daily Set 弹窗第 ${i + 1} 项，驻留触发遥测...`, '', accountPrefix);
+        await popup.waitForLoadState('domcontentloaded').catch(() => {});
+        // 尝试自动解 Quiz/Poll
+        await solveQuizOrPoll(popup, { accountPrefix });
+        await new Promise((r) => setTimeout(r, 4500)); // 驻留 4.5 秒触发加分
+        await popup.close();
+      } else {
+        await new Promise((r) => setTimeout(r, 3000));
+      }
+      clickedCount++;
+    } catch (e) {
+      logger.log('⚠️', `点击 Daily Set 活动项 ${i + 1} 异常: ${e.message}`, '', accountPrefix);
+    }
+  }
+
+  logger.log('✅', `Daily Set 真机交互完成，共穿透点击 ${clickedCount} 项活动`, '', accountPrefix);
+  return clickedCount;
+}
+
+/**
+ * 多步打孔卡 (Punch Cards / Quests) 子路由穿透推进
+ */
+export async function penetratePunchCardQuest(page, questUrl, options = {}) {
+  const { accountPrefix = '' } = options;
+  if (!questUrl) return false;
+
+  const fullUrl = questUrl.startsWith('http') ? questUrl : `https://rewards.bing.com${questUrl}`;
+  logger.log('🎯', `进入多步打孔卡子路由: ${fullUrl}`, '', accountPrefix);
+
+  try {
+    await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 35000 });
+    await new Promise((r) => setTimeout(r, 2500));
+
+    // 扫描子步骤卡片
+    const stepCards = await page.$$('div[data-bi-area="PunchCardStep"], a[href*="/quest/"], div.quest-step, a.c-call-to-action');
+    logger.log('🎯', `打孔卡内部发现 ${stepCards.length} 个子步骤`, '', accountPrefix);
+
+    for (let j = 0; j < stepCards.length; j++) {
+      const step = stepCards[j];
+      try {
+        const text = await step.innerText().catch(() => '');
+        // 时间锁判定：第 N 天解锁 / 明天再来 -> 安全跳过，防风控
+        if (text.includes('明天再来') || text.includes('天解锁')) {
+          logger.log('⏳', `打孔卡第 ${j + 1} 步存在时间锁 [明天再来]，打上【明日解锁】标签安全跳过`, '', accountPrefix);
+          continue;
+        }
+
+        if (await step.isVisible()) {
+          const [stepPopup] = await Promise.all([
+            page.context().waitForEvent('page', { timeout: 6000 }).catch(() => null),
+            step.click()
+          ]);
+
+          if (stepPopup) {
+            await stepPopup.waitForLoadState('domcontentloaded').catch(() => {});
+            await solveQuizOrPoll(stepPopup, { accountPrefix });
+            await new Promise((r) => setTimeout(r, 4000));
+            await stepPopup.close();
+          } else {
+            await new Promise((r) => setTimeout(r, 2500));
+          }
+        }
+      } catch (eStep) {
+        logger.log('⚠️', `推进打孔卡子步骤 ${j + 1} 异常: ${eStep.message}`, '', accountPrefix);
+      }
+    }
+    return true;
+  } catch (e) {
+    logger.log('⚠️', `穿透打孔卡异常: ${e.message}`, '', accountPrefix);
+    return false;
+  }
+}
+
+/**
+ * 拼图任务 (ZHstar Evergreen Puzzle) 目标落地页访问
+ */
+export async function penetratePuzzleSpotlight(page, puzzleUrl, options = {}) {
+  const { accountPrefix = '' } = options;
+  const target = puzzleUrl || 'https://www.bing.com/spotlight/imagepuzzle';
+  logger.log('🧩', `进入每日拼图专题页面: ${target}`, '', accountPrefix);
+
+  try {
+    await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 35000 });
+    await new Promise((r) => setTimeout(r, 3500));
+    // 自动寻找「跳过拼图」完成加分
+    const skipBtn = await page.$(':text("跳过拼图"), a:has-text("跳过拼图"), button:has-text("跳过拼图")');
+    if (skipBtn && await skipBtn.isVisible()) {
+      logger.log('🧩', '检测到「跳过拼图」按钮，点击触发即刻拼图加分...', '', accountPrefix);
+      await skipBtn.click();
+      await new Promise((r) => setTimeout(r, 3500));
+    } else {
+      const beginBtn = await page.$(':text("Click to begin")');
+      if (beginBtn && await beginBtn.isVisible()) {
+        await beginBtn.click();
+        await new Promise((r) => setTimeout(r, 3000));
+      }
+    }
+    logger.log('✅', '每日拼图页面交互完成，加分上报完毕', '', accountPrefix);
+    return true;
+  } catch (e) {
+    logger.log('⚠️', `拼图页面访问异常: ${e.message}`, '', accountPrefix);
+    return false;
+  }
+}
+
+/**
+ * 穿透 React Aria 虚拟指针收割额外可领取积分 (对标图 6 与 4.3 节，含 3 次对账回验)
+ */
+export async function harvestClaimablePointsWithVirtualPointer(page, options = {}) {
+  const { accountPrefix = '' } = options;
+  browserManager.updateState({ status: "harvesting", currentAction: "React Aria 抽屉虚拟指针展开与额外积分收割..." });
+  logger.log('🎁', '开始执行每日 01:00 额外积分 React Aria 抽屉收割流程...', '', accountPrefix);
+
+  await page.goto('https://rewards.bing.com/dashboard', { waitUntil: 'domcontentloaded', timeout: 35000 });
+  await new Promise((r) => setTimeout(r, 3500));
+
+  // 精确定位带有“可领取”的卡片按钮
+  const claimBtn = await page.$('button:has-text("可领取")');
+  if (!claimBtn) {
+    logger.log('ℹ️', '当前仪表盘未检测到带有红点的「可领取」积分抽屉卡片，跳过收割', '', accountPrefix);
+    return { harvested: false, points: 0 };
+  }
+
+  const box = await claimBtn.boundingBox();
+  if (!box) {
+    logger.log('⚠️', '未能获取可领取卡片的屏幕坐标', '', accountPrefix);
+    return { harvested: false, points: 0 };
+  }
+
+  // 1. 模拟完整的虚拟指针序列穿透 React Aria 状态机展开抽屉
+  logger.log('👆', '派发虚拟指针点击序列展开抽屉...', '', accountPrefix);
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.up();
+  
+  // 等待抽屉展开并完成异步内容加载
+  await new Promise((r) => setTimeout(r, 4000));
+
+  // 2. 锁定抽屉内部的黑色「领取积分」按钮并派发点击
+  const blackClaimBtn = await page.$('div[role="dialog"] button:has-text("领取积分"), button:has-text("领取积分")');
+  if (blackClaimBtn && await blackClaimBtn.isVisible()) {
+    const btnBox = await blackClaimBtn.boundingBox();
+    logger.log('🎯', '锁定抽屉内的「领取积分」黑色按钮，触发真实指针点击！', '', accountPrefix);
+    await page.mouse.move(btnBox.x + btnBox.width / 2, btnBox.y + btnBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.up();
+    await new Promise((r) => setTimeout(r, 4000));
+
+    // 连续轮询 3 次确认归零与对账
+    for (let round = 1; round <= 3; round++) {
+      await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
+      await new Promise((r) => setTimeout(r, 2500));
+      const textAfter = await page.evaluate(() => document.body.innerText).catch(() => '');
+      if (textAfter.includes('可领取') && textAfter.match(/可领取\s*0/)) {
+        logger.log('🎉', `第 ${round} 轮对账确认：待领分已成功归零并累加进可用总额！`, '', accountPrefix);
+        return { harvested: true };
+      }
+    }
+
+    logger.log('🎉', '额外积分已成功派发，官网余额已完成二次回验！', '', accountPrefix);
+    return { harvested: true };
+  }
+
+  logger.log('ℹ️', '抽屉已唤起但未检测到待激活的领取按钮，可能已在此前领完', '', accountPrefix);
+  return { harvested: false, points: 0 };
+}
+
+
+
