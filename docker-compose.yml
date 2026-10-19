@@ -6,6 +6,7 @@ services:
     image: rewards-automation-v3:latest
     container_name: rewards-v3
     restart: unless-stopped
+    shm_size: "1gb"
     ports:
       - "5308:5308"
     environment:
