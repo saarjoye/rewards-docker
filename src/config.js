@@ -126,29 +126,39 @@ class ConfigManager {
     if (!accountData || !accountData.id) return null;
     const list = this.config.accounts || [];
     const idx = list.findIndex((a) => a.id === accountData.id);
+    const existing = idx >= 0 ? list[idx] : null;
 
     let pass = accountData.pass;
-    if (idx >= 0 && pass === SECRET_PLACEHOLDER) {
-      pass = list[idx].pass;
+    if (existing && (!pass || pass === SECRET_PLACEHOLDER)) {
+      pass = existing.pass;
+    }
+
+    let resolvedName = accountData.name;
+    if (!resolvedName || resolvedName === '默认账号') {
+      resolvedName = existing?.name && existing.name !== '默认账号' ? existing.name : '';
+    }
+    if (!resolvedName) {
+      const userStr = (accountData.user && accountData.user !== '') ? accountData.user : (existing?.user || '');
+      resolvedName = userStr.includes('@') ? userStr.split('@')[0] : (userStr || '默认账号');
     }
 
     const merged = {
       id: accountData.id,
-      name: accountData.name || accountData.user || '默认账号',
-      user: accountData.user || '',
-      pass: pass || '',
-      proxy: accountData.proxy || '',
-      enabled: accountData.enabled !== false,
-      status: accountData.status || (idx >= 0 ? list[idx].status : 'ready'),
-      balance: accountData.balance !== undefined ? accountData.balance : (idx >= 0 ? list[idx].balance : 0),
-      todayEarned: accountData.todayEarned !== undefined ? accountData.todayEarned : (idx >= 0 ? list[idx].todayEarned : 0),
-      streakDays: accountData.streakDays !== undefined ? accountData.streakDays : (idx >= 0 ? list[idx].streakDays : 0),
-      claimablePoints: accountData.claimablePoints !== undefined ? accountData.claimablePoints : (idx >= 0 ? list[idx].claimablePoints : 0),
-      lastRun: accountData.lastRun || (idx >= 0 ? list[idx].lastRun : null)
+      name: resolvedName,
+      user: (accountData.user !== undefined && accountData.user !== '') ? accountData.user : (existing?.user || ''),
+      pass: pass || (existing?.pass || ''),
+      proxy: accountData.proxy !== undefined ? accountData.proxy : (existing?.proxy || ''),
+      enabled: accountData.enabled !== undefined ? accountData.enabled : (existing?.enabled !== false),
+      status: accountData.status || (existing?.status || 'ready'),
+      balance: accountData.balance !== undefined ? accountData.balance : (existing?.balance || 0),
+      todayEarned: accountData.todayEarned !== undefined ? accountData.todayEarned : (existing?.todayEarned || 0),
+      streakDays: accountData.streakDays !== undefined ? accountData.streakDays : (existing?.streakDays || 0),
+      claimablePoints: accountData.claimablePoints !== undefined ? accountData.claimablePoints : (existing?.claimablePoints || 0),
+      lastRun: accountData.lastRun || (existing?.lastRun || null)
     };
 
     if (idx >= 0) {
-      list[idx] = { ...list[idx], ...merged };
+      list[idx] = { ...existing, ...merged };
     } else {
       list.push(merged);
     }

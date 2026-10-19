@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Microsoft Rewards 自动任务系统 (v6.0)</title>
+  <title>Rewards 自动任务系统 (v6.0.4)</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -13,7 +13,7 @@
       <div class="sidebar-top">
         <div class="brand">
           <div class="brand-logo-sq">🎁</div>
-          <span class="brand-name">Rewards<span class="brand-dot">.v6</span></span>
+          <span class="brand-name">Rewards<span class="brand-dot">.v6.0.4</span></span>
         </div>
 
         <div class="store-selector-wrap">
@@ -44,11 +44,7 @@
             <span>全局配置中心</span>
           </a>
 
-          <div class="menu-label" style="margin-top: 10px;">实时监控</div>
-          <a href="#" class="menu-item" id="menu-open-logs">
-            <span class="menu-icon">📟</span>
-            <span>实时日志推流</span>
-          </a>
+          
         </nav>
       </div>
 
@@ -366,22 +362,35 @@
 
   <!-- 抽屉/模态框 3：实时日志推流控制台 -->
   <div id="modal-logs" class="modal-backdrop hidden">
-    <div class="modal-card modal-card-lg">
-      <div class="modal-head">
-        <h3 class="modal-h3">📟 自动化实时推流日志 (LIVE SSE)</h3>
-        <div class="header-tags">
-          <button class="btn-sm-ghost" id="btn-toggle-scroll">暂停滚动</button>
-          <button class="btn-sm-ghost" id="btn-clear-logs">清空屏幕</button>
-          
+    <div class="modal-card modal-card-lg modal-terminal-card" style="display: flex; flex-direction: column; max-height: 85vh; width: 100%; max-width: 900px;">
+      <div class="modal-head" style="flex-shrink: 0; padding-bottom: 12px; border-bottom: 1px solid #e2e8f0; display: flex; align-items: center; justify-content: space-between;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 20px;">📟</span>
+          <h3 class="modal-h3">自动化实时推流日志 (LIVE SSE)</h3>
+        </div>
+        <div class="header-tags" style="display: flex; align-items: center; gap: 8px;">
+          <button type="button" class="btn-sm-ghost" id="btn-toggle-scroll">暂停滚动</button>
+          <button type="button" class="btn-sm-ghost" id="btn-clear-logs">清空屏幕</button>
+          <button type="button" class="modal-close-pill" id="close-logs-modal" title="关闭日志窗口">✕ 关闭</button>
         </div>
       </div>
-      <div class="terminal-dark-box" id="log-terminal">
-        <!-- 动态日志流 -->
+      <div class="terminal-dark-box" id="log-terminal" style="flex: 1; overflow-y: auto; min-height: 380px; max-height: 58vh; margin: 12px 0;">
+        <div class="log-line info">[系统就绪] 正在建立 SSE 实时推送通道...</div>
+      </div>
+      <!-- 底部常驻吸底操作栏 (滚动到底部无需再滚回顶部) -->
+      <div class="modal-foot terminal-foot-bar" style="flex-shrink: 0; padding-top: 10px; border-top: 1px solid #e2e8f0; display: flex; align-items: center; justify-content: space-between;">
+        <div style="font-size: 11px; color: #64748b;">
+          💡 提示: 日志窗口支持实时滚动浏览，底部常驻快捷操作栏
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <button type="button" class="btn-sm-ghost" id="btn-toggle-scroll-bottom">⏸ 暂停/恢复滚动</button>
+          <button type="button" class="btn-sm-ghost" id="btn-clear-logs-bottom">🗑 清空屏幕</button>
+          <button type="button" class="btn-sm-ghost" id="btn-scroll-bottom">⬇️ 回到底部</button>
+          <button type="button" class="btn-cancel" id="btn-close-logs-bottom" style="font-weight: 700;">✕ 关闭</button>
+        </div>
       </div>
     </div>
   </div>
-
-
 
   <!-- 模态框 5：官网数据同步 (对标图 7) -->
   <div id="modal-sync-official" class="modal-backdrop hidden">

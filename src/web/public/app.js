@@ -351,7 +351,7 @@ document.addEventListener("DOMContentLoaded", () => {
       let displayName = getAccountDisplayName(a, idx);
       const initial = displayName[0].toUpperCase();
       const isSelected = viewMode === 'single' && selectedAccountId === a.id;
-      const isRunning = (currentRunningAccountId && currentRunningAccountId === a.id) || a.status === 'running';
+      const isRunning = Boolean(currentRunningAccountId && String(currentRunningAccountId) === String(a.id));
       const isAbnormal = a.status === 'error' || a.status === 'needs_2fa' || a.status === 'abnormal' || a.status === 'warning' || a.status === 'expired' || a.status === 'stagnated' || !!a.error || a.allSatisfied === false;
 
       let thumbStatusClass = 'thumb-status-idle';
@@ -841,6 +841,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
     setSyncStep(4, 100, "已完成", "官网真实成效与总额同步完毕，大盘已完全更新！");
     refreshDashboard();
+    // 持续轮询 5 次 (每 2 秒一次)，确保后端异步完成后大盘立刻反映最新数据
+    for (let c = 1; c <= 5; c++) {
+      setTimeout(() => refreshDashboard(), c * 2000);
+    }
   }
 
   document.getElementById("btn-start-sync-action")?.addEventListener("click", startSyncOfficialExecution);
@@ -1266,6 +1270,21 @@ document.addEventListener("DOMContentLoaded", () => {
     autoScroll = !autoScroll;
     this.textContent = autoScroll ? "暂停滚动" : "恢复滚动";
   });
+  
+    const closeLogModal = () => document.getElementById("modal-logs")?.classList.add("hidden");
+    document.getElementById("close-logs-modal")?.addEventListener("click", closeLogModal);
+    document.getElementById("btn-close-logs-bottom")?.addEventListener("click", closeLogModal);
+
+    document.getElementById("btn-toggle-scroll-bottom")?.addEventListener("click", () => {
+      document.getElementById("btn-toggle-scroll")?.click();
+    });
+    document.getElementById("btn-clear-logs-bottom")?.addEventListener("click", () => {
+      document.getElementById("btn-clear-logs")?.click();
+    });
+    document.getElementById("btn-scroll-bottom")?.addEventListener("click", () => {
+      if (logTerminal) logTerminal.scrollTop = logTerminal.scrollHeight;
+    });
+
   document.getElementById("btn-clear-logs")?.addEventListener("click", () => {
     if (logTerminal) logTerminal.innerHTML = "";
   });

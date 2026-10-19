@@ -7,7 +7,7 @@ import configManager from '../config.js';
 import logger from '../logger.js';
 import taskManager from '../core/taskManager.js';
 import { executeAutonomousAccountLogin } from '../identity/adaptiveAuth.js';
-import { deleteBrowserSession } from '../identity/browserSession.js';
+import { readBrowserSession, writeBrowserSession, deleteBrowserSession } from '../identity/browserSession.js';
 import historyManager from '../core/history.js';
 import scheduler from '../scheduler.js';
 import notifier from '../core/notifier.js';

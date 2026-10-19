@@ -1,3 +1,5 @@
+import path from 'path';
+import { DATA_DIR } from '../fsUtil.js';
 ﻿import configManager from '../config.js';
 import logger from '../logger.js';
 import accountContextLock from './contextLock.js';
@@ -63,7 +65,7 @@ export class TaskManager {
    * 抓取官网权威数据看板
    */
   async fetchOfficialDashboard(context, account) {
-    const page = await context.newPage();
+    let page = await context.newPage();
     const log = (msg) => logger.log('📊', `[官网同步] ${msg}`, '', account.name);
 
     let todayPoints = null;
@@ -76,53 +78,95 @@ export class TaskManager {
     let dashHtml = '';
     let dashText = '';
 
+    const safeGoto = async (url, name) => {
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          if (page.isClosed()) {
+            page = await context.newPage();
+          }
+          await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 35000 });
+          return true;
+        } catch (e) {
+          log(`访问 ${name} 尝试 ${attempt}/2 异常: ${e.message}`);
+          try { await page.close(); } catch {}
+          if (attempt < 2) {
+            await new Promise((r) => setTimeout(r, 1500));
+            page = await context.newPage();
+          }
+        }
+      }
+      return false;
+    };
+
     try {
       // 1. 请求 /earn 页面
       try {
         log('访问 https://rewards.bing.com/earn 页面获取今日成效看板...');
-        await page.goto('https://rewards.bing.com/earn', { waitUntil: 'domcontentloaded', timeout: 35000 });
-        await new Promise((r) => setTimeout(r, 2500));
-        earnHtml = await page.content();
-        earnText = await page.evaluate(() => document.body ? document.body.innerText : '').catch(() => '');
-        flightChunks = concatFlightChunks(earnHtml);
+        const ok = await safeGoto('https://rewards.bing.com/earn', '/earn');
+        if (ok) {
+          await new Promise((r) => setTimeout(r, 2000));
+          earnHtml = await page.content();
+          earnText = await page.evaluate(() => document.body ? document.body.innerText : '').catch(() => '');
+          flightChunks = concatFlightChunks(earnHtml);
 
-        todayPoints = extractOfficialTodayPoints(flightChunks, `${earnHtml}\n${earnText}`);
-        streakDays = extractOfficialStreakDays(flightChunks, `${earnHtml}\n${earnText}`);
-        balance = extractOfficialBalance(flightChunks, `${earnHtml}\n${earnText}`);
+          todayPoints = extractOfficialTodayPoints(flightChunks, `${earnHtml}\n${earnText}`);
+          streakDays = extractOfficialStreakDays(flightChunks, `${earnHtml}\n${earnText}`);
+          balance = extractOfficialBalance(flightChunks, `${earnHtml}\n${earnText}`);
 
-        // 保存实时无头视口截屏供 Web 控制台投影
-        const shotPath = path.join(DATA_DIR, 'latest_screencast.png');
-        await page.screenshot({ path: shotPath }).catch(() => {});
+          try {
+            const shotPath = path.join(DATA_DIR, 'latest_screencast.png');
+            await page.screenshot({ path: shotPath }).catch(() => {});
+          } catch {}
+        } else {
+          log('访问 /earn 未能成功建立连接，将通过 /dashboard 页面兜底');
+        }
       } catch (e) {
         log(`访问 /earn 发生异常: ${e.message}，将通过 /dashboard 页面兜底`);
       }
 
-      // 2. 请求 /dashboard 页面 (包含资产总额、待领抽屉、今日积分与连胜天数)
+      // 2. 请求 /dashboard 页面
       try {
         log('访问 https://rewards.bing.com/dashboard 页面获取资产总额与待领抽屉...');
-        await page.goto('https://rewards.bing.com/dashboard', { waitUntil: 'domcontentloaded', timeout: 35000 });
-        await new Promise((r) => setTimeout(r, 2500));
-        dashHtml = await page.content();
-        dashText = await page.evaluate(() => document.body ? document.body.innerText : '').catch(() => '');
-        const dashFlight = concatFlightChunks(dashHtml);
-        const combinedDash = `${dashFlight}\n${dashHtml}\n${dashText}`;
+        const ok = await safeGoto('https://rewards.bing.com/dashboard', '/dashboard');
+        if (ok) {
+          await new Promise((r) => setTimeout(r, 2000));
+          dashHtml = await page.content();
+          dashText = await page.evaluate(() => document.body ? document.body.innerText : '').catch(() => '');
+          const dashFlight = concatFlightChunks(dashHtml);
+          const combinedDash = `${dashFlight}\n${dashHtml}\n${dashText}`;
 
-        if (balance === null) {
-          balance = extractOfficialBalance(dashFlight, combinedDash);
-        }
-        if (todayPoints === null) {
-          todayPoints = extractOfficialTodayPoints(dashFlight, combinedDash);
-        }
-        if (!streakDays) {
-          streakDays = extractOfficialStreakDays(dashFlight, combinedDash);
-        }
-        claimablePoints = extractOfficialClaimablePoints(dashFlight, combinedDash);
+          if (balance === null) {
+            balance = extractOfficialBalance(dashFlight, combinedDash);
+          }
+          if (todayPoints === null) {
+            todayPoints = extractOfficialTodayPoints(dashFlight, combinedDash);
+          }
+          if (!streakDays) {
+            streakDays = extractOfficialStreakDays(dashFlight, combinedDash);
+          }
+          claimablePoints = extractOfficialClaimablePoints(dashFlight, combinedDash);
 
-        // 刷新最新视口截图
-        const shotPath = path.join(DATA_DIR, 'latest_screencast.png');
-        await page.screenshot({ path: shotPath }).catch(() => {});
+          try {
+            const shotPath = path.join(DATA_DIR, 'latest_screencast.png');
+            await page.screenshot({ path: shotPath }).catch(() => {});
+          } catch {}
+        }
       } catch (e) {
         log(`访问 /dashboard 异常: ${e.message}`);
+      }
+
+      // 绝不将已有历史数据清零！
+      if (balance === null && account.balance !== undefined) {
+        balance = account.balance;
+      }
+      if (todayPoints === null && account.todayEarned !== undefined) {
+        todayPoints = account.todayEarned;
+      }
+      if (!streakDays && account.streakDays !== undefined) {
+        streakDays = account.streakDays;
+      }
+      if (!claimablePoints && account.claimablePoints !== undefined) {
+        claimablePoints = account.claimablePoints;
       }
 
       log(`权威数据采集结果 - 可用余额: ${balance !== null ? balance + ' 分' : '未捕获'}, 今日已增: ${todayPoints !== null ? todayPoints + ' 分' : '0 分'}, 连续打卡: ${streakDays} 天, 待领额外: ${claimablePoints} 分`);
@@ -296,7 +340,7 @@ export class TaskManager {
               claimablePoints: initialData.claimablePoints
             });
 
-            const page = await context.newPage();
+            let page = await context.newPage();
 
             try {
               // 【板块 1: 连续打卡任务 (Streaks)】
