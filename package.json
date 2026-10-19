@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.0.9",
-  "description": "Microsoft Rewards 自动化平台 (v6.0.9 智能轮询收割额外积分与全端防换行增强)",
+  "version": "6.1.0",
+  "description": "Microsoft Rewards 自动化平台 (v6.1.0 多账号官方全量同步与全端防换行强化)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {

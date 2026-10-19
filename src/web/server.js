@@ -188,12 +188,27 @@ export function createServer() {
         ? [configManager.getAccount(accountId)].filter(Boolean)
         : allAccounts;
 
-      // 异步在后台依序同步每一个账号，绝不只同步第 1 个账号！
+      // 异步在后台依序同步每一个账号，支持未登录账号自动自愈登录
       (async () => {
-        for (const account of targetAccounts) {
+        logger.log('⏳', `[官网同步] 启动全量官方账本同步流水线，共 ${targetAccounts.length} 个账号待采集...`);
+        for (let i = 0; i < targetAccounts.length; i++) {
+          const account = targetAccounts[i];
           try {
-            const session = readBrowserSession(account.id) || {};
-            const cookies = session.cookies || [];
+            logger.log('🔍', `[官网同步] (${i + 1}/${targetAccounts.length}) 正在连接微软权威账本: [${account.name}]...`);
+            let session = readBrowserSession(account.id) || {};
+            let cookies = session.cookies || [];
+
+            // 关键机制：若账号缺少必应 Cookie 且有密码，自动自适应登录换取凭据
+            const hasU = cookies.some((c) => c.name === '_U' && (c.domain.includes('bing.com') || c.domain.includes('msn.cn')));
+            if (!hasU && account.user && account.pass) {
+              logger.log('🔑', `[官网同步] 账号 [${account.name}] 缺少必应凭据，自动启动自适应登录自愈...`);
+              const authRes = await executeAutonomousAccountLogin(account).catch(() => ({ success: false }));
+              if (authRes && authRes.success) {
+                session = readBrowserSession(account.id) || {};
+                cookies = session.cookies || [];
+              }
+            }
+
             await browserManager.withBrowser({ proxy: account.proxy, cookies, headless: true }, async (browser, context) => {
               const data = await taskManager.fetchOfficialDashboard(context, account);
               configManager.upsertAccount({
@@ -203,12 +218,19 @@ export function createServer() {
                 streakDays: data.streakDays,
                 claimablePoints: data.claimablePoints
               });
+              historyManager.recordDaily(account.id, {
+                todayEarned: data.todayPoints,
+                balance: data.balance,
+                streakDays: data.streakDays
+              });
+              logger.log('✅', `[官网同步] 账号 [${account.name}] 真实数据回写成功: 今日 ${data.todayPoints}分, 总额 ${data.balance}分, 连签 ${data.streakDays}天`);
             });
-            await new Promise((r) => setTimeout(r, 2000));
+            await new Promise((r) => setTimeout(r, 1500));
           } catch (err) {
             logger.log('⚠️', `账号 [${account.name}] 官网数据同步异常: ${err.message}`);
           }
         }
+        logger.log('🎉', `[官网同步] 全部 ${targetAccounts.length} 个账号的官方权威数据全部采集入账完毕！`);
       })();
 
       res.json({
@@ -217,16 +239,6 @@ export function createServer() {
           ? `已在后台启动全部 ${targetAccounts.length} 个账号的官方数据同步`
           : `已在后台启动账号 [${targetAccounts[0].name}] 的官方数据同步`
       });
-    } catch (e) {
-      res.status(500).json({ success: false, message: e.message });
-    }
-  });
-
-  // 16. 全局配置中心数据保存 (对标图 1-6)
-  app.post('/api/config/global', (req, res) => {
-    try {
-      const updated = configManager.updateGlobalSettings(req.body || {});
-      res.json({ success: true, config: updated, message: '全局配置已成功保存！' });
     } catch (e) {
       res.status(500).json({ success: false, message: e.message });
     }

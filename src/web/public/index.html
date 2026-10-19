@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Rewards 自动任务系统 (v6.0.9)</title>
+  <title>Rewards 自动任务系统 (v6.1.0)</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -13,7 +13,7 @@
       <div class="sidebar-top">
         <div class="brand">
           <div class="brand-logo-sq">🎁</div>
-          <span class="brand-name">Rewards<span class="brand-dot">.v6.0.9</span></span>
+          <span class="brand-name">Rewards<span class="brand-dot">.v6.1.0</span></span>
         </div>
 
         <div class="store-selector-wrap">
@@ -70,7 +70,7 @@
         </button>
         <div class="mobile-nav-brand">
           <span style="font-size: 18px;">🎁</span>
-          <span class="mobile-nav-title">Rewards<span class="brand-dot">.v6.0.9</span></span>
+          <span class="mobile-nav-title">Rewards<span class="brand-dot">.v6.1.0</span></span>
         </div>
         <button type="button" class="mobile-quick-btn" id="btn-mobile-quick-run">🚀 执行</button>
       </div>
@@ -420,6 +420,18 @@
           <h3 class="modal-h3">官网数据同步</h3>
         </div>
         <button type="button" class="modal-close-pill" id="close-sync-modal-x" title="关闭窗口">✕ 关闭</button>
+      </div>
+
+      <!-- 同步范围切换 (全部账号 / 指定单账号) -->
+      <div class="health-scope-row" style="margin-top: 12px; margin-bottom: 12px;">
+        <span class="health-scope-label">同步范围</span>
+        <div class="health-scope-pills">
+          <button type="button" class="scope-pill active" id="btn-sync-scope-all">全部账号 (全量)</button>
+          <button type="button" class="scope-pill" id="btn-sync-scope-single">指定单账号</button>
+        </div>
+        <select class="select-pill" id="sync-select-account" style="margin-left: 8px; font-weight: 700; background: #ffffff; display: none;">
+          <!-- 动态填充账号 -->
+        </select>
       </div>
 
       <div class="sync-status-box">

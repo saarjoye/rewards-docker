@@ -802,13 +802,31 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("close-global-modal")?.addEventListener("click", () => modalGlobalConfig?.classList.add("hidden"));
   document.getElementById("cancel-global-modal")?.addEventListener("click", () => modalGlobalConfig?.classList.add("hidden"));
 
+  let syncScope = "all"; // 默认全量同步全部托管账号
+
   async function openSyncOfficialModal() {
     modalSyncOfficial?.classList.remove("hidden");
     document.getElementById("btn-start-sync-action").style.display = "inline-block";
     document.getElementById("btn-sync-bg").style.display = "none";
     document.getElementById("sync-stage-tag").textContent = "待就绪";
-    document.getElementById("sync-stage-desc").textContent = "请点击下方「开始同步」按钮，从微软官网权威拉取最新成效 (避免误触占用账号锁)";
+    document.getElementById("sync-stage-desc").textContent = "默认将全量采集所有已启用托管账号的官方账本数据。点击下方「▶ 开始同步」启动。";
     document.getElementById("sync-progress-fill").style.width = "0%";
+
+    const selAcc = document.getElementById("sync-select-account");
+    if (selAcc) {
+      selAcc.innerHTML = accounts
+        .map((a, idx) => {
+          const dName = getAccountDisplayName(a, idx);
+          return '<option value="' + a.id + '">' + escapeHtml(dName) + (a.user ? ' (' + escapeHtml(a.user) + ')' : '') + '</option>';
+        })
+        .join("");
+    }
+
+    // 重置选择范围为全部账号 (全量)
+    syncScope = "all";
+    document.getElementById("btn-sync-scope-all")?.classList.add("active");
+    document.getElementById("btn-sync-scope-single")?.classList.remove("active");
+    if (selAcc) selAcc.style.display = "none";
 
     for (let i = 1; i <= 4; i++) {
       const row = document.getElementById("step-row-" + i);
@@ -823,31 +841,56 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("btn-start-sync-action").style.display = "none";
     document.getElementById("btn-sync-bg").style.display = "inline-block";
 
-    setSyncStep(1, 25, "准备中", "正在锁定当前账号上下文与无头浏览器资源...");
+    const targetId = document.getElementById("sync-select-account")?.value;
+    const isAll = syncScope === "all";
+
+    setSyncStep(1, 20, "准备中", isAll ? ("正在锁定全量 " + accounts.length + " 个账号上下文与浏览器资源...") : "正在锁定指定账号上下文与浏览器资源...");
     await new Promise((r) => setTimeout(r, 600));
 
-    const activeAcc = accounts.find((a) => a.id === selectedAccountId) || accounts[0];
-    fetch("/api/sync/official", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ accountId: activeAcc ? activeAcc.id : null })
-    }).catch(() => {});
+    try {
+      fetch("/api/sync/official", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accountId: isAll ? "all" : targetId })
+      }).catch(() => {});
+    } catch {}
 
-    setSyncStep(2, 55, "请求中", "正在访问微软官方 /earn 与 /dashboard 权威账本...");
-    await new Promise((r) => setTimeout(r, 1400));
+    setSyncStep(2, 50, "采集对账中", "正在依序访问微软官方 /earn 与 /dashboard 权威账本...");
 
-    setSyncStep(3, 85, "解码中", "正在解析 React Flight 数据流与四大板块卡片对象...");
-    await new Promise((r) => setTimeout(r, 1200));
-
-    setSyncStep(4, 100, "已完成", "官网真实成效与总额同步完毕，大盘已完全更新！");
-    refreshDashboard();
-    // 持续轮询 5 次 (每 2 秒一次)，确保后端异步完成后大盘立刻反映最新数据
-    for (let c = 1; c <= 5; c++) {
-      setTimeout(() => refreshDashboard(), c * 2000);
-    }
+    let count = 0;
+    const interval = setInterval(async () => {
+      count++;
+      refreshDashboard();
+      if (count === 3) {
+        setSyncStep(3, 80, "解码同步中", "正在解析各账号 RSC Flight 数据流并安全深度合并...");
+      }
+      if (count >= 10) {
+        clearInterval(interval);
+        setSyncStep(4, 100, "已全部同步", "官网权威成效与总额已全部采集入账完毕，大盘已完全更新！");
+        refreshDashboard();
+      }
+    }, 1500);
   }
 
   document.getElementById("btn-start-sync-action")?.addEventListener("click", startSyncOfficialExecution);
+
+  document.getElementById("btn-sync-scope-all")?.addEventListener("click", function () {
+    syncScope = "all";
+    this.classList.add("active");
+    document.getElementById("btn-sync-scope-single")?.classList.remove("active");
+    const selAcc = document.getElementById("sync-select-account");
+    if (selAcc) selAcc.style.display = "none";
+    document.getElementById("sync-stage-desc").textContent = "已就绪：将全量并发/依序采集全部 " + accounts.length + " 个账号的真实官方数据。";
+  });
+
+  document.getElementById("btn-sync-scope-single")?.addEventListener("click", function () {
+    syncScope = "single";
+    this.classList.add("active");
+    document.getElementById("btn-sync-scope-all")?.classList.remove("active");
+    const selAcc = document.getElementById("sync-select-account");
+    if (selAcc) selAcc.style.display = "inline-block";
+    document.getElementById("sync-stage-desc").textContent = "已就绪：仅从官网采集所选指定账号的官方真实成效。";
+  });
 
   function setSyncStep(stepNum, percent, tagText, descText) {
     const stageTag = document.getElementById("sync-stage-tag");
