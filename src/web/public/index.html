@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Rewards 自动任务系统 (v6.0.6)</title>
+  <title>Rewards 自动任务系统 (v6.0.7)</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -13,7 +13,7 @@
       <div class="sidebar-top">
         <div class="brand">
           <div class="brand-logo-sq">🎁</div>
-          <span class="brand-name">Rewards<span class="brand-dot">.v6.0.6</span></span>
+          <span class="brand-name">Rewards<span class="brand-dot">.v6.0.7</span></span>
         </div>
 
         <div class="store-selector-wrap">
@@ -70,7 +70,7 @@
         </button>
         <div class="mobile-nav-brand">
           <span style="font-size: 18px;">🎁</span>
-          <span class="mobile-nav-title">Rewards<span class="brand-dot">.v6.0.6</span></span>
+          <span class="mobile-nav-title">Rewards<span class="brand-dot">.v6.0.7</span></span>
         </div>
         <button type="button" class="mobile-quick-btn" id="btn-mobile-quick-run">🚀 执行</button>
       </div>
@@ -296,9 +296,12 @@
   <!-- 模态框 1：添加/编辑账号 -->
   <div id="modal-account" class="modal-backdrop hidden">
     <div class="modal-card">
-      <div class="modal-head">
-        <h3 class="modal-h3" id="account-modal-title">添加微软托管账号</h3>
-        
+      <div class="modal-head" style="display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #e2e8f0; padding-bottom: 10px;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 20px;">👤</span>
+          <h3 class="modal-h3" id="account-modal-title">添加微软托管账号</h3>
+        </div>
+        <button type="button" class="modal-close-pill" id="close-account-modal-x" title="关闭窗口">✕ 关闭</button>
       </div>
       <form id="form-account">
         <input type="hidden" id="acc-id">
@@ -334,9 +337,12 @@
   <!-- 模态框 2：企业微信应用推送配置 (含反代地址) -->
   <div id="modal-wework" class="modal-backdrop hidden">
     <div class="modal-card">
-      <div class="modal-head">
-        <h3 class="modal-h3">企业微信应用消息推送设置</h3>
-        
+      <div class="modal-head" style="display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #e2e8f0; padding-bottom: 10px;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 20px;">🔔</span>
+          <h3 class="modal-h3">企业微信应用消息推送设置</h3>
+        </div>
+        <button type="button" class="modal-close-pill" id="close-wework-modal-x" title="关闭窗口">✕ 关闭</button>
       </div>
       <form id="form-wework">
         <div class="f-checkbox">
@@ -365,8 +371,9 @@
           <input type="text" id="ww-to-user" placeholder="@all 或具体成员账号" value="@all">
         </div>
         <div class="modal-foot">
-          <button type="button" class="btn-cancel" id="btn-test-wework">发送测试推送</button>
           <button type="submit" class="btn-confirm-orange">保存推送配置</button>
+          <button type="button" class="btn-cancel" id="btn-test-wework">🚀 发送测试推送</button>
+          <button type="button" class="btn-cancel" id="cancel-wework-modal">取消</button>
         </div>
       </form>
     </div>
@@ -407,12 +414,12 @@
   <!-- 模态框 5：官网数据同步 (对标图 7) -->
   <div id="modal-sync-official" class="modal-backdrop hidden">
     <div class="modal-card modal-card-md">
-      <div class="modal-head">
+      <div class="modal-head" style="display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #e2e8f0; padding-bottom: 10px;">
         <div style="display: flex; align-items: center; gap: 8px;">
           <span style="font-size: 20px;">⏳</span>
-          <h3 class="modal-h3">官网同步</h3>
+          <h3 class="modal-h3">官网数据同步</h3>
         </div>
-        
+        <button type="button" class="modal-close-pill" id="close-sync-modal-x" title="关闭窗口">✕ 关闭</button>
       </div>
 
       <div class="sync-status-box">
@@ -548,12 +555,12 @@
   <!-- 模态框 7：全局配置中心 (对标图 1-6) -->
   <div id="modal-global-config" class="modal-backdrop hidden">
     <div class="modal-card modal-card-xl">
-      <div class="modal-head">
+      <div class="modal-head" style="display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #e2e8f0; padding-bottom: 10px;">
         <div style="display: flex; align-items: center; gap: 8px;">
           <span style="font-size: 20px;">⚙️</span>
           <h3 class="modal-h3">全局配置中心</h3>
         </div>
-        
+        <button type="button" class="modal-close-pill" id="close-global-modal-x" title="关闭窗口">✕ 关闭</button>
       </div>
 
       <!-- 五大 Tab 标签栏 (对标图 1) -->
@@ -774,9 +781,9 @@
         </div>
       </div>
 
-      <div class="modal-foot" style="justify-content: flex-end; gap: 10px; margin-top: 20px;">
+      <div class="modal-foot" style="justify-content: flex-end; gap: 10px; margin-top: 20px; border-top: 1px solid #e2e8f0; padding-top: 12px;">
+        <button type="button" class="btn-confirm-orange" id="btn-save-all-config" style="background: linear-gradient(135deg, #0284c7, #0369a1);">保存所有配置</button>
         <button type="button" class="btn-cancel" id="cancel-global-modal">取消</button>
-        <button type="button" class="btn-primary-blue" id="btn-save-all-config">保存所有配置</button>
       </div>
     </div>
   </div>
@@ -784,9 +791,12 @@
   <!-- 模态框 4：启动任务选择器 (多账号/单账号，全任务/单任务) -->
   <div id="modal-run-tasks" class="modal-backdrop hidden">
     <div class="modal-card">
-      <div class="modal-head">
-        <h3 class="modal-h3">🚀 启动自动化任务</h3>
-        
+      <div class="modal-head" style="display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #e2e8f0; padding-bottom: 10px;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 20px;">🚀</span>
+          <h3 class="modal-h3">启动自动化任务</h3>
+        </div>
+        <button type="button" class="modal-close-pill" id="close-run-modal-x" title="关闭窗口">✕ 关闭</button>
       </div>
       <form id="form-run-tasks">
         <div class="f-group">
@@ -823,8 +833,8 @@
         </div>
 
         <div class="modal-foot">
-          <button type="button" class="btn-cancel" id="cancel-run-modal">取消</button>
           <button type="submit" class="btn-confirm-orange" style="background: linear-gradient(135deg, #10b981, #059669);">▶ 确认启动执行</button>
+          <button type="button" class="btn-cancel" id="cancel-run-modal">取消</button>
         </div>
       </form>
     </div>

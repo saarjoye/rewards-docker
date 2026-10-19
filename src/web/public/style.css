@@ -2934,3 +2934,148 @@ button, input, select, textarea {
   transform: translateY(-1px);
   box-shadow: 0 4px 10px rgba(255, 87, 34, 0.35);
 }
+
+/* ============================================================
+   全局全端 UI 设计语言严格统合规范 (延续图 1 / 图 2 现代 Bento 风格)
+   ============================================================ */
+
+/* 1. 全局现代中文字体栈强制继承 (杜绝任何 SimSun 宋体回退) */
+html, body, button, input, select, textarea, span, div, h1, h2, h3, h4, p, label {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "WenQuanYi Micro Hei", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* 2. 统一表单输入框、下拉框控件外观 */
+input[type="text"], input[type="email"], input[type="password"], input[type="number"], select, textarea {
+  border: 1px solid #cbd5e1 !important;
+  border-radius: 10px !important;
+  background: #f8fafc !important;
+  color: #1e293b !important;
+  font-size: 13px !important;
+  padding: 8px 12px !important;
+  outline: none !important;
+  box-sizing: border-box !important;
+  transition: all 0.2s ease !important;
+}
+
+input:focus, select:focus, textarea:focus {
+  border-color: #ff5722 !important;
+  background: #ffffff !important;
+  box-shadow: 0 0 0 3px rgba(255, 87, 34, 0.15) !important;
+}
+
+/* 3. 模态框通用规范：头部与底部操作栏 */
+.modal-head {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  border-bottom: 1px solid #e2e8f0 !important;
+  padding-bottom: 12px !important;
+  margin-bottom: 14px !important;
+}
+
+.modal-foot {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-end !important;
+  gap: 10px !important;
+  margin-top: 18px !important;
+  border-top: 1px solid #e2e8f0 !important;
+  padding-top: 12px !important;
+}
+
+/* 4. 统一主次操作按钮质感 */
+.btn-confirm-orange {
+  height: 38px !important;
+  padding: 0 18px !important;
+  border-radius: 10px !important;
+  font-size: 13px !important;
+  font-weight: 750 !important;
+  background: linear-gradient(135deg, #ff5722, #f4511e) !important;
+  color: #ffffff !important;
+  border: none !important;
+  cursor: pointer !important;
+  box-shadow: 0 2px 8px rgba(255, 87, 34, 0.25) !important;
+  transition: all 0.2s ease !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+.btn-confirm-orange:hover {
+  transform: translateY(-1px) !important;
+  box-shadow: 0 4px 12px rgba(255, 87, 34, 0.35) !important;
+}
+
+.btn-primary-blue {
+  height: 38px !important;
+  padding: 0 18px !important;
+  border-radius: 10px !important;
+  font-size: 13px !important;
+  font-weight: 750 !important;
+  background: linear-gradient(135deg, #0284c7, #0369a1) !important;
+  color: #ffffff !important;
+  border: none !important;
+  cursor: pointer !important;
+  box-shadow: 0 2px 8px rgba(2, 132, 199, 0.25) !important;
+  transition: all 0.2s ease !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+.btn-primary-blue:hover {
+  transform: translateY(-1px) !important;
+  box-shadow: 0 4px 12px rgba(2, 132, 199, 0.35) !important;
+}
+
+.btn-cancel {
+  height: 38px !important;
+  padding: 0 16px !important;
+  border-radius: 10px !important;
+  font-size: 13px !important;
+  font-weight: 700 !important;
+  background: #ffffff !important;
+  border: 1px solid #cbd5e1 !important;
+  color: #475569 !important;
+  cursor: pointer !important;
+  transition: all 0.2s ease !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+.btn-cancel:hover {
+  background: #f1f5f9 !important;
+  color: #0f172a !important;
+  border-color: #94a3b8 !important;
+}
+
+/* 5. 模态框右上角胶囊关闭按钮 */
+.modal-close-pill {
+  cursor: pointer !important;
+  padding: 4px 12px !important;
+  border-radius: 8px !important;
+  border: 1px solid #cbd5e1 !important;
+  background: #ffffff !important;
+  color: #475569 !important;
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  transition: all 0.2s ease !important;
+}
+.modal-close-pill:hover {
+  background: #f1f5f9 !important;
+  color: #0f172a !important;
+  border-color: #94a3b8 !important;
+}
+
+/* 6. 移动端极小屏模态框底部按钮自适应 */
+@media (max-width: 640px) {
+  .modal-foot {
+    flex-direction: column !important;
+    width: 100% !important;
+    gap: 8px !important;
+  }
+  .modal-foot button {
+    width: 100% !important;
+    height: 42px !important;
+  }
+}

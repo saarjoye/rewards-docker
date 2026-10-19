@@ -1288,6 +1288,14 @@ document.addEventListener("DOMContentLoaded", () => {
     modalAccount?.classList.remove("hidden");
   });
   document.getElementById("close-account-modal")?.addEventListener("click", () => modalAccount?.classList.add("hidden"));
+  
+    document.getElementById("close-account-modal-x")?.addEventListener("click", () => modalAccount?.classList.add("hidden"));
+    document.getElementById("close-wework-modal-x")?.addEventListener("click", () => document.getElementById("modal-wework")?.classList.add("hidden"));
+    document.getElementById("cancel-wework-modal")?.addEventListener("click", () => document.getElementById("modal-wework")?.classList.add("hidden"));
+    document.getElementById("close-sync-modal-x")?.addEventListener("click", () => document.getElementById("modal-sync-official")?.classList.add("hidden"));
+    document.getElementById("close-global-modal-x")?.addEventListener("click", () => document.getElementById("modal-global-config")?.classList.add("hidden"));
+    document.getElementById("close-run-modal-x")?.addEventListener("click", () => modalRunTasks?.classList.add("hidden"));
+
   document.getElementById("cancel-account-modal")?.addEventListener("click", () => modalAccount?.classList.add("hidden"));
 
   

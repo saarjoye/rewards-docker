@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.0.6",
-  "description": "Microsoft Rewards 自动化平台 (v6.0.6 独立会话持久化与全账号健康体检矩阵)",
+  "version": "6.0.7",
+  "description": "Microsoft Rewards 自动化平台 (v6.0.7 全端视觉风格严格统一与Bento规范演进)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {
