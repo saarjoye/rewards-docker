@@ -399,7 +399,7 @@ export class TaskManager {
               if (this.shouldStop) throw new Error('任务已被用户主动中断');
 
               // PC Search
-              if (taskScope === 'all' || taskScope === 'search') {
+              if (taskScope === 'all' || taskScope === 'search' || taskScope === 'remaining') {
                 this.currentTaskName = '必应 PC 拟人搜索收割 (跑满 60 分)';
                 log('执行板块 1-核心: 必应 PC 拟人化搜索收割 (跑满 60 分)...');
 
@@ -413,6 +413,7 @@ export class TaskManager {
                 const jitterSec = Number(taskOpts.randomJitterSec) || 6;
                 const stagnationThreshold = Number(taskOpts.stagnationLimit) || 10;
 
+                let needsSearchSecondPass = false;
                 const stagnationGuard = new SearchStagnationGuard(stagnationThreshold, account.name);
                 stagnationGuard.recordObservation(initialData.todayPoints);
 
@@ -484,6 +485,13 @@ for (let i = 1; i <= maxSearches; i++) {
                       todayEarned: checkData.todayPoints,
                       balance: checkData.balance
                     });
+
+                    // 关键智能脱困：若连续 2 次无增量 (+0分)，不再硬熬！立即暂缓搜索，先切入后续板块
+                    if (obs.stagnant && stagnationGuard.consecutiveStagnantCount >= 2) {
+                      log(`⏳ [搜索遇阻暂缓] 检测到搜索连续停滞 (+0分)，启动智能脱困机制：暂缓搜索，优先执行后续板块任务，待全部跑完后再返回执行第 2 轮搜索补分！`);
+                      needsSearchSecondPass = true;
+                      break;
+                    }
                     if (obs.tripped) break;
                   }
                 }
@@ -519,6 +527,33 @@ for (let i = 1; i <= maxSearches; i++) {
                 streakDays: finalData.streakDays
               });
 
+              // 二次回眸：若此前搜索遭遇停滞，在所有板块结束后进行一次验证性补测
+              if (needsSearchSecondPass && !this.shouldStop) {
+                log('🔄 [二次回眸] 账号其他板块已执行完毕，返回检测搜索是否恢复涨分...');
+                const retryWord = getRandomSearchWord();
+                await performHumanizedSearch(page, retryWord, { accountPrefix: account.name, context }).catch(() => {});
+                await new Promise((r) => setTimeout(r, 6000));
+                const secondCheck = await this.fetchOfficialDashboard(context, account);
+                if (secondCheck.todayPoints > finalData.todayPoints) {
+                  log(`🎉 [二次回眸成功] 搜索已恢复涨分！最新今日积分: ${secondCheck.todayPoints} 分`);
+                  finalData = secondCheck;
+                } else {
+                  log('🛑 [停滞终态判定] 第 2 轮返回补做依然无增量，判定今日该账号搜索已受限，安全收工！');
+                }
+              }
+
+              // 单账号自动补偿模式判定
+              if (taskScope === 'all' && options.allowRemedy !== false && !this.shouldStop) {
+                const diag = this.diagnoseUnfinishedTasks(finalData, account);
+                if (diag.hasWork) {
+                  log('🔄 [单账号自动补偿] 诊断到尚有未完成且可执行的项目，自动启动单账号补漏扫尾...');
+                  if (diag.needDailyActivities) {
+                    await penetrateDailyActivities(page, { accountPrefix: account.name }).catch(() => {});
+                  }
+                  finalData = await this.fetchOfficialDashboard(context, account);
+                }
+              }
+
               log(`🎉 账号 [${account.name}] 任务执行完成！今日积分: ${finalData.todayPoints} 分, 可用余额: ${finalData.balance} 分, 连签: ${finalData.streakDays} 天`);
               notifier.sendSettlementReport(account, finalData).catch(() => {});
             } finally {
@@ -546,6 +581,43 @@ for (let i = 1; i <= maxSearches; i++) {
   /**
    * 每日 01:00 额外积分全自动收割引擎
    */
+  /**
+   * 智能诊断当前账号的未完成任务矩阵
+   */
+  diagnoseUnfinishedTasks(dashboardData = {}, account = {}) {
+    const todayPoints = Number(dashboardData.todayPoints || 0);
+    const cards = dashboardData.parsedCards || [];
+    const searchStatus = extractOfficialSearchPoints(dashboardData.combinedRawText);
+
+    // 1. PC 搜索是否未满 60 分
+    const needSearch = searchStatus ? !searchStatus.isMaxed : (todayPoints < 60);
+
+    // 2. 连续打卡与日常活动集
+    const needDailySet = todayPoints < 30;
+
+    // 3. 移动端签到与新闻资讯
+    const needAppSign = !dashboardData.bingAppCompleted && (todayPoints < 10);
+    const needNewsRead = todayPoints < 90;
+
+    // 4. 打孔卡是否有可执行任务
+    const needQuests = cards.some(c => (c.isPunchCard || c.isQuest || (c.destination && c.destination.includes('/quest/'))) && !c.done);
+
+    // 5. 日常活动是否有未打钩的非时间锁项目
+    const needDailyActivities = cards.some(c => c.points > 0 && !c.done && classifyTaskFeasibility(c.title || c.name).executable);
+
+    const hasWork = needSearch || needDailySet || needAppSign || needNewsRead || needQuests || needDailyActivities;
+
+    return {
+      needSearch,
+      needDailySet,
+      needAppSign,
+      needNewsRead,
+      needQuests,
+      needDailyActivities,
+      hasWork
+    };
+  }
+
   async harvestMidnightClaimable(accountId) {
     const account = configManager.getAccount(accountId);
     if (!account) return;

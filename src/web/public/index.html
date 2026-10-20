@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Rewards 自动任务系统 (v6.2.0)</title>
+  <title>Rewards 自动任务系统 (v6.2.1)</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -13,7 +13,7 @@
       <div class="sidebar-top">
         <div class="brand">
           <div class="brand-logo-sq">🎁</div>
-          <span class="brand-name">Rewards<span class="brand-dot">.v6.2.0</span></span>
+          <span class="brand-name">Rewards<span class="brand-dot">.v6.2.1</span></span>
         </div>
 
         <div class="store-selector-wrap">
@@ -70,7 +70,7 @@
         </button>
         <div class="mobile-nav-brand">
           <span style="font-size: 18px;">🎁</span>
-          <span class="mobile-nav-title">Rewards<span class="brand-dot">.v6.2.0</span></span>
+          <span class="mobile-nav-title">Rewards<span class="brand-dot">.v6.2.1</span></span>
         </div>
         <button type="button" class="mobile-quick-btn" id="btn-mobile-quick-run">🚀 执行</button>
       </div>
@@ -865,6 +865,7 @@
           <label for="select-task-scope">任务执行范围</label>
           <select id="select-task-scope" class="f-select" style="padding: 9px 12px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 13px; width: 100%; outline: none;">
             <option value="all">⭐ 全量所有任务 (标准日常全套流水线)</option>
+            <option value="remaining">🎯 仅执行未完成剩余任务 (智能补漏扫尾模式)</option>
             <option value="search">🔍 仅必应 PC 拟人搜索 (跑满 60 积分)</option>
             <option value="dailySet">📅 仅每日活动集 (Daily Set 3/3 弹窗点击)</option>
             <option value="appSign">📱 仅必应移动端连续签到 (DAPI 直连)</option>

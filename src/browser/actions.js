@@ -505,11 +505,19 @@ export async function penetrateDailyActivities(page, options = {}) {
 
         if (popup) {
           await popup.waitForLoadState('domcontentloaded').catch(() => {});
-          // 尝试自动解题/投票
+          // 尝试自动解题/投票 (Quiz 卡片)
           await solveQuizOrPoll(popup, { accountPrefix });
-          // 模拟真人滚轮浏览
-          await popup.mouse.wheel(0, 250).catch(() => {});
-          await new Promise((r) => setTimeout(r, 5500)); // 驻留 5.5 秒确保微软遥测入账
+          // 模拟真人滚轮浏览与搜索结果探测 (探索类卡片如化石精选)
+          try {
+            await popup.mouse.wheel(0, 300);
+            await new Promise((r) => setTimeout(r, 1500));
+            // 触碰首个自然搜索结果以彻底激活微软防刷加分遥测
+            const firstAlgo = await popup.$('#b_results .b_algo h2 a, #b_results .b_algo a').catch(() => null);
+            if (firstAlgo) {
+              await firstAlgo.hover().catch(() => {});
+            }
+          } catch {}
+          await new Promise((r) => setTimeout(r, 6000)); // 驻留 6 秒确保微软服务端遥测完全入账
           await popup.close().catch(() => {});
           executedCount++;
           logger.log('✅', `日常任务第 ${i + 1} 项 (${briefName}) 交互完成，积分遥测已上报`, '', accountPrefix);

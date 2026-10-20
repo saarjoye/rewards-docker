@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.2.0",
-  "description": "Microsoft Rewards 自动化平台 (v6.2.0 修复打孔卡page.$$异常、移除日志顶栏按钮、底部暂停恢复动态切换与打卡延时加固)",
+  "version": "6.2.1",
+  "description": "Microsoft Rewards 自动化平台 (v6.2.1 引入智能补漏扫尾模式、搜索停滞暂缓脱困二次回眸与企微textcard原生卡片兼容)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {
