@@ -257,6 +257,7 @@ export function createServer() {
       runningAccountName: taskManager.runningAccountName || '',
       currentTaskSection: taskManager.currentTaskSection || '',
       currentTaskName: taskManager.currentTaskName || '',
+      taskStartTime: taskManager.taskStartTime || null,
       browserState,
       network: cfg.network || {},
       taskOptions: cfg.taskOptions || {},

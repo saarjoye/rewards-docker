@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Rewards 自动任务系统 (v6.1.1)</title>
+  <title>Rewards 自动任务系统 (v6.1.2)</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -13,7 +13,7 @@
       <div class="sidebar-top">
         <div class="brand">
           <div class="brand-logo-sq">🎁</div>
-          <span class="brand-name">Rewards<span class="brand-dot">.v6.1.1</span></span>
+          <span class="brand-name">Rewards<span class="brand-dot">.v6.1.2</span></span>
         </div>
 
         <div class="store-selector-wrap">
@@ -70,7 +70,7 @@
         </button>
         <div class="mobile-nav-brand">
           <span style="font-size: 18px;">🎁</span>
-          <span class="mobile-nav-title">Rewards<span class="brand-dot">.v6.1.1</span></span>
+          <span class="mobile-nav-title">Rewards<span class="brand-dot">.v6.1.2</span></span>
         </div>
         <button type="button" class="mobile-quick-btn" id="btn-mobile-quick-run">🚀 执行</button>
       </div>
@@ -86,6 +86,15 @@
             
           </div>
         </div>
+        <!-- 图 3 红框位置：实时动态滚动信息播报条 (显示：XXXX账号正在执行XXXX任务，执行耗时XXX) -->
+        <div class="topbar-marquee-wrap" id="topbar-marquee-wrap">
+          <div class="marquee-inner">
+            <span class="marquee-badge" id="marquee-status-badge">● 就绪</span>
+            <span class="marquee-content" id="topbar-marquee-text">全系统错峰巡检待命中 · 各托管账号环境准备就绪</span>
+            <span class="marquee-timer" id="topbar-marquee-timer" style="display: none;">已耗时 0s</span>
+          </div>
+        </div>
+
         <div class="topbar-actions">
           <div class="pill-btn status-pill"><span class="pulse-dot"></span> 错峰调度: 运行中</div>
           <div class="pill-btn mem-pill" id="topbar-mem-pill">⚡ 内存: <span id="topbar-mem-text">142 MB / 512 MB</span></div>
@@ -426,8 +435,8 @@
       <div class="health-scope-row" style="margin-top: 12px; margin-bottom: 12px;">
         <span class="health-scope-label">同步范围</span>
         <div class="health-scope-pills">
-          <button type="button" class="scope-pill active" id="btn-sync-scope-all">全部账号 (全量)</button>
-          <button type="button" class="scope-pill" id="btn-sync-scope-single">指定单账号</button>
+          <button type="button" class="scope-pill active" id="btn-sync-scope-all">🌐 全部账号</button>
+          <button type="button" class="scope-pill" id="btn-sync-scope-single">👤 单账号</button>
         </div>
         <select class="select-pill" id="sync-select-account" style="margin-left: 8px; font-weight: 700; background: #ffffff; display: none;">
           <!-- 动态填充账号 -->

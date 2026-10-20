@@ -87,10 +87,25 @@ export function extractOfficialBalance(flightText = '', html = '') {
  */
 export function extractOfficialClaimablePoints(flightText = '', html = '') {
   const combined = `${flightText}\n${html}`;
+
+  // 1. 若页面或抽屉明确包含已领完或归零的终态标记，严格判定为 0
+  if (combined.includes('当前没有要领取的积分') || combined.includes('可领取 0') || combined.includes('已成功领取')) {
+    return 0;
+  }
+
+  // 2. 优先提取官方明细账本中的真实 TotalClaimablePoints
+  const bdMatch = combined.match(/"TotalClaimablePoints"\s*:\s*([0-9]+)/i)
+    || combined.match(/"totalClaimablePoints"\s*:\s*([0-9]+)/i);
+  if (bdMatch && bdMatch[1]) {
+    const val = parseInt(bdMatch[1], 10);
+    if (!isNaN(val)) return val;
+  }
+
+  // 3. 从 DOM 结构中提取待领分 (对标图 6 与单元测试样本)
   const patterns = [
-    /可领取\s*[:\n\r]+\s*([0-9,]+)/i,
-    /可领取\s*([0-9,]+)\s*领取/i,
+    /可领取[\s\S]{0,100}?>([0-9,]+)<[\s\S]{0,100}?>\s*领取/i,
     /class=["'][^"']*?text-labelControl[^"']*?["']>可领取<[\s\S]*?>([0-9,]+)</i,
+    /可领取\s*[:\n\r]+\s*([0-9,]+)/i,
     /"claimablePoints"\s*:\s*([0-9]+)/i
   ];
 
@@ -100,12 +115,10 @@ export function extractOfficialClaimablePoints(flightText = '', html = '') {
       return parseNumberWithCommas(match[1]);
     }
   }
+
   return 0;
 }
 
-/**
- * 严格真实校验函数：防止任何非真实数据污染
- */
 export function validateStrictMetrics({ officialToday, previousToday, claimedAdd = 0 }) {
   if (officialToday === null || officialToday === undefined) {
     return { valid: false, earned: previousToday || 0, reason: '未能读取官网今日真实积分' };

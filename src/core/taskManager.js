@@ -256,7 +256,7 @@ export class TaskManager {
     this.runningAccountName = account.name || account.user;
     this.shouldStop = false;
     this.currentTaskSection = '环境准备';
-    this.currentTaskName = '正在准备执行环境...';
+    this.currentTaskName = '正在准备执行环境...'; this.taskStartTime = Date.now();
 
     configManager.upsertAccount({ id: accountId, status: 'running' });
     const log = (msg) => logger.log('🚀', msg, '', account.name);
@@ -502,6 +502,20 @@ export class TaskManager {
       return;
     }
 
+    // 全量上报当前运行状态与活动账号，驱动大盘、账号池变绿与无头监控
+    this.runningAccountId = accountId;
+    this.runningAccountName = account.name || account.user;
+    this.currentTaskSection = '额外积分';
+    this.currentTaskName = '01:00 额外积分抽屉收割 (React Aria 虚拟指针)';
+    this.taskStartTime = Date.now();
+    configManager.upsertAccount({ id: accountId, status: 'running' });
+    browserManager.updateState({
+      status: 'harvesting',
+      activeAccountId: accountId,
+      activeAccountName: account.name || account.user,
+      currentAction: `[${account.name || account.user}] 正在展开 React Aria 抽屉收割额外积分...`
+    });
+
     try {
       await browserManager.withBrowser(
         { proxy: account.proxy, cookies: session.cookies, headless: true },
@@ -510,11 +524,15 @@ export class TaskManager {
           try {
             await harvestClaimablePointsWithVirtualPointer(page, { accountPrefix: account.name });
             const finalData = await this.fetchOfficialDashboard(context, account);
+            
+            // 实时将最新官方待领分值和余额安全深度合并回写
             configManager.upsertAccount({
               id: accountId,
+              status: 'ready',
               balance: finalData.balance,
-              claimablePoints: finalData.claimablePoints
+              claimablePoints: finalData.claimablePoints !== null ? finalData.claimablePoints : 0
             });
+            logger.log('🎉', `[收割入账] 账号 [${account.name}] 权威对账完毕 - 可用余额: ${finalData.balance} 分, 待领额外积分已同步更新为: ${finalData.claimablePoints} 分`);
             notifier.sendSettlementReport(account, finalData).catch(() => {});
           } finally {
             await page.close().catch(() => {});
@@ -524,6 +542,17 @@ export class TaskManager {
     } catch (e) {
       logger.log('⚠️', `01:00 额外积分收割异常 [${account.name}]: ${e.message}`);
     } finally {
+      this.runningAccountId = null;
+      this.runningAccountName = '';
+      this.currentTaskSection = '';
+      this.currentTaskName = '';
+      configManager.upsertAccount({ id: accountId, status: 'ready' });
+      browserManager.updateState({
+        status: 'idle',
+        activeAccountId: null,
+        activeAccountName: '无活跃任务',
+        currentAction: '无头浏览器处于空闲休眠状态 (0 进程占用)'
+      });
       accountContextLock.release(accountId);
     }
   }

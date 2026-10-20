@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.1.1",
-  "description": "Microsoft Rewards 自动化平台 (v6.1.1 任务积分实时事件驱动响应与动态到账动效)",
+  "version": "6.1.2",
+  "description": "Microsoft Rewards 自动化平台 (v6.1.2 跨自然日真机对账与真实流水重构)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {

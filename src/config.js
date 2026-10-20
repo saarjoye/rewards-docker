@@ -1,3 +1,18 @@
+
+export function getTodayDateString() {
+  try {
+    return new Intl.DateTimeFormat('zh-CN', {
+      timeZone: 'Asia/Shanghai',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).format(new Date()).replace(/\//g, '-');
+  } catch {
+    const d = new Date();
+    return d.toISOString().split('T')[0];
+  }
+}
+
 ﻿import fs from 'fs';
 import path from 'path';
 import { DATA_DIR, writeFileAtomic } from './fsUtil.js';
@@ -115,7 +130,22 @@ class ConfigManager {
   }
 
   getAccounts() {
-    return this.config.accounts || [];
+    const list = this.config.accounts || [];
+    const todayStr = getTodayDateString();
+    let changed = false;
+
+    for (const a of list) {
+      if (a.todayDate !== todayStr) {
+        // 自然日跨天重置：新的一天开启，重置今日增量，杜绝残留昨天的数据
+        a.todayEarned = 0;
+        a.todayDate = todayStr;
+        changed = true;
+      }
+    }
+    if (changed) {
+      this.save();
+    }
+    return list;
   }
 
   getAccount(id) {
