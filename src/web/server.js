@@ -187,6 +187,12 @@ export function createServer() {
       const targetAccounts = (accountId && accountId !== 'all')
         ? [configManager.getAccount(accountId)].filter(Boolean)
         : allAccounts;
+      if (targetAccounts.length === 0) {
+        return res.status(404).json({ success: false, message: '未找到指定的可用账号' });
+      }
+
+      const startedAt = Date.now();
+      const targetAccountIds = targetAccounts.map((account) => account.id);
 
       // 异步在后台依序同步每一个账号，支持未登录账号自动自愈登录
       (async () => {
@@ -211,6 +217,18 @@ export function createServer() {
 
             await browserManager.withBrowser({ proxy: account.proxy, cookies, headless: true }, async (browser, context) => {
               const data = await taskManager.fetchOfficialDashboard(context, account);
+              let officialTasks = null;
+              try {
+                officialTasks = await taskManager.fetchOfficialTaskSnapshot(context, account);
+              } catch (snapshotErr) {
+                logger.log('⚠️', `[官网同步] 任务状态读取失败 [${account.name}]: ${snapshotErr.message}`);
+              }
+              const syncedAt = Date.now();
+              const hasLiveDashboard = data.sources?.balance === 'live' && data.sources?.todayPoints === 'live';
+              const hasOfficialTasks = !!officialTasks && typeof officialTasks === 'object';
+              const dataState = hasLiveDashboard && hasOfficialTasks
+                ? (officialTasks.hasUnknown ? 'partial' : 'complete')
+                : 'partial';
               configManager.upsertAccount({
                 id: account.id,
                 name: account.name,
@@ -218,12 +236,18 @@ export function createServer() {
                 balance: data.balance,
                 todayEarned: data.todayPoints,
                 streakDays: data.streakDays,
-                claimablePoints: data.claimablePoints
+                claimablePoints: data.claimablePoints,
+                officialTasks,
+                lastSyncAt: syncedAt,
+                dataState
               });
               historyManager.recordDaily(account.id, {
                 todayEarned: data.todayPoints,
                 balance: data.balance,
-                streakDays: data.streakDays
+                streakDays: data.streakDays,
+                claimablePoints: data.claimablePoints,
+                officialTasks,
+                source: 'official-sync'
               });
               logger.log('✅', `[官网同步] 账号 [${account.name}] 真实数据回写成功: 今日 ${data.todayPoints}分, 总额 ${data.balance}分, 连签 ${data.streakDays}天`);
             });
@@ -237,6 +261,8 @@ export function createServer() {
 
       res.json({
         success: true,
+        startedAt,
+        targetAccountIds,
         message: targetAccounts.length > 1
           ? `已在后台启动全部 ${targetAccounts.length} 个账号的官方数据同步`
           : `已在后台启动账号 [${targetAccounts[0].name}] 的官方数据同步`
@@ -416,12 +442,13 @@ export function createServer() {
 
     const accounts = configManager.getAccounts().filter((a) => a.enabled);
     (async () => {
+      taskManager.beginRun('全量额外积分收割队列');
       taskManager.isQueueRunning = true;
       try {
         for (const a of accounts) {
           if (taskManager.shouldStop) break;
           await taskManager.harvestMidnightClaimable(a.id);
-          await new Promise((r) => setTimeout(r, 5000));
+          if (!(await taskManager.waitUnlessStopped(5000))) break;
         }
       } finally {
         taskManager.isQueueRunning = false;

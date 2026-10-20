@@ -1,7 +1,11 @@
 ﻿import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from '../src/web/server.js';
-import taskManager from '../src/core/taskManager.js';
+import taskManager, {
+  buildOfficialTaskSnapshot,
+  buildTaskPlan,
+  parseOfficialSearchPointsDetail
+} from '../src/core/taskManager.js';
 import configManager from '../src/config.js';
 import { createAdminSessionToken, getAdminSessionCookieName } from '../src/identity/adminAuth.js';
 import http from 'http';
@@ -60,4 +64,62 @@ test('POST /api/tasks/run 灵活任务调度接口测试', async () => {
     configManager.save();
     server.close();
   }
+});
+
+test('积分明细只从当前账号搜索行读取搜索上限', () => {
+  const parsed = parseOfficialSearchPointsDetail('今日积分\n250\n必应搜索\n30/30\n优惠\n220');
+  assert.deepEqual(parsed, {
+    current: 30,
+    max: 30,
+    isMaxed: true,
+    source: 'points-detail'
+  });
+  assert.equal(parseOfficialSearchPointsDetail('搜索: 1/1\n今日积分 250\n优惠 220'), null);
+  assert.equal(parseOfficialSearchPointsDetail('必应搜索\n31/30'), null);
+});
+
+test('剩余任务快照严格区分未知、完成和待做', () => {
+  const unknownSearch = buildOfficialTaskSnapshot({
+    text: '搜索: 1/1\n活动: 3/3',
+    sections: []
+  });
+  assert.equal(unknownSearch.needSearch, null);
+  assert.equal(unknownSearch.needDailySet, false);
+  assert.equal(unknownSearch.needAppSign, null);
+  assert.equal(unknownSearch.hasUnknown, true);
+
+  const complete = buildOfficialTaskSnapshot({
+    text: '搜索: 1/1\n活动: 3/3\n签到: 1/1',
+    sections: [
+      { title: '日常任务', cards: [{ title: 'x', done: true, disabled: false }] },
+      { title: '任务', cards: [{ title: 'q', done: true, disabled: false }] }
+    ],
+    searchPoints: { current: 30, max: 30, isMaxed: true }
+  });
+  assert.equal(complete.hasWork, false);
+  assert.equal(complete.hasUnknown, false);
+});
+
+test('remaining 只执行官网明确 true 的任务，unknown 不会被当成待做', () => {
+  const plan = buildTaskPlan('remaining', {
+    needSearch: null,
+    needAppSign: true,
+    needDailySet: false,
+    needQuests: null,
+    needDailyActivities: true
+  });
+  assert.deepEqual(plan, {
+    appSign: true,
+    dailySet: false,
+    quests: false,
+    dailyActivities: true,
+    search: false
+  });
+  assert.deepEqual(buildTaskPlan('remaining', null), {
+    appSign: false,
+    dailySet: false,
+    quests: false,
+    dailyActivities: false,
+    search: false
+  });
 });

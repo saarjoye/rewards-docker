@@ -4,6 +4,8 @@ import { DATA_DIR } from './fsUtil.js';
 
 const LOG_FILE = path.join(DATA_DIR, 'app.log');
 const MAX_IN_MEMORY_LOGS = 600;
+// Node test runner imports production modules. Keep synthetic logs out of data/app.log.
+const IS_TEST_RUNNER = Boolean(process.env.NODE_TEST_CONTEXT);
 
 class Logger {
   constructor() {
@@ -46,10 +48,12 @@ class Logger {
       this.buffer.shift();
     }
 
-    // 文件持久化追加
-    try {
-      fs.appendFileSync(LOG_FILE, fullText + '\n', 'utf-8');
-    } catch {}
+    // 文件持久化追加（测试运行器跳过）
+    if (!IS_TEST_RUNNER) {
+      try {
+        fs.appendFileSync(LOG_FILE, fullText + '\n', 'utf-8');
+      } catch {}
+    }
 
     // SSE 客户端实时广播
     for (const send of this.subscribers) {

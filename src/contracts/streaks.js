@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 官方任务模型提取器与四大板块契约定义
  * 依据 REWARDS_NEW_ARCHITECTURE_DESIGN.md 第 3 节规范
  */
@@ -15,57 +15,68 @@ export const TASK_SECTIONS = {
  */
 export function classifyTaskFeasibility(taskName = '', attributes = {}) {
   const name = String(taskName).toLowerCase();
+  const title = String(attributes.title || '').toLowerCase();
+  const destination = String(attributes.destination || attributes.href || '').toLowerCase();
+  const combined = `${name} ${title}`.trim();
 
-  // 1. 操作系统级遥测
-  if (name.includes('edge 浏览连续打卡') || name.includes('浏览 30 分钟') || name.includes('默认浏览器')) {
-    return {
-      executable: false,
-      tag: '【客户端硬件遥测限制 (跳过)】',
-      reason: '依赖 Windows 宿主机 Edge 操作系统级守护进程上报，无头浏览器无法伪造'
-    };
+  const notExecutable = (tag, reason) => ({ executable: false, tag, reason });
+  const executable = (kind, reason = '') => ({ executable: true, kind, tag: '【可执行】', reason });
+
+  // 1. Operating-system telemetry and browser configuration cannot be
+  // reproduced by a headless page.
+  if (combined.includes('edge 浏览连续打卡') || combined.includes('浏览 30 分钟') || combined.includes('默认浏览器')) {
+    return notExecutable('【客户端硬件遥测限制 (跳过)】', '依赖 Windows 宿主机 Edge 操作系统级守护进程上报，无头浏览器无法伪造');
+  }
+  if (combined.includes('默认搜索引擎') || combined.includes('设置为必应')) {
+    return notExecutable('【客户端环境配置项 (跳过)】', '依赖客户端检测物理机默认搜索引擎设置，属于静态配置而非交互动作');
   }
 
-  // 2. 默认引擎配置项
-  if (name.includes('默认搜索引擎') || name.includes('设置为必应')) {
-    return {
-      executable: false,
-      tag: '【客户端环境配置项 (跳过)】',
-      reason: '依赖客户端检测物理机默认搜索引擎设置，属于静态配置而非交互动作'
-    };
+  // 2. Commercial and external client flows are never point activities.
+  if (combined.includes('xbox') || combined.includes('game pass') || combined.includes('购买') || combined.includes('订阅') || combined.includes('充值')) {
+    return notExecutable('【外部付费消费项 (跳过)】', '涉及真实货币交易与外部付费订阅，属于商业营销引导卡');
+  }
+  if (combined.includes('免费获取') || (combined.includes('free') && combined.includes('super')) || combined.includes('super duolingo')) {
+    return notExecutable('【营销/订阅引导 (跳过)】', '营销或订阅引导不产生可直接领取的积分');
+  }
+  if (combined.includes('下载') || combined.includes('安装') || combined.includes('壁纸') || combined.includes('扩展') || combined.includes('extension') || combined.includes('客户端')) {
+    return notExecutable('【客户端/安装引导 (跳过)】', '依赖客户端或扩展安装，无法通过网页交互完成');
+  }
+  if (combined.includes('搜索栏') || combined.includes('search bar') || (combined.includes('启用') && combined.includes('搜索') && combined.includes('连续'))) {
+    return notExecutable('【客户端搜索栏引导 (跳过)】', '依赖客户端搜索栏启用和连续使用，不能由网页搜索替代');
+  }
+  if (combined.includes('连续使用') && combined.includes('天')) {
+    return notExecutable('【多日客户端任务 (跳过)】', '需要多日客户端使用记录，不属于单次网页活动');
+  }
+  if ((combined.includes('第') && combined.includes('天解锁')) || combined.includes('明天再来')) {
+    return notExecutable('【明日解锁 (当前已满)】', '微软服务器端强时间锁，当天强制请求会触发风控');
   }
 
-  // 3. 付费消费/会员类
-  if (name.includes('xbox') || name.includes('game pass') || name.includes('购买') || name.includes('订阅') || name.includes('充值')) {
-    return {
-      executable: false,
-      tag: '【外部付费消费项 (跳过)】',
-      reason: '涉及真实货币交易与外部付费订阅，属于商业营销引导卡'
-    };
+  // 3. Punch cards are owned by the quest pipeline. Re-entering them from the
+  // daily section would duplicate work and can reset in-progress state.
+  if (destination.includes('/quest/') || combined.includes('打孔卡') || /\d+\s*\/\s*\d+\s*个任务/.test(combined)) {
+    return notExecutable('【打孔卡/任务链 (跳过)】', '打孔卡由独立任务链执行，不能作为日常活动重复穿透');
   }
 
-  // 4. 未来未解锁步骤
-  if (name.includes('第') && name.includes('天解锁') || name.includes('明天再来')) {
-    return {
-      executable: false,
-      tag: '【明日解锁 (当前已满)】',
-      reason: '微软服务器端强时间锁，当天强制请求会触发风控'
-    };
+  // 4. Require an explicit point badge/value. A positive number in marketing
+  // prose is not enough; this keeps non-point promotional cards out.
+  const pointBadge = String(attributes.pointText || '').match(/^\s*\+?\s*(\d{1,4})\s*(?:分|points?)?\s*$/i);
+  const declaredPoints = Number(attributes.points ?? attributes.pointProgressMax ?? NaN);
+  const hasPositivePoints = (pointBadge && Number(pointBadge[1]) > 0) || (Number.isFinite(declaredPoints) && declaredPoints > 0);
+  const hasPointToken = /(?:^|\s)\+\s*\d{1,4}(?:\s|$)/.test(combined)
+    || /(?:^|\s)\d{1,4}\s*(?:分|积分)(?:\s|$|[，,。.])/.test(combined);
+  const isKnownContainer = /每日活动集|daily set/.test(combined);
+  if (!hasPositivePoints && !hasPointToken && !isKnownContainer) {
+    return notExecutable('【无积分/仅营销 (跳过)】', '未发现可验证的积分奖励标记');
   }
 
-  // 5. 移动应用安装引导
-  if (name.includes('下载并安装') || name.includes('安装 edge 移动版')) {
-    return {
-      executable: false,
-      tag: '【外部应用引导 (免做)】',
-      reason: '依赖应用商店回调或移动端包名检测'
-    };
+  // 5. Select the interaction strategy used by the executor.
+  if (destination.includes('imagepuzzle') || combined.includes('拼图') || combined.includes('puzzle')) {
+    return executable('puzzle', '拼图类交互');
   }
-
-  return {
-    executable: true,
-    tag: '【可执行】',
-    reason: ''
-  };
+  if (destination.includes('bing.com/search') || /化石精选|拓展你的|探索知识|知识探索/.test(combined)) {
+    return executable('search-exploration', '需要打开结果页并点击自然搜索结果');
+  }
+  return executable('web-interaction', '网页内可执行活动');
 }
 
 /**
@@ -201,7 +212,11 @@ export function buildUnifiedTaskBoard(flightData = {}, rawCards = []) {
   // 动态解析打孔卡 (Quests / Punch Cards) 与日常活动卡片 (Daily Activities)
   if (Array.isArray(rawCards)) {
     for (const card of rawCards) {
-      const feasibility = classifyTaskFeasibility(card.title || card.name || '', card.attributes);
+      const feasibility = classifyTaskFeasibility(card.title || card.name || '', {
+        ...(card.attributes || {}),
+        points: card.pointProgressMax || card.points,
+        destination: card.destination || ''
+      });
       const item = {
         id: card.offerId || card.id || Math.random().toString(36).slice(2, 8),
         title: card.title || card.name || '未命名活动',
@@ -210,6 +225,7 @@ export function buildUnifiedTaskBoard(flightData = {}, rawCards = []) {
         progress: Number(card.pointProgress || (card.isCompleted ? card.pointProgressMax || card.points : 0)),
         max: Number(card.pointProgressMax || card.points || 1),
         executable: feasibility.executable,
+        kind: feasibility.kind || null,
         tag: feasibility.tag,
         note: feasibility.reason,
         destination: card.destination || '',

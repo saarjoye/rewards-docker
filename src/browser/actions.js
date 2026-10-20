@@ -1,4 +1,4 @@
-﻿import logger from '../logger.js';
+import logger from '../logger.js';
 import browserManager from './browser.js';
 import { classifyTaskFeasibility } from '../contracts/streaks.js';
 
@@ -259,6 +259,107 @@ async function dismissCelebrationOverlay(page) {
   } catch {}
 }
 
+async function readPointBadge(card) {
+  return card.evaluate((el) => {
+    const text = (el.innerText || '').replace(/\r/g, '');
+    const tokenPatterns = [
+      /(?:^|\s)\+\s*(\d{1,4})(?:\s*分)?(?=\s|$)/m,
+      /(?:^|\s)(\d{1,4})\s*(?:分|积分)(?=\s|$|[，,。.])/m
+    ];
+    for (const pattern of tokenPatterns) {
+      const match = text.match(pattern);
+      if (match && Number(match[1]) > 0) return match[1];
+    }
+    const badge = [...el.querySelectorAll('[aria-label], [title]')]
+      .map((node) => `${node.getAttribute('aria-label') || ''} ${node.getAttribute('title') || ''}`)
+      .map((value) => value.match(/(?:\+\s*)?(\d{1,4})\s*(?:分|积分|points?)/i))
+      .find(Boolean);
+    return badge ? badge[1] : null;
+  }).catch(() => null);
+}
+
+async function openCardInTargetBlank(page, card) {
+  const popupPromise = page.context().waitForEvent('page', { timeout: 12000 }).catch(() => null);
+  await card.scrollIntoViewIfNeeded().catch(() => {});
+  await card.click({ force: true, timeout: 10000 });
+  const popup = await popupPromise;
+  if (popup) await popup.waitForTimeout(250).catch(() => {});
+  if (!popup) throw new Error('点击活动卡片后未打开 target=_blank 页面');
+  await popup.waitForLoadState('domcontentloaded', { timeout: 35000 }).catch(() => {});
+  return popup;
+}
+
+async function clickFirstNaturalSearchResult(popup, options = {}) {
+  const result = popup.locator('#b_results .b_algo h2 a, #b_results .b_algo a').first();
+  if (!(await result.count())) throw new Error('结果页未找到自然搜索结果');
+  const resultHref = await result.getAttribute('href').catch(() => null);
+  if (!resultHref || !/^https?:/i.test(resultHref)) throw new Error('自然搜索结果缺少可点击 URL');
+
+  const beforePages = new Set(popup.context().pages());
+  await result.click({ force: true, timeout: 15000 });
+  let destination = popup;
+  for (let i = 0; i < 40; i++) {
+    destination = popup.context().pages().find((candidate) => !beforePages.has(candidate) && !candidate.isClosed()) || popup;
+    if (destination !== popup || !destination.url().includes('bing.com/search')) break;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  await destination.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() => {});
+  const dwellMs = Number.isFinite(Number(options.searchDwellMs)) ? Number(options.searchDwellMs) : 6000;
+  await new Promise((resolve) => setTimeout(resolve, Math.max(0, dwellMs)));
+  return { page: destination, url: destination.url(), resultHref };
+}
+
+export async function executeDailyActivity(page, card, options = {}) {
+  const { accountPrefix = '', index = 1 } = options;
+  const cardText = (await card.innerText().catch(() => '')).replace(/\r/g, '');
+  const href = await card.getAttribute('href').catch(() => null);
+  const pointText = await readPointBadge(card);
+  const feasibility = classifyTaskFeasibility(cardText, { href, pointText });
+  const briefName = cardText.split('\n').map((line) => line.trim()).filter(Boolean).slice(0, 2).join(' ');
+
+  if (!feasibility.executable) {
+    const reason = `${feasibility.tag} ${feasibility.reason}`.trim();
+    logger.log('⏭️', `跳过日常任务第 ${index} 项 (${briefName || '未命名活动'}): ${reason}`, '', accountPrefix);
+    return { status: 'skipped', reason, feasibility };
+  }
+  if (cardText.includes('已完成') || cardText.includes('Completed') || cardText.includes('✔')) {
+    return { status: 'already-completed', reason: '官网卡片显示已完成', feasibility };
+  }
+
+  if (feasibility.kind === 'puzzle') {
+    const popup = await openCardInTargetBlank(page, card);
+    try {
+      await penetratePuzzleSpotlight(popup, popup.url(), { accountPrefix });
+      return { status: 'interacted', reason: '拼图页已打开并完成页面交互', pointText, feasibility };
+    } finally {
+      await popup.close().catch(() => {});
+    }
+  }
+
+  const popup = await openCardInTargetBlank(page, card);
+  let destination = popup;
+  try {
+    await solveQuizOrPoll(popup, { accountPrefix });
+    if (feasibility.kind === 'search-exploration') {
+      const result = await clickFirstNaturalSearchResult(popup, options);
+      destination = result.page;
+      logger.log('🔎', `日常任务第 ${index} 项已点击自然搜索结果并驻留: ${result.url}`, '', accountPrefix);
+    } else {
+      await popup.mouse.wheel(0, 260).catch(() => {});
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+    }
+    return {
+      status: 'interacted',
+      reason: `已打开 ${href || '活动页面'} 并完成${feasibility.kind === 'search-exploration' ? '自然搜索结果点击' : '页面交互'}，待官网确认积分`,
+      pointText,
+      feasibility
+    };
+  } finally {
+    if (destination !== popup) await destination.close().catch(() => {});
+    await popup.close().catch(() => {});
+  }
+}
+
 export async function penetratePunchCardQuest(page, questUrl, options = {}) {
   const { accountPrefix = '' } = options;
   if (!questUrl) return false;
@@ -391,7 +492,7 @@ export async function harvestClaimablePointsWithVirtualPointer(page, options = {
     }
     if (before.points === 0) {
       logger.log('\u2139\ufe0f', '\u300c\u53ef\u9886\u53d6\u300d\u5f53\u524d\u4e3a 0 \u5206\uff0c\u65e0\u9700\u9886\u53d6', '', accountPrefix);
-      return { harvested: true, points: 0, reason: 'already-zero', before };
+      return { harvested: false, status: 'already-empty', points: 0, reason: 'already-zero', before, after: before };
     }
     if (!Number.isFinite(before.points)) {
       throw new Error('\u65e0\u6cd5\u4ece\u5b98\u7f51\u5361\u7247\u89e3\u6790\u53ef\u9886\u53d6\u79ef\u5206\uff0c\u62d2\u7edd\u731c\u6d4b\u6210\u529f\u72b6\u6001');
@@ -412,7 +513,7 @@ export async function harvestClaimablePointsWithVirtualPointer(page, options = {
       const balanceIncreased = before.balance !== null && after.balance !== null && after.balance >= before.balance + before.points;
       if (after.points === 0 && balanceIncreased) {
         logger.log('\u{1f389}', '\u9886\u53d6\u6210\u529f\u5e76\u5df2\u5bf9\u8d26\uff1a\u4f59\u989d ' + before.balance + ' \u2192 ' + after.balance + '\uff0c\u53ef\u9886\u53d6 ' + before.points + ' \u2192 0', '', accountPrefix);
-        return { harvested: true, points: before.points, before, after, reason: 'balance-and-claimable-verified' };
+        return { harvested: true, status: 'claimed', points: before.points, before, after, reason: 'balance-and-claimable-verified' };
       }
     }
 
@@ -422,139 +523,121 @@ export async function harvestClaimablePointsWithVirtualPointer(page, options = {
     const increased = before.balance !== null && finalState.balance !== null && finalState.balance > before.balance;
     if (finalState.points === 0 && increased) {
       logger.log('\u{1f389}', '\u5237\u65b0\u5bf9\u8d26\u6210\u529f\uff1a\u4f59\u989d ' + before.balance + ' \u2192 ' + finalState.balance + '\uff0c\u53ef\u9886\u53d6\u5df2\u5f52\u96f6', '', accountPrefix);
-      return { harvested: true, points: before.points, before, after: finalState, reason: 'reload-verified' };
+      return { harvested: true, status: 'claimed', points: before.points, before, after: finalState, reason: 'reload-verified' };
     }
 
     logger.log('\u26a0\ufe0f', '\u70b9\u51fb\u540e\u5c1a\u672a\u786e\u8ba4\u5230\u8d26\uff1a\u4f59\u989d ' + (finalState.balance ?? '\u672a\u77e5') + '\uff0c\u53ef\u9886\u53d6 ' + (finalState.points ?? '\u672a\u77e5') + '\u3002\u672a\u6807\u8bb0\u4e3a\u6210\u529f\u3002', '', accountPrefix);
-    return { harvested: false, points: before.points, before, after: finalState, reason: 'unverified-after-click' };
+    return { harvested: false, status: 'unverified', points: before.points, before, after: finalState, reason: 'unverified-after-click' };
   } catch (err) {
     logger.log('\u{1f534}', '\u989d\u5916\u79ef\u5206\u9886\u53d6\u6267\u884c\u5f02\u5e38: ' + err.message, '', accountPrefix);
-    return { harvested: false, points: 0, reason: 'exception', error: err.message };
+    return { harvested: false, status: 'unverified', points: 0, reason: 'exception', error: err.message };
   }
+}
+
+function normalizeDailyActivityUrl(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw || (!/^(?:https?:)?\/\//i.test(raw) && !raw.startsWith('/'))) return '';
+  try {
+    const url = new URL(raw, 'https://rewards.bing.com');
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
+    url.hash = '';
+    url.hostname = url.hostname.toLowerCase();
+    if ((url.protocol === 'https:' && url.port === '443') || (url.protocol === 'http:' && url.port === '80')) {
+      url.port = '';
+    }
+    if (url.pathname.length > 1) url.pathname = url.pathname.replace(/\/+$/, '');
+    url.searchParams.sort();
+    return url.href;
+  } catch {
+    return '';
+  }
+}
+
+function normalizeDailyActivityTitle(value) {
+  return String(value ?? '')
+    .normalize('NFKC')
+    .replace(/[\u200b-\u200d\ufeff]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLocaleLowerCase('en-US');
 }
 
 export async function penetrateDailyActivities(page, options = {}) {
   const { accountPrefix = '', pendingKeys = null } = options;
   browserManager.updateState({ status: "navigating", currentAction: "执行【板块 4: 日常任务】点击穿透与答题..." });
   logger.log('📋', '>>> 开始执行【板块 4: 日常任务 (Daily Activities)】<<<', '', accountPrefix);
+  if (Array.isArray(pendingKeys) && pendingKeys.length === 0) {
+    logger.log('ℹ️', '官网待办列表为空，本次不执行任何日常任务卡片', '', accountPrefix);
+    return 0;
+  }
 
   try {
-    // 关键修正：官方全量日常任务 (素食汉堡、化石精选、你是否知道答案、完成此拼图等) 位于 /earn 路由
     await page.goto('https://rewards.bing.com/earn', { waitUntil: 'domcontentloaded', timeout: 35000 });
-    await new Promise((r) => setTimeout(r, 3000));
-
-    // 先行清理可能遮挡的蒙层
+    await new Promise((resolve) => setTimeout(resolve, 3000));
     await dismissCelebrationOverlay(page);
 
-    // 定位「日常任务」区域的所有活动卡片链接
-    let cards = await page.$$('div.react-aria-Disclosure:has(h2:has-text("日常任务")) a, div:has(> h2:text("日常任务")) a, div[data-bi-area="MoreActivities"] a, #more-activities a');
+    const dailyRoot = page.locator('div.react-aria-Disclosure').filter({ has: page.locator('h2', { hasText: '日常任务' }) }).first();
+    await dailyRoot.waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
+    let cards = [];
+    if (await dailyRoot.count()) {
+      cards = await dailyRoot.locator('a').all();
+    }
     if (!cards || cards.length === 0) {
-      // 兼容兜底选择器
       cards = await page.$$('a[class*="rounded-cornerCardDefault"][href*="bing.com"]');
     }
-
     logger.log('📋', `检索到【日常任务】区域内包含 ${cards.length} 个活动项目`, '', accountPrefix);
 
     let executedCount = 0;
+    let skippedCount = 0;
+    let failedCount = 0;
+
     for (let i = 0; i < cards.length; i++) {
       const card = cards[i];
       try {
         if (!(await card.isVisible().catch(() => false))) continue;
 
-        const cardText = await card.innerText().catch(() => '');
-        // 过滤不可执行的营销扩展类卡片
-        const feasibility = classifyTaskFeasibility(cardText);
-        if (!feasibility.executable) {
-          logger.log('⏭️', `跳过非积分项目: ${cardText.slice(0, 25).replace(/\n/g, ' ')}... (${feasibility.tag})`, '', accountPrefix);
-          continue;
-        }
+        const cardText = (await card.innerText().catch(() => '')).replace(/\r/g, '');
+        const href = await card.getAttribute('href').catch(() => null);
+        const normalizedCardText = normalizeDailyActivityTitle(cardText);
+        const normalizedHref = normalizeDailyActivityUrl(href);
+        if (Array.isArray(pendingKeys)) {
+          const matched = pendingKeys.some((key) => {
+            const normalizedKeyUrl = normalizeDailyActivityUrl(key);
+            if (normalizedKeyUrl) return Boolean(normalizedHref) && normalizedKeyUrl === normalizedHref;
 
-        // 如果卡片已经打钩已完成，跳过
-        if (cardText.includes('已完成') || cardText.includes('Completed') || cardText.includes('✔')) {
-          continue;
-        }
-
-        const hrefNow = await card.getAttribute('href').catch(() => null);
-        if (Array.isArray(pendingKeys) && pendingKeys.length) {
-          const matched = pendingKeys.some((k) => k && ((hrefNow && k === hrefNow) || cardText.includes(String(k).slice(0, 12))));
+            const normalizedKeyTitle = normalizeDailyActivityTitle(key);
+            return Boolean(normalizedKeyTitle) && normalizedKeyTitle === normalizedCardText;
+          });
           if (!matched) continue;
         }
 
-        const briefName = cardText.slice(0, 25).replace(/\n/g, ' ');
-        logger.log('🚀', `触发日常任务第 ${i + 1} 项: ${briefName}...`, '', accountPrefix);
+        const briefName = cardText.split('\n').map((line) => line.trim()).filter(Boolean).slice(0, 2).join(' ').slice(0, 70);
+        logger.log('🚀', `检查日常任务第 ${i + 1} 项: ${briefName || '未命名活动'}...`, '', accountPrefix);
 
-        const href = await card.getAttribute('href').catch(() => null);
-
-        // 如果是拼图任务，使用专属拼图解决逻辑
-        if (cardText.includes('拼图') || cardText.includes('puzzle') || (href && href.includes('imagepuzzle'))) {
-          let popup = null;
-          if (href && href.startsWith('http')) {
-            popup = await page.context().newPage();
-            await popup.goto(href, { waitUntil: 'domcontentloaded', timeout: 35000 }).catch(() => {});
-          } else {
-            const [p] = await Promise.all([
-              page.context().waitForEvent('page', { timeout: 10000 }).catch(() => null),
-              card.click({ force: true }).catch(() => {})
-            ]);
-            popup = p;
-          }
-
-          if (popup) {
-            await popup.waitForLoadState('domcontentloaded').catch(() => {});
-            await penetratePuzzleSpotlight(popup, popup.url(), { accountPrefix });
-            await new Promise((r) => setTimeout(r, 4000));
-            await popup.close().catch(() => {});
-            executedCount++;
-          }
-          continue;
-        }
-
-        // 普通探索与 Quiz 问答卡片 (如化石精选 +15、你是否知道答案 +5)
-        let popup = null;
-        if (href && href.startsWith('http')) {
-          popup = await page.context().newPage();
-          await popup.goto(href, { waitUntil: 'domcontentloaded', timeout: 35000 }).catch(() => {});
-        } else {
-          const [p] = await Promise.all([
-            page.context().waitForEvent('page', { timeout: 10000 }).catch(() => null),
-            card.click({ force: true }).catch(() => {})
-          ]);
-          popup = p;
-        }
-
-        if (popup) {
-          await popup.waitForLoadState('domcontentloaded').catch(() => {});
-          // 尝试自动解题/投票 (Quiz 卡片)
-          await solveQuizOrPoll(popup, { accountPrefix });
-          // 模拟真人滚轮浏览与搜索结果探测 (探索类卡片如化石精选)
-          try {
-            await popup.mouse.wheel(0, 300);
-            await new Promise((r) => setTimeout(r, 1500));
-            // 触碰首个自然搜索结果以彻底激活微软防刷加分遥测
-            const firstAlgo = await popup.$('#b_results .b_algo h2 a, #b_results .b_algo a').catch(() => null);
-            if (firstAlgo) {
-              await firstAlgo.hover().catch(() => {});
-            }
-          } catch {}
-          await new Promise((r) => setTimeout(r, 6000)); // 驻留 6 秒确保微软服务端遥测完全入账
-          await popup.close().catch(() => {});
+        const result = await executeDailyActivity(page, card, { accountPrefix, index: i + 1 });
+        if (result.status === 'interacted') {
           executedCount++;
-          logger.log('✅', `日常任务第 ${i + 1} 项 (${briefName}) 交互完成，积分遥测已上报`, '', accountPrefix);
-        } else {
-          await new Promise((r) => setTimeout(r, 3000));
+          logger.log('✅', `日常任务第 ${i + 1} 项已执行交互，${result.reason}；最终积分以官网同步结果为准`, '', accountPrefix);
+        } else if (result.status === 'skipped') {
+          skippedCount++;
+        } else if (result.status === 'already-completed') {
+          skippedCount++;
+          logger.log('✅', `日常任务第 ${i + 1} 项官网已显示完成，跳过重复执行`, '', accountPrefix);
         }
 
-        // 卡片间退避睡眠防风控
-        await new Promise((r) => setTimeout(r, 2500 + Math.random() * 2000));
+        // Human-like delay between cards. Keep it interruptible at task-manager
+        // level between cards rather than adding hidden retries.
+        await new Promise((resolve) => setTimeout(resolve, 2500 + Math.random() * 2000));
       } catch (errItem) {
-        logger.log('⚠️', `日常任务项 ${i + 1} 交互异常: ${errItem.message}`, '', accountPrefix);
+        failedCount++;
+        logger.log('⚠️', `日常任务第 ${i + 1} 项交互失败: ${errItem.message}`, '', accountPrefix);
       }
     }
 
-    logger.log('✅', `【板块 4: 日常任务】执行完毕，共穿透打卡 ${executedCount} 项`, '', accountPrefix);
+    logger.log('✅', `【板块 4: 日常任务】执行结束：已交互 ${executedCount} 项，跳过 ${skippedCount} 项，失败 ${failedCount} 项；积分状态以随后官网同步为准`, '', accountPrefix);
     return executedCount;
-  } catch (e) {
-    logger.log('🔴', `日常任务板块穿透异常: ${e.message}`, '', accountPrefix);
+  } catch (error) {
+    logger.log('🔴', `日常任务板块穿透异常: ${error.message}`, '', accountPrefix);
     return 0;
   }
 }

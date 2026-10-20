@@ -21,13 +21,152 @@ import {
   extractOfficialTodayPoints,
   extractOfficialBalance,
   extractOfficialStreakDays,
-  extractOfficialClaimablePoints,
-  extractOfficialSearchPoints
+  extractOfficialClaimablePoints
 } from '../contracts/validator.js';
 import { concatFlightChunks, extractOfferObjects } from '../contracts/flightParse.js';
-import { buildUnifiedTaskBoard } from '../contracts/streaks.js';
+import { buildUnifiedTaskBoard, classifyTaskFeasibility } from '../contracts/streaks.js';
 import historyManager from './history.js';
 import notifier from './notifier.js';
+
+export const TASK_STOP_MESSAGE = '任务已被用户主动中断';
+
+/**
+ * Parse only the search row from the opened official points drawer.
+ * A loose page-wide number match is intentionally forbidden here.
+ */
+export function parseOfficialSearchPointsDetail(detailText = '') {
+  const lines = String(detailText || '')
+    .replace(/\r/g, '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const valueRe = /^([0-9]{1,5})\s*\/\s*([0-9]{1,5})(?:\s*(?:分|points?))?$/i;
+  const rowRe = /^(必应搜索|Bing search|PC\s*搜索|PC\s*Search)\s*[:：]?\s*([0-9]{1,5})\s*\/\s*([0-9]{1,5})(?:\s*(?:分|points?))?(?:\s*[+＋]\s*[0-9]{1,5}\s*分)?$/i;
+  const labelRe = /^(必应搜索|Bing search|PC\s*搜索|PC\s*Search)\s*[:：]?$/i;
+
+  for (let i = 0; i < lines.length; i++) {
+    let current;
+    let max;
+    const rowMatch = lines[i].match(rowRe);
+    if (rowMatch) {
+      current = Number(rowMatch[2]);
+      max = Number(rowMatch[3]);
+    } else if (labelRe.test(lines[i]) && i + 1 < lines.length) {
+      const valueMatch = lines[i + 1].match(valueRe);
+      if (valueMatch) {
+        current = Number(valueMatch[1]);
+        max = Number(valueMatch[2]);
+      }
+    }
+
+    if (!Number.isInteger(current) || !Number.isInteger(max)) continue;
+    if (max <= 0 || current < 0 || current > max) continue;
+    return {
+      current,
+      max,
+      isMaxed: current >= max,
+      source: 'points-detail'
+    };
+  }
+  return null;
+}
+
+export function describeOfficialNeed(value) {
+  if (value === true) return '待做';
+  if (value === false) return '已完成';
+  return '未知';
+}
+
+/**
+ * Build a tri-state task snapshot from official DOM evidence.
+ * null means unknown. Unknown never becomes work and never counts as complete.
+ */
+export function buildOfficialTaskSnapshot({ text = '', sections = [], searchPoints = null } = {}) {
+  const lines = String(text || '').split('\n').map((line) => line.trim()).filter(Boolean);
+  const counter = (re) => {
+    for (const line of lines) {
+      const match = line.match(re);
+      if (match) return { current: Number(match[1]), max: Number(match[2]) };
+    }
+    return null;
+  };
+
+  const searchStreak = counter(/^搜索\s*:\s*([0-9]+)\s*\/\s*([0-9]+)$/);
+  const dailySet = counter(/^活动\s*:\s*([0-9]+)\s*\/\s*([0-9]+)$/);
+  const appCheckIn = counter(/^签到\s*:\s*([0-9]+)\s*\/\s*([0-9]+)$/);
+  const dailySection = sections.find((section) => section.title === '日常任务') || null;
+  const questSection = sections.find((section) => section.title === '任务') || null;
+  const dailyCards = dailySection?.cards || [];
+  const questCards = questSection?.cards || [];
+  const dailyPending = dailyCards.filter((card) => !card.done && !card.disabled && card.executable !== false);
+  const questPending = questCards.filter((card) => !card.done && !card.disabled);
+
+  const needSearch = searchPoints ? !searchPoints.isMaxed : null;
+  const needDailySet = dailySet ? dailySet.current < dailySet.max : null;
+  const needAppSign = appCheckIn ? appCheckIn.current < appCheckIn.max : null;
+  const needDailyActivities = dailySection ? dailyPending.length > 0 : null;
+  const needQuests = questSection ? questPending.length > 0 : null;
+  const state = {
+    search: needSearch,
+    dailySet: needDailySet,
+    appSign: needAppSign,
+    dailyActivities: needDailyActivities,
+    quests: needQuests
+  };
+  const unknown = Object.entries(state)
+    .filter(([, value]) => value === null)
+    .map(([key]) => key);
+
+  return {
+    searchStreak,
+    dailySet,
+    appCheckIn,
+    searchPoints,
+    dailyPending,
+    questPending,
+    needSearch,
+    needDailySet,
+    needAppSign,
+    needDailyActivities,
+    needQuests,
+    hasWork: Object.values(state).some((value) => value === true),
+    hasUnknown: unknown.length > 0,
+    details: {
+      searchStreak,
+      dailySet,
+      appCheckIn,
+      dailyPending: dailyPending.map((card) => card.title),
+      questPending: questPending.map((card) => card.title),
+      searchPoints: searchPoints || { unknown: true },
+      state,
+      unknown
+    }
+  };
+}
+
+/**
+ * A remaining plan is allow-listed by explicit official true values only.
+ * Unknown and false are both non-executable in remaining mode.
+ */
+export function buildTaskPlan(taskScope, officialTasks = null) {
+  if (taskScope === 'remaining') {
+    return {
+      appSign: officialTasks?.needAppSign === true,
+      dailySet: officialTasks?.needDailySet === true,
+      quests: officialTasks?.needQuests === true,
+      dailyActivities: officialTasks?.needDailyActivities === true,
+      search: officialTasks?.needSearch === true
+    };
+  }
+  return {
+    appSign: taskScope === 'all' || taskScope === 'appSign',
+    dailySet: taskScope === 'all' || taskScope === 'dailySet',
+    quests: taskScope === 'all' || taskScope === 'quests',
+    dailyActivities: taskScope === 'all' || taskScope === 'puzzle' || taskScope === 'dailyActivities',
+    search: taskScope === 'all' || taskScope === 'search'
+  };
+}
 
 export class TaskManager {
   constructor() {
@@ -37,23 +176,54 @@ export class TaskManager {
     this.currentTaskName = '';
     this.shouldStop = false;
     this.isQueueRunning = false;
+    this.activeRunId = null;
+    this.stopReason = '';
   }
 
   isAccountRunning(accountId) {
     return this.runningAccountId === accountId;
   }
 
+  beginRun(reason = '任务流水线') {
+    const runId = Date.now() + Math.random().toString(36).slice(2, 8);
+    this.activeRunId = runId;
+    this.shouldStop = false;
+    this.stopReason = '';
+    return runId;
+  }
+
+  async waitUnlessStopped(milliseconds) {
+    const deadline = Date.now() + milliseconds;
+    while (Date.now() < deadline) {
+      if (this.shouldStop) return false;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(250, deadline - Date.now())));
+    }
+    return !this.shouldStop;
+  }
+
+  finalizeAccountRun(accountId) {
+    this.runningAccountId = null;
+    this.runningAccountName = '';
+    this.currentTaskSection = '';
+    this.currentTaskName = '';
+    accountContextLock.release(accountId);
+  }
+
   /**
    * 用户主动中断/停止当前任务流水线
    */
-  stopCurrentTask() {
-    if (!this.runningAccountId) {
+  stopCurrentTask(reason = '用户主动中断') {
+    if (!this.runningAccountId && !this.isQueueRunning) {
       return { stopped: false, message: '当前没有正在执行中的任务' };
     }
 
-    const accName = this.runningAccountName || this.runningAccountId;
+    const accName = this.runningAccountName || this.runningAccountId || '批量队列';
+    if (this.shouldStop) {
+      return { stopped: true, alreadyStopping: true, accountName: accName };
+    }
     this.shouldStop = true;
-    logger.log('🛑', `收到用户主动中断指令，正在安全回收浏览器并释放账号 [${accName}] 上下文...`);
+    this.stopReason = reason;
+    logger.log('🛑', reason + '：正在安全回收浏览器并释放账号 [' + accName + '] 上下文...');
 
     // 强行关闭浏览器中断所有导航与等待
     if (browserManager.activeBrowser) {
@@ -66,14 +236,14 @@ export class TaskManager {
   /**
    * 抓取官网权威数据看板
    */
-  async fetchOfficialDashboard(context, account) {
+  async fetchOfficialDashboard(context, account, options = {}) {
     let page = await context.newPage();
     const log = (msg) => logger.log('📊', `[官网同步] ${msg}`, '', account.name);
 
     let todayPoints = null;
     let balance = null;
     let streakDays = 0;
-    let claimablePoints = 0;
+    let claimablePoints = null;
     let flightChunks = '';
     let earnHtml = '';
     let earnText = '';
@@ -157,20 +327,19 @@ export class TaskManager {
         log(`访问 /dashboard 异常: ${e.message}`);
       }
 
-      // 绝不将已有历史数据清零！
-      if (balance === null && account.balance !== undefined) {
-        balance = account.balance;
+      const sources = {
+        balance: balance !== null ? 'live' : 'unknown',
+        todayPoints: todayPoints !== null ? 'live' : 'unknown',
+        streakDays: streakDays ? 'live' : 'unknown',
+        claimablePoints: claimablePoints !== null ? 'live' : 'unknown'
+      };
+      const allowCachedFallback = options.allowCachedFallback !== false;
+      if (allowCachedFallback) {
+        if (balance === null && account.balance !== undefined) { balance = account.balance; sources.balance = 'cache'; }
+        if (todayPoints === null && account.todayEarned !== undefined) { todayPoints = account.todayEarned; sources.todayPoints = 'cache'; }
+        if (!streakDays && account.streakDays !== undefined) { streakDays = account.streakDays; sources.streakDays = 'cache'; }
+        if (claimablePoints === null && account.claimablePoints !== undefined) { claimablePoints = account.claimablePoints; sources.claimablePoints = 'cache'; }
       }
-      if (todayPoints === null && account.todayEarned !== undefined) {
-        todayPoints = account.todayEarned;
-      }
-      if (!streakDays && account.streakDays !== undefined) {
-        streakDays = account.streakDays;
-      }
-      if (claimablePoints === null && account.claimablePoints !== undefined) {
-        claimablePoints = account.claimablePoints;
-      }
-
       log(`权威数据采集结果 - 可用余额: ${balance !== null ? balance + ' 分' : '未捕获'}, 今日已增: ${todayPoints !== null ? todayPoints + ' 分' : '0 分'}, 连续打卡: ${streakDays} 天, 待领额外: ${claimablePoints} 分`);
     } catch (e) {
       log(`官网看板数据同步异常: ${e.message}`);
@@ -207,6 +376,7 @@ export class TaskManager {
       claimablePoints,
       taskBoard,
       parsedCards,
+      sources,
       combinedRawText: (flightChunks || "") + "\n" + (earnHtml || "") + "\n" + (dashHtml || "")
     };
   }
@@ -215,13 +385,13 @@ export class TaskManager {
    * 顺序执行全账号批量任务
    */
   async runAllAccountsTasks(options = {}) {
+    this.beginRun('批量队列');
     this.isQueueRunning = true;
     const accounts = configManager.getAccounts().filter((a) => a.enabled);
-    if (accounts.length === 0) throw new Error('未检测到已启用的托管账号');
-
     const taskScope = options.taskScope || 'all';
     try {
-    logger.log('🚀', `>>> 开始批量执行全账号队列流水线 (共 ${accounts.length} 户，任务范围: ${taskScope}) <<<`);
+      if (accounts.length === 0) throw new Error('未检测到已启用的托管账号');
+      logger.log('🚀', `>>> 开始批量执行全账号队列流水线 (共 ${accounts.length} 户，任务范围: ${taskScope}) <<<`);
 
     for (let i = 0; i < accounts.length; i++) {
       if (this.shouldStop) {
@@ -231,19 +401,27 @@ export class TaskManager {
 
       const acc = accounts[i];
       try {
-        await this.runAccountTasks(acc.id, { taskScope });
+        await this.runAccountTasks(acc.id, { taskScope, preserveStopState: true });
       } catch (err) {
-        logger.log('🔴', `账号 [${acc.name}] 流水线异常: ${err.message}`);
+        if (err.message === TASK_STOP_MESSAGE) {
+          logger.log('🛑', `账号 [${acc.name}] 已按用户指令停止`);
+        } else {
+          logger.log('🔴', `账号 [${acc.name}] 流水线异常: ${err.message}`);
+        }
       }
 
       if (i < accounts.length - 1 && !this.shouldStop) {
         logger.log('❄️', '账号切换物理隔离冷却 15 秒...');
-        await new Promise((r) => setTimeout(r, 15000));
+        await this.waitUnlessStopped(15000);
       }
     }
-    logger.log('🎉', '>>> 批量全账号任务流水线执行完毕 <<<');
+    if (this.shouldStop) {
+      logger.log('🛑', '>>> 批量全账号任务流水线已按用户指令中断 <<<');
+    } else {
+      logger.log('🎉', '>>> 批量全账号任务流水线执行完毕 <<<');
+    }
     this.isQueueRunning = false;
-    return { success: true };
+    return { success: true, stopped: this.shouldStop };
     } finally {
       this.isQueueRunning = false;
     }
@@ -256,6 +434,14 @@ export class TaskManager {
     const account = configManager.getAccount(accountId);
     if (!account) throw new Error(`找不到账号 ID: ${accountId}`);
 
+    // A standalone invocation starts a new cancellation scope. Calls made by
+    // an active batch or scheduler series preserve the stop signal.
+    if (!options.preserveStopState && !this.isQueueRunning) {
+      this.beginRun('账号任务');
+    }
+    const currentRunId = this.activeRunId;
+    if (this.shouldStop) throw new Error(TASK_STOP_MESSAGE);
+
     if (!accountContextLock.acquire(accountId)) {
       throw new Error(`账号 [${account.name}] 正在执行任务中，锁定互斥！`);
     }
@@ -263,7 +449,6 @@ export class TaskManager {
     const taskScope = options.taskScope || 'all';
     this.runningAccountId = accountId;
     this.runningAccountName = account.name || account.user;
-    this.shouldStop = false;
     this.currentTaskSection = '环境准备';
     this.currentTaskName = '正在准备执行环境...'; this.taskStartTime = Date.now();
 
@@ -277,11 +462,7 @@ export class TaskManager {
         this.currentTaskName = '\u989d\u5916\u79ef\u5206\u9886\u53d6\u4e0e\u5b98\u7f51\u5bf9\u8d26';
         return await this.harvestMidnightClaimable(accountId, { lockAlreadyHeld: true });
       } finally {
-        this.runningAccountId = null;
-        this.runningAccountName = '';
-        this.currentTaskSection = '';
-        this.currentTaskName = '';
-        accountContextLock.release(accountId);
+        this.finalizeAccountRun(accountId);
       }
     }
 
@@ -309,30 +490,30 @@ export class TaskManager {
         cookies = session.cookies;
       }
 
-      if (this.shouldStop) throw new Error('任务已被用户主动中断');
+      if (this.shouldStop) throw new Error(TASK_STOP_MESSAGE);
 
       // 2. 移动端 DAPI 任务
-      if (taskScope === 'all' || taskScope === 'remaining' || taskScope === 'appSign' || taskScope === 'newsRead') {
+      if (taskScope === 'all' || taskScope === 'appSign' || taskScope === 'newsRead') {
         const dapi = new DapiClient(account, tokens, (refreshedTokens) => {
           session.tokens = refreshedTokens;
           writeBrowserSession(accountId, session);
         });
 
         this.currentTaskSection = '移动端任务';
-        if (taskScope === 'all' || taskScope === 'remaining' || taskScope === 'appSign') {
+        if (taskScope === 'all' || taskScope === 'appSign') {
           this.currentTaskName = '必应移动应用连续签到 (DAPI直连)';
           await dapi.performAppCheckIn();
         }
 
-        if (this.shouldStop) throw new Error('任务已被用户主动中断');
+        if (this.shouldStop) throw new Error(TASK_STOP_MESSAGE);
 
-        if (taskScope === 'all' || taskScope === 'remaining' || taskScope === 'newsRead') {
+        if (taskScope === 'all' || taskScope === 'newsRead') {
           this.currentTaskName = '移动端新闻资讯阅读 (30 积分)';
           await dapi.performNewsReading(10);
         }
       }
 
-      if (this.shouldStop) throw new Error('任务已被用户主动中断');
+      if (this.shouldStop) throw new Error(TASK_STOP_MESSAGE);
 
       // 3. PC 端任务
       // remaining 必须进入浏览器，先从官网实时 DOM 生成任务快照，再逐项只补未完成项。
@@ -349,7 +530,7 @@ export class TaskManager {
             try {
               officialTasks = await this.fetchOfficialTaskSnapshot(context, account);
             } catch (snapshotErr) {
-              log(`⚠️ 官网实时任务判定失败，将安全回退到完整执行: ${snapshotErr.message}`);
+              log(`⚠️ 官网实时任务判定失败；remaining 模式将按未知处理且不执行未确认任务: ${snapshotErr.message}`);
             }
             const initialData = await this.fetchOfficialDashboard(context, account);
             configManager.upsertAccount({
@@ -373,22 +554,39 @@ export class TaskManager {
             let page = await context.newPage();
 
             try {
-              // 官网任务快照已在上方获取。remaining 模式只执行官网明确未完成的项目。
-              if (taskScope === 'remaining' && officialTasks) {
-                log(`🎯 [官网实时判定] 剩余: 搜索=${officialTasks.needSearch ? '待做' : '已完成'}, App=${officialTasks.needAppSign ? '待做' : '已完成'}, DailySet=${officialTasks.needDailySet ? '待做' : '已完成'}, 日常任务=${officialTasks.needDailyActivities ? '待做' : '已完成'}, 打孔卡=${officialTasks.needQuests ? '待做' : '已完成'}`);
-                if (!officialTasks.hasWork) {
+              // remaining 只消费当前账号刚刚读取的官网快照；unknown 绝不当成待做。
+              const taskPlan = buildTaskPlan(taskScope, officialTasks);
+              if (taskScope === 'remaining') {
+                if (!officialTasks) {
+                  log('⚠️ [剩余任务] 未取得当前账号官网快照，安全跳过全部任务，不执行全量兜底。');
+                  return;
+                }
+                log(`🎯 [官网实时判定] 剩余: 搜索=${describeOfficialNeed(officialTasks.needSearch)}, App=${describeOfficialNeed(officialTasks.needAppSign)}, DailySet=${describeOfficialNeed(officialTasks.needDailySet)}, 日常任务=${describeOfficialNeed(officialTasks.needDailyActivities)}, 打孔卡=${describeOfficialNeed(officialTasks.needQuests)}`);
+                if (officialTasks.hasUnknown) {
+                  log(`⚠️ [剩余任务] 官网状态未知项: ${officialTasks.details.unknown.join(', ')}；未知项不会执行。`);
+                }
+                if (!officialTasks.hasWork && !officialTasks.hasUnknown) {
                   log('✅ [剩余任务] 官网实时状态显示今日可执行任务已全部完成。');
                   const cleanData = await this.fetchOfficialDashboard(context, account);
                   configManager.upsertAccount({ id: accountId, status: 'ready', balance: cleanData.balance, todayEarned: cleanData.todayPoints, streakDays: cleanData.streakDays, claimablePoints: cleanData.claimablePoints, officialTasks, lastSyncAt: Date.now(), dataState: 'complete', lastRun: Date.now() });
                   historyManager.recordDaily(accountId, { todayEarned: cleanData.todayPoints, balance: cleanData.balance, streakDays: cleanData.streakDays, claimablePoints: cleanData.claimablePoints, officialTasks, source: 'official-sync' });
                   return;
                 }
+                if (taskPlan.appSign) {
+                  this.currentTaskSection = '移动端任务';
+                  this.currentTaskName = '必应移动应用连续签到 (官网判定待做)';
+                  const dapi = new DapiClient(account, tokens, (refreshedTokens) => {
+                    session.tokens = refreshedTokens;
+                    writeBrowserSession(accountId, session);
+                  });
+                  await dapi.performAppCheckIn();
+                }
               }
 
-              const runDailySet = taskScope === 'all' || taskScope === 'dailySet' || (taskScope === 'remaining' && officialTasks?.needDailySet);
-              const runQuests = taskScope === 'all' || taskScope === 'quests' || (taskScope === 'remaining' && officialTasks?.needQuests);
-              const runDailyActs = taskScope === 'all' || taskScope === 'puzzle' || taskScope === 'dailyActivities' || (taskScope === 'remaining' && officialTasks?.needDailyActivities);
-              const runSearch = taskScope === 'all' || taskScope === 'search' || (taskScope === 'remaining' && officialTasks?.needSearch);
+              const runDailySet = taskPlan.dailySet;
+              const runQuests = taskPlan.quests;
+              const runDailyActs = taskPlan.dailyActivities;
+              const runSearch = taskPlan.search;
 
               if (runDailySet) {
                 this.currentTaskSection = '板块 1: 连续打卡';
@@ -396,7 +594,7 @@ export class TaskManager {
                 log('>>> 执行【板块 1: 连续打卡任务 (Streaks)】每日活动集 (Daily Set 3/3)...');
                 await penetrateDailySetActivities(page, { accountPrefix: account.name });
               }
-              if (this.shouldStop) throw new Error('任务已被用户主动中断');
+              if (this.shouldStop) throw new Error(TASK_STOP_MESSAGE);
 
               log('>>> 检查【板块 2: 升级活动 (Level Up)】(随日常打卡与搜索自动驱动累积)...');
 
@@ -404,33 +602,36 @@ export class TaskManager {
                 this.currentTaskSection = '板块 3: 打孔卡任务';
                 this.currentTaskName = '多步任务打孔卡 (Punch Cards)';
                 log('>>> 执行【板块 3: 任务 (Punch Cards / Quests)】多步打孔卡...');
-                const pending = officialTasks?.questPending || [];
-                const questHrefs = pending.length
-                  ? pending.map((q) => q.href).filter(Boolean)
-                  : await page.evaluate(() => [...new Set([...document.querySelectorAll('a[href*="/quest/"]')].map((a) => a.getAttribute('href')).filter(Boolean))]).catch(() => []);
+                // remaining 仅使用官方快照中明确的待做 quest；不能回退到页面扫描。
+                const questHrefs = taskScope === 'remaining'
+                  ? (officialTasks?.questPending || []).map((q) => q.href).filter(Boolean)
+                  : (officialTasks?.questPending?.length
+                    ? officialTasks.questPending.map((q) => q.href).filter(Boolean)
+                    : await page.evaluate(() => [...new Set([...document.querySelectorAll('a[href*="/quest/"]')].map((a) => a.getAttribute('href')).filter(Boolean))]).catch(() => []));
                 log(`检索到 ${questHrefs.length} 个待推进打孔卡任务`);
                 for (const qUrl of questHrefs) {
-                  if (this.shouldStop) break;
+                  if (this.shouldStop) throw new Error(TASK_STOP_MESSAGE);
                   if (qUrl) await penetratePunchCardQuest(page, qUrl, { accountPrefix: account.name });
                 }
               }
-              if (this.shouldStop) throw new Error('任务已被用户主动中断');
+              if (this.shouldStop) throw new Error(TASK_STOP_MESSAGE);
 
               if (runDailyActs) {
                 this.currentTaskSection = '板块 4: 日常任务';
                 this.currentTaskName = '日常任务穿透打卡 (Daily Activities)';
                 log('>>> 执行【板块 4: 日常任务 (Daily Activities)】日常活动与拼图全量穿透...');
-                await penetrateDailyActivities(page, {
-                  accountPrefix: account.name,
-                  pendingKeys: officialTasks?.dailyPending?.map((x) => x.key || x.href || x.title) || null
-                });
+                const pendingKeys = officialTasks?.dailyPending?.map((x) => x.key || x.href || x.title) || null;
+                // remaining 只执行官网快照列出的待做项；绝不退化成全量穿透。
+                if (taskScope !== 'remaining' || pendingKeys) {
+                  await penetrateDailyActivities(page, { accountPrefix: account.name, pendingKeys });
+                }
               }
-              if (this.shouldStop) throw new Error('任务已被用户主动中断');
+              if (this.shouldStop) throw new Error(TASK_STOP_MESSAGE);
 
               let needsSearchSecondPass = false;
               if (runSearch) {
-                this.currentTaskName = '必应 PC 拟人搜索收割 (跑满 60 分)';
-                log('执行板块 1-核心: 必应 PC 拟人化搜索收割 (跑满 60 分)...');
+                this.currentTaskName = '必应 PC 拟人搜索收割 (跑满官网上限)';
+                log('执行板块 1-核心: 必应 PC 拟人化搜索收割 (跑满官网上限)...');
                 const fullCfg = configManager.get();
                 const taskOpts = fullCfg.taskOptions || {};
                 const searchCfg = fullCfg.searchSettings || {};
@@ -440,7 +641,7 @@ export class TaskManager {
                 const stagnationThreshold = Number(taskOpts.stagnationLimit) || 10;
                 const stagnationGuard = new SearchStagnationGuard(stagnationThreshold, account.name);
                 stagnationGuard.recordObservation(initialData.todayPoints);
-                const initialSearchCap = officialTasks?.searchPoints || extractOfficialSearchPoints(initialData.combinedRawText);
+                const initialSearchCap = officialTasks?.searchPoints || null;
                 if (initialSearchCap?.isMaxed) {
                   log(`🎉 [已达上限] 官网必应搜索已跑满 ${initialSearchCap.current}/${initialSearchCap.max} 分，安全跳过。`);
                 } else {
@@ -460,10 +661,12 @@ export class TaskManager {
                     }
                     const sleepSec = baseSec + Math.random() * jitterSec;
                     log(`[风控防线] 拟人搜索间隔退避 ${sleepSec.toFixed(1)} 秒 (基础 ${baseSec}s + 浮动 ${jitterSec}s)...`);
-                    await new Promise((r) => setTimeout(r, sleepSec * 1000));
+                    await this.waitUnlessStopped(sleepSec * 1000);
+                    if (this.shouldStop) throw new Error(TASK_STOP_MESSAGE);
                     if (i % 3 === 0 || i === maxSearches) {
                       const checkData = await this.fetchOfficialDashboard(context, account);
-                      const midCap = extractOfficialSearchPoints(checkData.combinedRawText);
+                      const midSnapshot = await this.fetchOfficialTaskSnapshot(context, account);
+                      const midCap = midSnapshot.searchPoints;
                       if (midCap?.isMaxed) { log(`🎉 [搜索达标] 已跑满 ${midCap.current}/${midCap.max} 分。`); break; }
                       const obs = stagnationGuard.recordObservation(checkData.todayPoints);
                       configManager.upsertAccount({ id: accountId, todayEarned: checkData.todayPoints, balance: checkData.balance });
@@ -481,54 +684,89 @@ export class TaskManager {
               // 最终结算与回验
               this.currentTaskName = '权威数据对账核验...';
               log('等待 15 秒让微软服务端遥测入账...');
-              await new Promise((r) => setTimeout(r, 15000));
+              await this.waitUnlessStopped(15000);
+              if (this.shouldStop) throw new Error(TASK_STOP_MESSAGE);
 
               let finalData = null;
+              let verifiedOfficialTasks = null;
               for (let round = 1; round <= 3; round++) {
-                finalData = await this.fetchOfficialDashboard(context, account);
-                finalData.officialTasks = officialTasks;
-                if (finalData.todayPoints > (initialData.todayPoints || 0)) break;
-                await new Promise((r) => setTimeout(r, 5000));
+                if (this.shouldStop) throw new Error(TASK_STOP_MESSAGE);
+                finalData = await this.fetchOfficialDashboard(context, account, { allowCachedFallback: false });
+                try {
+                  verifiedOfficialTasks = await this.fetchOfficialTaskSnapshot(context, account);
+                } catch (snapshotErr) {
+                  log(`⚠️ 执行后官网任务回读失败（${round}/3）: ${snapshotErr.message}`);
+                  verifiedOfficialTasks = null;
+                }
+                const taskStateResolved = verifiedOfficialTasks && !verifiedOfficialTasks.hasUnknown;
+                const pointsSettled = finalData.sources?.todayPoints === 'live'
+                  && finalData.todayPoints > (initialData.todayPoints || 0);
+                if (taskStateResolved && (pointsSettled || !verifiedOfficialTasks.hasWork)) break;
+                await this.waitUnlessStopped(5000);
               }
+              if (this.shouldStop) throw new Error(TASK_STOP_MESSAGE);
 
-              configManager.upsertAccount({
-                id: accountId,
-                status: 'ready',
-                balance: finalData.balance,
-                todayEarned: finalData.todayPoints,
-                streakDays: finalData.streakDays,
-                claimablePoints: finalData.claimablePoints,
-                lastRun: Date.now(),
-                lastSyncAt: Date.now(),
-                dataState: 'complete'
-              });
-
-              historyManager.recordDaily(accountId, {
-                todayEarned: finalData.todayPoints,
-                balance: finalData.balance,
-                streakDays: finalData.streakDays,
-                claimablePoints: finalData.claimablePoints,
-                officialTasks: finalData.officialTasks || officialTasks || null,
-                source: 'official-sync'
-              });
-
-              // 二次回眸：若此前搜索遭遇停滞，在所有板块结束后进行一次验证性补测
-              if (needsSearchSecondPass && !this.shouldStop) {
+              if (needsSearchSecondPass) {
                 log('🔄 [二次回眸] 账号其他板块已执行完毕，返回检测搜索是否恢复涨分...');
                 const retryWord = getRandomSearchWord();
                 await performHumanizedSearch(page, retryWord, { accountPrefix: account.name, context }).catch(() => {});
-                await new Promise((r) => setTimeout(r, 6000));
-                const secondCheck = await this.fetchOfficialDashboard(context, account);
-                if (secondCheck.todayPoints > finalData.todayPoints) {
+                await this.waitUnlessStopped(6000);
+                if (this.shouldStop) throw new Error(TASK_STOP_MESSAGE);
+                const secondCheck = await this.fetchOfficialDashboard(context, account, { allowCachedFallback: false });
+                if (secondCheck.sources?.todayPoints === 'live' && secondCheck.todayPoints > finalData.todayPoints) {
                   log(`🎉 [二次回眸成功] 搜索已恢复涨分！最新今日积分: ${secondCheck.todayPoints} 分`);
-                  finalData = secondCheck;
                 } else {
                   log('🛑 [停滞终态判定] 第 2 轮返回补做依然无增量，判定今日该账号搜索已受限，安全收工！');
                 }
+                finalData = secondCheck;
+                try {
+                  verifiedOfficialTasks = await this.fetchOfficialTaskSnapshot(context, account);
+                } catch (snapshotErr) {
+                  log(`⚠️ 二次回眸后的官网任务回读失败: ${snapshotErr.message}`);
+                  verifiedOfficialTasks = null;
+                }
               }
 
+              const remainingText = !verifiedOfficialTasks
+                ? '执行后官网任务状态回读失败，无法确认全部完成'
+                : (verifiedOfficialTasks.hasUnknown
+                  ? '部分官网任务状态未知，未知项未执行'
+                  : (verifiedOfficialTasks.hasWork
+                    ? '官网任务仍有未完成项，已执行剩余任务扫描'
+                    : '官网任务已全部完成'));
+
+              finalData.officialTasks = verifiedOfficialTasks;
+              finalData.taskStatusText = remainingText;
+              const hasCompleteOfficialState = Boolean(
+                verifiedOfficialTasks
+                && !verifiedOfficialTasks.hasUnknown
+                && finalData.sources?.balance === 'live'
+                && finalData.sources?.todayPoints === 'live'
+              );
+              const reconciledAccount = {
+                id: accountId,
+                status: 'ready',
+                officialTasks: verifiedOfficialTasks,
+                lastSyncAt: Date.now(),
+                dataState: hasCompleteOfficialState ? 'complete' : 'partial',
+                lastRun: Date.now()
+              };
+              if (finalData.sources?.balance === 'live') reconciledAccount.balance = finalData.balance;
+              if (finalData.sources?.todayPoints === 'live') reconciledAccount.todayEarned = finalData.todayPoints;
+              if (finalData.sources?.streakDays === 'live') reconciledAccount.streakDays = finalData.streakDays;
+              if (finalData.sources?.claimablePoints === 'live') reconciledAccount.claimablePoints = finalData.claimablePoints;
+              configManager.upsertAccount(reconciledAccount);
+              historyManager.recordDaily(accountId, {
+                todayEarned: finalData.sources?.todayPoints === 'live' ? finalData.todayPoints : null,
+                balance: finalData.sources?.balance === 'live' ? finalData.balance : null,
+                streakDays: finalData.sources?.streakDays === 'live' ? finalData.streakDays : null,
+                claimablePoints: finalData.sources?.claimablePoints === 'live' ? finalData.claimablePoints : null,
+                officialTasks: verifiedOfficialTasks,
+                source: 'task-settlement'
+              });
+
               log(`🎉 账号 [${account.name}] 任务执行完成！今日积分: ${finalData.todayPoints} 分, 可用余额: ${finalData.balance} 分, 连签: ${finalData.streakDays} 天`);
-              notifier.sendSettlementReport(account, { ...finalData, taskStatusText: officialTasks?.hasWork ? '官网任务仍有未完成项，已执行剩余任务扫描' : '官网任务已全部完成' }).catch(() => {});
+              notifier.sendSettlementReport(account, finalData).catch(() => {});
             } finally {
               if (page && typeof page.close === 'function') { await page.close().catch(() => {}); }
             }
@@ -538,16 +776,15 @@ export class TaskManager {
 
       return { success: true };
     } catch (err) {
-      log(`🔴 任务执行失败: ${err.message}`);
+      if (err.message === TASK_STOP_MESSAGE && this.activeRunId === currentRunId) {
+        log('🛑 任务已按用户指令停止');
+      } else {
+        log(`🔴 任务执行失败: ${err.message}`);
+      }
       configManager.upsertAccount({ id: accountId, status: 'ready' });
       throw err;
     } finally {
-      this.runningAccountId = null;
-      this.runningAccountName = '';
-      this.currentTaskSection = '';
-      this.currentTaskName = '';
-      this.shouldStop = false;
-      accountContextLock.release(accountId);
+      this.finalizeAccountRun(accountId);
     }
   }
 
@@ -595,83 +832,46 @@ export class TaskManager {
         return { text, sections };
       });
 
-      const lines = snapshot.text.split('\n').map((x) => x.trim());
-      const counter = (re) => {
-        for (const line of lines) {
-          const m = line.match(re);
-          if (m) return { current: Number(m[1]), max: Number(m[2]) };
-        }
-        return null;
-      };
-      const searchStreak = counter(/搜索:\s*(\d+)\s*\/\s*(\d+)/);
-      const dailySet = counter(/活动:\s*(\d+)\s*\/\s*(\d+)/);
-      const appCheckIn = counter(/签到:\s*(\d+)\s*\/\s*(\d+)/);
-
-      const sections = snapshot.sections;
-      const dailyCards = sections.find((x) => x.title === '日常任务')?.cards || [];
-      const questCards = sections.find((x) => x.title === '任务')?.cards || [];
-      const dailyPending = dailyCards.filter((c) => !c.done && !c.disabled);
-      const questPending = questCards.filter((c) => !c.done && !c.disabled);
-
-      const snapshotResult = {
-        searchStreak,
-        dailySet,
-        appCheckIn,
-        dailyPending,
-        questPending,
-        needSearch: false,
-        needDailySet: !dailySet || dailySet.current < dailySet.max,
-        needAppSign: !appCheckIn || appCheckIn.current < appCheckIn.max,
-        needDailyActivities: dailyPending.length > 0,
-        needQuests: questPending.length > 0,
-        hasWork: false,
-        details: {
-          searchStreak,
-          dailySet,
-          appCheckIn,
-          dailyPending: dailyPending.map((x) => x.title),
-          questPending: questPending.map((x) => x.title)
-        }
-      };
-      // PC 搜索是否满 60/60，必须从“积分明细”抽屉读取，而不是把连续打卡“搜索:1/1”误认为上限
-      const pointsCard = page.locator('button').filter({ hasText: '今日积分' }).first();
+      let searchPoints = null;
+      const pointsCard = page.locator('button[aria-expanded]').filter({ hasText: '今日积分' }).first();
       if (await pointsCard.count()) {
-        const box = await pointsCard.boundingBox();
-        if (box) {
-          // React Aria 在无头 Chromium 下对普通 click 偶发不展开，使用完整按压事件链。
-          await pointsCard.evaluate((el) => {
-            for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
-              el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window, button: 0 }));
-            }
-          }).catch(() => {});
-          await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2).catch(() => {});
-          // React Aria 抽屉存在异步渲染，不能只等固定 1.2 秒
+        try {
+          await pointsCard.focus();
+          await page.keyboard.press('Enter');
           let detailText = '';
           for (let i = 0; i < 30; i++) {
-            await new Promise((r) => setTimeout(r, 500));
-            detailText = await page.evaluate(() => {
-              const d = document.querySelector('[role="dialog"], [aria-modal="true"]');
-              return d ? (d.innerText || '').replace(/\r/g, '') : '';
-            });
-            if (/必应搜索\s*[0-9]+\s*\/\s*[0-9]+/i.test(detailText)) break;
+            await new Promise((resolve) => setTimeout(resolve, 500));
+            const dialog = page.locator('[role="dialog"], [aria-modal="true"]').first();
+            if (!(await dialog.count())) continue;
+            detailText = await dialog.innerText().catch(() => '');
+            if (parseOfficialSearchPointsDetail(detailText)) break;
           }
-          const m = detailText.match(/必应搜索\s*([0-9]+)\s*\/\s*([0-9]+)/i);
-          if (m) {
-            const current = Number(m[1]);
-            const max = Number(m[2]);
-            snapshotResult.searchPoints = { current, max, isMaxed: max > 0 && current >= max };
-            snapshotResult.needSearch = !snapshotResult.searchPoints.isMaxed;
-            snapshotResult.details.searchPoints = snapshotResult.searchPoints;
-          }
+          searchPoints = parseOfficialSearchPointsDetail(detailText);
+        } catch (drawerError) {
+          log(`积分明细读取失败，搜索状态保持 unknown: ${drawerError.message}`);
+        } finally {
           await page.keyboard.press('Escape').catch(() => {});
         }
       }
-      if (!snapshotResult.searchPoints) {
-        // points drawer occasionally loads slower; retry with a fresh page before assuming search remains.
-        snapshotResult.needSearch = true;
-        snapshotResult.details.searchPoints = { unknown: true };
+
+      for (const section of snapshot.sections) {
+        for (const card of section.cards) {
+          const feasibility = classifyTaskFeasibility(card.title, {
+            href: card.href,
+            destination: card.href,
+            title: card.title
+          });
+          card.executable = feasibility.executable;
+          card.feasibilityKind = feasibility.kind || null;
+          card.feasibilityReason = feasibility.reason || '';
+        }
       }
-      snapshotResult.hasWork = snapshotResult.needSearch || snapshotResult.needDailySet || snapshotResult.needAppSign || snapshotResult.needDailyActivities || snapshotResult.needQuests;
+
+      const snapshotResult = buildOfficialTaskSnapshot({
+        text: snapshot.text,
+        sections: snapshot.sections,
+        searchPoints
+      });
       log(`实时任务判定: ${JSON.stringify(snapshotResult.details)}`);
       return snapshotResult;
     } finally {
@@ -679,24 +879,28 @@ export class TaskManager {
     }
   }
 
+
+
+
   async harvestMidnightClaimable(accountId, options = {}) {
     const account = configManager.getAccount(accountId);
-    if (!account) return { success: false, reason: 'account-not-found' };
+    if (!account) {
+      return { success: false, status: 'failed', reason: 'account-not-found', harvest: null, before: null, after: null, finalData: null };
+    }
 
     const ownsLock = !options.lockAlreadyHeld;
     if (ownsLock && !accountContextLock.acquire(accountId)) {
       logger.log('\u26a0\ufe0f', '\u8d26\u53f7 [' + account.name + '] \u6b63\u5728\u6267\u884c\u5176\u4ed6\u4efb\u52a1\uff0c\u8df3\u8fc7\u989d\u5916\u79ef\u5206\u9886\u53d6');
-      return { success: false, reason: 'account-locked' };
+      return { success: false, status: 'skipped', reason: 'account-locked', harvest: null, before: null, after: null, finalData: null };
     }
 
     const session = readBrowserSession(accountId);
     if (!session || !session.cookies) {
       if (ownsLock) accountContextLock.release(accountId);
       logger.log('\u26a0\ufe0f', '\u8d26\u53f7 [' + account.name + '] \u7f3a\u5c11\u767b\u5f55\u4f1a\u8bdd\uff0c\u65e0\u6cd5\u9886\u53d6\u989d\u5916\u79ef\u5206');
-      return { success: false, reason: 'session-missing' };
+      return { success: false, status: 'failed', reason: 'session-missing', harvest: null, before: null, after: null, finalData: null };
     }
 
-    // 全量上报当前运行状态与活动账号，驱动大盘、账号池变绿与无头监控
     this.runningAccountId = accountId;
     this.runningAccountName = account.name || account.user;
     this.currentTaskSection = '额外积分';
@@ -710,52 +914,122 @@ export class TaskManager {
       currentAction: `[${account.name || account.user}] 正在展开 React Aria 抽屉收割额外积分...`
     });
 
+    let outcome = {
+      success: false,
+      status: 'failed',
+      reason: 'harvest-not-started',
+      harvest: null,
+      before: null,
+      after: null,
+      finalData: null
+    };
+
     try {
-      await browserManager.withBrowser(
+      const browserOutcome = await browserManager.withBrowser(
         { proxy: account.proxy, cookies: session.cookies, headless: true },
         async (browser, context) => {
           const page = await context.newPage();
           try {
             const harvestResult = await harvestClaimablePointsWithVirtualPointer(page, { accountPrefix: account.name });
-            const finalData = await this.fetchOfficialDashboard(context, account);
-            const authoritativeClaimable = finalData.claimablePoints;
-            const verifiedBalance = harvestResult?.after?.balance ?? finalData.balance;
+            const finalData = await this.fetchOfficialDashboard(context, account, { allowCachedFallback: false });
+            const liveClaimable = finalData.sources?.claimablePoints === 'live';
+            const liveBalance = finalData.sources?.balance === 'live';
+            const beforeBalance = harvestResult?.before?.balance;
+            const finalBalance = liveBalance ? finalData.balance : null;
+            const finalClaimable = liveClaimable ? finalData.claimablePoints : null;
+            const claimStatus = harvestResult?.status;
+            const claimableCleared = liveClaimable && finalClaimable === 0;
+            const balanceIncreased = liveBalance
+              && Number.isFinite(beforeBalance)
+              && Number.isFinite(finalBalance)
+              && finalBalance > beforeBalance;
+            const verified = claimStatus === 'claimed' && claimableCleared && balanceIncreased;
+            const status = verified ? 'claimed' : (claimStatus === 'already-empty' ? 'already-empty' : 'unverified');
 
-            configManager.upsertAccount({
+            const failureReasons = [];
+            if (claimStatus !== 'claimed') {
+              failureReasons.push(harvestResult?.reason || (claimStatus === 'already-empty' ? 'already-empty' : 'claim-not-confirmed'));
+            }
+            if (!liveClaimable) failureReasons.push('final-claimable-source-not-live');
+            else if (finalClaimable !== 0) failureReasons.push('final-claimable-not-zero');
+            if (!liveBalance) failureReasons.push('final-balance-source-not-live');
+            else if (!Number.isFinite(beforeBalance)) failureReasons.push('initial-balance-unknown');
+            else if (!Number.isFinite(finalBalance) || finalBalance <= beforeBalance) failureReasons.push('final-balance-not-increased');
+
+            const storedBalance = liveBalance ? finalBalance : account.balance;
+            const storedClaimable = liveClaimable ? finalClaimable : account.claimablePoints;
+            const accountUpdate = {
               id: accountId,
-              status: harvestResult?.harvested || harvestResult?.reason === 'already-zero' ? 'ready' : 'warning',
-              balance: verifiedBalance,
-              claimablePoints: authoritativeClaimable,
+              status: verified ? 'ready' : 'warning',
               lastSyncAt: Date.now(),
-              dataState: authoritativeClaimable === null ? 'partial' : 'complete'
-            });
+              dataState: verified ? 'complete' : 'partial'
+            };
+            if (liveBalance) accountUpdate.balance = finalBalance;
+            if (liveClaimable) accountUpdate.claimablePoints = storedClaimable;
+            if (finalData.sources?.todayPoints === 'live') accountUpdate.todayEarned = finalData.todayPoints;
+            if (finalData.sources?.streakDays === 'live') accountUpdate.streakDays = finalData.streakDays;
+            configManager.upsertAccount(accountUpdate);
             historyManager.recordDaily(accountId, {
-              todayEarned: finalData.todayPoints,
-              balance: verifiedBalance,
-              streakDays: finalData.streakDays,
-              claimablePoints: authoritativeClaimable,
+              todayEarned: finalData.sources?.todayPoints === 'live' ? finalData.todayPoints : null,
+              balance: liveBalance ? finalBalance : null,
+              streakDays: finalData.sources?.streakDays === 'live' ? finalData.streakDays : null,
+              claimablePoints: liveClaimable ? finalClaimable : null,
+              officialTasks: account.officialTasks || null,
               source: 'harvest-reconcile'
             });
 
-            if (harvestResult?.harvested) {
-              logger.log('\u{1f389}', '[\u6536\u5272\u5165\u8d26] \u8d26\u53f7 [' + account.name + '] \u5df2\u6838\u9a8c\u5230\u8d26 - \u4f59\u989d: ' + verifiedBalance + ' \u5206, \u5269\u4f59\u5f85\u9886: ' + authoritativeClaimable + ' \u5206');
+            if (verified) {
+              logger.log('\u{1f389}', '[收割入账] ' + account.name + ' 已核验到账 - 余额: ' + finalBalance + ' 分, 剩余待领: 0 分');
             } else {
-              logger.log('\u26a0\ufe0f', '[\u6536\u5272\u672a\u786e\u8ba4] \u8d26\u53f7 [' + account.name + '] \u4f59\u989d: ' + verifiedBalance + ' \u5206, \u5b98\u7f51\u5f85\u9886: ' + (authoritativeClaimable ?? '\u672a\u6355\u83b7') + ' \u5206\u3002\u672a\u8bb0\u5f55\u4e3a\u9886\u53d6\u6210\u529f\u3002');
+              logger.log('\u26a0\ufe0f', '[收割未确认] ' + account.name + ' 未记录为领取成功: ' + failureReasons.join(','));
             }
+
             notifier.sendSettlementReport(account, {
               ...finalData,
-              balance: verifiedBalance,
-              claimablePoints: authoritativeClaimable,
-              taskStatusText: harvestResult?.harvested ? '\u989d\u5916\u79ef\u5206\u5df2\u5230\u8d26' : '\u989d\u5916\u79ef\u5206\u672a\u786e\u8ba4\u5230\u8d26'
+              balance: storedBalance,
+              claimablePoints: storedClaimable,
+              taskStatusText: verified
+                ? '额外积分已核验到账'
+                : (status === 'already-empty'
+                  ? '官网当前无待领取积分（未发生领取）'
+                  : '额外积分未确认到账')
             }).catch(() => {});
-            return { success: !!harvestResult?.harvested, harvest: harvestResult, finalData: { ...finalData, balance: verifiedBalance, claimablePoints: authoritativeClaimable } };
+
+            return {
+              success: verified,
+              status,
+              reason: verified ? 'official-claim-and-balance-verified' : failureReasons.join(','),
+              harvest: harvestResult,
+              before: {
+                claimablePoints: harvestResult?.before?.points ?? null,
+                balance: Number.isFinite(beforeBalance) ? beforeBalance : null
+              },
+              after: {
+                claimablePoints: finalClaimable,
+                balance: finalBalance
+              },
+              finalData
+            };
           } finally {
             if (page && typeof page.close === 'function') { await page.close().catch(() => {}); }
           }
         }
       );
+      outcome = browserOutcome && typeof browserOutcome === 'object'
+        ? browserOutcome
+        : { success: false, status: 'failed', reason: 'empty-browser-outcome', harvest: null, before: null, after: null, finalData: null };
     } catch (e) {
-      logger.log('⚠️', `01:00 额外积分收割异常 [${account.name}]: ${e.message}`);
+      logger.log('\u26a0\ufe0f', `01:00 额外积分收割异常 [${account.name}]: ${e.message}`);
+      outcome = {
+        success: false,
+        status: 'failed',
+        reason: 'exception',
+        error: e.message,
+        harvest: null,
+        before: null,
+        after: null,
+        finalData: null
+      };
     } finally {
       this.runningAccountId = null;
       this.runningAccountName = '';
@@ -770,8 +1044,9 @@ export class TaskManager {
       });
       if (ownsLock) accountContextLock.release(accountId);
     }
+
+    return outcome;
   }
 }
-
 export const taskManager = new TaskManager();
 export default taskManager;

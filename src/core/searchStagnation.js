@@ -1,4 +1,4 @@
-﻿import logger from '../logger.js';
+import logger from '../logger.js';
 
 export class SearchStagnationGuard {
   constructor(limit = 3, accountPrefix = '') {
@@ -33,8 +33,8 @@ export class SearchStagnationGuard {
     if (this.consecutiveStagnantCount >= this.limit) {
       this.tripped = true;
       logger.log(
-        '🛑',
-        `[停滞熔断] 连续 ${this.consecutiveStagnantCount} 次未产生积分增量，已达到上限或触发微软风控冷冻，立即熔断终止本轮搜索！`,
+        '⏸️',
+        `[搜索分支暂停] 连续 ${this.consecutiveStagnantCount} 次未产生积分增量；仅跳过本账号搜索，其他板块和后续账号继续执行。`,
         '',
         this.accountPrefix
       );

@@ -32,12 +32,85 @@ document.addEventListener("DOMContentLoaded", () => {
     return '账号 ' + (idx + 1);
   }
 
+  function finiteNumberOrNull(value) {
+    if (value === null || value === undefined || value === '') return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  function formatShanghaiDate(date = new Date()) {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit'
+    }).formatToParts(date);
+    const valueOf = (type) => parts.find((part) => part.type === type)?.value || '';
+    return valueOf('year') + '-' + valueOf('month') + '-' + valueOf('day');
+  }
+
+  function getDailySnapshot(account, date) {
+    const snapshots = account && account.dailySnapshots;
+    if (Array.isArray(snapshots)) return snapshots.find((item) => item && item.date === date) || null;
+    return snapshots && typeof snapshots === 'object' ? (snapshots[date] || null) : null;
+  }
+
+  function renderSafely(label, renderer, fallbackTarget) {
+    try {
+      return renderer();
+    } catch (error) {
+      console.error('[' + label + '] 渲染失败:', error);
+      if (fallbackTarget) {
+        fallbackTarget.innerHTML = '<div class="empty-state empty-state-error">' + escapeHtml(label) + '加载失败，请刷新重试</div>';
+      }
+      return null;
+    }
+  }
+
+  function mergeSnapshotsIntoAccounts(snapshots) {
+    if (!snapshots || typeof snapshots !== 'object') return false;
+    for (const account of accounts) {
+      const remote = snapshots[account.id] || {};
+      const current = account.dailySnapshots;
+      if (Array.isArray(current)) {
+        const merged = new Map(current.filter((item) => item && item.date).map((item) => [item.date, item]));
+        Object.entries(remote).forEach(([date, record]) => merged.set(date, record));
+        account.dailySnapshots = Array.from(merged.values());
+      } else {
+        account.dailySnapshots = {
+          ...(current && typeof current === 'object' ? current : {}),
+          ...remote
+        };
+      }
+    }
+    return true;
+  }
+
+  async function hydrateDailySnapshots() {
+    if (dailySnapshotsLoading) return;
+    dailySnapshotsLoading = true;
+    try {
+      const response = await fetch('/api/history/recent', { cache: 'no-store' });
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      const payload = await response.json();
+      const snapshots = payload && payload.snapshots;
+      if (snapshots && typeof snapshots === 'object') previousSnapshots = snapshots;
+      mergeSnapshotsIntoAccounts(previousSnapshots);
+      renderSafely('积分日历', () => renderChartBars(), chartBars);
+      renderSafely('账号卡片', renderTopAccountCards, document.getElementById('top-accounts-cards'));
+      renderSafely('账号池', renderAccountsList);
+    } catch (error) {
+      console.warn('[积分日历] 历史快照暂不可用，保留官网状态数据:', error);
+    } finally {
+      dailySnapshotsLoading = false;
+    }
+  }
+
   let accounts = [];
   let autoScroll = true;
   let viewMode = "all";
   let selectedAccountId = null;
   let healthScope = "single";
   let currentRunningAccountId = null;
+  let previousSnapshots = {};
+  let dailySnapshotsLoading = false;
 
   const mTodayPoints = document.getElementById("m-today-points");
   const mTotalBalance = document.getElementById("m-total-balance");
@@ -68,17 +141,13 @@ document.addEventListener("DOMContentLoaded", () => {
 
   async function refreshDashboard() {
     try {
-      const res = await fetch("/api/status");
+      const res = await fetch("/api/status", { cache: 'no-store' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
       const data = await res.json();
-      if (!data.success) return;
+      if (!data.success) throw new Error(data.message || '状态接口返回失败');
 
-      accounts = data.accounts || [];
-      try {
-        const recentRes = await fetch('/api/history/recent', { cache: 'no-store' });
-        const recentData = await recentRes.json();
-        const snapshots = (recentData && recentData.snapshots) || {};
-        for (const a of accounts) a.dailySnapshots = snapshots[a.id] || {};
-      } catch {}
+      accounts = Array.isArray(data.accounts) ? data.accounts : [];
+      mergeSnapshotsIntoAccounts(previousSnapshots);
       
       // 状态迁移监测：检测到从运行中(isBusy: true)变为结束(false)的瞬间，立即二次强制刷新
       if (lastWasBusy && !data.isBusy) {
@@ -87,15 +156,17 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       lastWasBusy = !!data.isBusy;
 
-      const primaryAcc = accounts[0] || { id: "test_live_account", name: "桂林", user: "user@example.com", todayEarned: 93, balance: 1511, streakDays: 4, claimablePoints: 0 };
+      const primaryAcc = accounts[0] || null;
 
       let today = 0, balance = 0, streak = 0, claimable = 0;
 
       if (viewMode === "all") {
-        today = accounts.reduce((s, a) => s + (a.todayEarned == null ? 0 : Number(a.todayEarned)), 0);
-        balance = accounts.reduce((s, a) => s + (a.balance == null ? 0 : Number(a.balance)), 0);
-        streak = accounts.reduce((max, a) => Math.max(max, a.streakDays || 0), 0);
-        claimable = accounts.reduce((s, a) => s + (a.claimablePoints || 0), 0);
+        const officialAccounts = accounts.filter((a) => a && a.hasOfficialData !== false && finiteNumberOrNull(a.todayEarned) !== null);
+        today = officialAccounts.length ? officialAccounts.reduce((sum, a) => sum + finiteNumberOrNull(a.todayEarned), 0) : null;
+        const knownBalances = accounts.map((a) => finiteNumberOrNull(a.balance)).filter((value) => value !== null);
+        balance = knownBalances.length ? knownBalances.reduce((sum, value) => sum + value, 0) : null;
+        streak = accounts.reduce((max, a) => Math.max(max, finiteNumberOrNull(a.streakDays) || 0), 0);
+        claimable = accounts.reduce((sum, a) => sum + (finiteNumberOrNull(a.claimablePoints) || 0), 0);
 
         if (btnModeAll) btnModeAll.classList.add("active");
         if (btnModeSingle) btnModeSingle.classList.remove("active");
@@ -107,36 +178,45 @@ document.addEventListener("DOMContentLoaded", () => {
         if (currentUserDisplayName) currentUserDisplayName.textContent = "全账号合计";
       } else {
         const targetAcc = accounts.find((a) => a.id === selectedAccountId) || primaryAcc;
-        today = targetAcc.todayEarned == null ? null : Number(targetAcc.todayEarned);
-        balance = targetAcc.balance == null ? null : Number(targetAcc.balance);
-        streak = targetAcc.streakDays || 0;
-        claimable = targetAcc.claimablePoints || 0;
+        if (!targetAcc) {
+          today = null;
+          balance = null;
+        } else {
+          today = targetAcc.hasOfficialData === false ? null : finiteNumberOrNull(targetAcc.todayEarned);
+          balance = finiteNumberOrNull(targetAcc.balance);
+          streak = finiteNumberOrNull(targetAcc.streakDays) || 0;
+          claimable = finiteNumberOrNull(targetAcc.claimablePoints) || 0;
+        }
 
         if (btnModeAll) btnModeAll.classList.remove("active");
         if (btnModeSingle) btnModeSingle.classList.add("active");
-        if (welcomeSubDesc) welcomeSubDesc.textContent = "账号 [" + (targetAcc.name || targetAcc.user) + "] 独立成效看板 · 官方实时数据";
+        if (welcomeSubDesc) welcomeSubDesc.textContent = "账号 [" + ((targetAcc && (targetAcc.name || targetAcc.user)) || '未选择') + "] 独立成效看板 · 官方实时数据";
 
-        if (currentViewAvatar) currentViewAvatar.textContent = (targetAcc.name || targetAcc.user || "A")[0].toUpperCase();
-        if (currentViewName) currentViewName.textContent = targetAcc.name || targetAcc.user;
+        if (currentViewAvatar) currentViewAvatar.textContent = ((targetAcc && (targetAcc.name || targetAcc.user)) || "A")[0].toUpperCase();
+        if (currentViewName) currentViewName.textContent = (targetAcc && (targetAcc.name || targetAcc.user)) || '请选择账号';
         if (currentViewBadge) currentViewBadge.textContent = "单账号视图";
-        if (currentUserDisplayName) currentUserDisplayName.textContent = targetAcc.name || targetAcc.user;
+        if (currentUserDisplayName) currentUserDisplayName.textContent = (targetAcc && (targetAcc.name || targetAcc.user)) || '管理员';
       }
 
-      if (mTodayPoints) mTodayPoints.textContent = today;
+      if (mTodayPoints) mTodayPoints.textContent = today == null ? '--' : today;
       if (mTotalBalance) mTotalBalance.textContent = balance == null ? '--' : balance.toLocaleString();
       if (mStreakDays) mStreakDays.textContent = String(streak).padStart(2, "0");
 
       const todayTarget = viewMode === "all" ? (accounts.length || 1) * 174 : 174;
       const todayPct = today == null ? 0 : Math.min(100, Math.round((today / todayTarget) * 100));
       if (fillToday) fillToday.style.width = todayPct + "%";
-      if (mTodayPercent) mTodayPercent.textContent = todayPct + "%";
+      if (mTodayPercent) mTodayPercent.textContent = today == null ? '--' : todayPct + "%";
       if (fillBalance) fillBalance.style.width = "85%";
       if (fillStreak) fillStreak.style.width = Math.min(100, Math.round((streak / 12) * 100)) + "%";
 
       const isBusy = !!data.isBusy || !!data.runningAccountId;
       currentRunningAccountId = data.runningAccountId || null;
       const runningAccName = data.runningAccountName || (data.runningAccountId ? "执行中账号" : "");
-      const currentTaskName = data.currentTaskName || "正在执行自动化流水线...";
+      const currentTaskSection = String(data.currentTaskSection || '').trim();
+      const currentTaskName = String(data.currentTaskName || '').trim() || "正在执行自动化流水线...";
+      const currentTaskLabel = currentTaskSection && !currentTaskName.includes(currentTaskSection)
+        ? currentTaskSection + " · " + currentTaskName
+        : currentTaskName;
 
       const btnRunActive = document.getElementById("btn-run-active-task");
       if (btnRunActive) {
@@ -180,7 +260,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const monActiveKw = document.getElementById("mon-active-kw");
       if (monActiveKw) {
-        monActiveKw.textContent = isBusy ? (bState.currentKeyword || currentTaskName || "自动化流程调度") : "--";
+        monActiveKw.textContent = isBusy ? (bState.currentKeyword || currentTaskLabel || "自动化流程调度") : "--";
         monActiveKw.title = monActiveKw.textContent;
       }
 
@@ -207,7 +287,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const monBox = document.getElementById("mon-status-callout");
       if (monCallout) {
         if (isBusy) {
-          monCallout.textContent = bState.currentAction || ("正在执行: " + currentTaskName);
+          monCallout.textContent = bState.currentAction || ("正在执行: " + currentTaskLabel);
           if (monBox) monBox.className = "browser-status-callout active";
         } else {
           monCallout.textContent = "浏览器当前处于空闲休眠状态，内存完全释放 (0 内存占用)";
@@ -215,12 +295,13 @@ document.addEventListener("DOMContentLoaded", () => {
         }
       }
 
-      renderDropdownMenu();
-      renderAccountsList();
-      renderTopAccountCards();
-      renderBoardDropdown();
-      renderOfficialTaskGaps(); renderSchedulerQueue();
-      renderChartBars(today);
+      renderSafely('账号下拉框', renderDropdownMenu);
+      renderSafely('账号池', renderAccountsList);
+      renderSafely('账号卡片', () => renderTopAccountCards(), document.getElementById('top-accounts-cards'));
+      if (typeof renderBoardDropdown === 'function') renderSafely('积分看板下拉框', renderBoardDropdown);
+      renderSafely('官网任务缺口', () => renderOfficialTaskGaps(data), document.getElementById('task-gaps-list'));
+      renderSafely('调度队列', () => renderSchedulerQueue(data), document.getElementById('queue-list'));
+      renderSafely('积分日历', () => renderChartBars(today), chartBars);
       const boardToday = document.getElementById("board-today-points");
       if (boardToday) boardToday.textContent = today == null ? '--' : ('+' + today + ' 分');
       const boardTotal = document.getElementById("board-total-balance");
@@ -259,8 +340,7 @@ document.addEventListener("DOMContentLoaded", () => {
         }
         if (marqueeText) {
           const accLabel = data.runningAccountName || "微软托管账号";
-          const taskLabel = data.currentTaskName || "自动化流水线任务";
-          marqueeText.textContent = "[" + accLabel + "] 正在执行 [" + taskLabel + "]";
+          marqueeText.textContent = "[" + accLabel + "] 正在执行 [" + currentTaskLabel + "]";
           marqueeText.title = marqueeText.textContent;
         }
         if (marqueeTimer && data.taskStartTime) {
@@ -285,8 +365,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const liveImg = document.getElementById("live-screencast-img");
       if (liveImg) liveImg.src = "/api/browser/screenshot?_t=" + Date.now();
+      return data;
     } catch (e) {
       console.error("刷新大盘异常:", e);
+      renderSafely('官网任务缺口', () => renderOfficialTaskGaps(), document.getElementById('task-gaps-list'));
+      renderSafely('调度队列', () => renderSchedulerQueue(), document.getElementById('queue-list'));
+      renderSafely('积分日历', () => renderChartBars(), chartBars);
     }
   }
 
@@ -302,13 +386,12 @@ document.addEventListener("DOMContentLoaded", () => {
     const weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
     for (let i = 6; i >= 0; i--) {
       const d = new Date(now.getTime() - i * 86400000);
-      const date = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(d).replace(/\//g, '-');
+      const date = formatShanghaiDate(d);
       const breakdown = activeAccs.map((a, idx) => {
-        const snapshots = a.dailySnapshots || {};
-        const rec = snapshots[date];
+        const rec = getDailySnapshot(a, date);
         return {
           name: getAccountDisplayName(a, idx),
-          pts: rec && rec.earned != null ? Number(rec.earned) : null
+          pts: rec ? finiteNumberOrNull(rec.earned) : null
         };
       });
       const known = breakdown.filter((b) => b.pts !== null);
@@ -338,7 +421,7 @@ document.addEventListener("DOMContentLoaded", () => {
       return (
         '<div class="bar-col ' + (d.active ? 'active' : '') + ' ' + alignClass + '">' +
           '<div class="bar-pillar ' + (hasOfficialData ? '' : 'bar-unknown') + '" style="height: ' + heightPct + '%;">' +
-            '<span class="bar-top-val">' + (hasOfficialData ? (d.val > 0 ? '+' + d.val : '0') : '?') + '</span>' +
+            '<span class="bar-top-val">' + (hasOfficialData ? (d.val > 0 ? '+' + d.val : '0') : '暂无') + '</span>' +
           '</div>' +
           '<span class="bar-date-label">' + d.label + '</span>' +
           '<div class="chart-tooltip-capsule">' +
@@ -428,38 +511,62 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function taskStatusLabel(done, known = true) {
-    if (!known) return { text: '未同步', cls: 'task-state-unknown' };
+    if (!known) return { text: '未知', cls: 'task-state-unknown' };
     return done ? { text: '已完成', cls: 'task-state-done' } : { text: '待完成', cls: 'task-state-pending' };
   }
 
-  function renderOfficialTaskGaps() {
+  function counterTaskItem(label, value) {
+    const current = finiteNumberOrNull(value && value.current);
+    const max = finiteNumberOrNull(value && value.max);
+    const known = current !== null && max !== null;
+    return {
+      label,
+      known,
+      value: known ? current + '/' + max : '未知',
+      done: known && (value.isMaxed === true || (max > 0 && current >= max))
+    };
+  }
+
+  function renderOfficialTaskGaps(data = {}) {
     const list = document.getElementById('task-gaps-list');
     const syncEl = document.getElementById('task-gaps-sync-time');
     if (!list) return;
     if (!accounts.length) {
       list.innerHTML = '<div class="empty-state">暂无托管账号</div>';
+      if (syncEl) syncEl.textContent = '尚未同步';
       return;
     }
+
     let latest = 0;
     list.innerHTML = accounts.map((a, idx) => {
-      const t = a.officialTasks || {};
-      const hasSnap = !!(t && Object.keys(t).length);
-      const search = t.searchPoints || null;
-      const app = t.appCheckIn || null;
-      const daily = t.dailySet || null;
+      const t = a.officialTasks && typeof a.officialTasks === 'object' ? a.officialTasks : {};
+      const hasSnap = Object.keys(t).length > 0;
       const pendingDaily = Array.isArray(t.dailyPending) ? t.dailyPending.length : null;
       const pendingQuests = Array.isArray(t.questPending) ? t.questPending.length : null;
-      if (a.lastSyncAt) latest = Math.max(latest, Number(a.lastSyncAt));
+      if (a.lastSyncAt) latest = Math.max(latest, Number(a.lastSyncAt) || 0);
+
       const items = [
-        { label: '搜索', value: search ? search.current + '/' + search.max : '未同步', done: search ? !!search.isMaxed : false, known: !!search },
-        { label: 'App签到', value: app ? app.current + '/' + app.max : '未同步', done: app ? app.current >= app.max : false, known: !!app },
-        { label: 'Daily Set', value: daily ? daily.current + '/' + daily.max : '未同步', done: daily ? daily.current >= daily.max : false, known: !!daily },
-        { label: '日常任务', value: pendingDaily === null ? '未同步' : (pendingDaily === 0 ? '全部完成' : pendingDaily + ' 项待做'), done: pendingDaily === 0, known: pendingDaily !== null },
-        { label: '打孔卡', value: pendingQuests === null ? '未同步' : (pendingQuests === 0 ? '全部完成' : pendingQuests + ' 张进行中'), done: pendingQuests === 0, known: pendingQuests !== null }
+        counterTaskItem('搜索', t.searchPoints),
+        counterTaskItem('App签到', t.appCheckIn),
+        counterTaskItem('Daily Set', t.dailySet),
+        {
+          label: '日常任务',
+          known: pendingDaily !== null,
+          value: pendingDaily === null ? '未知' : (pendingDaily === 0 ? '全部完成' : pendingDaily + ' 项待做'),
+          done: pendingDaily === 0
+        },
+        {
+          label: '打孔卡',
+          known: pendingQuests !== null,
+          value: pendingQuests === null ? '未知' : (pendingQuests === 0 ? '全部完成' : pendingQuests + ' 张进行中'),
+          done: pendingQuests === 0
+        }
       ];
       const name = getAccountDisplayName(a, idx);
+      const isRunning = currentRunningAccountId && String(currentRunningAccountId) === String(a.id);
       return '<div class="task-gap-card ' + (!hasSnap ? 'task-gap-card-unknown' : '') + '">' +
-        '<div class="task-gap-account"><span class="task-gap-dot ' + (a.status === 'running' ? 'running' : '') + '"></span>' + escapeHtml(name) + '</div>' +
+        '<div class="task-gap-account"><span class="task-gap-dot ' + (isRunning ? 'running' : '') + '"></span><span>' + escapeHtml(name) + '</span>' +
+          (!hasSnap ? '<span class="task-gap-account-state">待官网同步</span>' : '') + '</div>' +
         '<div class="task-gap-pills">' + items.map((it) => {
           const st = taskStatusLabel(it.done, it.known);
           return '<span class="task-gap-pill ' + st.cls + '" title="' + escapeHtml(it.label + ': ' + it.value) + '">' +
@@ -467,7 +574,8 @@ document.addEventListener("DOMContentLoaded", () => {
         }).join('') + '</div>' +
       '</div>';
     }).join('');
-    if (syncEl) syncEl.textContent = latest ? ('同步于 ' + new Date(latest).toLocaleTimeString('zh-CN', { hour12: false })) : '尚未同步';
+
+    if (syncEl) syncEl.textContent = latest ? ('同步于 ' + new Date(latest).toLocaleTimeString('zh-CN', { hour12: false })) : '等待官网同步';
   }
 
   function renderSchedulerQueue() {
@@ -885,41 +993,6 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  async function startSyncOfficialExecution() {
-    document.getElementById("btn-start-sync-action").style.display = "none";
-    document.getElementById("btn-sync-bg").style.display = "inline-block";
-
-    const targetId = document.getElementById("sync-select-account")?.value;
-    const isAll = syncScope === "all";
-
-    setSyncStep(1, 20, "准备中", isAll ? ("正在锁定全量 " + accounts.length + " 个账号上下文与浏览器资源...") : "正在锁定指定账号上下文与浏览器资源...");
-    await new Promise((r) => setTimeout(r, 600));
-
-    try {
-      fetch("/api/sync/official", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accountId: isAll ? "all" : targetId })
-      }).catch(() => {});
-    } catch {}
-
-    setSyncStep(2, 50, "采集对账中", "正在依序访问微软官方 /earn 与 /dashboard 权威账本...");
-
-    let count = 0;
-    const interval = setInterval(async () => {
-      count++;
-      refreshDashboard();
-      if (count === 3) {
-        setSyncStep(3, 80, "解码同步中", "正在解析各账号 RSC Flight 数据流并安全深度合并...");
-      }
-      if (count >= 10) {
-        clearInterval(interval);
-        setSyncStep(4, 100, "已全部同步", "官网权威成效与总额已全部采集入账完毕，大盘已完全更新！");
-        refreshDashboard();
-      }
-    }, 1500);
-  }
-
   document.getElementById("btn-start-sync-action")?.addEventListener("click", startSyncOfficialExecution);
 
   document.getElementById("btn-sync-scope-all")?.addEventListener("click", function () {
@@ -963,6 +1036,85 @@ document.addEventListener("DOMContentLoaded", () => {
           row.querySelector(".step-bullet").textContent = "○";
         }
       }
+    }
+  }
+
+  async function startSyncOfficialExecution() {
+    const startBtn = document.getElementById("btn-start-sync-action");
+    if (!startBtn || startBtn.disabled) return;
+
+    startBtn.disabled = true;
+    startBtn.textContent = "⏳ 正在同步...";
+    setSyncStep(1, 5, "启动中", "正在锁定目标账号并提交官网同步请求...");
+
+    try {
+      const selectedAccountId = document.getElementById("sync-select-account")?.value || null;
+      const requestAccountId = syncScope === "single" ? selectedAccountId : "all";
+      if (syncScope === "single" && !requestAccountId) {
+        throw new Error("请先选择需要同步的账号");
+      }
+
+      const response = await fetch("/api/sync/official", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accountId: requestAccountId })
+      });
+
+      let payload = null;
+      try {
+        payload = await response.json();
+      } catch {
+        throw new Error("同步接口未返回有效响应 (HTTP " + response.status + ")");
+      }
+      if (!response.ok || !payload || !payload.success) {
+        throw new Error((payload && payload.message) || ("同步请求失败 (HTTP " + response.status + ")"));
+      }
+
+      const startedAt = Number(payload.startedAt) || Date.now();
+      const targetAccountIds = Array.isArray(payload.targetAccountIds) && payload.targetAccountIds.length
+        ? payload.targetAccountIds.map(String)
+        : (requestAccountId === "all" ? accounts.map((account) => String(account.id)) : [String(requestAccountId)]);
+      if (!targetAccountIds.length) throw new Error("同步接口未返回目标账号");
+
+      const syncBtnBackground = document.getElementById("btn-sync-bg");
+      if (syncBtnBackground) syncBtnBackground.style.display = "inline-block";
+      setSyncStep(2, 20, "同步中", "后台正在依序采集 " + targetAccountIds.length + " 个账号的官网看板与任务状态...");
+
+      let lastCompleted = -1;
+      while (true) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        const latestStatus = await refreshDashboard();
+        await hydrateDailySnapshots();
+        if (!latestStatus) {
+          setSyncStep(2, 20, "等待响应", "状态刷新暂时失败，继续等待后台同步，不会提前报告完成。");
+          continue;
+        }
+
+        const latestAccounts = Array.isArray(latestStatus.accounts) ? latestStatus.accounts : accounts;
+        const completedIds = targetAccountIds.filter((accountId) => {
+          const account = latestAccounts.find((item) => String(item.id) === accountId);
+          return account && Number(account.lastSyncAt || 0) >= startedAt;
+        });
+        const pendingIds = targetAccountIds.filter((accountId) => !completedIds.includes(accountId));
+
+        if (completedIds.length !== lastCompleted) {
+          lastCompleted = completedIds.length;
+          const progress = Math.max(20, Math.min(90, Math.round(20 + (completedIds.length / targetAccountIds.length) * 70)));
+          setSyncStep(3, progress, "同步中", "官网同步进度 " + completedIds.length + "/" + targetAccountIds.length + "，等待目标账号写入最新官网数据...");
+        }
+
+        if (pendingIds.length === 0) {
+          setSyncStep(5, 100, "同步完成", "目标账号的官网看板、任务状态和积分日历已全部刷新完成。");
+          startBtn.textContent = "✓ 同步完成";
+          await refreshDashboard();
+          await hydrateDailySnapshots();
+          return;
+        }
+      }
+    } catch (error) {
+      setSyncStep(1, 0, "同步异常", error.message || "官网数据同步失败，请检查网络与账号状态。");
+      startBtn.disabled = false;
+      startBtn.textContent = "▶ 重新同步";
     }
   }
 
@@ -1697,6 +1849,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   refreshDashboard();
+  hydrateDailySnapshots();
   connectLogs();
   
   // 自适应动态节拍调度器 (执行任务期间 2 秒高频刷新，空闲期间 4 秒平稳巡检，任务结束瞬间毫秒级即时更新)

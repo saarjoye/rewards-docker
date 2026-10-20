@@ -17,14 +17,20 @@ class Scheduler {
       '0 1 * * *',
       async () => {
         logger.log('🌙', '>>> 触发每日 01:00 额外积分全自动收割与对账闭环引擎 <<<');
-        const accounts = configManager.getAccounts().filter((a) => a.enabled);
-        for (const acc of accounts) {
-          try {
-            await taskManager.harvestMidnightClaimable(acc.id);
-            await new Promise((r) => setTimeout(r, 15000));
-          } catch (e) {
-            logger.log('⚠️', `01:00 额外积分收割流程异常 [${acc.name}]: ${e.message}`);
+        taskManager.beginRun('01:00 额外积分收割队列');
+        taskManager.isQueueRunning = true;
+        try {
+          const accounts = configManager.getAccounts().filter((a) => a.enabled);
+          for (const acc of accounts) {
+            try {
+              await taskManager.harvestMidnightClaimable(acc.id);
+              if (!(await taskManager.waitUnlessStopped(15000))) break;
+            } catch (e) {
+              logger.log('⚠️', `01:00 额外积分收割流程异常 [${acc.name}]: ${e.message}`);
+            }
           }
+        } finally {
+          taskManager.isQueueRunning = false;
         }
       },
       { timezone: 'Asia/Shanghai' }
@@ -73,16 +79,24 @@ class Scheduler {
 
           logger.log('🚀', `[${slotDef.label}] 本时段启动执行，共 ${targetAccounts.length} 个账号待进入流水线`);
 
-          for (const acc of targetAccounts) {
-            try {
-              await taskManager.runAccountTasks(acc.id);
-              // 账号间物理隔离与随机冷却 (15~25 秒)
-              const cooldown = 15000 + Math.random() * 10000;
-              logger.log('❄️', `账号切换物理隔离冷却 ${Math.round(cooldown / 1000)} 秒...`);
-              await new Promise((r) => setTimeout(r, cooldown));
-            } catch (err) {
-              logger.log('🔴', `调度任务异常 [${acc.name}]: ${err.message}`);
+          taskManager.beginRun('错峰时段队列');
+          taskManager.isQueueRunning = true;
+          try {
+            for (const acc of targetAccounts) {
+              if (taskManager.shouldStop) break;
+              try {
+                await taskManager.runAccountTasks(acc.id, { preserveStopState: true });
+                const cooldown = 15000 + Math.random() * 10000;
+                logger.log('❄️', `账号切换物理隔离冷却 ${Math.round(cooldown / 1000)} 秒...`);
+                if (!(await taskManager.waitUnlessStopped(cooldown))) break;
+              } catch (err) {
+                if (err.message !== '任务已被用户主动中断') {
+                  logger.log('🔴', `调度任务异常 [${acc.name}]: ${err.message}`);
+                }
+              }
             }
+          } finally {
+            taskManager.isQueueRunning = false;
           }
         },
         { timezone: 'Asia/Shanghai' }
