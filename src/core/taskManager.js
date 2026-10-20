@@ -167,7 +167,7 @@ export class TaskManager {
       if (!streakDays && account.streakDays !== undefined) {
         streakDays = account.streakDays;
       }
-      if (!claimablePoints && account.claimablePoints !== undefined) {
+      if (claimablePoints === null && account.claimablePoints !== undefined) {
         claimablePoints = account.claimablePoints;
       }
 
@@ -273,13 +273,16 @@ export class TaskManager {
     log(`>>> 启动账号 [${account.name}] 自动化流水线 (范围: ${taskScope}) <<<`);
 
     if (taskScope === 'harvest') {
-      this.currentTaskName = '01:00 额外积分抽屉收割';
-      await this.harvestMidnightClaimable(accountId);
-      this.runningAccountId = null;
-      this.runningAccountName = '';
-      this.currentTaskName = '';
-      accountContextLock.release(accountId);
-      return { success: true };
+      try {
+        this.currentTaskName = '\u989d\u5916\u79ef\u5206\u9886\u53d6\u4e0e\u5b98\u7f51\u5bf9\u8d26';
+        return await this.harvestMidnightClaimable(accountId, { lockAlreadyHeld: true });
+      } finally {
+        this.runningAccountId = null;
+        this.runningAccountName = '';
+        this.currentTaskSection = '';
+        this.currentTaskName = '';
+        accountContextLock.release(accountId);
+      }
     }
 
     try {
@@ -676,19 +679,21 @@ export class TaskManager {
     }
   }
 
-  async harvestMidnightClaimable(accountId) {
+  async harvestMidnightClaimable(accountId, options = {}) {
     const account = configManager.getAccount(accountId);
-    if (!account) return;
+    if (!account) return { success: false, reason: 'account-not-found' };
 
-    if (!accountContextLock.acquire(accountId)) {
-      logger.log('⚠️', `账号 [${account.name}] 正在执行其他任务，跳过 01:00 额外积分收割`);
-      return;
+    const ownsLock = !options.lockAlreadyHeld;
+    if (ownsLock && !accountContextLock.acquire(accountId)) {
+      logger.log('\u26a0\ufe0f', '\u8d26\u53f7 [' + account.name + '] \u6b63\u5728\u6267\u884c\u5176\u4ed6\u4efb\u52a1\uff0c\u8df3\u8fc7\u989d\u5916\u79ef\u5206\u9886\u53d6');
+      return { success: false, reason: 'account-locked' };
     }
 
     const session = readBrowserSession(accountId);
     if (!session || !session.cookies) {
-      accountContextLock.release(accountId);
-      return;
+      if (ownsLock) accountContextLock.release(accountId);
+      logger.log('\u26a0\ufe0f', '\u8d26\u53f7 [' + account.name + '] \u7f3a\u5c11\u767b\u5f55\u4f1a\u8bdd\uff0c\u65e0\u6cd5\u9886\u53d6\u989d\u5916\u79ef\u5206');
+      return { success: false, reason: 'session-missing' };
     }
 
     // 全量上报当前运行状态与活动账号，驱动大盘、账号池变绿与无头监控
@@ -711,18 +716,39 @@ export class TaskManager {
         async (browser, context) => {
           const page = await context.newPage();
           try {
-            await harvestClaimablePointsWithVirtualPointer(page, { accountPrefix: account.name });
+            const harvestResult = await harvestClaimablePointsWithVirtualPointer(page, { accountPrefix: account.name });
             const finalData = await this.fetchOfficialDashboard(context, account);
-            
-            // 实时将最新官方待领分值和余额安全深度合并回写
+            const authoritativeClaimable = finalData.claimablePoints;
+            const verifiedBalance = harvestResult?.after?.balance ?? finalData.balance;
+
             configManager.upsertAccount({
               id: accountId,
-              status: 'ready',
-              balance: finalData.balance,
-              claimablePoints: finalData.claimablePoints !== null ? finalData.claimablePoints : 0
+              status: harvestResult?.harvested || harvestResult?.reason === 'already-zero' ? 'ready' : 'warning',
+              balance: verifiedBalance,
+              claimablePoints: authoritativeClaimable,
+              lastSyncAt: Date.now(),
+              dataState: authoritativeClaimable === null ? 'partial' : 'complete'
             });
-            logger.log('🎉', `[收割入账] 账号 [${account.name}] 权威对账完毕 - 可用余额: ${finalData.balance} 分, 待领额外积分已同步更新为: ${finalData.claimablePoints} 分`);
-            notifier.sendSettlementReport(account, finalData).catch(() => {});
+            historyManager.recordDaily(accountId, {
+              todayEarned: finalData.todayPoints,
+              balance: verifiedBalance,
+              streakDays: finalData.streakDays,
+              claimablePoints: authoritativeClaimable,
+              source: 'harvest-reconcile'
+            });
+
+            if (harvestResult?.harvested) {
+              logger.log('\u{1f389}', '[\u6536\u5272\u5165\u8d26] \u8d26\u53f7 [' + account.name + '] \u5df2\u6838\u9a8c\u5230\u8d26 - \u4f59\u989d: ' + verifiedBalance + ' \u5206, \u5269\u4f59\u5f85\u9886: ' + authoritativeClaimable + ' \u5206');
+            } else {
+              logger.log('\u26a0\ufe0f', '[\u6536\u5272\u672a\u786e\u8ba4] \u8d26\u53f7 [' + account.name + '] \u4f59\u989d: ' + verifiedBalance + ' \u5206, \u5b98\u7f51\u5f85\u9886: ' + (authoritativeClaimable ?? '\u672a\u6355\u83b7') + ' \u5206\u3002\u672a\u8bb0\u5f55\u4e3a\u9886\u53d6\u6210\u529f\u3002');
+            }
+            notifier.sendSettlementReport(account, {
+              ...finalData,
+              balance: verifiedBalance,
+              claimablePoints: authoritativeClaimable,
+              taskStatusText: harvestResult?.harvested ? '\u989d\u5916\u79ef\u5206\u5df2\u5230\u8d26' : '\u989d\u5916\u79ef\u5206\u672a\u786e\u8ba4\u5230\u8d26'
+            }).catch(() => {});
+            return { success: !!harvestResult?.harvested, harvest: harvestResult, finalData: { ...finalData, balance: verifiedBalance, claimablePoints: authoritativeClaimable } };
           } finally {
             if (page && typeof page.close === 'function') { await page.close().catch(() => {}); }
           }
@@ -742,7 +768,7 @@ export class TaskManager {
         activeAccountName: '无活跃任务',
         currentAction: '无头浏览器处于空闲休眠状态 (0 进程占用)'
       });
-      accountContextLock.release(accountId);
+      if (ownsLock) accountContextLock.release(accountId);
     }
   }
 }

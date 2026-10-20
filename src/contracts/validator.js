@@ -92,8 +92,19 @@ export function extractOfficialClaimablePoints(flightText = '', html = '') {
   const combined = `${flightText}\n${html}`;
 
   // 1. 若页面或抽屉明确包含已领完或归零的终态标记，严格判定为 0
-  if (combined.includes('当前没有要领取的积分') || combined.includes('可领取 0') || combined.includes('已成功领取')) {
+  if (combined.includes('\u5f53\u524d\u6ca1\u6709\u8981\u9886\u53d6\u7684\u79ef\u5206')) {
     return 0;
+  }
+
+  const currentCardMatch = combined.match(/text-labelControl[^>]*>\u53ef\u9886\u53d6<[\s\S]{0,500}?text-pageHeader[^>]*>([0-9,]+)</i);
+  if (currentCardMatch && currentCardMatch[1]) {
+    return parseNumberWithCommas(currentCardMatch[1]);
+  }
+
+  // The current DOM card takes precedence over cached Flight data.
+  const liveClaimable = combined.match(/\u53ef\u9886\u53d6\s*([0-9,]+)\s*\u9886\u53d6/);
+  if (liveClaimable && liveClaimable[1]) {
+    return parseNumberWithCommas(liveClaimable[1]);
   }
 
   // 2. 优先提取官方明细账本中的真实 TotalClaimablePoints
@@ -119,7 +130,7 @@ export function extractOfficialClaimablePoints(flightText = '', html = '') {
     }
   }
 
-  return 0;
+  return null;
 }
 
 export function validateStrictMetrics({ officialToday, previousToday, claimedAdd = 0 }) {

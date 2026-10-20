@@ -43,6 +43,18 @@ test('extractOfficialClaimablePoints 提取待领抽屉积分 (对标图 6)', ()
   assert.equal(claimable, 3);
 });
 
+test('extractOfficialClaimablePoints current zero wins over stale success toast', () => {
+  const liveZero = '<div class="text-labelControl">\u53ef\u9886\u53d6</div><div class="text-pageHeader">0</div><div>\u9886\u53d6</div>';
+  assert.equal(extractOfficialClaimablePoints('', liveZero), 0);
+
+  const staleToast = '<div>\u5df2\u6210\u529f\u9886\u53d6</div><div class="text-labelControl">\u53ef\u9886\u53d6</div><div class="text-pageHeader">6</div><div>\u9886\u53d6</div>';
+  assert.equal(extractOfficialClaimablePoints('', staleToast), 6);
+});
+
+test('extractOfficialClaimablePoints returns null without official evidence', () => {
+  assert.equal(extractOfficialClaimablePoints('', '<div>maintenance</div>'), null);
+});
+
 test('validateStrictMetrics 绝不造假原则：今日积分仅由官网值决定', () => {
   const res = validateStrictMetrics({ officialToday: 174, previousToday: 120 });
   assert.equal(res.valid, true);

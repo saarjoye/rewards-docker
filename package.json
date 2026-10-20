@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.3.0",
-  "description": "Microsoft Rewards 自动化平台 (v6.3.0 官网口径日历与任务缺口、实时记录铺满、日志SSE兜底、剩余任务精确补做)",
+  "version": "6.3.1",
+  "description": "Microsoft Rewards automation platform (v6.3.1 verified claim, authoritative reconcile, version-safe deployment)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {

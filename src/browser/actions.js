@@ -358,110 +358,78 @@ export async function penetratePuzzleSpotlight(page, puzzleUrl, options = {}) {
  */
 export async function harvestClaimablePointsWithVirtualPointer(page, options = {}) {
   const { accountPrefix = '' } = options;
-  browserManager.updateState({ status: 'harvesting', currentAction: '展开 React Aria 抽屉收割额外待领积分...' });
-  logger.log('🎁', '开始执行每日 01:00 额外积分 React Aria 抽屉收割流程...', '', accountPrefix);
+  const claimLabel = '\u53ef\u9886\u53d6';
+  const claimButtonLabel = '\u9886\u53d6\u79ef\u5206';
+  const balanceLabel = '\u53ef\u7528\u79ef\u5206';
 
-  const readCard = async () => {
-    const btn = page.locator('button').filter({ hasText: '可领取' }).first();
-    if (!(await btn.count())) return null;
-    const text = (await btn.innerText().catch(() => '')).replace(/\s+/g, ' ');
-    const nums = [...text.matchAll(/(\d+)/g)].map((m) => Number(m[1]));
-    return { btn, text, points: nums.length ? nums[nums.length - 1] : 0 };
+  browserManager.updateState({ status: 'harvesting', currentAction: '\u5c55\u5f00\u9886\u53d6\u79ef\u5206\u62bd\u5c49\u5e76\u6838\u9a8c\u5b98\u65b9\u5230\u8d26...' });
+  logger.log('\u{1f381}', '\u5f00\u59cb\u6267\u884c\u989d\u5916\u79ef\u5206\u9886\u53d6\u6d41\u7a0b...', '', accountPrefix);
+
+  const readDashboard = async () => {
+    const body = await page.locator('body').innerText().catch(() => '');
+    const card = page.locator('button[aria-expanded]').filter({ hasText: claimLabel }).first();
+    let points = null;
+    if (await card.count()) {
+      const cardText = (await card.innerText().catch(() => '')).replace(/\s+/g, ' ');
+      const match = cardText.match(new RegExp(claimLabel + '\\s*([0-9,]+)'));
+      if (match) points = Number(match[1].replace(/,/g, ''));
+    }
+    const balanceMatch = body.match(new RegExp(balanceLabel + '\\s*[\\r\\n]+\\s*([0-9,]+)'));
+    const balance = balanceMatch ? Number(balanceMatch[1].replace(/,/g, '')) : null;
+    return { card, points, balance };
   };
 
   try {
     await page.goto('https://rewards.bing.com/dashboard', { waitUntil: 'domcontentloaded', timeout: 35000 });
-    await new Promise((r) => setTimeout(r, 3500));
+    await page.waitForTimeout(4500);
     await dismissCookieBanner(page);
 
-    let card = await readCard();
-    if (!card) {
-      logger.log('ℹ️', '当前仪表盘未检测到独立「可领取」积分卡片，跳过收割', '', accountPrefix);
-      return { harvested: false, points: 0 };
+    const before = await readDashboard();
+    if (!(await before.card.count())) {
+      logger.log('\u2139\ufe0f', '\u5f53\u524d\u4eea\u8868\u76d8\u672a\u68c0\u6d4b\u5230\u300c\u53ef\u9886\u53d6\u300d\u79ef\u5206\u5361\u7247\uff0c\u8df3\u8fc7\u6536\u5272', '', accountPrefix);
+      return { harvested: false, points: 0, reason: 'claim-card-not-found', before };
     }
-    if (card.points === 0) {
-      logger.log('ℹ️', '「可领取」卡片当前为 0 分，已处于领完状态', '', accountPrefix);
-      return { harvested: true, points: 0 };
+    if (before.points === 0) {
+      logger.log('\u2139\ufe0f', '\u300c\u53ef\u9886\u53d6\u300d\u5f53\u524d\u4e3a 0 \u5206\uff0c\u65e0\u9700\u9886\u53d6', '', accountPrefix);
+      return { harvested: true, points: 0, reason: 'already-zero', before };
     }
-    logger.log('💰', `官网卡片显示可领取 ${card.points} 分，开始展开领取抽屉`, '', accountPrefix);
+    if (!Number.isFinite(before.points)) {
+      throw new Error('\u65e0\u6cd5\u4ece\u5b98\u7f51\u5361\u7247\u89e3\u6790\u53ef\u9886\u53d6\u79ef\u5206\uff0c\u62d2\u7edd\u731c\u6d4b\u6210\u529f\u72b6\u6001');
+    }
 
-    const cardBox = await card.btn.boundingBox().catch(() => null);
-    if (cardBox) {
-      await page.mouse.click(cardBox.x + cardBox.width / 2, cardBox.y + cardBox.height / 2);
-    } else {
-      await card.btn.click({ force: true }).catch(() => {});
-    }
+    logger.log('\u{1f4b0}', '\u5b98\u7f51\u663e\u793a\u53ef\u9886\u53d6 ' + before.points + ' \u5206\uff0c\u53ef\u7528\u4f59\u989d ' + (before.balance ?? '\u672a\u77e5') + ' \u5206\uff0c\u5c55\u5f00\u9886\u53d6\u62bd\u5c49...', '', accountPrefix);
+    await before.card.click({ timeout: 10000 });
+
+    const claimButton = page.locator('button').filter({ hasText: claimButtonLabel }).first();
+    await claimButton.waitFor({ state: 'visible', timeout: 20000 });
+    await claimButton.click({ timeout: 10000 });
+    logger.log('\u{1f446}', '\u5df2\u70b9\u51fb\u300c\u9886\u53d6\u79ef\u5206\u300d\uff0c\u7b49\u5f85\u5b98\u65b9\u4f59\u989d\u4e0e\u5f85\u9886\u53d6\u72b6\u6001\u5165\u8d26...', '', accountPrefix);
+
+    let after = null;
     for (let attempt = 0; attempt < 20; attempt++) {
-      await new Promise((r) => setTimeout(r, 500));
-      const expanded = await card.btn.getAttribute('aria-expanded').catch(() => null);
-      const dialogs = await page.locator('[role="dialog"], [aria-modal="true"]').count().catch(() => 0);
-      if (expanded === 'true' || dialogs > 0) break;
-      if (attempt === 4) await card.btn.click({ force: true }).catch(() => {});
+      await page.waitForTimeout(1000);
+      after = await readDashboard();
+      const balanceIncreased = before.balance !== null && after.balance !== null && after.balance >= before.balance + before.points;
+      if (after.points === 0 && balanceIncreased) {
+        logger.log('\u{1f389}', '\u9886\u53d6\u6210\u529f\u5e76\u5df2\u5bf9\u8d26\uff1a\u4f59\u989d ' + before.balance + ' \u2192 ' + after.balance + '\uff0c\u53ef\u9886\u53d6 ' + before.points + ' \u2192 0', '', accountPrefix);
+        return { harvested: true, points: before.points, before, after, reason: 'balance-and-claimable-verified' };
+      }
     }
 
-    for (let t = 0; t < 30; t++) {
-      await new Promise((r) => setTimeout(r, 500));
-      const state = await page.evaluate(() => {
-        const dialog = document.querySelector('[role="dialog"], [aria-modal="true"]');
-        if (!dialog) return { found: false };
-        return {
-          found: true,
-          text: (dialog.innerText || '').replace(/\s+/g, ' '),
-          buttons: [...dialog.querySelectorAll('button')].map((b) => ({
-            text: (b.innerText || '').replace(/\s+/g, ' ').trim(),
-            disabled: !!b.disabled,
-            ariaDisabled: b.getAttribute('aria-disabled')
-          }))
-        };
-      });
-      if (!state.found) continue;
-      if (/当前没有要领取的积分|已成功领取|0\s*待领取/.test(state.text)) {
-        logger.log('ℹ️', '抽屉确认当前无可领取积分，已处于归零状态', '', accountPrefix);
-        return { harvested: true, points: 0 };
-      }
-      const enabled = state.buttons.filter((b) => !b.disabled && b.ariaDisabled !== 'true');
-      if (enabled.length === 0) continue;
-      logger.log('🎯', `抽屉已加载，发现 ${enabled.length} 个可触发按钮: ${enabled.map((b) => b.text || '(图标按钮)').join(' / ')}`, '', accountPrefix);
-
-      const clicked = await page.evaluate(() => {
-        const dialog = document.querySelector('[role="dialog"], [aria-modal="true"]');
-        if (!dialog) return false;
-        const buttons = [...dialog.querySelectorAll('button')].filter((b) => !b.disabled && b.getAttribute('aria-disabled') !== 'true');
-        const preferred = buttons.find((b) => /领取积分|立即领取|全部领取|领取/.test((b.innerText || '').trim()))
-          || buttons.find((b) => /bg-bgCtrlBrandRest|bg-.*Brand/.test(b.className))
-          || buttons[0];
-        if (!preferred) return false;
-        // React Aria 需要完整指针事件序列，直接 click() 往往不会触发 Pressable
-        for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
-          preferred.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window, button: 0 }));
-        }
-        preferred.click();
-        return true;
-      }).catch(() => false);
-      if (!clicked) continue;
-
-      logger.log('👆', '已点击抽屉内领取按钮，等待官网对账', '', accountPrefix);
-      await new Promise((r) => setTimeout(r, 5000));
-      const result = await page.evaluate(() => {
-        const dialog = document.querySelector('[role="dialog"], [aria-modal="true"]');
-        const body = document.body.innerText || '';
-        return {
-          dialogText: dialog ? (dialog.innerText || '').replace(/\s+/g, ' ') : '',
-          success: /已成功领取|领取成功|成功领取/.test(body)
-        };
-      });
-      if (result.success) {
-        logger.log('🎉', '官网已返回领取成功提示，额外积分收割完成', '', accountPrefix);
-        return { harvested: true, points: card.points };
-      }
-      logger.log('⚠️', '点击后未检测到成功提示，继续观察抽屉状态', '', accountPrefix);
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 35000 }).catch(() => {});
+    await page.waitForTimeout(3500);
+    const finalState = await readDashboard();
+    const increased = before.balance !== null && finalState.balance !== null && finalState.balance > before.balance;
+    if (finalState.points === 0 && increased) {
+      logger.log('\u{1f389}', '\u5237\u65b0\u5bf9\u8d26\u6210\u529f\uff1a\u4f59\u989d ' + before.balance + ' \u2192 ' + finalState.balance + '\uff0c\u53ef\u9886\u53d6\u5df2\u5f52\u96f6', '', accountPrefix);
+      return { harvested: true, points: before.points, before, after: finalState, reason: 'reload-verified' };
     }
 
-    logger.log('⚠️', '等待 15 秒后仍未捕获到可领取按钮，抽屉可能已归零', '', accountPrefix);
-    return { harvested: false, points: 0 };
+    logger.log('\u26a0\ufe0f', '\u70b9\u51fb\u540e\u5c1a\u672a\u786e\u8ba4\u5230\u8d26\uff1a\u4f59\u989d ' + (finalState.balance ?? '\u672a\u77e5') + '\uff0c\u53ef\u9886\u53d6 ' + (finalState.points ?? '\u672a\u77e5') + '\u3002\u672a\u6807\u8bb0\u4e3a\u6210\u529f\u3002', '', accountPrefix);
+    return { harvested: false, points: before.points, before, after: finalState, reason: 'unverified-after-click' };
   } catch (err) {
-    logger.log('🔴', `额外积分收割执行异常: ${err.message}`, '', accountPrefix);
-    return { harvested: false, points: 0 };
+    logger.log('\u{1f534}', '\u989d\u5916\u79ef\u5206\u9886\u53d6\u6267\u884c\u5f02\u5e38: ' + err.message, '', accountPrefix);
+    return { harvested: false, points: 0, reason: 'exception', error: err.message };
   }
 }
 
