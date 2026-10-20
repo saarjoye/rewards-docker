@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.2.4",
-  "description": "Microsoft Rewards 自动化平台 (v6.2.4 官网实时任务快照判定、剩余任务补漏、日常任务真实点击与打孔卡页选器修复)",
+  "version": "6.2.5",
+  "description": "Microsoft Rewards 自动化平台 (v6.2.5 官网实时任务快照判定、剩余任务补漏、日常任务真实点击与打孔卡页选器修复)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {

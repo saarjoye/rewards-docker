@@ -361,95 +361,103 @@ export async function harvestClaimablePointsWithVirtualPointer(page, options = {
   browserManager.updateState({ status: 'harvesting', currentAction: '展开 React Aria 抽屉收割额外待领积分...' });
   logger.log('🎁', '开始执行每日 01:00 额外积分 React Aria 抽屉收割流程...', '', accountPrefix);
 
+  const readCard = async () => {
+    const btn = page.locator('button').filter({ hasText: '可领取' }).first();
+    if (!(await btn.count())) return null;
+    const text = (await btn.innerText().catch(() => '')).replace(/\s+/g, ' ');
+    const nums = [...text.matchAll(/(\d+)/g)].map((m) => Number(m[1]));
+    return { btn, text, points: nums.length ? nums[nums.length - 1] : 0 };
+  };
+
   try {
     await page.goto('https://rewards.bing.com/dashboard', { waitUntil: 'domcontentloaded', timeout: 35000 });
-    await new Promise((r) => setTimeout(r, 3000));
+    await new Promise((r) => setTimeout(r, 3500));
+    await dismissCookieBanner(page);
 
-    // 1. 精确定位「可领取」抽屉触发卡片按钮
-    const claimBtn = await page.$('button:has-text("可领取")');
-    if (!claimBtn || !(await claimBtn.isVisible().catch(() => false))) {
-      logger.log('ℹ️', '当前仪表盘未检测到独立的「可领取」积分抽屉卡片，跳过收割', '', accountPrefix);
+    let card = await readCard();
+    if (!card) {
+      logger.log('ℹ️', '当前仪表盘未检测到独立「可领取」积分卡片，跳过收割', '', accountPrefix);
       return { harvested: false, points: 0 };
     }
-
-    const cardText = await claimBtn.innerText().catch(() => '');
-    const numMatch = cardText.match(/(\d+)/);
-    const claimablePointsNum = numMatch ? parseInt(numMatch[1], 10) : 0;
-
-    // 若卡片显示 0 分，已处于全部领完状态
-    if (claimablePointsNum === 0 || cardText.includes('可领取\n\n0') || cardText.includes('可领取 0')) {
-      logger.log('ℹ️', '可领取卡片标识为 0 分，已处于全部领完状态，无需重复领取', '', accountPrefix);
+    if (card.points === 0) {
+      logger.log('ℹ️', '「可领取」卡片当前为 0 分，已处于领完状态', '', accountPrefix);
       return { harvested: true, points: 0 };
     }
+    logger.log('💰', `官网卡片显示可领取 ${card.points} 分，开始展开领取抽屉`, '', accountPrefix);
 
-    logger.log('💰', `精准锁定官方「可领取」卡片 (标识分值: ${claimablePointsNum} 分)，正在派发点击展开抽屉...`, '', accountPrefix);
-
-    // 虚拟指针派发 pointerdown / pointerup 触发 React Aria 抽屉
-    const box = await claimBtn.boundingBox();
-    if (box) {
-      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-      await page.mouse.down();
-      await page.mouse.up();
-      logger.log('👆', '已精准触发「可领取」卡片展开抽屉事件...', '', accountPrefix);
+    const cardBox = await card.btn.boundingBox().catch(() => null);
+    if (cardBox) {
+      await page.mouse.click(cardBox.x + cardBox.width / 2, cardBox.y + cardBox.height / 2);
     } else {
-      await claimBtn.click({ force: true }).catch(() => {});
+      await card.btn.click({ force: true }).catch(() => {});
+    }
+    for (let attempt = 0; attempt < 20; attempt++) {
+      await new Promise((r) => setTimeout(r, 500));
+      const expanded = await card.btn.getAttribute('aria-expanded').catch(() => null);
+      const dialogs = await page.locator('[role="dialog"], [aria-modal="true"]').count().catch(() => 0);
+      if (expanded === 'true' || dialogs > 0) break;
+      if (attempt === 4) await card.btn.click({ force: true }).catch(() => {});
     }
 
-    // 2. 轮询等待抽屉展开与领取按钮异步渲染 (最长等待 15 秒，支持多语言与变体选择器)
-    logger.log('⏳', '等待抽屉内容与「领取积分」按钮异步加载完成 (动态多态轮询守护)...', '', accountPrefix);
-
-    for (let t = 1; t <= 30; t++) {
+    for (let t = 0; t < 30; t++) {
       await new Promise((r) => setTimeout(r, 500));
-
-      // 若前 2 秒抽屉尚未展开，追加一次辅助点击确保触发
-      if (t === 4) {
-        const isExp = await claimBtn.getAttribute('aria-expanded').catch(() => null);
-        if (isExp !== 'true') {
-          await claimBtn.click({ force: true }).catch(() => {});
-        }
-      }
-
-      // 综合探测所有形态的领取按钮 (含领取积分、全部领取、立即领取、黑色背景主按钮、Claim等)
-      const claimSelectors = [
-        'div[role="dialog"] button:has-text("领取积分")',
-        'div[role="dialog"] button:has-text("立即领取")',
-        'div[role="dialog"] button:has-text("全部领取")',
-        'div[role="dialog"] button:has-text("领取")',
-        'button:has-text("领取积分")',
-        '[aria-modal="true"] button:has-text("领取")',
-        'div[role="dialog"] button.bg-bgCtrlBrandRest',
-        'div[role="dialog"] button:not([disabled])[class*="Button"]'
-      ];
-
-      for (const sel of claimSelectors) {
-        const btn = await page.$(sel).catch(() => null);
-        if (btn && (await btn.isVisible().catch(() => false))) {
-          const btnBox = await btn.boundingBox().catch(() => null);
-          if (btnBox && btnBox.width > 20) {
-            logger.log('🎯', `第 ${(t * 0.5).toFixed(1)} 秒成功锁定抽屉内已激活的领取按钮，立即派发真实指针点击！`, '', accountPrefix);
-            await page.mouse.move(btnBox.x + btnBox.width / 2, btnBox.y + btnBox.height / 2);
-            await page.mouse.down();
-            await page.mouse.up();
-            await new Promise((r) => setTimeout(r, 4500));
-            logger.log('🎉', '恭喜！抽屉内领取按钮点击完成，已成功收割入账！', '', accountPrefix);
-            return { harvested: true, points: claimablePointsNum || 3 };
-          }
-        }
-      }
-
-      // 检查抽屉内是否显示「当前没有要领取的积分」
-      const dialogText = await page.evaluate(() => {
-        const d = document.querySelector('div[role="dialog"], [aria-modal="true"]');
-        return d ? d.innerText : '';
-      }).catch(() => '');
-
-      if (dialogText.includes('当前没有要领取的积分') || dialogText.includes('已成功领取') || dialogText.includes('0 待领取')) {
-        logger.log('ℹ️', '抽屉内部已领完或归零 (当前没有要领取的积分)，已确认成功！', '', accountPrefix);
+      const state = await page.evaluate(() => {
+        const dialog = document.querySelector('[role="dialog"], [aria-modal="true"]');
+        if (!dialog) return { found: false };
+        return {
+          found: true,
+          text: (dialog.innerText || '').replace(/\s+/g, ' '),
+          buttons: [...dialog.querySelectorAll('button')].map((b) => ({
+            text: (b.innerText || '').replace(/\s+/g, ' ').trim(),
+            disabled: !!b.disabled,
+            ariaDisabled: b.getAttribute('aria-disabled')
+          }))
+        };
+      });
+      if (!state.found) continue;
+      if (/当前没有要领取的积分|已成功领取|0\s*待领取/.test(state.text)) {
+        logger.log('ℹ️', '抽屉确认当前无可领取积分，已处于归零状态', '', accountPrefix);
         return { harvested: true, points: 0 };
       }
+      const enabled = state.buttons.filter((b) => !b.disabled && b.ariaDisabled !== 'true');
+      if (enabled.length === 0) continue;
+      logger.log('🎯', `抽屉已加载，发现 ${enabled.length} 个可触发按钮: ${enabled.map((b) => b.text || '(图标按钮)').join(' / ')}`, '', accountPrefix);
+
+      const clicked = await page.evaluate(() => {
+        const dialog = document.querySelector('[role="dialog"], [aria-modal="true"]');
+        if (!dialog) return false;
+        const buttons = [...dialog.querySelectorAll('button')].filter((b) => !b.disabled && b.getAttribute('aria-disabled') !== 'true');
+        const preferred = buttons.find((b) => /领取积分|立即领取|全部领取|领取/.test((b.innerText || '').trim()))
+          || buttons.find((b) => /bg-bgCtrlBrandRest|bg-.*Brand/.test(b.className))
+          || buttons[0];
+        if (!preferred) return false;
+        // React Aria 需要完整指针事件序列，直接 click() 往往不会触发 Pressable
+        for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+          preferred.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window, button: 0 }));
+        }
+        preferred.click();
+        return true;
+      }).catch(() => false);
+      if (!clicked) continue;
+
+      logger.log('👆', '已点击抽屉内领取按钮，等待官网对账', '', accountPrefix);
+      await new Promise((r) => setTimeout(r, 5000));
+      const result = await page.evaluate(() => {
+        const dialog = document.querySelector('[role="dialog"], [aria-modal="true"]');
+        const body = document.body.innerText || '';
+        return {
+          dialogText: dialog ? (dialog.innerText || '').replace(/\s+/g, ' ') : '',
+          success: /已成功领取|领取成功|成功领取/.test(body)
+        };
+      });
+      if (result.success) {
+        logger.log('🎉', '官网已返回领取成功提示，额外积分收割完成', '', accountPrefix);
+        return { harvested: true, points: card.points };
+      }
+      logger.log('⚠️', '点击后未检测到成功提示，继续观察抽屉状态', '', accountPrefix);
     }
 
-    logger.log('⚠️', '等待 15 秒未能捕获到激活态的领取按钮，可能已处于归零状态', '', accountPrefix);
+    logger.log('⚠️', '等待 15 秒后仍未捕获到可领取按钮，抽屉可能已归零', '', accountPrefix);
     return { harvested: false, points: 0 };
   } catch (err) {
     logger.log('🔴', `额外积分收割执行异常: ${err.message}`, '', accountPrefix);
