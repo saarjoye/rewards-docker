@@ -143,6 +143,8 @@ class ConfigManager {
         // 确实跨越了自然天（昨天是旧日期）：开启新一天重置
         a.todayEarned = 0;
         a.todayDate = todayStr;
+        a.remainingRetryCount = 0;
+        a.remainingRetriesDate = todayStr;
         changed = true;
       }
     }
@@ -192,7 +194,9 @@ class ConfigManager {
       lastRun: accountData.lastRun || (existing?.lastRun || null),
       lastSyncAt: accountData.lastSyncAt !== undefined ? accountData.lastSyncAt : (existing?.lastSyncAt || null),
       dataState: accountData.dataState || existing?.dataState || 'unknown',
-      officialTasks: accountData.officialTasks !== undefined ? accountData.officialTasks : (existing?.officialTasks || null)
+      officialTasks: accountData.officialTasks !== undefined ? accountData.officialTasks : (existing?.officialTasks || null),
+      remainingRetryCount: accountData.remainingRetryCount !== undefined ? accountData.remainingRetryCount : (existing?.remainingRetryCount || 0),
+      remainingRetriesDate: accountData.remainingRetriesDate || (existing?.remainingRetriesDate || null)
     };
 
     if (idx >= 0) {

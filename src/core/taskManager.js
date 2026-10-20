@@ -1,6 +1,6 @@
 import path from 'path';
 import { DATA_DIR } from '../fsUtil.js';
-﻿import configManager from '../config.js';
+﻿import configManager, { getTodayDateString } from '../config.js';
 import logger from '../logger.js';
 import accountContextLock from './contextLock.js';
 import { readBrowserSession, writeBrowserSession } from '../identity/browserSession.js';
@@ -464,11 +464,29 @@ export class TaskManager {
     const currentRunId = this.activeRunId;
     if (this.shouldStop) throw new Error(TASK_STOP_MESSAGE);
 
+    const taskScope = options.taskScope || 'all';
+    const todayStr = getTodayDateString();
+
+    // 未完成任务最多重试 2 次保护，防止无法完成的外部项目死循环一直跑
+    if (taskScope === 'remaining' && !options.force) {
+      const retryCount = (account.remainingRetriesDate === todayStr) ? (Number(account.remainingRetryCount) || 0) : 0;
+      const maxRetries = Number(options.maxRemainingRetries || 2);
+      if (retryCount >= maxRetries) {
+        logger.log('🛑', `[重试保护] 账号 [${account.name}] 今日未完成剩余任务已执行 ${retryCount} 次（已达上限 ${maxRetries} 次），安全跳过，防止反复死循环。`, '', account.name);
+        return { success: true, skipped: true, reason: 'max-remaining-retries-reached' };
+      }
+      configManager.upsertAccount({
+        id: accountId,
+        remainingRetryCount: retryCount + 1,
+        remainingRetriesDate: todayStr
+      });
+      logger.log('🎯', `[未完成任务补做] 账号 [${account.name}] 正在进行今日第 ${retryCount + 1}/${maxRetries} 次未完成任务补做扫描...`, '', account.name);
+    }
+
     if (!accountContextLock.acquire(accountId)) {
       throw new Error(`账号 [${account.name}] 正在执行任务中，锁定互斥！`);
     }
 
-    const taskScope = options.taskScope || 'all';
     this.runningAccountId = accountId;
     this.runningAccountName = account.name || account.user;
     this.currentTaskSection = '环境准备';
