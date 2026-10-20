@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Rewards 自动任务系统 (v6.1.4)</title>
+  <title>Rewards 自动任务系统 (v6.1.5)</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -13,7 +13,7 @@
       <div class="sidebar-top">
         <div class="brand">
           <div class="brand-logo-sq">🎁</div>
-          <span class="brand-name">Rewards<span class="brand-dot">.v6.1.4</span></span>
+          <span class="brand-name">Rewards<span class="brand-dot">.v6.1.5</span></span>
         </div>
 
         <div class="store-selector-wrap">
@@ -70,7 +70,7 @@
         </button>
         <div class="mobile-nav-brand">
           <span style="font-size: 18px;">🎁</span>
-          <span class="mobile-nav-title">Rewards<span class="brand-dot">.v6.1.4</span></span>
+          <span class="mobile-nav-title">Rewards<span class="brand-dot">.v6.1.5</span></span>
         </div>
         <button type="button" class="mobile-quick-btn" id="btn-mobile-quick-run">🚀 执行</button>
       </div>
@@ -201,19 +201,23 @@
         </section>
 
         <!-- 第 2 行列 3 (用户红框标注位置)：托管账号池 (向下移动至此独立卡片) -->
-        <section class="bento-box box-stores" style="grid-column: 3; grid-row: 2;">
-          <div class="box-header">
-            <div>
-              <h2 class="box-title">托管账号池</h2>
-              <span class="box-sub">点击卡片直达单账号视图</span>
+        <section class="bento-box box-live-stream" style="grid-column: 3; grid-row: 2;">
+          <div class="box-header" style="margin-bottom: 8px;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-size: 16px;">📜</span>
+              <div>
+                <h2 class="box-title" style="font-size: 13.5px;">实时执行记录</h2>
+                <span class="box-sub" style="font-size: 11px;">全账号流水线秒级作业轨迹</span>
+              </div>
             </div>
             <div style="display: flex; align-items: center; gap: 6px;">
-              <button class="chip-sm" id="btn-toggle-all-pool" style="cursor: pointer; border: 1px solid #cbd5e1; font-weight: 700; background: #fff;">🌐 全部合计</button>
-              <button class="btn-primary-sm" onclick="window.openAddAccountModal?.()" style="cursor: pointer; background: var(--brand-orange); color: #fff; border: none; padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 700;">+ 添加</button>
+              <span class="chip-sm" id="stream-live-badge" style="background: #f0fdf4; color: #15803d; border: 1px solid #bbf7d0; font-size: 11px; font-weight: 700;">● 实时推流</span>
+              <button type="button" class="btn-cancel-sm" id="btn-clear-stream" style="padding: 2px 8px; font-size: 11px; border-radius: 6px; cursor: pointer; background: #fff; border: 1px solid #cbd5e1;" title="清空当前小窗屏幕">清屏</button>
             </div>
           </div>
-          <div class="store-list-scroll" id="accounts-scroll-list">
-            <!-- 动态渲染账号列表 -->
+          <!-- 实时执行记录终端视口 (自动向下滚动，展示实时作业流水) -->
+          <div class="stream-terminal-dark" id="stream-terminal-list">
+            <div class="stream-log-row" style="color: #64748b;">[系统就绪] 等待任务触发，实时作业流将同步在此滚动呈现...</div>
           </div>
         </section>
 

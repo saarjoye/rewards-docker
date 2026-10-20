@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.1.4",
-  "description": "Microsoft Rewards 自动化平台 (v6.1.4 状态横幅全端统一字体美化与无头全维监控闭环)",
+  "version": "6.1.5",
+  "description": "Microsoft Rewards 自动化平台 (v6.1.5 白底现代流式实时执行记录与全配置统一化)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {

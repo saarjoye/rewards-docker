@@ -1319,6 +1319,52 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("pacing-jitter").value = 30;
   });
 
+  
+  // 拟人化错峰时段设定按钮交互
+  document.querySelectorAll(".slot-pill-btn").forEach((btn) => {
+    btn.addEventListener("click", function () {
+      document.querySelectorAll(".slot-pill-btn").forEach((b) => b.classList.remove("active"));
+      this.classList.add("active");
+      const slot = this.getAttribute("data-slot");
+      const expl = document.getElementById("slot-schedule-explanation");
+      if (expl) {
+        const slotNames = {
+          morning: "早间窗口 (09:15 ~ 09:45 随机启动)",
+          afternoon: "午后窗口 (13:20 ~ 13:50 随机启动)",
+          evening: "傍晚窗口 (17:15 ~ 17:45 随机启动)",
+          night: "夜间窗口 (21:10 ~ 21:40 随机启动)",
+          all: "全天全时段错峰轮巡 (推荐)"
+        };
+        expl.innerHTML = "🕒 <b>当前时段设定</b>：已选中 <b>" + (slotNames[slot] || slot) + "</b>。<br>多账号处于相同时段时，系统将使用严格单例锁<b>自动按序串行排队</b>，每账号跑完自动休眠 15~25 秒物理隔离防风控！";
+      }
+    });
+  });
+
+  
+  // 错峰时段按钮点击高亮与说明联动
+  document.querySelectorAll(".slot-select-btn").forEach((btn) => {
+    btn.addEventListener("click", function () {
+      this.classList.toggle("active");
+      const activeBtns = document.querySelectorAll(".slot-select-btn.active");
+      const expl = document.getElementById("slot-expl-text");
+      if (expl) {
+        if (activeBtns.length === 0) {
+          expl.innerHTML = "⚠️ 当前未选中任何错峰时段，建议至少激活一个时段以便系统自动执行错峰任务调度。";
+        } else {
+          expl.innerHTML = "<b>已激活 " + activeBtns.length + " 个错峰时段</b>。多账号在相同时段内将<b>自动单例串行排队调度</b>，每户跑完自动冷却 20 秒，绝不并发，彻底抹平关联指纹！";
+        }
+      }
+    });
+  });
+
+  // 编辑当前选中账号按钮绑定
+  document.getElementById("cfg-btn-edit-selected-acc")?.addEventListener("click", () => {
+    const selAccId = document.getElementById("cfg-select-acc")?.value;
+    if (selAccId) {
+      window.openEditAccountModal(selAccId);
+    }
+  });
+
   document.getElementById("btn-test-network-egress")?.addEventListener("click", async () => {
     const proxy = document.getElementById("cfg-net-proxy")?.value.trim();
     const msgEl = document.getElementById("network-test-msg");
@@ -1550,6 +1596,20 @@ document.addEventListener("DOMContentLoaded", () => {
         div.style.lineHeight = "1.5";
         div.textContent = item.raw;
         logTerminal?.appendChild(div);
+
+        // 同步推流到 Row 2 Column 3 的主面板实时执行记录窗口
+        const streamBox = document.getElementById("stream-terminal-list");
+        if (streamBox) {
+          const sDiv = document.createElement("div");
+          sDiv.className = "stream-log-row";
+          if (item.raw.includes("✅") || item.raw.includes("成功") || item.raw.includes("🎉")) sDiv.className += " success";
+          else if (item.raw.includes("⚠️") || item.raw.includes("冷冻")) sDiv.className += " warn";
+          else if (item.raw.includes("🔴") || item.raw.includes("失败") || item.raw.includes("异常")) sDiv.className += " err";
+          else if (item.raw.includes("📰") || item.raw.includes("🔍") || item.raw.includes("🚀")) sDiv.className += " info";
+          sDiv.textContent = item.raw;
+          streamBox.appendChild(sDiv);
+          streamBox.scrollTop = streamBox.scrollHeight;
+        }
         if (autoScroll && logTerminal) logTerminal.scrollTop = logTerminal.scrollHeight;
 
         // 关键事件驱动：一旦监听到任务完成、积分变动或权威数据采集日志，毫秒级即刻触发大盘刷新！
@@ -1592,6 +1652,11 @@ document.addEventListener("DOMContentLoaded", () => {
       if (logTerminal) logTerminal.scrollTop = logTerminal.scrollHeight;
     });
 
+  document.getElementById("btn-clear-stream")?.addEventListener("click", () => {
+    const sBox = document.getElementById("stream-terminal-list");
+    if (sBox) sBox.innerHTML = '<div class="stream-log-row" style="color: #64748b;">[已清空屏幕] 等待最新任务日志推流...</div>';
+  });
+  
   document.getElementById("btn-clear-logs")?.addEventListener("click", () => {
     if (logTerminal) logTerminal.innerHTML = "";
   });

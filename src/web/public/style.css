@@ -3505,3 +3505,385 @@ input:focus, select:focus, textarea:focus {
   color: #15803d !important;
   font-weight: 700 !important;
 }
+
+/* ============================================================
+   彻底修复体检与同步弹窗中范围切换按钮挤压竖排 Bug
+   ============================================================ */
+.health-scope-row {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-start !important;
+  flex-wrap: nowrap !important;
+  gap: 12px !important;
+  width: 100% !important;
+  box-sizing: border-box !important;
+}
+
+.health-scope-label {
+  font-size: 13px !important;
+  font-weight: 750 !important;
+  color: #334155 !important;
+  white-space: nowrap !important;
+  flex-shrink: 0 !important;
+}
+
+.health-scope-pills {
+  display: inline-flex !important;
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  align-items: center !important;
+  gap: 4px !important;
+  padding: 3px !important;
+  border-radius: 10px !important;
+  background: #e2e8f0 !important;
+  flex-shrink: 0 !important;
+  width: 190px !important;
+  min-width: 190px !important;
+  max-width: 190px !important;
+  box-sizing: border-box !important;
+}
+
+.health-scope-pills .scope-pill {
+  flex: 1 1 50% !important;
+  white-space: nowrap !important;
+  flex-shrink: 0 !important;
+  padding: 5px 10px !important;
+  font-size: 12px !important;
+  font-weight: 750 !important;
+  height: 30px !important;
+  line-height: 20px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  border: none !important;
+  border-radius: 7px !important;
+  color: #64748b !important;
+  cursor: pointer !important;
+  transition: all 0.2s ease !important;
+  box-sizing: border-box !important;
+}
+
+.health-scope-pills .scope-pill.active {
+  background: #ffffff !important;
+  color: #0284c7 !important;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12) !important;
+}
+
+/* 右侧长账号下拉框：必须具备自适应缩短与省略号，绝不把左侧挤变形 */
+.health-scope-row select, .health-scope-row .select-pill, .health-scope-row .f-select-sm {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  height: 36px !important;
+  box-sizing: border-box !important;
+}
+
+/* ============================================================
+   统一模式切换高亮色彩：单账号明细与账号卡片严格使用相同品牌橙
+   ============================================================ */
+.view-mode-capsule .mode-pill.active {
+  background: linear-gradient(135deg, #ff5722, #f4511e) !important;
+  color: #ffffff !important;
+  border-color: #ff5722 !important;
+  box-shadow: 0 2px 8px rgba(255, 87, 34, 0.35) !important;
+}
+
+/* 侧边栏账号选择器悬浮菜单防折行重构 (对标图 4 彻底消除挤爆叠罗汉) */
+.store-selector-wrap {
+  position: relative !important;
+}
+
+.account-dropdown {
+  position: absolute !important;
+  top: calc(100% + 6px) !important;
+  left: 0 !important;
+  width: 260px !important;
+  max-width: 85vw !important;
+  background: #ffffff !important;
+  border: 1px solid #cbd5e1 !important;
+  border-radius: 14px !important;
+  box-shadow: 0 12px 36px rgba(15, 23, 42, 0.18) !important;
+  z-index: 99999 !important;
+  padding: 8px !important;
+  box-sizing: border-box !important;
+}
+
+.dropdown-acc-item {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  padding: 8px 10px !important;
+  border-radius: 8px !important;
+  cursor: pointer !important;
+  transition: all 0.15s ease !important;
+  gap: 8px !important;
+  width: 100% !important;
+  box-sizing: border-box !important;
+}
+
+.dropdown-acc-item:hover {
+  background: #f1f5f9 !important;
+}
+
+.dropdown-acc-item.active {
+  background: #fff7ed !important;
+  border: 1px solid #ffedd5 !important;
+}
+
+.dropdown-item-meta {
+  display: flex !important;
+  flex-direction: column !important;
+  min-width: 0 !important;
+  flex: 1 1 auto !important;
+  overflow: hidden !important;
+}
+
+.dropdown-item-meta span {
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  font-size: 12px !important;
+  line-height: 1.4 !important;
+}
+
+.dropdown-acc-pts {
+  font-size: 11px !important;
+  font-weight: 750 !important;
+  color: #ff5722 !important;
+  background: #fff7ed !important;
+  padding: 2px 7px !important;
+  border-radius: 6px !important;
+  flex-shrink: 0 !important;
+  white-space: nowrap !important;
+  font-family: var(--font-mono) !important;
+}
+
+/* ============================================================
+   Row 2 Column 3：实时执行记录滚动条 (对标图 3 终端日志格式)
+   ============================================================ */
+.box-live-stream {
+  display: flex !important;
+  flex-direction: column !important;
+  height: 100% !important;
+  box-sizing: border-box !important;
+}
+
+.stream-terminal-dark {
+  background: #f8fafc !important;
+  border: 1px solid #e2e8f0 !important;
+  border-radius: 12px !important;
+  padding: 10px 12px !important;
+  font-family: var(--font-mono) !important;
+  font-size: 11.5px !important;
+  color: #334155 !important;
+  line-height: 1.6 !important;
+  flex: 1 1 auto !important;
+  min-height: 140px !important;
+  max-height: 190px !important;
+  overflow-y: auto !important;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.02) !important;
+}
+
+.stream-terminal-dark::-webkit-scrollbar {
+  width: 4px;
+}
+.stream-terminal-dark::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+
+.stream-log-row {
+  margin-bottom: 3px;
+  word-break: break-all;
+  white-space: pre-wrap;
+  color: #334155;
+}
+.stream-log-row.info { color: #0284c7; font-weight: 600; }
+.stream-log-row.success { color: #15803d; font-weight: 700; }
+.stream-log-row.warn { color: #b45309; font-weight: 600; }
+.stream-log-row.err { color: #b91c1c; font-weight: 700; }
+
+/* ============================================================
+   全局配置中心：拟人化错峰时段设定按钮与编辑按钮 (对标图 1 彻底美化)
+   ============================================================ */
+.slot-pills-grid {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  gap: 8px !important;
+  margin-top: 6px !important;
+}
+
+.slot-pill-btn {
+  background: #ffffff !important;
+  border: 1px solid #cbd5e1 !important;
+  border-radius: 9px !important;
+  padding: 7px 14px !important;
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  color: #334155 !important;
+  cursor: pointer !important;
+  transition: all 0.2s ease !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+
+.slot-pill-btn:hover {
+  background: #f8fafc !important;
+  border-color: #94a3b8 !important;
+}
+
+.slot-pill-btn.active {
+  background: linear-gradient(135deg, #ff5722, #f4511e) !important;
+  color: #ffffff !important;
+  border-color: #ff5722 !important;
+  box-shadow: 0 2px 8px rgba(255, 87, 34, 0.3) !important;
+}
+
+.slot-schedule-callout {
+  display: flex !important;
+  align-items: flex-start !important;
+  gap: 8px !important;
+  background: #f8fafc !important;
+  border: 1px solid #e2e8f0 !important;
+  border-radius: 10px !important;
+  padding: 10px 12px !important;
+  margin-top: 10px !important;
+}
+
+.slot-schedule-callout .callout-indicator {
+  width: 3px !important;
+  height: 28px !important;
+  background: #0284c7 !important;
+  border-radius: 9999px !important;
+  flex-shrink: 0 !important;
+}
+
+.btn-edit-acc-pill {
+  cursor: pointer !important;
+  background: #ffffff !important;
+  border: 1px solid #0284c7 !important;
+  color: #0284c7 !important;
+  font-size: 12px !important;
+  font-weight: 750 !important;
+  padding: 7px 14px !important;
+  border-radius: 10px !important;
+  white-space: nowrap !important;
+  transition: all 0.2s ease !important;
+}
+.btn-edit-acc-pill:hover {
+  background: #f0f9ff !important;
+  box-shadow: 0 2px 6px rgba(2, 132, 199, 0.15) !important;
+}
+
+.btn-test-action {
+  cursor: pointer !important;
+  background: #ffffff !important;
+  border: 1px solid #0284c7 !important;
+  color: #0284c7 !important;
+  font-size: 12px !important;
+  font-weight: 750 !important;
+  padding: 5px 12px !important;
+  border-radius: 8px !important;
+  white-space: nowrap !important;
+  transition: all 0.2s ease !important;
+}
+.btn-test-action:hover {
+  background: #f0f9ff !important;
+}
+
+/* 日志详情页顶部按钮统一 */
+.header-tags .btn-sm-ghost {
+  cursor: pointer !important;
+  background: #ffffff !important;
+  border: 1px solid #cbd5e1 !important;
+  color: #334155 !important;
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  padding: 4px 12px !important;
+  border-radius: 8px !important;
+  transition: all 0.2s ease !important;
+}
+.header-tags .btn-sm-ghost:hover {
+  background: #f1f5f9 !important;
+  color: #0f172a !important;
+}
+
+/* ============================================================
+   全局配置中心：拟人化错峰时段设定与全部按钮视觉彻底统一
+   ============================================================ */
+.peak-slots-grid {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  gap: 8px !important;
+  margin-top: 8px !important;
+}
+
+.slot-select-btn {
+  background: #ffffff !important;
+  border: 1px solid #cbd5e1 !important;
+  border-radius: 9px !important;
+  padding: 8px 14px !important;
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  color: #334155 !important;
+  cursor: pointer !important;
+  transition: all 0.2s ease !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02) !important;
+}
+
+.slot-select-btn:hover {
+  background: #f8fafc !important;
+  border-color: #94a3b8 !important;
+}
+
+.slot-select-btn.active {
+  background: linear-gradient(135deg, #ff5722, #f4511e) !important;
+  color: #ffffff !important;
+  border-color: #ff5722 !important;
+  box-shadow: 0 2px 8px rgba(255, 87, 34, 0.35) !important;
+}
+
+#cfg-btn-edit-selected-acc {
+  cursor: pointer !important;
+  background: #ffffff !important;
+  border: 1px solid #0284c7 !important;
+  color: #0284c7 !important;
+  font-size: 12px !important;
+  font-weight: 750 !important;
+  padding: 7px 16px !important;
+  border-radius: 9px !important;
+  white-space: nowrap !important;
+  transition: all 0.2s ease !important;
+}
+
+#cfg-btn-edit-selected-acc:hover {
+  background: #f0f9ff !important;
+  box-shadow: 0 2px 6px rgba(2, 132, 199, 0.2) !important;
+}
+
+/* 预设按钮统一高亮 */
+.preset-pill {
+  cursor: pointer !important;
+  background: #ffffff !important;
+  border: 1px solid #cbd5e1 !important;
+  border-radius: 8px !important;
+  padding: 8px 16px !important;
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  color: #334155 !important;
+  transition: all 0.2s ease !important;
+}
+
+.preset-pill.active {
+  background: linear-gradient(135deg, #ff5722, #f4511e) !important;
+  color: #ffffff !important;
+  border-color: #ff5722 !important;
+  box-shadow: 0 2px 8px rgba(255, 87, 34, 0.3) !important;
+}
