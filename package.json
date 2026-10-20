@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.3.4",
-  "description": "Microsoft Rewards automation platform (v6.3.4 verified claim, authoritative reconcile, version-safe deployment)",
+  "version": "6.3.5",
+  "description": "Microsoft Rewards automation platform (v6.3.5 verified claim, authoritative reconcile, version-safe deployment)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {

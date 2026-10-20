@@ -1809,6 +1809,13 @@ document.addEventListener("DOMContentLoaded", () => {
   // 一键领取额外积分抽屉 (绑定在 DOMContentLoaded 内部)
   document.getElementById("btn-refresh-tasks")?.addEventListener("click", () => refreshDashboard());
 
+  document.getElementById("btn-refresh-task-gaps")?.addEventListener("click", async () => {
+    const btn = document.getElementById("btn-refresh-task-gaps");
+    if (btn) btn.style.transform = "rotate(360deg)";
+    await refreshDashboard();
+    setTimeout(() => { if (btn) btn.style.transform = "none"; }, 500);
+  });
+
   document.getElementById("btn-one-click-claim")?.addEventListener("click", async () => {
     const claimBtn = document.getElementById("btn-one-click-claim");
     if (claimBtn.disabled) return;

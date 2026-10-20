@@ -45,6 +45,31 @@ class Scheduler {
       { id: '21:00-01:00', label: '夜间时段 (21:00 - 01:00)', cron: '10 21 * * *', index: 3 }
     ];
 
+    // 3. 用户自定义 Cron 自动定时巡检（若开启并配置了有效表达式）
+    const cfg = configManager.get().scheduler;
+    const customCron = (cfg && cfg.cron) ? cfg.cron.trim() : '*/25 * * * *';
+    if (cron.validate(customCron)) {
+      const inspectJob = cron.schedule(
+        customCron,
+        async () => {
+          const currentCfg = configManager.get().scheduler;
+          if (!currentCfg || !currentCfg.enabled) return;
+          if (taskManager.isQueueRunning || taskManager.runningAccountId) {
+            logger.log('ℹ️', '[定时自动巡检] 当前有任务正在执行中，跳过本次巡检');
+            return;
+          }
+          logger.log('⏰', '>>> 触发后台自动定时巡检流水线 (模式: 补全剩余未完成任务) <<<');
+          try {
+            await taskManager.runAllAccountsTasks({ taskScope: 'remaining' });
+          } catch (e) {
+            logger.log('⚠️', `[定时自动巡检] 执行异常: ${e.message}`);
+          }
+        },
+        { timezone: 'Asia/Shanghai' }
+      );
+      this.jobs.push(inspectJob);
+    }
+
     for (const slotDef of slotDefinitions) {
       const job = cron.schedule(
         slotDef.cron,

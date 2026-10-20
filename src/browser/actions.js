@@ -203,6 +203,7 @@ export async function penetrateDailySetActivities(page, options = {}) {
 
   let clickedCount = 0;
   for (let i = 0; i < links.length; i++) {
+    let popup = null;
     const link = links[i];
     try {
       if (!(await link.isVisible().catch(() => false))) continue;
@@ -211,7 +212,6 @@ export async function penetrateDailySetActivities(page, options = {}) {
       await dismissCelebrationOverlay(page);
 
       const href = await link.getAttribute('href').catch(() => null);
-      let popup = null;
 
       if (href && href.startsWith('http')) {
         popup = await page.context().newPage();
@@ -381,6 +381,7 @@ export async function penetratePunchCardQuest(page, questUrl, options = {}) {
     logger.log('🎯', `打孔卡内部发现 ${stepCards.length} 个子步骤`, '', accountPrefix);
 
     for (let j = 0; j < stepCards.length; j++) {
+      let stepPopup = null;
       const step = stepCards[j];
       try {
         const text = await step.innerText().catch(() => '');
@@ -390,7 +391,6 @@ export async function penetratePunchCardQuest(page, questUrl, options = {}) {
         }
 
         const href = await step.getAttribute('href').catch(() => null);
-        let stepPopup = null;
 
         if (href && href.startsWith('http')) {
           stepPopup = await page.context().newPage();

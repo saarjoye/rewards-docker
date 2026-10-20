@@ -791,7 +791,7 @@ export class TaskManager {
               const reconciledAccount = {
                 id: accountId,
                 status: 'ready',
-                officialTasks: verifiedOfficialTasks,
+                officialTasks: verifiedOfficialTasks || officialTasks || account.officialTasks || null,
                 lastSyncAt: Date.now(),
                 dataState: hasCompleteOfficialState ? 'complete' : 'partial',
                 lastRun: Date.now()
