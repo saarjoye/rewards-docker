@@ -21,7 +21,8 @@ import {
   extractOfficialTodayPoints,
   extractOfficialBalance,
   extractOfficialStreakDays,
-  extractOfficialClaimablePoints
+  extractOfficialClaimablePoints,
+  extractOfficialSearchPoints
 } from '../contracts/validator.js';
 import { concatFlightChunks, extractOfferObjects } from '../contracts/flightParse.js';
 import { buildUnifiedTaskBoard } from '../contracts/streaks.js';
@@ -204,7 +205,8 @@ export class TaskManager {
       streakDays,
       claimablePoints,
       taskBoard,
-      parsedCards
+      parsedCards,
+      combinedRawText: (flightChunks || "") + "\n" + (earnHtml || "") + "\n" + (dashHtml || "")
     };
   }
 
@@ -361,14 +363,26 @@ export class TaskManager {
                 this.currentTaskSection = '板块 3: 打孔卡任务';
                 this.currentTaskName = '多步任务打孔卡 (Punch Cards)';
                 log('>>> 执行【板块 3: 任务 (Punch Cards / Quests)】多步打孔卡...');
-                const questCards = (initialData.parsedCards || []).filter(
-                  (c) => c.isPunchCard || c.isQuest || (c.destination && c.destination.includes('/quest/'))
-                );
-                for (const q of questCards) {
+                // 1. 扫描 /earn 页面中所有进行中的打孔卡链接 (如万圣节礼遇、Rewards App weekly 等)
+                let onPageQuestUrls = [];
+                try {
+                  await page.goto('https://rewards.bing.com/earn', { waitUntil: 'domcontentloaded', timeout: 35000 });
+                  await new Promise(r => setTimeout(r, 2000));
+                  onPageQuestUrls = await page.evaluate(() => {
+                    const links = Array.from(document.querySelectorAll('a[href*="/quest/"]'));
+                    return Array.from(new Set(links.map(a => a.getAttribute('href')).filter(Boolean)));
+                  });
+                } catch {}
+
+                const allQuestHrefs = new Set(onPageQuestUrls);
+                (initialData.parsedCards || []).forEach(c => {
+                  if (c.destination && c.destination.includes('/quest/')) allQuestHrefs.add(c.destination);
+                });
+
+                log(`检索到 ${allQuestHrefs.size} 个进行中的多步打孔卡任务`);
+                for (const qUrl of allQuestHrefs) {
                   if (this.shouldStop) break;
-                  if (q.destination) {
-                    await penetratePunchCardQuest(page, q.destination, { accountPrefix: account.name });
-                  }
+                  await penetratePunchCardQuest(page, qUrl, { accountPrefix: account.name });
                 }
               }
 
@@ -402,7 +416,13 @@ export class TaskManager {
                 const stagnationGuard = new SearchStagnationGuard(stagnationThreshold, account.name);
                 stagnationGuard.recordObservation(initialData.todayPoints);
 
-                for (let i = 1; i <= maxSearches; i++) {
+                
+                // 先行检查今日 PC 搜索是否已在官网跑满 60/60 分
+                const initialSearchCap = extractOfficialSearchPoints(initialData.combinedRawText);
+                if (initialSearchCap && initialSearchCap.isMaxed) {
+                  log(`🎉 [已达上限] 官网权威账本确认今日必应搜索已跑满 ${initialSearchCap.current}/${initialSearchCap.max} 分！无需多余搜索，立即安全跳过！`);
+                } else {
+for (let i = 1; i <= maxSearches; i++) {
                   if (this.shouldStop) {
                     log('检测到用户中断指令，退出搜索循环！');
                     break;
@@ -445,6 +465,7 @@ export class TaskManager {
                     currentKeyword: word,
                     searchRounds: `${i} / ${maxSearches}`,
                     nextIntervalSec: Math.round(sleepSec),
+                    nextSearchTargetTime: Date.now() + Math.round(sleepSec * 1000),
                     currentAction: `[${account.name || account.user}] 风控退避拟人休眠 ${sleepSec.toFixed(1)}s，防频控冷冻...`
                   });
 
@@ -452,6 +473,11 @@ export class TaskManager {
 
                   if (i % 3 === 0 || i === maxSearches) {
                     const checkData = await this.fetchOfficialDashboard(context, account);
+                    const searchMidCap = extractOfficialSearchPoints(checkData.combinedRawText);
+                    if (searchMidCap && searchMidCap.isMaxed) {
+                      log(`🎉 [搜索达标] 官网必应搜索已跑满 ${searchMidCap.current}/${searchMidCap.max} 分上限！立即安全退出搜索循环！`);
+                      break;
+                    }
                     const obs = stagnationGuard.recordObservation(checkData.todayPoints);
                     configManager.upsertAccount({
                       id: accountId,
@@ -461,6 +487,8 @@ export class TaskManager {
                     if (obs.tripped) break;
                   }
                 }
+              }
+
               }
 
               // 最终结算与回验

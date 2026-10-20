@@ -4315,3 +4315,39 @@ input:focus, select:focus, textarea:focus {
   font-size: 9.5px !important;
   color: #94a3b8 !important;
 }
+
+
+/* 日志详情页顶部与底部全部按钮统一样式 (彻底杜绝文字折行与黑框不一致) */
+.header-tags .btn-sm-ghost,
+.header-tags .modal-close-pill,
+.terminal-foot-bar .btn-sm-ghost,
+.terminal-foot-bar .btn-cancel {
+  cursor: pointer !important;
+  background: #ffffff !important;
+  border: 1px solid #cbd5e1 !important;
+  color: #334155 !important;
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  height: 30px !important;
+  min-height: 30px !important;
+  max-height: 30px !important;
+  padding: 0 12px !important;
+  border-radius: 8px !important;
+  white-space: nowrap !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 4px !important;
+  transition: all 0.2s ease !important;
+  box-sizing: border-box !important;
+  line-height: 1 !important;
+}
+.header-tags .btn-sm-ghost:hover,
+.header-tags .modal-close-pill:hover,
+.terminal-foot-bar .btn-sm-ghost:hover,
+.terminal-foot-bar .btn-cancel:hover {
+  background: #f1f5f9 !important;
+  color: #0f172a !important;
+  border-color: #94a3b8 !important;
+  transform: translateY(-1px) !important;
+}

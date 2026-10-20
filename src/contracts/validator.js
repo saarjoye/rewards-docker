@@ -132,3 +132,21 @@ export function validateStrictMetrics({ officialToday, previousToday, claimedAdd
     delta: previousToday !== undefined ? officialToday - previousToday : 0
   };
 }
+
+
+export function extractOfficialSearchPoints(text = '') {
+  if (!text) return null;
+  const match = text.match(/必应搜索[\s\S]{0,60}?([0-9]+)\s*\/\s*([0-9]+)/i)
+    || text.match(/PC\s*搜索[\s\S]{0,60}?([0-9]+)\s*\/\s*([0-9]+)/i)
+    || text.match(/PC\s*Search[\s\S]{0,60}?([0-9]+)\s*\/\s*([0-9]+)/i);
+  if (match) {
+    const cur = parseInt(match[1], 10);
+    const max = parseInt(match[2], 10);
+    return {
+      current: cur,
+      max: max,
+      isMaxed: cur >= max && max > 0
+    };
+  }
+  return null;
+}

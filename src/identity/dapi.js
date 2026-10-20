@@ -87,21 +87,28 @@ export class DapiClient {
    */
   async performAppCheckIn() {
     logger.log('📱', '正在执行必应应用连续打卡 (DAPI 网关直连签入)...', '', this.account.name);
-    try {
-      const res = await this.submitActivity('Gamification_Sapphire_DailyCheckIn');
-      logger.log('✅', '必应移动端签到成功，已在官网点亮 [签到: 1/1]！', '', this.account.name);
-      return { success: true, res };
-    } catch (e) {
-      // 容错备用 offerId
+    const offerCandidates = [
+      'Gamification_DailyCheckIn',
+      'Gamification_Sapphire_DailyCheckIn',
+      'Sapphire_DailyCheckIn',
+      'ENUS_appcheckin_streak',
+      'Gamification_BingApp_DailyCheckIn'
+    ];
+
+    let checkInSuccess = false;
+    for (const offerId of offerCandidates) {
       try {
-        const resFallback = await this.submitActivity('Gamification_DailyCheckIn');
-        logger.log('✅', '必应移动端备用签到成功！', '', this.account.name);
-        return { success: true, res: resFallback };
-      } catch (err2) {
-        logger.log('⚠️', `移动端签到请求异常: ${err2.message}`, '', this.account.name);
-        return { success: false, error: err2.message };
-      }
+        const res = await this.submitActivity(offerId);
+        logger.log('✅', `必应移动端签到成功 (${offerId})，已在官网点亮 [签到: 1/1]！`, '', this.account.name);
+        checkInSuccess = true;
+        break;
+      } catch (e) {}
     }
+
+    if (!checkInSuccess) {
+      logger.log('⚠️', '移动端备用签到请求尝试完毕', '', this.account.name);
+    }
+    return { success: checkInSuccess };
   }
 
   /**

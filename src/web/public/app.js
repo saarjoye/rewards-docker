@@ -1,4 +1,20 @@
 
+  let countdownTargetTime = 0;
+  function tickCountdown() {
+    const monNext = document.getElementById("mon-next-interval");
+    if (!monNext) return;
+    if (countdownTargetTime > 0) {
+      const remainingSec = Math.max(0, Math.ceil((countdownTargetTime - Date.now()) / 1000));
+      if (remainingSec > 0) {
+        monNext.textContent = remainingSec + " 秒";
+        return;
+      }
+    }
+    monNext.textContent = "--";
+  }
+  setInterval(tickCountdown, 1000);
+
+
   function formatSlotName(slot) {
     if (!slot || slot === 'auto') return '智能错峰';
     if (slot === '09:00-13:00') return '早间 09-13点';
@@ -167,10 +183,14 @@ document.addEventListener("DOMContentLoaded", () => {
         monRounds.textContent = isBusy ? (bState.searchRounds || "执行中") : "0 / 0";
       }
 
-      const monNext = document.getElementById("mon-next-interval");
-      if (monNext) {
-        monNext.textContent = isBusy && bState.nextIntervalSec ? (bState.nextIntervalSec + " 秒") : "--";
+      if (bState.nextSearchTargetTime && bState.nextSearchTargetTime > Date.now()) {
+        countdownTargetTime = bState.nextSearchTargetTime;
+      } else if (isBusy && bState.nextIntervalSec > 0 && countdownTargetTime <= Date.now()) {
+        countdownTargetTime = Date.now() + bState.nextIntervalSec * 1000;
+      } else if (!isBusy) {
+        countdownTargetTime = 0;
       }
+      tickCountdown();
 
       const monMem = document.getElementById("mon-mem-usage");
       if (monMem) {

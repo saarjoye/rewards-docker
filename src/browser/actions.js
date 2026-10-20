@@ -1,5 +1,6 @@
 ﻿import logger from '../logger.js';
 import browserManager from './browser.js';
+import { classifyTaskFeasibility } from '../contracts/streaks.js';
 
 const HOT_SEARCH_WORDS = [
   '2026年最新前沿科技趋势', '神舟飞船最新动态', '人工智能多模态发展', '新能源汽车续航与电池革新',
@@ -257,7 +258,7 @@ export async function penetratePunchCardQuest(page, questUrl, options = {}) {
     await new Promise((r) => setTimeout(r, 2500));
 
     // 扫描子步骤卡片
-    const stepCards = await page.$$('div[data-bi-area="PunchCardStep"], a[href*="/quest/"], div.quest-step, a.c-call-to-action');
+    const stepCards = await page.$('a[href*="bing.com"][class*="rounded-cornerCtrlRest"], a[class*="bg-bgCtrlBrandRest"], div[data-bi-area="PunchCardStep"], a[href*="/quest/"], a.c-call-to-action');
     logger.log('🎯', `打孔卡内部发现 ${stepCards.length} 个子步骤`, '', accountPrefix);
 
     for (let j = 0; j < stepCards.length; j++) {
