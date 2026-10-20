@@ -83,17 +83,20 @@ export class Notifier {
     const baseUrl = buildWeWorkAppBaseUrl(cfg.baseUrl);
     let token = await this.getAccessToken(cfg);
 
-    // 将内容规整为文本卡片 textcard 格式，完美兼容企业微信与普通微信客户端，彻底根治「暂不支持此消息类型」
-    const plainLines = content.split('\n').map(l => l.replace(/^[>\s*#]+/, '').trim()).filter(Boolean);
+    // 彻底清洗所有 Markdown 符号（**、`、>、#）与裸 HTML 样式，保证普通微信图文卡片 100% 优雅呈现
+    const plainLines = content.split('\n')
+      .map(l => l.replace(/^[>\s*#]+/, '').replace(/\*\*/g, '').replace(/`/g, '').replace(/>/g, '').trim())
+      .filter(Boolean);
     const cardDescription = plainLines.map(l => '<div class="normal">' + l + '</div>').join('');
 
+    const cleanTitle = title.replace(/[#*`>]/g, '').trim();
     const payload = {
       touser: cfg.toUser || '@all',
       msgtype: 'textcard',
       agentid: Number(cfg.agentId),
       textcard: {
-        title: '🎁 ' + title,
-        description: '<div class="gray">' + new Date().toLocaleDateString('zh-CN') + '</div>' + cardDescription + '<div class="highlight" style="margin-top:6px;">🤖 Microsoft Rewards 自动化平台</div>',
+        title: '🎁 ' + cleanTitle,
+        description: '<div class="gray">统计日期: ' + new Date().toLocaleDateString('zh-CN') + '</div>' + cardDescription + '<div class="highlight">🤖 Microsoft Rewards 自动化平台</div>',
         url: 'https://rewards.bing.com',
         btntxt: '查看详情'
       },

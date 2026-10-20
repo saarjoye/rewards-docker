@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.2.2",
-  "description": "Microsoft Rewards 自动化平台 (v6.2.2 修复一键领取单账号精确派发、抽屉14秒自适应动态轮询与队列防并发互斥)",
+  "version": "6.2.3",
+  "description": "Microsoft Rewards 自动化平台 (v6.2.3 彻底清洗企业微信Markdown代码标签、抽屉多态领取按钮与双端卡片美化)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {
