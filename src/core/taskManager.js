@@ -257,7 +257,20 @@ export class TaskManager {
           if (page.isClosed()) {
             page = await context.newPage();
           }
-          await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 35000 });
+          try {
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
+          } catch (navErr) {
+            if (navErr.message.includes('Timeout') || navErr.message.includes('timeout')) {
+              log(`访问 ${name} 等待 DOM 事件超时，降级为轻量连接模式直连...`);
+              if (page.isClosed()) page = await context.newPage();
+              await page.goto(url, { waitUntil: 'commit', timeout: 25000 });
+            } else {
+              throw navErr;
+            }
+          }
+          await new Promise((r) => setTimeout(r, 2500));
+          await page.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => {});
+          await page.waitForFunction(() => document.body && document.body.innerText.length > 30, { timeout: 12000 }).catch(() => {});
           return true;
         } catch (e) {
           log(`访问 ${name} 尝试 ${attempt}/2 异常: ${e.message}`);
@@ -277,9 +290,7 @@ export class TaskManager {
         log('访问 https://rewards.bing.com/earn 页面获取今日成效看板...');
         const ok = await safeGoto('https://rewards.bing.com/earn', '/earn');
         if (ok) {
-          await new Promise((r) => setTimeout(r, 2000));
-          await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
-          for (let r = 0; r < 8; r++) {
+          for (let r = 0; r < 10; r++) {
             try {
               earnHtml = await page.content();
               earnText = await page.evaluate(() => document.body ? document.body.innerText : '').catch(() => '');
@@ -316,9 +327,7 @@ export class TaskManager {
         log('访问 https://rewards.bing.com/dashboard 页面获取资产总额与待领抽屉...');
         const ok = await safeGoto('https://rewards.bing.com/dashboard', '/dashboard');
         if (ok) {
-          await new Promise((r) => setTimeout(r, 2000));
-          await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
-          for (let r = 0; r < 8; r++) {
+          for (let r = 0; r < 10; r++) {
             try {
               dashHtml = await page.content();
               dashText = await page.evaluate(() => document.body ? document.body.innerText : '').catch(() => '');
@@ -841,8 +850,14 @@ export class TaskManager {
     const page = await context.newPage();
     const log = (msg) => logger.log('🔎', `[官网任务判定] ${msg}`, '', account.name);
     try {
-      await page.goto('https://rewards.bing.com/earn', { waitUntil: 'domcontentloaded', timeout: 35000 });
-      await new Promise((r) => setTimeout(r, 3000));
+      try {
+        await page.goto('https://rewards.bing.com/earn', { waitUntil: 'domcontentloaded', timeout: 20000 });
+      } catch {
+        await page.goto('https://rewards.bing.com/earn', { waitUntil: 'commit', timeout: 25000 });
+      }
+      await new Promise((r) => setTimeout(r, 2500));
+      await page.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => {});
+      await page.waitForFunction(() => document.body && document.body.innerText.length > 50, { timeout: 12000 }).catch(() => {});
       const snapshot = await page.evaluate(() => {
         const text = (document.body.innerText || '').replace(/\r/g, '');
         const sectionTitle = (h) => (h.innerText || '').trim();

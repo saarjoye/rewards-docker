@@ -373,10 +373,10 @@ export async function penetratePunchCardQuest(page, questUrl, options = {}) {
     await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 35000 });
     await new Promise((r) => setTimeout(r, 2500));
 
-    // 扫描子步骤卡片 (使用 page.$ 严防 null.length 异常)
-    let stepCards = (await page.$('a[href*="bing.com"][class*="rounded-cornerCtrlRest"], a[class*="bg-bgCtrlBrandRest"], div[data-bi-area="PunchCardStep"], a[href*="/quest/"], a.c-call-to-action')) || [];
-    if (stepCards.length === 0) {
-      stepCards = (await page.$('a[class*="rounded-cornerCtrlRest"], a[class*="Button"], button[class*="bg-bgCtrlBrandRest"]')) || [];
+    // 扫描子步骤卡片 (使用 page.$ 获取所有子步骤链接/按钮)
+    let stepCards = await page.$$('a[href*="redirect?"], a[href*="bing.com"][class*="rounded-cornerCtrlRest"], a[class*="bgCtrlBrandRest"], div[data-bi-area="PunchCardStep"] a, a[href*="/quest/"], a.c-call-to-action');
+    if (!stepCards || stepCards.length === 0) {
+      stepCards = await page.$$('a[class*="rounded-cornerCtrlRest"], a[class*="Button"], button[class*="bg-bgCtrlBrandRest"], a:has-text("立即激活"), a:has-text("开始"), a:has-text("加入")');
     }
     logger.log('🎯', `打孔卡内部发现 ${stepCards.length} 个子步骤`, '', accountPrefix);
 
@@ -503,11 +503,48 @@ export async function harvestClaimablePointsWithVirtualPointer(page, options = {
     }
 
     logger.log('\u{1f4b0}', '\u5b98\u7f51\u663e\u793a\u53ef\u9886\u53d6 ' + before.points + ' \u5206\uff0c\u53ef\u7528\u4f59\u989d ' + (before.balance ?? '\u672a\u77e5') + ' \u5206\uff0c\u5c55\u5f00\u9886\u53d6\u62bd\u5c49...', '', accountPrefix);
-    await before.card.click({ timeout: 10000 });
+    // 确保抽屉完全唤起
+    const drawer = page.locator('[role="dialog"], section[role="dialog"], div.fixed:has-text("领取积分")').first();
+    for (let clickAttempt = 0; clickAttempt < 3; clickAttempt++) {
+      try {
+        const cardBtn = page.locator('button').filter({ hasText: claimLabel }).first();
+        if (await cardBtn.count()) {
+          const box = await cardBtn.boundingBox();
+          if (box) {
+            await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+            await page.mouse.down();
+            await page.mouse.up();
+          } else {
+            await cardBtn.click({ force: true }).catch(() => {});
+          }
+        }
+      } catch {}
+      await page.waitForTimeout(1500);
+      if (await drawer.isVisible().catch(() => false)) break;
+    }
 
-    const claimButton = page.locator('button').filter({ hasText: claimButtonLabel }).first();
-    await claimButton.waitFor({ state: 'visible', timeout: 20000 });
-    await claimButton.click({ timeout: 10000 });
+    await drawer.waitFor({ state: "visible", timeout: 8000 }).catch(() => {});
+
+    // 在抽屉内部寻找可见的「领取积分」按钮，彻底杜绝全局 .first() 选中隐藏模版死等超时
+    const dialogScope = (await drawer.count()) ? drawer : page;
+    let claimButton = dialogScope.locator('button').filter({ hasText: claimButtonLabel }).last();
+    if (!(await claimButton.isVisible().catch(() => false))) {
+      claimButton = dialogScope.locator('button:has-text("领取积分"), button:has-text("领取"), [role="dialog"] button.group\\/ctrl').first();
+    }
+
+    if (await claimButton.isVisible().catch(() => false)) {
+      const btnBox = await claimButton.boundingBox();
+      if (btnBox) {
+        await page.mouse.move(btnBox.x + btnBox.width / 2, btnBox.y + btnBox.height / 2);
+        await page.mouse.down();
+        await page.mouse.up();
+      } else {
+        await claimButton.click({ force: true });
+      }
+      logger.log('👆', '已点击抽屉内「领取积分」按钮，等待官方余额与待领取状态入账...', '', accountPrefix);
+    } else {
+      logger.log('⚠️', '抽屉已展开但未定位到激活的「领取积分」按钮，直接触发回验对账', '', accountPrefix);
+    }
     logger.log('\u{1f446}', '\u5df2\u70b9\u51fb\u300c\u9886\u53d6\u79ef\u5206\u300d\uff0c\u7b49\u5f85\u5b98\u65b9\u4f59\u989d\u4e0e\u5f85\u9886\u53d6\u72b6\u6001\u5165\u8d26...', '', accountPrefix);
 
     let after = null;

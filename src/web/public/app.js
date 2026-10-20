@@ -1695,9 +1695,16 @@ document.addEventListener("DOMContentLoaded", () => {
     const div = document.createElement("div");
     div.style.lineHeight = "1.5";
     div.textContent = item.raw;
-    logTerminal?.appendChild(div);
+    if (logTerminal) {
+      const initialLine = logTerminal.querySelector(".log-line.info");
+      if (initialLine && initialLine.textContent.includes("正在建立")) initialLine.remove();
+      logTerminal.appendChild(div);
+    }
     const streamBox = document.getElementById("stream-terminal-list");
     if (streamBox) {
+      if (streamBox.children.length === 1 && streamBox.firstElementChild?.textContent.includes("等待任务触发")) {
+        streamBox.firstElementChild.remove();
+      }
       const sDiv = document.createElement("div");
       sDiv.className = "stream-log-row";
       if (item.raw.includes("✅") || item.raw.includes("成功") || item.raw.includes("🎉")) sDiv.className += " success";
@@ -1725,7 +1732,7 @@ document.addEventListener("DOMContentLoaded", () => {
       if (!res.ok) return;
       const data = await res.json();
       for (const item of (data.logs || [])) {
-        const ts = Number(String(item.id).split('.')[0]) || 0;
+        const ts = Number(item.ts) || Number(String(item.id).split('.')[0]) || 0;
         if (ts > pollSince) pollSince = ts;
         appendLogItem(item);
       }

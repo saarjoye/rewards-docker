@@ -601,7 +601,10 @@ export function createServer() {
   app.get('/api/logs/recent', (req, res) => {
     const since = Number(req.query.since || 0);
     const limit = Math.min(Number(req.query.limit) || 200, 600);
-    const list = logger.getRecentLogs(limit).filter((item) => Number(item.id.split('.')[0]) > since);
+    const list = logger.getRecentLogs(limit).filter((item) => {
+      const ts = Number(item.ts) || Number(String(item.id).split('.')[0]) || 0;
+      return ts > since;
+    });
     res.setHeader('Cache-Control', 'no-store');
     res.json({ success: true, logs: list, serverTime: Date.now() });
   });

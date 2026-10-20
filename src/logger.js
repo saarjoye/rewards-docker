@@ -34,7 +34,8 @@ class Logger {
 
     // 内存环形缓存
     const item = {
-      id: Date.now() + Math.random().toString(36).slice(2, 6),
+      id: `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`,
+      ts: Date.now(),
       time: timeStr,
       emoji,
       prefix: accountPrefix,
