@@ -1,5 +1,5 @@
-﻿import cron from 'node-cron';
-import configManager from './config.js';
+import cron from 'node-cron';
+import configManager, { getTodayDateString } from './config.js';
 import logger from './logger.js';
 import taskManager from './core/taskManager.js';
 
@@ -21,7 +21,6 @@ class Scheduler {
         for (const acc of accounts) {
           try {
             await taskManager.harvestMidnightClaimable(acc.id);
-            // 账号间 15 秒物理隔离冷却
             await new Promise((r) => setTimeout(r, 15000));
           } catch (e) {
             logger.log('⚠️', `01:00 额外积分收割流程异常 [${acc.name}]: ${e.message}`);
@@ -32,23 +31,49 @@ class Scheduler {
     );
     this.jobs.push(harvestJob);
 
-    // 2. 拟人化错峰时段调度：在四个时间窗口内随机启动
-    // 09:15, 13:20, 17:15, 21:10
-    const scheduleSlots = ['15 9 * * *', '20 13 * * *', '15 17 * * *', '10 21 * * *'];
-    for (const slot of scheduleSlots) {
+    // 2. 拟人化 4 大错峰时间窗口 (09:15, 13:20, 17:15, 21:10)
+    const slotDefinitions = [
+      { id: '09:00-13:00', label: '早间时段 (09:00 - 13:00)', cron: '15 9 * * *', index: 0 },
+      { id: '13:00-17:00', label: '午间时段 (13:00 - 17:00)', cron: '20 13 * * *', index: 1 },
+      { id: '17:00-21:00', label: '晚间时段 (17:00 - 21:00)', cron: '15 17 * * *', index: 2 },
+      { id: '21:00-01:00', label: '夜间时段 (21:00 - 01:00)', cron: '10 21 * * *', index: 3 }
+    ];
+
+    for (const slotDef of slotDefinitions) {
       const job = cron.schedule(
-        slot,
+        slotDef.cron,
         async () => {
           const cfg = configManager.get().scheduler;
           if (!cfg || !cfg.enabled) return;
 
           // 随机浮动 0~30 分钟打散调度，防止规律性被检测
           const jitterMinutes = Math.floor(Math.random() * 30);
-          logger.log('🎲', `错峰时段触发，加入 ${jitterMinutes} 分钟随机睡眠防关联...`);
+          logger.log('🎲', `[${slotDef.label}] 错峰时段触发，加入 ${jitterMinutes} 分钟拟人随机浮动延迟防关联...`);
           await new Promise((r) => setTimeout(r, jitterMinutes * 60 * 1000));
 
-          const accounts = configManager.getAccounts().filter((a) => a.enabled);
-          for (const acc of accounts) {
+          const allAccounts = configManager.getAccounts().filter((a) => a.enabled);
+          const todayStr = getTodayDateString();
+
+          // 筛选本时段匹配的账号：
+          // 1) 明确指定当前时段的账号 (acc.slot === slotDef.id)
+          // 2) 设为「智能错峰 (auto)」并按账号序列哈希轮转到本时段、或今日尚未跑满的账号
+          const targetAccounts = allAccounts.filter((acc, idx) => {
+            if (acc.slot && acc.slot === slotDef.id) return true;
+            if (!acc.slot || acc.slot === 'auto') {
+              // 自动模式：将账号均匀分配至 4 个时段，避免全部挤在同一时间
+              return (idx % 4) === slotDef.index;
+            }
+            return false;
+          });
+
+          if (targetAccounts.length === 0) {
+            logger.log('ℹ️', `[${slotDef.label}] 当前时段无待执行账号（其他账号已分配至其余错峰窗口）`);
+            return;
+          }
+
+          logger.log('🚀', `[${slotDef.label}] 本时段启动执行，共 ${targetAccounts.length} 个账号待进入流水线`);
+
+          for (const acc of targetAccounts) {
             try {
               await taskManager.runAccountTasks(acc.id);
               // 账号间物理隔离与随机冷却 (15~25 秒)
