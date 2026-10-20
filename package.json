@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.1.5",
-  "description": "Microsoft Rewards 自动化平台 (v6.1.5 白底现代流式实时执行记录与全配置统一化)",
+  "version": "6.1.6",
+  "description": "Microsoft Rewards 自动化平台 (v6.1.6 账号卡片三态变色LOGO与全端状态精确同步)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {

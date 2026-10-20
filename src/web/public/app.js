@@ -460,7 +460,6 @@ document.addEventListener("DOMContentLoaded", () => {
       const colorClass = colorClasses[idx % colorClasses.length];
       const isAct = viewMode === 'single' && selectedAccountId === acc.id;
 
-      // 智能识别账号显示名称：优先使用自定义名称；若重名或默认则展示邮箱前缀以资区分
       let displayName = acc.name || '';
       if (!displayName || displayName === '默认账号') {
         if (acc.user) {
@@ -470,13 +469,27 @@ document.addEventListener("DOMContentLoaded", () => {
         }
       }
 
+      // 三态变色 LOGO：执行为绿色，异常为黄色，等待为粉色 (严格对标用户指令)
+      const isRunning = Boolean(currentRunningAccountId && String(currentRunningAccountId) === String(acc.id));
+      const isAbnormal = acc.status === 'error' || acc.status === 'needs_2fa' || acc.status === 'abnormal' || acc.status === 'warning' || acc.status === 'expired' || acc.status === 'stagnated' || !!acc.error || acc.allSatisfied === false;
+
+      let logoStatusClass = 'logo-status-waiting';
+      let logoTitle = '等待调度 / 空闲待命 (等待粉色)';
+      if (isRunning) {
+        logoStatusClass = 'logo-status-running';
+        logoTitle = '正在执行自动化流水线任务... (执行绿色)';
+      } else if (isAbnormal) {
+        logoStatusClass = 'logo-status-abnormal';
+        logoTitle = '账号状态异常 (' + (acc.status || '需注意') + ') (异常黄色)';
+      }
+
       const subLabel = '可用 ' + balance + ' 分';
 
       return (
         '<section class="metric-card ' + (isAct ? 'active-card' : '') + '" onclick="switchView(\'single\', \'' + acc.id + '\')" title="点击切换查看 [' + escapeHtml(displayName) + '] 独立看板">' +
           '<div class="metric-header">' +
             '<div class="metric-title-group">' +
-              '<span class="metric-icon">👤</span>' +
+              '<span class="metric-icon ' + logoStatusClass + '" title="' + logoTitle + '">👤</span>' +
               '<span class="metric-label" title="' + escapeHtml(acc.name || acc.user) + '">' + escapeHtml(displayName) + '</span>' +
             '</div>' +
             '<span class="metric-number">' + today + '</span>' +
