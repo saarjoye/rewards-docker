@@ -532,12 +532,20 @@ document.addEventListener("DOMContentLoaded", () => {
       );
     });
 
-    const addDashedCard = '<div class="add-account-dashed-card" onclick="window.openAddAccountModal()" title="添加新的微软托管账号">' +
-      '<span style="font-size: 20px;">➕</span>' +
-      '<span>添加账号</span>' +
-    '</div>';
+    // 补充与正式卡片完全同等长方形规格的空槽位格子，彻底消除右侧大片留白
+    const emptyCount = Math.max(2, 6 - accounts.length);
+    const dashedCards = [];
+    for (let s = 1; s <= emptyCount; s++) {
+      dashedCards.push(
+        '<div class="add-account-dashed-card" onclick="window.openAddAccountModal()" title="点击添加新微软托管账号">' +
+          '<span class="dashed-icon">➕</span>' +
+          '<span class="dashed-title">添加托管账号</span>' +
+          '<span class="dashed-sub">点击接入新账号槽位</span>' +
+        '</div>'
+      );
+    }
 
-    container.innerHTML = cardItems.join('') + addDashedCard;
+    container.innerHTML = cardItems.join('') + dashedCards.join('');
   }
 
   function renderDropdownMenu() {

@@ -4074,23 +4074,37 @@ input:focus, select:focus, textarea:focus {
 
 /* 顶部账号横条末尾的虚线加号卡片 */
 .add-account-dashed-card {
-  min-width: 130px !important;
-  max-width: 130px !important;
+  min-width: 250px !important;
+  max-width: 275px !important;
   height: 94px !important;
+  min-height: 94px !important;
+  max-height: 94px !important;
   border: 2px dashed #cbd5e1 !important;
   border-radius: 18px !important;
-  background: rgba(255, 255, 255, 0.6) !important;
+  background: rgba(255, 255, 255, 0.75) !important;
   display: flex !important;
   flex-direction: column !important;
   align-items: center !important;
   justify-content: center !important;
-  gap: 4px !important;
+  gap: 3px !important;
   cursor: pointer !important;
   color: #64748b !important;
-  font-size: 12px !important;
-  font-weight: 700 !important;
   transition: all 0.2s ease !important;
   flex-shrink: 0 !important;
+  box-sizing: border-box !important;
+}
+.add-account-dashed-card .dashed-icon {
+  font-size: 20px !important;
+  line-height: 1 !important;
+}
+.add-account-dashed-card .dashed-title {
+  font-size: 13px !important;
+  font-weight: 750 !important;
+}
+.add-account-dashed-card .dashed-sub {
+  font-size: 10.5px !important;
+  font-weight: 500 !important;
+  color: #94a3b8 !important;
 }
 .add-account-dashed-card:hover {
   border-color: #ff5722 !important;
