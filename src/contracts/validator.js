@@ -136,17 +136,23 @@ export function validateStrictMetrics({ officialToday, previousToday, claimedAdd
 
 export function extractOfficialSearchPoints(text = '') {
   if (!text) return null;
-  const match = text.match(/必应搜索[\s\S]{0,60}?([0-9]+)\s*\/\s*([0-9]+)/i)
-    || text.match(/PC\s*搜索[\s\S]{0,60}?([0-9]+)\s*\/\s*([0-9]+)/i)
-    || text.match(/PC\s*Search[\s\S]{0,60}?([0-9]+)\s*\/\s*([0-9]+)/i);
-  if (match) {
-    const cur = parseInt(match[1], 10);
+
+  // 只匹配积分明细中的“必应搜索 60/60”，不能误匹配连续打卡卡片中的“搜索: 1/1”。
+  const patterns = [
+    /必应搜索\s*[:：]?\s*([0-9]+)\s*\/\s*([0-9]+)/i,
+    /Bing search\s*[:：]?\s*([0-9]+)\s*\/\s*([0-9]+)/i,
+    /PC\s*搜索\s*[:：]?\s*([0-9]+)\s*\/\s*([0-9]+)/i,
+    /PC\s*Search\s*[:：]?\s*([0-9]+)\s*\/\s*([0-9]+)/i
+  ];
+
+  for (const re of patterns) {
+    const match = text.match(re);
+    if (!match) continue;
+    const current = parseInt(match[1], 10);
     const max = parseInt(match[2], 10);
-    return {
-      current: cur,
-      max: max,
-      isMaxed: cur >= max && max > 0
-    };
+    // 连续打卡的“搜索: 1/1”不是 PC 搜索积分上限，排除这种误识别。
+    if (max <= 1) continue;
+    return { current, max, isMaxed: max > 0 && current >= max };
   }
   return null;
 }

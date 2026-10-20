@@ -2,6 +2,19 @@
 import browserManager from './browser.js';
 import { classifyTaskFeasibility } from '../contracts/streaks.js';
 
+async function dismissCookieBanner(page) {
+  try {
+    for (const sel of ['button:has-text("接受")', 'button:has-text("Accept")', 'button:has-text("同意")']) {
+      const btn = await page.$(sel).catch(() => null);
+      if (btn && await btn.isVisible().catch(() => false)) {
+        await btn.click({ force: true }).catch(() => {});
+        await new Promise((r) => setTimeout(r, 350));
+        break;
+      }
+    }
+  } catch {}
+}
+
 const HOT_SEARCH_WORDS = [
   '2026年最新前沿科技趋势', '神舟飞船最新动态', '人工智能多模态发展', '新能源汽车续航与电池革新',
   '深空探测与火星科研进展', '量子计算机最新突破', '今日国内国际重大新闻', '健康生活作息指南',

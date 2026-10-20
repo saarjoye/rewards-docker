@@ -215,10 +215,12 @@ export class TaskManager {
    * 顺序执行全账号批量任务
    */
   async runAllAccountsTasks(options = {}) {
+    this.isQueueRunning = true;
     const accounts = configManager.getAccounts().filter((a) => a.enabled);
     if (accounts.length === 0) throw new Error('未检测到已启用的托管账号');
 
     const taskScope = options.taskScope || 'all';
+    try {
     logger.log('🚀', `>>> 开始批量执行全账号队列流水线 (共 ${accounts.length} 户，任务范围: ${taskScope}) <<<`);
 
     for (let i = 0; i < accounts.length; i++) {
@@ -240,7 +242,11 @@ export class TaskManager {
       }
     }
     logger.log('🎉', '>>> 批量全账号任务流水线执行完毕 <<<');
+    this.isQueueRunning = false;
     return { success: true };
+    } finally {
+      this.isQueueRunning = false;
+    }
   }
 
   /**
@@ -303,21 +309,21 @@ export class TaskManager {
       if (this.shouldStop) throw new Error('任务已被用户主动中断');
 
       // 2. 移动端 DAPI 任务
-      if (taskScope === 'all' || taskScope === 'appSign' || taskScope === 'newsRead') {
+      if (taskScope === 'all' || taskScope === 'remaining' || taskScope === 'appSign' || taskScope === 'newsRead') {
         const dapi = new DapiClient(account, tokens, (refreshedTokens) => {
           session.tokens = refreshedTokens;
           writeBrowserSession(accountId, session);
         });
 
         this.currentTaskSection = '移动端任务';
-        if (taskScope === 'all' || taskScope === 'appSign') {
+        if (taskScope === 'all' || taskScope === 'remaining' || taskScope === 'appSign') {
           this.currentTaskName = '必应移动应用连续签到 (DAPI直连)';
           await dapi.performAppCheckIn();
         }
 
         if (this.shouldStop) throw new Error('任务已被用户主动中断');
 
-        if (taskScope === 'all' || taskScope === 'newsRead') {
+        if (taskScope === 'all' || taskScope === 'remaining' || taskScope === 'newsRead') {
           this.currentTaskName = '移动端新闻资讯阅读 (30 积分)';
           await dapi.performNewsReading(10);
         }
@@ -326,7 +332,8 @@ export class TaskManager {
       if (this.shouldStop) throw new Error('任务已被用户主动中断');
 
       // 3. PC 端任务
-      const needBrowser = taskScope === 'all' || ['dailySet', 'search', 'puzzle', 'quests'].includes(taskScope);
+      // remaining 必须进入浏览器，先从官网实时 DOM 生成任务快照，再逐项只补未完成项。
+      const needBrowser = taskScope === 'all' || taskScope === 'remaining' || ['dailySet', 'search', 'puzzle', 'quests', 'dailyActivities'].includes(taskScope);
       if (needBrowser) {
         this.currentTaskSection = '桌面端任务';
         await browserManager.withBrowser(
@@ -346,8 +353,35 @@ export class TaskManager {
             let page = await context.newPage();
 
             try {
+              // 所有模式都先读取官网实时 DOM 快照；remaining 仅执行未完成项，all 跳过已完成项。
+              let officialTasks = null;
+              try {
+                officialTasks = await this.fetchOfficialTaskSnapshot(context, account);
+              } catch (snapshotErr) {
+                log(`⚠️ 官网实时任务判定失败，将安全回退到完整执行: ${snapshotErr.message}`);
+              }
+              const shouldRun = (kind) => {
+                if (!officialTasks) return true;
+                if (taskScope !== 'remaining') return true;
+                if (kind === 'search') return officialTasks.needSearch;
+                if (kind === 'dailySet') return officialTasks.needDailySet;
+                if (kind === 'quests') return officialTasks.needQuests;
+                if (kind === 'dailyActivities') return officialTasks.needDailyActivities;
+                return true;
+              };
+              if (taskScope === 'remaining' && officialTasks) {
+                log(`🎯 [官网实时判定] 选择补做项: dailySet=${officialTasks.needDailySet}, dailyActivities=${officialTasks.needDailyActivities}, quests=${officialTasks.needQuests}, search=${officialTasks.needSearch}, appSign=${officialTasks.needAppSign}`);
+                log(`🎯 [官网实时判定] 剩余任务: 搜索=${officialTasks.needSearch ? '待做' : '已完成'}, 移动签到=${officialTasks.needAppSign ? '待做' : '已完成'}, 打孔卡=${officialTasks.needQuests ? '待做' : '已完成'}, 日常任务=${officialTasks.needDailyActivities ? '待做' : '已完成'}`);
+                if (!officialTasks.hasWork) {
+                  log('✅ [剩余任务] 官网实时状态显示今日可执行任务已全部完成，无需启动浏览器任务。');
+                  const cleanData = await this.fetchOfficialDashboard(context, account);
+                  configManager.upsertAccount({ id: accountId, status: 'ready', balance: cleanData.balance, todayEarned: cleanData.todayPoints, streakDays: cleanData.streakDays, claimablePoints: cleanData.claimablePoints, lastRun: Date.now() });
+                  return;
+                }
+              }
+
               // 【板块 1: 连续打卡任务 (Streaks)】
-              if (taskScope === 'all' || taskScope === 'dailySet') {
+              if ((taskScope === 'all' || taskScope === 'dailySet') && shouldRun('dailySet')) {
                 this.currentTaskSection = '板块 1: 连续打卡';
                 this.currentTaskName = '每日活动集 (Daily Set 3/3 弹窗点击)';
                 log('>>> 执行【板块 1: 连续打卡任务 (Streaks)】每日活动集 (Daily Set 3/3)...');
@@ -360,7 +394,7 @@ export class TaskManager {
               log('>>> 检查【板块 2: 升级活动 (Level Up)】(随日常打卡与搜索自动驱动累积)...');
 
               // 【板块 3: 任务 (Punch Cards / Quests)】
-              if (taskScope === 'all' || taskScope === 'quests') {
+              if ((taskScope === 'all' || taskScope === 'quests') && shouldRun('quests')) {
                 this.currentTaskSection = '板块 3: 打孔卡任务';
                 this.currentTaskName = '多步任务打孔卡 (Punch Cards)';
                 log('>>> 执行【板块 3: 任务 (Punch Cards / Quests)】多步打孔卡...');
@@ -390,7 +424,7 @@ export class TaskManager {
               if (this.shouldStop) throw new Error('任务已被用户主动中断');
 
               // 【板块 4: 日常任务 (Daily Activities)】(含 Veggie burgers, Fossil favorites, 完成此拼图等全量活动)
-              if (taskScope === 'all' || taskScope === 'puzzle' || taskScope === 'dailyActivities') {
+              if ((taskScope === 'all' || taskScope === 'puzzle' || taskScope === 'dailyActivities') && shouldRun('dailyActivities')) {
                 this.currentTaskSection = '板块 4: 日常任务';
                 this.currentTaskName = '日常任务穿透打卡 (Daily Activities)';
                 log('>>> 执行【板块 4: 日常任务 (Daily Activities)】日常活动与拼图全量穿透...');
@@ -400,7 +434,7 @@ export class TaskManager {
               if (this.shouldStop) throw new Error('任务已被用户主动中断');
 
               // PC Search
-              if (taskScope === 'all' || taskScope === 'search' || taskScope === 'remaining') {
+              if ((taskScope === 'all' || taskScope === 'search' || taskScope === 'remaining') && shouldRun('search')) {
                 this.currentTaskName = '必应 PC 拟人搜索收割 (跑满 60 分)';
                 log('执行板块 1-核心: 必应 PC 拟人化搜索收割 (跑满 60 分)...');
 
@@ -508,6 +542,7 @@ for (let i = 1; i <= maxSearches; i++) {
               let finalData = null;
               for (let round = 1; round <= 3; round++) {
                 finalData = await this.fetchOfficialDashboard(context, account);
+                finalData.officialTasks = liveTasks;
                 if (finalData.todayPoints > (initialData.todayPoints || 0)) break;
                 await new Promise((r) => setTimeout(r, 5000));
               }
@@ -543,13 +578,25 @@ for (let i = 1; i <= maxSearches; i++) {
                 }
               }
 
-              // 单账号自动补偿模式判定
-              if (taskScope === 'all' && options.allowRemedy !== false && !this.shouldStop) {
-                const diag = this.diagnoseUnfinishedTasks(finalData, account);
-                if (diag.hasWork) {
-                  log('🔄 [单账号自动补偿] 诊断到尚有未完成且可执行的项目，自动启动单账号补漏扫尾...');
-                  if (diag.needDailyActivities) {
-                    await penetrateDailyActivities(page, { accountPrefix: account.name }).catch(() => {});
+              // 单账号自动补偿：先用官网实时 DOM 判定，不再依赖本地积分阈值猜测
+              if ((taskScope === 'all' || taskScope === 'remaining') && options.allowRemedy !== false && !this.shouldStop) {
+                const liveTasks = await this.fetchOfficialTaskSnapshot(context, account).catch(() => null);
+                if (liveTasks && liveTasks.hasWork) {
+                  log('🔄 [官网补偿] 官网仍有未完成项目，自动执行补漏扫尾...');
+                  if (liveTasks.needAppSign) {
+                    const dapiRetry = new DapiClient(account, tokens, (refreshedTokens) => {
+                      session.tokens = refreshedTokens;
+                      writeBrowserSession(accountId, session);
+                    });
+                    await dapiRetry.performAppCheckIn().catch(() => {});
+                  }
+                  if (liveTasks.needDailyActivities) {
+                    await penetrateDailyActivities(page, { accountPrefix: account.name, onlyPending: true }).catch(() => {});
+                  }
+                  if (liveTasks.needQuests) {
+                    for (const q of (liveTasks.questPending || [])) {
+                      if (q.href) await penetratePunchCardQuest(page, q.href, { accountPrefix: account.name }).catch(() => {});
+                    }
                   }
                   finalData = await this.fetchOfficialDashboard(context, account);
                 }
@@ -583,40 +630,120 @@ for (let i = 1; i <= maxSearches; i++) {
    * 每日 01:00 额外积分全自动收割引擎
    */
   /**
-   * 智能诊断当前账号的未完成任务矩阵
+   * 从官网 /earn 的实时 DOM 构建权威任务快照（禁止用本地缓存判定）
    */
-  diagnoseUnfinishedTasks(dashboardData = {}, account = {}) {
-    const todayPoints = Number(dashboardData.todayPoints || 0);
-    const cards = dashboardData.parsedCards || [];
-    const searchStatus = extractOfficialSearchPoints(dashboardData.combinedRawText);
+  async fetchOfficialTaskSnapshot(context, account) {
+    const page = await context.newPage();
+    const log = (msg) => logger.log('🔎', `[官网任务判定] ${msg}`, '', account.name);
+    try {
+      await page.goto('https://rewards.bing.com/earn', { waitUntil: 'domcontentloaded', timeout: 35000 });
+      await new Promise((r) => setTimeout(r, 3000));
+      const snapshot = await page.evaluate(() => {
+        const text = (document.body.innerText || '').replace(/\r/g, '');
+        const sectionTitle = (h) => (h.innerText || '').trim();
+        const sections = [];
+        for (const h of document.querySelectorAll('h2')) {
+          const title = sectionTitle(h);
+          if (!['连续打卡任务', '每日活动', '活动', '任务', '日常任务'].includes(title)) continue;
+          const sec = h.closest('div.react-aria-disclosure, [class*="Disclosure"]') || h.parentElement?.parentElement;
+          const root = sec || h.parentElement;
+          const cards = [];
+          for (const el of root.querySelectorAll('a, button[aria-expanded]')) {
+            const cardText = (el.innerText || '').replace(/\s+/g, ' ').trim();
+            if (!cardText || cardText === title) continue;
+            const href = el.getAttribute('href') || '';
+            const disabled = !!el.disabled || el.getAttribute('aria-disabled') === 'true';
+            const done = /已完成|Completed|✔/.test(cardText) || (title === '任务' && /\b5\/5\b/.test(cardText));
+            cards.push({
+              section: title,
+              title: cardText.slice(0, 200),
+              href,
+              disabled,
+              done,
+              key: href || cardText.slice(0, 80)
+            });
+          }
+          sections.push({ title, cards });
+        }
+        return { text, sections };
+      });
 
-    // 1. PC 搜索是否未满 60 分
-    const needSearch = searchStatus ? !searchStatus.isMaxed : (todayPoints < 60);
+      const lines = snapshot.text.split('\n').map((x) => x.trim());
+      const counter = (re) => {
+        for (const line of lines) {
+          const m = line.match(re);
+          if (m) return { current: Number(m[1]), max: Number(m[2]) };
+        }
+        return null;
+      };
+      const searchStreak = counter(/搜索:\s*(\d+)\s*\/\s*(\d+)/);
+      const dailySet = counter(/活动:\s*(\d+)\s*\/\s*(\d+)/);
+      const appCheckIn = counter(/签到:\s*(\d+)\s*\/\s*(\d+)/);
 
-    // 2. 连续打卡与日常活动集
-    const needDailySet = todayPoints < 30;
+      const sections = snapshot.sections;
+      const dailyCards = sections.find((x) => x.title === '日常任务')?.cards || [];
+      const questCards = sections.find((x) => x.title === '任务')?.cards || [];
+      const dailyPending = dailyCards.filter((c) => !c.done && !c.disabled);
+      const questPending = questCards.filter((c) => !c.done && !c.disabled);
 
-    // 3. 移动端签到与新闻资讯
-    const needAppSign = !dashboardData.bingAppCompleted && (todayPoints < 10);
-    const needNewsRead = todayPoints < 90;
-
-    // 4. 打孔卡是否有可执行任务
-    const needQuests = cards.some(c => (c.isPunchCard || c.isQuest || (c.destination && c.destination.includes('/quest/'))) && !c.done);
-
-    // 5. 日常活动是否有未打钩的非时间锁项目
-    const needDailyActivities = cards.some(c => c.points > 0 && !c.done && classifyTaskFeasibility(c.title || c.name).executable);
-
-    const hasWork = needSearch || needDailySet || needAppSign || needNewsRead || needQuests || needDailyActivities;
-
-    return {
-      needSearch,
-      needDailySet,
-      needAppSign,
-      needNewsRead,
-      needQuests,
-      needDailyActivities,
-      hasWork
-    };
+      const snapshotResult = {
+        searchStreak,
+        dailySet,
+        appCheckIn,
+        dailyPending,
+        questPending,
+        needSearch: false,
+        needDailySet: !dailySet || dailySet.current < dailySet.max,
+        needAppSign: !appCheckIn || appCheckIn.current < appCheckIn.max,
+        needDailyActivities: dailyPending.length > 0,
+        needQuests: questPending.length > 0,
+        hasWork: false,
+        details: {
+          searchStreak,
+          dailySet,
+          appCheckIn,
+          dailyPending: dailyPending.map((x) => x.title),
+          questPending: questPending.map((x) => x.title)
+        }
+      };
+      // PC 搜索是否满 60/60，必须从“积分明细”抽屉读取，而不是把连续打卡“搜索:1/1”误认为上限
+      const pointsCard = page.locator('button').filter({ hasText: '今日积分' }).first();
+      if (await pointsCard.count()) {
+        const box = await pointsCard.boundingBox();
+        if (box) {
+          await pointsCard.click({ force: true });
+          // React Aria 抽屉存在异步渲染，不能只等固定 1.2 秒
+          let detailText = '';
+          for (let i = 0; i < 12; i++) {
+            await new Promise((r) => setTimeout(r, 500));
+            detailText = await page.evaluate(() => {
+              const d = document.querySelector('[role="dialog"], [aria-modal="true"]');
+              return d ? (d.innerText || '').replace(/\r/g, '') : '';
+            });
+            if (/必应搜索\s*[0-9]+\s*\/\s*[0-9]+/i.test(detailText)) break;
+          }
+          const m = detailText.match(/必应搜索\s*([0-9]+)\s*\/\s*([0-9]+)/i);
+          if (m) {
+            const current = Number(m[1]);
+            const max = Number(m[2]);
+            snapshotResult.searchPoints = { current, max, isMaxed: max > 0 && current >= max };
+            snapshotResult.needSearch = !snapshotResult.searchPoints.isMaxed;
+            snapshotResult.details.searchPoints = snapshotResult.searchPoints;
+          }
+          await page.keyboard.press('Escape').catch(() => {});
+        }
+      }
+      if (!snapshotResult.searchPoints) {
+        // points drawer occasionally loads slower; retry with a fresh page before assuming search remains.
+        snapshotResult.needSearch = true;
+        snapshotResult.details.searchPoints = { unknown: true };
+      }
+      snapshotResult.hasWork = snapshotResult.needSearch || snapshotResult.needDailySet || snapshotResult.needAppSign || snapshotResult.needDailyActivities || snapshotResult.needQuests;
+      log(`实时任务判定: ${JSON.stringify(snapshotResult.details)}`);
+      return snapshotResult;
+    } finally {
+      await page.close().catch(() => {});
+    }
   }
 
   async harvestMidnightClaimable(accountId) {
