@@ -180,35 +180,53 @@ export async function penetrateDailySetActivities(page, options = {}) {
   await page.goto('https://rewards.bing.com/dashboard', { waitUntil: 'domcontentloaded', timeout: 35000 });
   await new Promise((r) => setTimeout(r, 2500));
 
+  // 先行清理可能遮挡视口的祝贺弹窗 (如「干得漂亮」等 bg-bgSmoke 浮层)
+  await dismissCelebrationOverlay(page);
+
   // 查找 Daily Set 区域内的未完成活动链接
-  const links = await page.$$('#dailyset a[target="_blank"], div[data-bi-area="DailySet"] a');
+  const links = await page.$$('#dailyset a[target="_blank"], div[data-bi-area="DailySet"] a, div[class*="DailySet"] a');
   logger.log('📅', `检索到 Daily Set 区域内包含 ${links.length} 个活动项目`, '', accountPrefix);
 
   let clickedCount = 0;
   for (let i = 0; i < links.length; i++) {
     const link = links[i];
     try {
-      if (!(await link.isVisible())) continue;
+      if (!(await link.isVisible().catch(() => false))) continue;
 
-      // 监听新弹窗打开
-      const [popup] = await Promise.all([
-        page.context().waitForEvent('page', { timeout: 8000 }).catch(() => null),
-        link.click()
-      ]);
+      // 每次点击前确保无遮挡蒙层
+      await dismissCelebrationOverlay(page);
+
+      const href = await link.getAttribute('href').catch(() => null);
+      let popup = null;
+
+      if (href && href.startsWith('http')) {
+        popup = await page.context().newPage();
+        await popup.goto(href, { waitUntil: 'domcontentloaded', timeout: 35000 }).catch(() => {});
+      } else {
+        const [p] = await Promise.all([
+          page.context().waitForEvent('page', { timeout: 8000 }).catch(() => null),
+          link.click({ force: true, timeout: 6000 }).catch(() => {})
+        ]);
+        popup = p;
+      }
 
       if (popup) {
         logger.log('🚀', `触发 Daily Set 弹窗第 ${i + 1} 项，驻留触发遥测...`, '', accountPrefix);
         await popup.waitForLoadState('domcontentloaded').catch(() => {});
-        // 尝试自动解 Quiz/Poll
         await solveQuizOrPoll(popup, { accountPrefix });
-        await new Promise((r) => setTimeout(r, 4500)); // 驻留 4.5 秒触发加分
-        await popup.close();
+        await new Promise((r) => setTimeout(r, 4500));
+        await popup.close().catch(() => {});
       } else {
         await new Promise((r) => setTimeout(r, 3000));
       }
       clickedCount++;
+
+      // 点击完成后再次清理可能弹出的「干得漂亮」连击祝贺框，杜绝阻断后续卡片
+      await dismissCelebrationOverlay(page);
+      await new Promise((r) => setTimeout(r, 1500));
     } catch (e) {
       logger.log('⚠️', `点击 Daily Set 活动项 ${i + 1} 异常: ${e.message}`, '', accountPrefix);
+      await dismissCelebrationOverlay(page);
     }
   }
 
@@ -216,9 +234,17 @@ export async function penetrateDailySetActivities(page, options = {}) {
   return clickedCount;
 }
 
-/**
- * 多步打孔卡 (Punch Cards / Quests) 子路由穿透推进
- */
+async function dismissCelebrationOverlay(page) {
+  try {
+    const closeBtn = await page.$('div.bg-bgSmoke button, [data-rac] button[aria-label*="关闭"], div[class*="Smoke"] button, button:has-text("关闭"), button:has-text("知道了"), button:has-text("确定")');
+    if (closeBtn && (await closeBtn.isVisible().catch(() => false))) {
+      await closeBtn.click({ force: true }).catch(() => {});
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    await page.keyboard.press('Escape').catch(() => {});
+  } catch {}
+}
+
 export async function penetratePunchCardQuest(page, questUrl, options = {}) {
   const { accountPrefix = '' } = options;
   if (!questUrl) return false;
@@ -388,13 +414,19 @@ export async function penetrateDailyActivities(page, options = {}) {
   logger.log('📋', '>>> 开始执行【板块 4: 日常任务 (Daily Activities)】<<<', '', accountPrefix);
 
   try {
-    await page.goto('https://rewards.bing.com/dashboard', { waitUntil: 'domcontentloaded', timeout: 35000 });
-    await new Promise((r) => setTimeout(r, 2500));
+    // 关键修正：官方全量日常任务 (素食汉堡、化石精选、你是否知道答案、完成此拼图等) 位于 /earn 路由
+    await page.goto('https://rewards.bing.com/earn', { waitUntil: 'domcontentloaded', timeout: 35000 });
+    await new Promise((r) => setTimeout(r, 3000));
+
+    // 先行清理可能遮挡的蒙层
+    await dismissCelebrationOverlay(page);
 
     // 定位「日常任务」区域的所有活动卡片链接
-    const cards = await page.$$(
-      'div[data-bi-area="MoreActivities"] a, #more-activities a, div:has(> p:text("日常任务")) a, div:has(> h2:text("日常任务")) a, a[data-bi-area="PromotionalItems"]'
-    );
+    let cards = await page.$$('div.react-aria-Disclosure:has(h2:has-text("日常任务")) a, div:has(> h2:text("日常任务")) a, div[data-bi-area="MoreActivities"] a, #more-activities a');
+    if (!cards || cards.length === 0) {
+      // 兼容兜底选择器
+      cards = await page.$$('a[class*="rounded-cornerCardDefault"][href*="bing.com"]');
+    }
 
     logger.log('📋', `检索到【日常任务】区域内包含 ${cards.length} 个活动项目`, '', accountPrefix);
 
@@ -402,7 +434,7 @@ export async function penetrateDailyActivities(page, options = {}) {
     for (let i = 0; i < cards.length; i++) {
       const card = cards[i];
       try {
-        if (!(await card.isVisible())) continue;
+        if (!(await card.isVisible().catch(() => false))) continue;
 
         const cardText = await card.innerText().catch(() => '');
         // 过滤不可执行的营销扩展类卡片
@@ -413,19 +445,29 @@ export async function penetrateDailyActivities(page, options = {}) {
         }
 
         // 如果卡片已经打钩已完成，跳过
-        if (cardText.includes('已完成') || cardText.includes('Completed')) {
+        if (cardText.includes('已完成') || cardText.includes('Completed') || cardText.includes('✔')) {
           continue;
         }
 
         const briefName = cardText.slice(0, 25).replace(/\n/g, ' ');
         logger.log('🚀', `触发日常任务第 ${i + 1} 项: ${briefName}...`, '', accountPrefix);
 
+        const href = await card.getAttribute('href').catch(() => null);
+
         // 如果是拼图任务，使用专属拼图解决逻辑
-        if (cardText.includes('拼图') || cardText.includes('puzzle') || cardText.includes('Evergreen')) {
-          const [popup] = await Promise.all([
-            page.context().waitForEvent('page', { timeout: 10000 }).catch(() => null),
-            card.click().catch(() => {})
-          ]);
+        if (cardText.includes('拼图') || cardText.includes('puzzle') || (href && href.includes('imagepuzzle'))) {
+          let popup = null;
+          if (href && href.startsWith('http')) {
+            popup = await page.context().newPage();
+            await popup.goto(href, { waitUntil: 'domcontentloaded', timeout: 35000 }).catch(() => {});
+          } else {
+            const [p] = await Promise.all([
+              page.context().waitForEvent('page', { timeout: 10000 }).catch(() => null),
+              card.click({ force: true }).catch(() => {})
+            ]);
+            popup = p;
+          }
+
           if (popup) {
             await popup.waitForLoadState('domcontentloaded').catch(() => {});
             await penetratePuzzleSpotlight(popup, popup.url(), { accountPrefix });
@@ -436,22 +478,29 @@ export async function penetrateDailyActivities(page, options = {}) {
           continue;
         }
 
-        // 普通探索与 Quiz 问答卡片
-        const [popup] = await Promise.all([
-          page.context().waitForEvent('page', { timeout: 10000 }).catch(() => null),
-          card.click().catch(() => {})
-        ]);
+        // 普通探索与 Quiz 问答卡片 (如化石精选 +15、你是否知道答案 +5)
+        let popup = null;
+        if (href && href.startsWith('http')) {
+          popup = await page.context().newPage();
+          await popup.goto(href, { waitUntil: 'domcontentloaded', timeout: 35000 }).catch(() => {});
+        } else {
+          const [p] = await Promise.all([
+            page.context().waitForEvent('page', { timeout: 10000 }).catch(() => null),
+            card.click({ force: true }).catch(() => {})
+          ]);
+          popup = p;
+        }
 
         if (popup) {
           await popup.waitForLoadState('domcontentloaded').catch(() => {});
           // 尝试自动解题/投票
           await solveQuizOrPoll(popup, { accountPrefix });
           // 模拟真人滚轮浏览
-          await popup.mouse.wheel(0, 200).catch(() => {});
+          await popup.mouse.wheel(0, 250).catch(() => {});
           await new Promise((r) => setTimeout(r, 4500)); // 驻留 4.5 秒确保微软遥测入账
           await popup.close().catch(() => {});
           executedCount++;
-          logger.log('✅', `日常任务第 ${i + 1} 项交互完成，积分遥测已上报`, '', accountPrefix);
+          logger.log('✅', `日常任务第 ${i + 1} 项 (${briefName}) 交互完成，积分遥测已上报`, '', accountPrefix);
         } else {
           await new Promise((r) => setTimeout(r, 3000));
         }
@@ -465,8 +514,8 @@ export async function penetrateDailyActivities(page, options = {}) {
 
     logger.log('✅', `【板块 4: 日常任务】执行完毕，共穿透打卡 ${executedCount} 项`, '', accountPrefix);
     return executedCount;
-  } catch (errAll) {
-    logger.log('⚠️', `【板块 4: 日常任务】访问异常: ${errAll.message}`, '', accountPrefix);
+  } catch (e) {
+    logger.log('🔴', `日常任务板块穿透异常: ${e.message}`, '', accountPrefix);
     return 0;
   }
 }
