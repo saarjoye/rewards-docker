@@ -145,15 +145,20 @@ export class Notifier {
       return false;
     }
 
+    const metric = (value, unit = ' 分') => {
+      if (value === null || value === undefined || !Number.isFinite(Number(value))) return '官网未确认';
+      return Number(value).toLocaleString() + unit;
+    };
     const title = `Rewards 每日对账战报 - ${account.name || account.user}`;
+    const cleanStatus = String(stats.taskStatusText || '官网对账完成').replace(/[#*`>]/g, '').trim();
     const content = [
-      `> **托管账号**：\`${account.user}\``,
-      `> **今日真实已增**：\`+${stats.todayEarned || 0} 分\``,
-      `> **账户可用总额**：\`${(stats.balance || 0).toLocaleString()} 分\``,
-      `> **连续打卡天数**：\`${stats.streakDays || 0} 天\``,
-      `> **待领抽屉积分**：\`${stats.claimablePoints || 0} 分 (01:00已收割)\``,
-      `> **执行状态**：\`${stats.taskStatusText || '官网对账完成'}\``
-    ].join('\n\n');
+      `托管账号: ${account.name || account.user}`,
+      `今日已增: ${metric(stats.todayEarned)}`,
+      `账户总额: ${metric(stats.balance)}`,
+      `连续打卡: ${metric(stats.streakDays, ' 天')}`,
+      `待领额外: ${metric(stats.claimablePoints)}`,
+      `执行状态: ${cleanStatus}`
+    ].join('\n');
 
     try {
       await this.sendWeWorkApp(cfg, title, content);

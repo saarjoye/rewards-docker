@@ -249,6 +249,7 @@ export class TaskManager {
     let earnText = '';
     let dashHtml = '';
     let dashText = '';
+    let sources = { balance: 'unknown', todayPoints: 'unknown', streakDays: 'unknown', claimablePoints: 'unknown' };
 
     const safeGoto = async (url, name) => {
       for (let attempt = 1; attempt <= 2; attempt++) {
@@ -277,13 +278,27 @@ export class TaskManager {
         const ok = await safeGoto('https://rewards.bing.com/earn', '/earn');
         if (ok) {
           await new Promise((r) => setTimeout(r, 2000));
-          earnHtml = await page.content();
-          earnText = await page.evaluate(() => document.body ? document.body.innerText : '').catch(() => '');
-          flightChunks = concatFlightChunks(earnHtml);
-
-          todayPoints = extractOfficialTodayPoints(flightChunks, `${earnHtml}\n${earnText}`);
-          streakDays = extractOfficialStreakDays(flightChunks, `${earnHtml}\n${earnText}`);
-          balance = extractOfficialBalance(flightChunks, `${earnHtml}\n${earnText}`);
+          await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+          for (let r = 0; r < 8; r++) {
+            try {
+              earnHtml = await page.content();
+              earnText = await page.evaluate(() => document.body ? document.body.innerText : '').catch(() => '');
+              flightChunks = concatFlightChunks(earnHtml);
+              const tp = extractOfficialTodayPoints(flightChunks, `${earnHtml}\n${earnText}`);
+              if (tp !== null) {
+                todayPoints = tp;
+                break;
+              }
+            } catch {}
+            await new Promise((res) => setTimeout(res, 800));
+          }
+          if (todayPoints === null && earnHtml && earnText) {
+            todayPoints = extractOfficialTodayPoints(flightChunks, `${earnHtml}\n${earnText}`);
+          }
+          if (earnHtml && earnText) {
+            streakDays = extractOfficialStreakDays(flightChunks, `${earnHtml}\n${earnText}`);
+            balance = extractOfficialBalance(flightChunks, `${earnHtml}\n${earnText}`);
+          }
 
           try {
             const shotPath = path.join(DATA_DIR, 'latest_screencast.png');
@@ -302,21 +317,21 @@ export class TaskManager {
         const ok = await safeGoto('https://rewards.bing.com/dashboard', '/dashboard');
         if (ok) {
           await new Promise((r) => setTimeout(r, 2000));
-          dashHtml = await page.content();
-          dashText = await page.evaluate(() => document.body ? document.body.innerText : '').catch(() => '');
-          const dashFlight = concatFlightChunks(dashHtml);
-          const combinedDash = `${dashFlight}\n${dashHtml}\n${dashText}`;
-
-          if (balance === null) {
-            balance = extractOfficialBalance(dashFlight, combinedDash);
+          await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+          for (let r = 0; r < 8; r++) {
+            try {
+              dashHtml = await page.content();
+              dashText = await page.evaluate(() => document.body ? document.body.innerText : '').catch(() => '');
+              const dashFlight = concatFlightChunks(dashHtml);
+              const combinedDash = `${dashFlight}\n${dashHtml}\n${dashText}`;
+              if (balance === null) balance = extractOfficialBalance(dashFlight, combinedDash);
+              if (todayPoints === null) todayPoints = extractOfficialTodayPoints(dashFlight, combinedDash);
+              if (!streakDays) streakDays = extractOfficialStreakDays(dashFlight, combinedDash);
+              claimablePoints = extractOfficialClaimablePoints(dashFlight, `${dashHtml}\n${dashText}`);
+              if (balance !== null && claimablePoints !== null) break;
+            } catch {}
+            await new Promise((res) => setTimeout(res, 800));
           }
-          if (todayPoints === null) {
-            todayPoints = extractOfficialTodayPoints(dashFlight, combinedDash);
-          }
-          if (!streakDays) {
-            streakDays = extractOfficialStreakDays(dashFlight, combinedDash);
-          }
-          claimablePoints = extractOfficialClaimablePoints(dashFlight, combinedDash);
 
           try {
             const shotPath = path.join(DATA_DIR, 'latest_screencast.png');
@@ -327,12 +342,10 @@ export class TaskManager {
         log(`访问 /dashboard 异常: ${e.message}`);
       }
 
-      const sources = {
-        balance: balance !== null ? 'live' : 'unknown',
-        todayPoints: todayPoints !== null ? 'live' : 'unknown',
-        streakDays: streakDays ? 'live' : 'unknown',
-        claimablePoints: claimablePoints !== null ? 'live' : 'unknown'
-      };
+      sources.balance = balance !== null ? 'live' : 'unknown';
+      sources.todayPoints = todayPoints !== null ? 'live' : 'unknown';
+      sources.streakDays = streakDays ? 'live' : 'unknown';
+      sources.claimablePoints = claimablePoints !== null ? 'live' : 'unknown';
       const allowCachedFallback = options.allowCachedFallback !== false;
       if (allowCachedFallback) {
         if (balance === null && account.balance !== undefined) { balance = account.balance; sources.balance = 'cache'; }
@@ -533,20 +546,23 @@ export class TaskManager {
               log(`⚠️ 官网实时任务判定失败；remaining 模式将按未知处理且不执行未确认任务: ${snapshotErr.message}`);
             }
             const initialData = await this.fetchOfficialDashboard(context, account);
-            configManager.upsertAccount({
-              id: accountId,
-              balance: initialData.balance,
-              todayEarned: initialData.todayPoints,
-              streakDays: initialData.streakDays,
-              claimablePoints: initialData.claimablePoints,
-              lastSyncAt: Date.now(),
-              dataState: 'complete'
-            });
+            const initialAccountUpdate = { id: accountId, lastSyncAt: Date.now() };
+            if (initialData.sources?.balance === 'live') initialAccountUpdate.balance = initialData.balance;
+            if (initialData.sources?.todayPoints === 'live') initialAccountUpdate.todayEarned = initialData.todayPoints;
+            if (initialData.sources?.streakDays === 'live') initialAccountUpdate.streakDays = initialData.streakDays;
+            if (initialData.sources?.claimablePoints === 'live') initialAccountUpdate.claimablePoints = initialData.claimablePoints;
+            if (officialTasks) initialAccountUpdate.officialTasks = officialTasks;
+            initialAccountUpdate.dataState = initialData.sources?.balance === 'live'
+              && initialData.sources?.todayPoints === 'live'
+              && officialTasks
+              ? (officialTasks.hasUnknown ? 'partial' : 'complete')
+              : 'partial';
+            configManager.upsertAccount(initialAccountUpdate);
             historyManager.recordDaily(accountId, {
-              todayEarned: initialData.todayPoints,
-              balance: initialData.balance,
-              streakDays: initialData.streakDays,
-              claimablePoints: initialData.claimablePoints,
+              todayEarned: initialData.sources?.todayPoints === 'live' ? initialData.todayPoints : null,
+              balance: initialData.sources?.balance === 'live' ? initialData.balance : null,
+              streakDays: initialData.sources?.streakDays === 'live' ? initialData.streakDays : null,
+              claimablePoints: initialData.sources?.claimablePoints === 'live' ? initialData.claimablePoints : null,
               officialTasks,
               source: 'official-sync'
             });
@@ -567,9 +583,24 @@ export class TaskManager {
                 }
                 if (!officialTasks.hasWork && !officialTasks.hasUnknown) {
                   log('✅ [剩余任务] 官网实时状态显示今日可执行任务已全部完成。');
-                  const cleanData = await this.fetchOfficialDashboard(context, account);
-                  configManager.upsertAccount({ id: accountId, status: 'ready', balance: cleanData.balance, todayEarned: cleanData.todayPoints, streakDays: cleanData.streakDays, claimablePoints: cleanData.claimablePoints, officialTasks, lastSyncAt: Date.now(), dataState: 'complete', lastRun: Date.now() });
-                  historyManager.recordDaily(accountId, { todayEarned: cleanData.todayPoints, balance: cleanData.balance, streakDays: cleanData.streakDays, claimablePoints: cleanData.claimablePoints, officialTasks, source: 'official-sync' });
+                  const cleanData = await this.fetchOfficialDashboard(context, account, { allowCachedFallback: false });
+                  const cleanUpdate = { id: accountId, status: 'ready', officialTasks, lastSyncAt: Date.now(), lastRun: Date.now() };
+                  if (cleanData.sources?.balance === 'live') cleanUpdate.balance = cleanData.balance;
+                  if (cleanData.sources?.todayPoints === 'live') cleanUpdate.todayEarned = cleanData.todayPoints;
+                  if (cleanData.sources?.streakDays === 'live') cleanUpdate.streakDays = cleanData.streakDays;
+                  if (cleanData.sources?.claimablePoints === 'live') cleanUpdate.claimablePoints = cleanData.claimablePoints;
+                  cleanUpdate.dataState = cleanData.sources?.balance === 'live' && cleanData.sources?.todayPoints === 'live'
+                    ? (officialTasks?.hasUnknown ? 'partial' : 'complete')
+                    : 'partial';
+                  configManager.upsertAccount(cleanUpdate);
+                  historyManager.recordDaily(accountId, {
+                    todayEarned: cleanData.sources?.todayPoints === 'live' ? cleanData.todayPoints : null,
+                    balance: cleanData.sources?.balance === 'live' ? cleanData.balance : null,
+                    streakDays: cleanData.sources?.streakDays === 'live' ? cleanData.streakDays : null,
+                    claimablePoints: cleanData.sources?.claimablePoints === 'live' ? cleanData.claimablePoints : null,
+                    officialTasks,
+                    source: 'official-sync'
+                  });
                   return;
                 }
                 if (taskPlan.appSign) {
@@ -669,7 +700,12 @@ export class TaskManager {
                       const midCap = midSnapshot.searchPoints;
                       if (midCap?.isMaxed) { log(`🎉 [搜索达标] 已跑满 ${midCap.current}/${midCap.max} 分。`); break; }
                       const obs = stagnationGuard.recordObservation(checkData.todayPoints);
-                      configManager.upsertAccount({ id: accountId, todayEarned: checkData.todayPoints, balance: checkData.balance });
+                      const checkUpdate = { id: accountId };
+                      if (checkData.sources?.todayPoints === 'live') checkUpdate.todayEarned = checkData.todayPoints;
+                      if (checkData.sources?.balance === 'live') checkUpdate.balance = checkData.balance;
+                      if (checkData.sources?.streakDays === 'live') checkUpdate.streakDays = checkData.streakDays;
+                      if (checkData.sources?.claimablePoints === 'live') checkUpdate.claimablePoints = checkData.claimablePoints;
+                      configManager.upsertAccount(checkUpdate);
                       if (obs.stagnant && stagnationGuard.consecutiveStagnantCount >= 2) {
                         log('⏳ [搜索遇阻暂缓] 连续 2 次无增量，暂缓搜索，完成其他板块后再回眸。');
                         needsSearchSecondPass = true;
@@ -765,8 +801,15 @@ export class TaskManager {
                 source: 'task-settlement'
               });
 
-              log(`🎉 账号 [${account.name}] 任务执行完成！今日积分: ${finalData.todayPoints} 分, 可用余额: ${finalData.balance} 分, 连签: ${finalData.streakDays} 天`);
-              notifier.sendSettlementReport(account, finalData).catch(() => {});
+              const settledToday = finalData.sources?.todayPoints === 'live' ? finalData.todayPoints : null;
+              const settledBalance = finalData.sources?.balance === 'live' ? finalData.balance : null;
+              log(`🎉 账号 [${account.name}] 任务对账完成：今日积分 ${settledToday === null ? '未确认' : settledToday + ' 分'}，可用余额 ${settledBalance === null ? '未确认' : settledBalance + ' 分'}，连签 ${finalData.streakDays || 0} 天`);
+              notifier.sendSettlementReport(account, {
+                ...finalData,
+                todayEarned: settledToday,
+                balance: settledBalance,
+                claimablePoints: finalData.sources?.claimablePoints === 'live' ? finalData.claimablePoints : null
+              }).catch(() => {});
             } finally {
               if (page && typeof page.close === 'function') { await page.close().catch(() => {}); }
             }

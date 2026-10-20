@@ -241,6 +241,8 @@ export async function penetrateDailySetActivities(page, options = {}) {
     } catch (e) {
       logger.log('⚠️', `点击 Daily Set 活动项 ${i + 1} 异常: ${e.message}`, '', accountPrefix);
       await dismissCelebrationOverlay(page);
+    } finally {
+      if (popup && !popup.isClosed()) await popup.close().catch(() => {});
     }
   }
 
@@ -413,6 +415,8 @@ export async function penetratePunchCardQuest(page, questUrl, options = {}) {
         }
       } catch (eStep) {
         logger.log('⚠️', `推进打孔卡子步骤 ${j + 1} 异常: ${eStep.message}`, '', accountPrefix);
+      } finally {
+        if (stepPopup && !stepPopup.isClosed()) await stepPopup.close().catch(() => {});
       }
     }
     return true;

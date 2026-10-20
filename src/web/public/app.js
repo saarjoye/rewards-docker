@@ -95,6 +95,7 @@ document.addEventListener("DOMContentLoaded", () => {
       mergeSnapshotsIntoAccounts(previousSnapshots);
       renderSafely('积分日历', () => renderChartBars(), chartBars);
       renderSafely('账号卡片', renderTopAccountCards, document.getElementById('top-accounts-cards'));
+      renderSafely('积分看板账号选项', renderBoardAccountOptions);
       renderSafely('账号池', renderAccountsList);
     } catch (error) {
       console.warn('[积分日历] 历史快照暂不可用，保留官网状态数据:', error);
@@ -176,8 +177,10 @@ document.addEventListener("DOMContentLoaded", () => {
         if (currentViewName) currentViewName.textContent = "全部账号合计";
         if (currentViewBadge) currentViewBadge.textContent = "共 " + (accounts.length || 1) + " 户接入";
         if (currentUserDisplayName) currentUserDisplayName.textContent = "全账号合计";
+        const boardSubScope = document.getElementById("board-sub-scope");
+        if (boardSubScope) boardSubScope.textContent = "全部账号合计 · 官方多维度透视";
       } else {
-        const targetAcc = accounts.find((a) => a.id === selectedAccountId) || primaryAcc;
+        const targetAcc = accounts.find((a) => String(a.id) === String(selectedAccountId)) || primaryAcc;
         if (!targetAcc) {
           today = null;
           balance = null;
@@ -196,6 +199,8 @@ document.addEventListener("DOMContentLoaded", () => {
         if (currentViewName) currentViewName.textContent = (targetAcc && (targetAcc.name || targetAcc.user)) || '请选择账号';
         if (currentViewBadge) currentViewBadge.textContent = "单账号视图";
         if (currentUserDisplayName) currentUserDisplayName.textContent = (targetAcc && (targetAcc.name || targetAcc.user)) || '管理员';
+        const boardSubScope = document.getElementById("board-sub-scope");
+        if (boardSubScope) boardSubScope.textContent = "账号 [" + ((targetAcc && (targetAcc.name || targetAcc.user)) || '未选择') + "] 独立成效看板";
       }
 
       if (mTodayPoints) mTodayPoints.textContent = today == null ? '--' : today;
@@ -296,6 +301,7 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       renderSafely('账号下拉框', renderDropdownMenu);
+      renderSafely('积分看板账号选项', renderBoardAccountOptions);
       renderSafely('账号池', renderAccountsList);
       renderSafely('账号卡片', () => renderTopAccountCards(), document.getElementById('top-accounts-cards'));
       if (typeof renderBoardDropdown === 'function') renderSafely('积分看板下拉框', renderBoardDropdown);
@@ -378,7 +384,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!chartBars) return;
     const isSingleMode = viewMode === "single" && selectedAccountId;
     const activeAccs = isSingleMode
-      ? accounts.filter((a) => a.id === selectedAccountId)
+      ? accounts.filter((a) => String(a.id) === String(selectedAccountId))
       : accounts;
 
     const days = [];
@@ -440,26 +446,20 @@ document.addEventListener("DOMContentLoaded", () => {
     }).join('');
   }
 
+  function renderBoardAccountOptions() {
+    const select = document.getElementById("select-board-view");
+    if (!select) return;
+    const current = viewMode === "single" && selectedAccountId ? String(selectedAccountId) : "all";
+    select.innerHTML = ['<option value="all">🏛 全部账号汇总</option>'].concat(accounts.map((account, index) => '<option value="' + escapeHtml(String(account.id)) + '">👤 ' + escapeHtml(getAccountDisplayName(account, index)) + '</option>')).join("");
+    select.value = Array.from(select.options).some((option) => option.value === current) ? current : "all";
+  }
+
   function renderAccountsList() {
     if (!accountsScrollList) return;
     if (accounts.length === 0) {
       accountsScrollList.innerHTML = '<div style="text-align: center; color: #94a3b8; font-size: 11px; padding: 20px;">暂无托管账号</div>';
       return;
     }
-
-    // 动态同步填充积分详情看板右上角的下拉框
-    const selectBoardView = document.getElementById("select-board-view");
-    if (selectBoardView) {
-      const currentVal = viewMode === "all" ? "all" : (selectedAccountId || "all");
-      const opts = ['<option value="all">🏛 全部账号汇总</option>'];
-      accounts.forEach((a, idx) => {
-        const dName = getAccountDisplayName(a, idx);
-        opts.push('<option value="' + a.id + '">👤 ' + escapeHtml(dName) + '</option>');
-      });
-      selectBoardView.innerHTML = opts.join('');
-      selectBoardView.value = currentVal;
-    }
-
     const isAllSelected = viewMode === 'all';
     const totalTodayPts = accounts.reduce((sum, a) => sum + (a.todayEarned || 0), 0);
 
@@ -479,7 +479,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const accountRows = accounts.map((a, idx) => {
       let displayName = getAccountDisplayName(a, idx);
       const initial = displayName[0].toUpperCase();
-      const isSelected = viewMode === 'single' && selectedAccountId === a.id;
+      const isSelected = viewMode === 'single' && String(selectedAccountId) === String(a.id);
       const isRunning = Boolean(currentRunningAccountId && String(currentRunningAccountId) === String(a.id));
       const isAbnormal = a.status === 'error' || a.status === 'needs_2fa' || a.status === 'abnormal' || a.status === 'warning' || a.status === 'expired' || a.status === 'stagnated' || !!a.error || a.allSatisfied === false;
 
@@ -620,7 +620,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const balance = acc.balance === null || acc.balance === undefined ? '--' : Number(acc.balance).toLocaleString();
       const pct = hasOfficial ? Math.min(100, Math.round((today / 174) * 100)) : 0;
       const colorClass = colorClasses[idx % colorClasses.length];
-      const isAct = viewMode === 'single' && selectedAccountId === acc.id;
+      const isAct = viewMode === 'single' && String(selectedAccountId) === String(acc.id);
 
       let displayName = acc.name || '';
       if (!displayName || displayName === '默认账号') {
@@ -699,7 +699,7 @@ document.addEventListener("DOMContentLoaded", () => {
     ];
 
     for (const a of accounts) {
-      const isAct = viewMode === "single" && selectedAccountId === a.id;
+      const isAct = viewMode === "single" && String(selectedAccountId) === String(a.id);
       items.push(
         "<div class=\"dropdown-acc-item " + (isAct ? "active" : "") + "\" onclick=\"switchView('single', '" + a.id + "')\">" +
           "<div class=\"dropdown-item-meta\">" +
@@ -744,19 +744,16 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("modal-account")?.classList.remove("hidden");
   };
 
-  window.switchView = (mode, accId = null) => {
-    viewMode = mode;
-    selectedAccountId = accId;
+  window.switchView = async (mode, accId = null) => {
+    const nextMode = mode === "single" && accId != null ? "single" : "all";
+    viewMode = nextMode;
+    selectedAccountId = nextMode === "single" ? String(accId) : null;
     accountDropdownMenu?.classList.add("hidden");
-    renderBoardDropdown();
 
-    // 关键联动：当用户点击账号池卡片时，看板顶部的下拉框同步切换！
-    const selectBoardView = document.getElementById("select-board-view");
-    if (selectBoardView) {
-      selectBoardView.value = mode === "all" ? "all" : (accId || "all");
-    }
-
-    refreshDashboard();
+    renderBoardAccountOptions();
+    renderAccountsList();
+    renderTopAccountCards();
+    await refreshDashboard();
   };
 
   accountQuickSelect?.addEventListener("click", (e) => {
@@ -815,7 +812,7 @@ document.addEventListener("DOMContentLoaded", () => {
         { icon: '🎯', title: '50分的万圣节礼遇 (全户累计)', pts: questDone + '/' + questMax, pct: questPct }
       ];
     } else {
-      const curAcc = accounts.find((a) => a.id === selectedAccountId) || accounts[0] || {};
+      const curAcc = accounts.find((a) => String(a.id) === String(selectedAccountId)) || accounts[0] || {};
       const dName = getAccountDisplayName(curAcc, accounts.indexOf(curAcc));
       if (subEl) subEl.textContent = '账号 [' + dName + '] 官方四大板块完成进度';
       if (scopeTag) scopeTag.textContent = dName + ' ▾';
@@ -1944,7 +1941,7 @@ document.addEventListener("DOMContentLoaded", () => {
             : dayStr + '\n暂无官网快照';
 
           cells.push(
-            '<div class="cal-day-cell ' + (isToday ? 'today ' : '') + (hasData ? 'has-points' : 'no-data') + '" title="' + escapeHtml(tooltip) + '">' +
+            '<div class="cal-day-cell ' + (isToday ? 'today ' : '') + (hasData ? 'has-points' : 'no-data') + '">' +
               '<div class="cal-day-top"><span class="cal-day-num">' + day + '日</span>' + (isToday ? '<span class="cal-today-badge">今天</span>' : '') + '</div>' +
               '<div class="cal-day-body">' + (hasData ? ('<span class="cal-pts-val">+' + pts + '</span><span class="cal-pts-unit">分</span>') : '<span class="cal-pts-none">无数据</span>') + '</div>' +
               '<div class="cal-day-sub">' + (details.length ? details.map((d) => escapeHtml(d.name) + (d.earned === null ? ' 未同步' : ' +' + d.earned)).join(' · ') : '') + '</div>' +

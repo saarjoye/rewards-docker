@@ -1320,7 +1320,7 @@ html, body {
 .bar-col.align-right:hover .chart-tooltip-capsule {
   opacity: 1 !important;
   visibility: visible !important;
-  pointer-events: auto !important;
+  pointer-events: none !important;
   transform: translateY(0) !important;
 }
 
@@ -1334,7 +1334,7 @@ html, body {
 .bar-col.align-left:hover .chart-tooltip-capsule {
   opacity: 1 !important;
   visibility: visible !important;
-  pointer-events: auto !important;
+  pointer-events: none !important;
   transform: translateY(0) !important;
 }
 

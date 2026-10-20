@@ -23,6 +23,10 @@ test('extractOfficialTodayPoints 提取今日真实积分 (对标图 5)', () => 
   const domSample = '<div class="flex"><p>今日积分</p><p class="text-pageHeader">210</p></div>';
   const domPoints = extractOfficialTodayPoints('', domSample);
   assert.equal(domPoints, 210);
+
+  // 真实 /earn 页面换行文本样本
+  const earnTextSample = '首页\n积分赚取\n今日积分\n\n155\n\n积分明细\n每日连续打卡\n5';
+  assert.equal(extractOfficialTodayPoints('', earnTextSample), 155);
 });
 
 test('extractOfficialBalance 提取可用积分余额 (对标图 6)', () => {
@@ -53,6 +57,13 @@ test('extractOfficialClaimablePoints current zero wins over stale success toast'
 
 test('extractOfficialClaimablePoints returns null without official evidence', () => {
   assert.equal(extractOfficialClaimablePoints('', '<div>maintenance</div>'), null);
+});
+
+test('extractOfficialClaimablePoints current positive card wins over hidden zero and stale Flight', () => {
+  const liveCard = '<div class="text-labelControl">\u53ef\u9886\u53d6</div><div class="text-pageHeader">3</div><div>\u9886\u53d6</div>';
+  const hiddenZero = '<template>\u5f53\u524d\u6ca1\u6709\u8981\u9886\u53d6\u7684\u79ef\u5206</template>';
+  const staleFlight = '"TotalClaimablePoints":0';
+  assert.equal(extractOfficialClaimablePoints(staleFlight, liveCard + hiddenZero), 3);
 });
 
 test('validateStrictMetrics 绝不造假原则：今日积分仅由官网值决定', () => {

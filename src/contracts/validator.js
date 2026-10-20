@@ -89,49 +89,39 @@ export function extractOfficialBalance(flightText = '', html = '') {
  * 从 /dashboard 页面提取可领取额外积分 (图 6 对标)
  */
 export function extractOfficialClaimablePoints(flightText = '', html = '') {
-  const combined = `${flightText}\n${html}`;
+  const live = String(html || '');
+  const flight = String(flightText || '');
 
-  // 1. 若页面或抽屉明确包含已领完或归零的终态标记，严格判定为 0
-  if (combined.includes('\u5f53\u524d\u6ca1\u6709\u8981\u9886\u53d6\u7684\u79ef\u5206')) {
-    return 0;
-  }
+  // Current DOM must win over stale Flight data or hidden historical text.
+  const currentCardMatch = live.match(/text-labelControl[^>]*>\u53ef\u9886\u53d6<[\s\S]{0,500}?text-pageHeader[^>]*>([0-9,]+)</i);
+  if (currentCardMatch && currentCardMatch[1]) return parseNumberWithCommas(currentCardMatch[1]);
 
-  const currentCardMatch = combined.match(/text-labelControl[^>]*>\u53ef\u9886\u53d6<[\s\S]{0,500}?text-pageHeader[^>]*>([0-9,]+)</i);
-  if (currentCardMatch && currentCardMatch[1]) {
-    return parseNumberWithCommas(currentCardMatch[1]);
-  }
+  const liveClaimable = live.match(/\u53ef\u9886\u53d6\s*([0-9,]+)\s*\u9886\u53d6/);
+  if (liveClaimable && liveClaimable[1]) return parseNumberWithCommas(liveClaimable[1]);
 
-  // The current DOM card takes precedence over cached Flight data.
-  const liveClaimable = combined.match(/\u53ef\u9886\u53d6\s*([0-9,]+)\s*\u9886\u53d6/);
-  if (liveClaimable && liveClaimable[1]) {
-    return parseNumberWithCommas(liveClaimable[1]);
-  }
+  if (live.includes('\u5f53\u524d\u6ca1\u6709\u8981\u9886\u53d6\u7684\u79ef\u5206')) return 0;
 
-  // 2. 优先提取官方明细账本中的真实 TotalClaimablePoints
-  const bdMatch = combined.match(/"TotalClaimablePoints"\s*:\s*([0-9]+)/i)
-    || combined.match(/"totalClaimablePoints"\s*:\s*([0-9]+)/i);
-  if (bdMatch && bdMatch[1]) {
-    const val = parseInt(bdMatch[1], 10);
-    if (!isNaN(val)) return val;
-  }
-
-  // 3. 从 DOM 结构中提取待领分 (对标图 6 与单元测试样本)
-  const patterns = [
-    /可领取[\s\S]{0,100}?>([0-9,]+)<[\s\S]{0,100}?>\s*领取/i,
-    /class=["'][^"']*?text-labelControl[^"']*?["']>可领取<[\s\S]*?>([0-9,]+)</i,
-    /可领取\s*[:\n\r]+\s*([0-9,]+)/i,
-    /"claimablePoints"\s*:\s*([0-9]+)/i
+  const livePatterns = [
+    /\u53ef\u9886\u53d6[\s\S]{0,100}?>([0-9,]+)<[\s\S]{0,100}?>\s*\u9886\u53d6/i,
+    /class=["'][^"']*?text-labelControl[^"']*?["']>\u53ef\u9886\u53d6<[\s\S]*?>([0-9,]+)</i,
+    /\u53ef\u9886\u53d6\s*[:\n\r]+\s*([0-9,]+)/i
   ];
+  for (const regex of livePatterns) {
+    const match = live.match(regex);
+    if (match && match[1]) return parseNumberWithCommas(match[1]);
+  }
 
-  for (const regex of patterns) {
-    const match = combined.match(regex);
-    if (match && match[1]) {
-      return parseNumberWithCommas(match[1]);
-    }
+  const bdMatch = flight.match(/"TotalClaimablePoints"\s*:\s*([0-9]+)/i)
+    || flight.match(/"totalClaimablePoints"\s*:\s*([0-9]+)/i)
+    || flight.match(/"claimablePoints"\s*:\s*([0-9]+)/i);
+  if (bdMatch && bdMatch[1]) {
+    const value = parseInt(bdMatch[1], 10);
+    if (!Number.isNaN(value)) return value;
   }
 
   return null;
 }
+
 
 export function validateStrictMetrics({ officialToday, previousToday, claimedAdd = 0 }) {
   if (officialToday === null || officialToday === undefined) {

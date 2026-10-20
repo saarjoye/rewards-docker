@@ -152,6 +152,11 @@ export function createServer() {
         const results = [];
         for (const a of accounts) {
           const report = await healthCheckService.checkAccountHealth(a.id);
+          configManager.upsertAccount({
+            id: report.accountId,
+            status: report.allSatisfied ? 'ready' : (report.cookieHealth.hasU ? 'warning' : 'needs_login'),
+            allSatisfied: report.allSatisfied
+          });
           results.push(report);
         }
         return res.json({ success: true, scope: 'all', reports: results });
@@ -159,6 +164,11 @@ export function createServer() {
         const targetId = accountId || (configManager.getAccounts()[0] && configManager.getAccounts()[0].id);
         if (!targetId) return res.status(404).json({ success: false, message: '未找到待体检账号' });
         const report = await healthCheckService.checkAccountHealth(targetId);
+        configManager.upsertAccount({
+          id: report.accountId,
+          status: report.allSatisfied ? 'ready' : (report.cookieHealth.hasU ? 'warning' : 'needs_login'),
+          allSatisfied: report.allSatisfied
+        });
         return res.json({ success: true, scope: 'single', report });
       }
     } catch (e) {
@@ -215,6 +225,13 @@ export function createServer() {
               }
             }
 
+            const hasUAfter = (cookies || []).some((c) => c.name === '_U' && (c.domain.includes('bing.com') || c.domain.includes('msn.cn')));
+            if (!hasUAfter) {
+              logger.log('⚠️', `[官网同步] 账号 [${account.name}] 缺少有效登录会话 (_U)，跳过官网抓取以避免覆盖现有数据`);
+              configManager.upsertAccount({ id: account.id, status: 'needs_login' });
+              continue;
+            }
+
             await browserManager.withBrowser({ proxy: account.proxy, cookies, headless: true }, async (browser, context) => {
               const data = await taskManager.fetchOfficialDashboard(context, account);
               let officialTasks = null;
@@ -224,32 +241,43 @@ export function createServer() {
                 logger.log('⚠️', `[官网同步] 任务状态读取失败 [${account.name}]: ${snapshotErr.message}`);
               }
               const syncedAt = Date.now();
-              const hasLiveDashboard = data.sources?.balance === 'live' && data.sources?.todayPoints === 'live';
+              const hasLiveBalance = data.sources?.balance === 'live';
+              const hasLiveToday = data.sources?.todayPoints === 'live';
+              const hasLiveDashboard = hasLiveBalance && hasLiveToday;
               const hasOfficialTasks = !!officialTasks && typeof officialTasks === 'object';
               const dataState = hasLiveDashboard && hasOfficialTasks
                 ? (officialTasks.hasUnknown ? 'partial' : 'complete')
-                : 'partial';
-              configManager.upsertAccount({
+                : (hasLiveDashboard ? 'partial' : (account.dataState || 'unknown'));
+
+              const updatePayload = {
                 id: account.id,
                 name: account.name,
                 user: account.user,
-                balance: data.balance,
-                todayEarned: data.todayPoints,
-                streakDays: data.streakDays,
-                claimablePoints: data.claimablePoints,
-                officialTasks,
-                lastSyncAt: syncedAt,
-                dataState
-              });
-              historyManager.recordDaily(account.id, {
-                todayEarned: data.todayPoints,
-                balance: data.balance,
-                streakDays: data.streakDays,
-                claimablePoints: data.claimablePoints,
-                officialTasks,
-                source: 'official-sync'
-              });
-              logger.log('✅', `[官网同步] 账号 [${account.name}] 真实数据回写成功: 今日 ${data.todayPoints}分, 总额 ${data.balance}分, 连签 ${data.streakDays}天`);
+                officialTasks: officialTasks || account.officialTasks || null,
+                lastSyncAt: hasLiveDashboard ? syncedAt : (account.lastSyncAt || null),
+                dataState,
+                status: 'ready'
+              };
+              if (hasLiveBalance) updatePayload.balance = data.balance;
+              if (hasLiveToday) updatePayload.todayEarned = data.todayPoints;
+              if (data.sources?.streakDays === 'live') updatePayload.streakDays = data.streakDays;
+              if (data.sources?.claimablePoints === 'live') updatePayload.claimablePoints = data.claimablePoints;
+
+              configManager.upsertAccount(updatePayload);
+
+              if (hasLiveToday || hasLiveBalance) {
+                historyManager.recordDaily(account.id, {
+                  todayEarned: hasLiveToday ? data.todayPoints : null,
+                  balance: hasLiveBalance ? data.balance : null,
+                  streakDays: data.sources?.streakDays === 'live' ? data.streakDays : null,
+                  claimablePoints: data.sources?.claimablePoints === 'live' ? data.claimablePoints : null,
+                  officialTasks,
+                  source: 'official-sync'
+                });
+                logger.log('✅', `[官网同步] 账号 [${account.name}] 真实数据回写成功: 今日 ${hasLiveToday ? data.todayPoints + '分' : '未更新'}, 总额 ${hasLiveBalance ? data.balance + '分' : '未更新'}, 连签 ${data.streakDays || 0}天`);
+              } else {
+                logger.log('⚠️', `[官网同步] 账号 [${account.name}] 未能从微软官网采集到有效资产数据，保留原数据未覆盖`);
+              }
             });
             await new Promise((r) => setTimeout(r, 1500));
           } catch (err) {
