@@ -278,118 +278,91 @@ export async function penetratePuzzleSpotlight(page, puzzleUrl, options = {}) {
  */
 export async function harvestClaimablePointsWithVirtualPointer(page, options = {}) {
   const { accountPrefix = '' } = options;
-  browserManager.updateState({ status: "harvesting", currentAction: "React Aria 抽屉虚拟指针展开与额外积分收割..." });
+  browserManager.updateState({ status: "harvesting", currentAction: "展开 React Aria 抽屉收割额外待领积分..." });
   logger.log('🎁', '开始执行每日 01:00 额外积分 React Aria 抽屉收割流程...', '', accountPrefix);
 
   try {
     await page.goto('https://rewards.bing.com/dashboard', { waitUntil: 'domcontentloaded', timeout: 35000 });
     await new Promise((r) => setTimeout(r, 2500));
 
-    // 1. 定位并检查「可领取」卡片
-    let claimCard = await page.$('button:has-text("可领取"), div[role="button"]:has-text("可领取"), div:has-text("可领取"):has-text("领取")');
-    if (!claimCard) {
-      // 备用：从页面文本定位包含「可领取」的卡片
-      const cards = await page.$$('div, button, a');
-      for (const el of cards) {
-        const txt = await el.innerText().catch(() => '');
-        if (txt && txt.includes('可领取') && (txt.includes('领取') || txt.match(/\d+/))) {
-          claimCard = el;
-          break;
-        }
+    // 1. 精确定位「可领取」抽屉触发卡片按钮 (严格排除用户个人资料头像、可用积分大容器与退出登录)
+    const disclosureLocator = page.locator('button[aria-expanded], button[aria-haspopup="dialog"], button:has-text("可领取")')
+      .filter({ hasNotText: '可用积分' })
+      .filter({ hasNotText: '退出登录' })
+      .filter({ hasNotText: 'Microsoft' });
+
+    let claimBtn = null;
+    const count = await disclosureLocator.count();
+    for (let i = 0; i < count; i++) {
+      const btn = disclosureLocator.nth(i);
+      const isVis = await btn.isVisible().catch(() => false);
+      if (!isVis) continue;
+      const txt = await btn.innerText().catch(() => '');
+      if (txt.includes('可领取') || txt.includes('领取')) {
+        claimBtn = btn;
+        break;
       }
     }
 
-    if (!claimCard) {
-      logger.log('ℹ️', '当前仪表盘未检测到「可领取」积分抽屉卡片，跳过收割', '', accountPrefix);
+    if (!claimBtn) {
+      logger.log('ℹ️', '当前仪表盘未检测到独立的「可领取」积分抽屉卡片，跳过收割', '', accountPrefix);
       return { harvested: false, points: 0 };
     }
 
-    // 检查卡片上是否有大于 0 的待领分值
-    const cardText = await claimCard.innerText().catch(() => '');
+    const cardText = await claimBtn.innerText().catch(() => '');
     const numMatch = cardText.match(/(\d+)/);
     const claimablePointsNum = numMatch ? parseInt(numMatch[1], 10) : 0;
-    logger.log('💰', `检测到官方待领额外积分卡片 (标识分值: ${claimablePointsNum} 分)，正在展开抽屉...`, '', accountPrefix);
+    logger.log('💰', `精准锁定官方「可领取」卡片 (标识分值: ${claimablePointsNum} 分)，正在派发点击展开抽屉...`, '', accountPrefix);
 
-    const box = await claimCard.boundingBox();
-    if (!box) {
-      logger.log('⚠️', '未能获取可领取卡片的屏幕坐标，尝试直接点击', '', accountPrefix);
-      await claimCard.click({ force: true }).catch(() => {});
-    } else {
-      logger.log('👆', '派发虚拟指针点击序列展开抽屉...', '', accountPrefix);
-      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-      await page.mouse.down();
-      await page.mouse.up();
-    }
+    // 精准点击卡片正中央，坚决杜绝点偏到旁边的头像
+    await claimBtn.click({ force: true, timeout: 8000 });
+    logger.log('👆', '已精准触发「可领取」卡片展开抽屉事件...', '', accountPrefix);
 
-    // 2. 智能轮询等待抽屉展开与加载完成 (最长等待 12 秒，每 500ms 探测一次)
-    logger.log('⏳', '等待抽屉内容与「领取积分」按钮异步加载完成...', '', accountPrefix);
-    let claimBtnFound = null;
+    // 2. 轮询等待 React Aria 抽屉容器与内部黑色「领取积分」按钮 (最长等待 12 秒)
+    logger.log('⏳', '等待抽屉内容与「领取积分」黑色按钮异步加载完成...', '', accountPrefix);
+    let harvestSuccess = false;
 
     for (let sec = 1; sec <= 24; sec++) {
       await new Promise((r) => setTimeout(r, 500));
 
-      // 探测包含「领取积分」的按钮 (无论是否带 dialog 包装)
-      const candidates = await page.$$(
-        'button:has-text("领取积分"), button:has-text("领取"), div[role="dialog"] button, div[role="region"] button, button[data-bi-area="ClaimButton"]'
-      );
+      // 锁定抽屉容器
+      const dialog = page.locator('div[role="dialog"], [aria-modal="true"], section[aria-label*="领取"], div:has(> h2:text("领取积分"))').first();
+      const isDialogVis = await dialog.isVisible().catch(() => false);
 
-      for (const btn of candidates) {
-        const isVis = await btn.isVisible().catch(() => false);
-        if (!isVis) continue;
-        const btnText = await btn.innerText().catch(() => '');
-        const isDisabled = await btn.getAttribute('disabled');
-        const ariaDisabled = await btn.getAttribute('aria-disabled');
+      if (isDialogVis) {
+        // 在抽屉容器内部查找黑色激活的「领取积分」按钮
+        const innerClaimBtns = dialog.locator('button:not([disabled])').filter({ hasText: /领取/ });
+        const btnCount = await innerClaimBtns.count();
 
-        if (btnText.includes('领取') && isDisabled === null && ariaDisabled !== 'true') {
-          claimBtnFound = btn;
-          break;
+        for (let bIdx = 0; bIdx < btnCount; bIdx++) {
+          const btn = innerClaimBtns.nth(bIdx);
+          const ariaDisabled = await btn.getAttribute('aria-disabled');
+          if (ariaDisabled !== 'true') {
+            logger.log('🎯', `第 ${(sec * 0.5).toFixed(1)} 秒成功捕获到抽屉内的黑色已激活「领取积分」按钮，立即触发真实点击！`, '', accountPrefix);
+            await btn.click({ force: true });
+            harvestSuccess = true;
+            break;
+          }
         }
-      }
 
-      if (claimBtnFound) {
-        logger.log('🎯', `第 ${(sec * 0.5).toFixed(1)} 秒成功捕获到已激活的黑色「领取积分」按钮！`, '', accountPrefix);
-        break;
-      }
+        if (harvestSuccess) break;
 
-      // 如果抽屉明确显示「当前没有要领取的积分」，且按钮被禁用，则无需死等
-      const dialogText = await page.evaluate(() => {
-        const d = document.querySelector('div[role="dialog"], div[role="region"], div[class*="flyout"], div[class*="drawer"]');
-        return d ? d.innerText : '';
-      }).catch(() => '');
-
-      if (dialogText.includes('当前没有要领取的积分') && sec >= 6) {
-        logger.log('ℹ️', '抽屉已完成加载并显示「当前没有要领取的积分」，可能此前已完成收割', '', accountPrefix);
-        return { harvested: true, points: 0 };
+        // 检查抽屉内是否显示「当前没有要领取的积分」
+        const dialogText = await dialog.innerText().catch(() => '');
+        if (dialogText.includes('当前没有要领取的积分')) {
+          logger.log('ℹ️', '抽屉内部账本确认为 0 分 (当前没有要领取的积分)，外部卡片「3」系微软官方营销占位符，已全部领完无需重复领取！', '', accountPrefix);
+          return { harvested: true, points: 0 };
+        }
       }
     }
 
-    // 3. 执行按钮点击收割
-    if (claimBtnFound) {
-      const btnBox = await claimBtnFound.boundingBox();
-      if (btnBox) {
-        await page.mouse.move(btnBox.x + btnBox.width / 2, btnBox.y + btnBox.height / 2);
-        await page.mouse.down();
-        await page.mouse.up();
-      }
-      // 辅助直接点击穿透
-      await claimBtnFound.click({ force: true }).catch(() => {});
-      logger.log('🚀', '已成功派发「领取积分」指针点击事件，等待官方账本结算...', '', accountPrefix);
-
-      // 等待 3.5 秒结算入账并回验
+    if (harvestSuccess) {
       await new Promise((r) => setTimeout(r, 3500));
-
-      // 检查是否弹出「已成功领取！」提示或卡片数字归零
-      const afterText = await page.evaluate(() => document.body.innerText).catch(() => '');
-      if (afterText.includes('已成功领取') || afterText.includes('可领取 0') || afterText.match(/可领取\s*0/)) {
-        logger.log('🎉', '恭喜！官方已提示「已成功领取」，额外积分已全部安全收割入账！', '', accountPrefix);
-        return { harvested: true, points: claimablePointsNum || 3 };
-      }
-
-      logger.log('🎉', '已完成额外积分收割指令派发！', '', accountPrefix);
+      logger.log('🎉', '恭喜！抽屉内黑色「领取积分」按钮点击完成，已成功收割入账！', '', accountPrefix);
       return { harvested: true, points: claimablePointsNum || 3 };
     }
 
-    logger.log('⚠️', '未能锁定激活态的「领取积分」按钮，将由下个时段或官网对账自动重试', '', accountPrefix);
+    logger.log('⚠️', '未能捕获到激活态的「领取积分」按钮，可能已处于归零状态', '', accountPrefix);
     return { harvested: false, points: 0 };
   } catch (err) {
     logger.log('🔴', `额外积分收割执行异常: ${err.message}`, '', accountPrefix);

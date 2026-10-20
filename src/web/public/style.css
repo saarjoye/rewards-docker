@@ -3929,3 +3929,87 @@ input:focus, select:focus, textarea:focus {
   border: 1px solid #f43f5e !important;
   box-shadow: 0 2px 6px rgba(244, 63, 94, 0.25) !important;
 }
+
+/* ============================================================
+   全局配置中心：Tab 标签栏高度防挤压与滚动条完全隐藏
+   ============================================================ */
+.cfg-tabs-row {
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  align-items: center !important;
+  gap: 8px !important;
+  padding: 4px 0 10px 0 !important;
+  margin-bottom: 16px !important;
+  border-bottom: 1px solid #e2e8f0 !important;
+  min-height: 52px !important;
+  height: 52px !important;
+  box-sizing: border-box !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+
+.cfg-tabs-row::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+.cfg-tab {
+  height: 38px !important;
+  min-height: 38px !important;
+  max-height: 38px !important;
+  padding: 0 16px !important;
+  border-radius: 10px !important;
+  font-size: 13px !important;
+  font-weight: 700 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 6px !important;
+  flex-shrink: 0 !important;
+  white-space: nowrap !important;
+  box-sizing: border-box !important;
+  border: 1px solid #cbd5e1 !important;
+  background: #ffffff !important;
+  color: #475569 !important;
+  cursor: pointer !important;
+  transition: all 0.2s ease !important;
+}
+
+.cfg-tab:hover {
+  background: #f8fafc !important;
+  color: #0f172a !important;
+  border-color: #94a3b8 !important;
+}
+
+.cfg-tab.active {
+  background: linear-gradient(135deg, #ff5722, #f4511e) !important;
+  color: #ffffff !important;
+  border-color: #ff5722 !important;
+  box-shadow: 0 2px 8px rgba(255, 87, 34, 0.35) !important;
+}
+
+.btn-test-action {
+  cursor: pointer !important;
+  background: #ffffff !important;
+  border: 1px solid #0284c7 !important;
+  color: #0284c7 !important;
+  font-size: 12px !important;
+  font-weight: 750 !important;
+  padding: 6px 14px !important;
+  border-radius: 8px !important;
+  white-space: nowrap !important;
+  transition: all 0.2s ease !important;
+  box-shadow: 0 1px 3px rgba(2, 132, 199, 0.1) !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+.btn-test-action:hover {
+  background: #f0f9ff !important;
+  border-color: #0369a1 !important;
+  transform: translateY(-1px) !important;
+}

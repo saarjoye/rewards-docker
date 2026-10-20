@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.1.6",
-  "description": "Microsoft Rewards 自动化平台 (v6.1.6 账号卡片三态变色LOGO与全端状态精确同步)",
+  "version": "6.1.7",
+  "description": "Microsoft Rewards 自动化平台 (v6.1.7 修复抽屉误点头像Bug与全局配置完全统一)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {

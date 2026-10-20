@@ -220,11 +220,14 @@ class ConfigManager {
       this.config.scheduler = { ...this.config.scheduler, ...settings.scheduler };
     }
     if (settings.notify) {
+      const currentNotify = this.config.notify || {};
       this.config.notify = {
-        ...this.config.notify,
+        ...currentNotify,
         ...settings.notify,
+        weworkRobot: settings.notify.weworkRobot !== undefined ? settings.notify.weworkRobot : (currentNotify.weworkRobot || ''),
+        dingdingRobot: settings.notify.dingdingRobot !== undefined ? settings.notify.dingdingRobot : (currentNotify.dingdingRobot || ''),
         weworkApp: {
-          ...this.config.notify?.weworkApp,
+          ...currentNotify.weworkApp,
           ...(settings.notify.weworkApp || {})
         }
       };

@@ -409,6 +409,17 @@ export function createServer() {
     res.json({ success: true, history: list });
   });
 
+  // 全局配置中心数据全量保存 (对标图 1-6)
+  app.post('/api/config/global', (req, res) => {
+    try {
+      const updated = configManager.updateGlobalSettings(req.body || {});
+      logger.log('⚙️', '全局配置中心参数已成功更新生效！');
+      res.json({ success: true, config: updated, message: '全局配置已成功保存生效！' });
+    } catch (e) {
+      res.status(500).json({ success: false, message: e.message });
+    }
+  });
+
   // 9. 保存企业微信应用推送配置 (含反代地址)
   app.post('/api/notify', (req, res) => {
     try {
