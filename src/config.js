@@ -135,8 +135,12 @@ class ConfigManager {
     let changed = false;
 
     for (const a of list) {
-      if (a.todayDate !== todayStr) {
-        // 自然日跨天重置：新的一天开启，重置今日增量，杜绝残留昨天的数据
+      if (!a.todayDate) {
+        // 首次初始化或版本升级：坚决保留已有真实积分，仅记录今日日期，杜绝误杀清零
+        a.todayDate = todayStr;
+        changed = true;
+      } else if (a.todayDate !== todayStr) {
+        // 确实跨越了自然天（昨天是旧日期）：开启新一天重置
         a.todayEarned = 0;
         a.todayDate = todayStr;
         changed = true;

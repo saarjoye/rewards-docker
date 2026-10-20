@@ -97,7 +97,8 @@ export async function performHumanizedSearch(page, queryWord, options = {}) {
   const dwellTime = 4000 + Math.random() * 3000;
   await new Promise((r) => setTimeout(r, dwellTime));
 
-  return true;
+  // 必须返回最新的有效 Page 实例，杜绝将 page 变量覆盖为布尔值导致 page.close is not a function 异常
+  return page;
 }
 
 /**

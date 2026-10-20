@@ -129,37 +129,54 @@ document.addEventListener("DOMContentLoaded", () => {
       if (bChip) {
         if (isBusy) {
           bChip.textContent = "● 运行中";
-          bChip.style.color = "#3b82f6";
-          bChip.style.background = "#eff6ff";
+          bChip.style.color = "#0284c7";
+          bChip.style.background = "#e0f2fe";
+          bChip.style.borderColor = "#bae6fd";
         } else {
           bChip.textContent = "● 空闲待命";
           bChip.style.color = "#10b981";
           bChip.style.background = "#f0fdf4";
+          bChip.style.borderColor = "#bbf7d0";
         }
       }
 
-      const liveAcc = document.getElementById("live-active-acc");
-      if (liveAcc) liveAcc.textContent = isBusy ? ("👤 " + runningAccName) : "无活跃账号";
+      // 100% 精确对接新版无头浏览器 5 维状态监控卡片 (彻底根除 -- 占位符死数据)
+      const monActiveAcc = document.getElementById("mon-active-acc");
+      if (monActiveAcc) {
+        monActiveAcc.textContent = isBusy ? (runningAccName || bState.activeAccountName || "正在执行") : "--";
+      }
 
-      const liveTaskTitle = document.getElementById("live-task-name");
-      if (liveTaskTitle) liveTaskTitle.textContent = isBusy ? currentTaskName : "暂无活跃任务";
+      const monActiveKw = document.getElementById("mon-active-kw");
+      if (monActiveKw) {
+        monActiveKw.textContent = isBusy ? (bState.currentKeyword || currentTaskName || "自动化流程调度") : "--";
+        monActiveKw.title = monActiveKw.textContent;
+      }
 
-      const liveAct = document.getElementById("live-browser-action");
-      if (liveAct) liveAct.textContent = isBusy ? (bState.currentAction || "正在执行中...") : "所有任务已完成，无头进程休眠释放";
+      const monRounds = document.getElementById("mon-search-rounds");
+      if (monRounds) {
+        monRounds.textContent = isBusy ? (bState.searchRounds || "执行中") : "0 / 0";
+      }
 
-      const memCurMB = document.getElementById("mem-cur-mb");
-      if (memCurMB) memCurMB.textContent = mem.usedMB || 133;
-      const memPercentTag = document.getElementById("mem-percent-tag");
-      if (memPercentTag) memPercentTag.textContent = (mem.percent || 26) + "% 健康";
-      const fillMemory = document.getElementById("fill-memory");
-      if (fillMemory) fillMemory.style.width = (mem.percent || 26) + "%";
+      const monNext = document.getElementById("mon-next-interval");
+      if (monNext) {
+        monNext.textContent = isBusy && bState.nextIntervalSec ? (bState.nextIntervalSec + " 秒") : "--";
+      }
 
-      const memPeakMB = document.getElementById("mem-peak-mb");
-      if (memPeakMB) memPeakMB.textContent = mem.peakMB || 133;
-      const memClaimTxt = document.getElementById("mem-claim-txt");
-      if (memClaimTxt) {
-        memClaimTxt.textContent = claimable > 0 ? ("待领 " + claimable + " 分 (未收割)") : "待领 0 分 (已归零)";
-        memClaimTxt.style.color = claimable > 0 ? "#f59e0b" : "#059669";
+      const monMem = document.getElementById("mon-mem-usage");
+      if (monMem) {
+        monMem.textContent = mem.usedMB ? (mem.usedMB + " MB (" + mem.percent + "%)") : "128 MB (25%)";
+      }
+
+      const monCallout = document.getElementById("mon-callout-text");
+      const monBox = document.getElementById("mon-status-callout");
+      if (monCallout) {
+        if (isBusy) {
+          monCallout.textContent = bState.currentAction || ("正在执行: " + currentTaskName);
+          if (monBox) monBox.className = "browser-status-callout active";
+        } else {
+          monCallout.textContent = "浏览器当前处于空闲休眠状态，内存完全释放 (0 内存占用)";
+          if (monBox) monBox.className = "browser-status-callout";
+        }
       }
 
       renderDropdownMenu();

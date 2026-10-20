@@ -173,7 +173,7 @@ export class TaskManager {
     } catch (e) {
       log(`官网看板数据同步异常: ${e.message}`);
     } finally {
-      await page.close().catch(() => {});
+      if (page && typeof page.close === 'function') { await page.close().catch(() => {}); }
     }
 
     const rawOffers = extractOfferObjects(flightChunks || dashHtml);
@@ -412,11 +412,35 @@ export class TaskManager {
                   const word = getRandomSearchWord();
                   this.currentTaskName = `必应 PC 搜索 (第 ${i}/${maxSearches} 轮: "${word}")`;
                   log(`正在执行第 ${i}/${maxSearches} 轮搜索: "${word}"...`);
-                  page = await performHumanizedSearch(page, word, { accountPrefix: account.name });
+
+                  browserManager.updateState({
+                    status: 'typing',
+                    activeAccountId: accountId,
+                    activeAccountName: account.name || account.user,
+                    currentKeyword: word,
+                    searchRounds: `${i} / ${maxSearches}`,
+                    nextIntervalSec: 0,
+                    currentAction: `[${account.name || account.user}] 正在拟人键入并搜索: "${word}" (${i}/${maxSearches})`
+                  });
+                  const searchRes = await performHumanizedSearch(page, word, { accountPrefix: account.name });
+                  if (searchRes && typeof searchRes.goto === 'function') {
+                    page = searchRes;
+                  }
 
                   // 精准拟人睡眠：基础秒数 + [0, 随机浮动秒数]，杜绝硬编码 168 秒
                   const sleepSec = baseSec + Math.random() * jitterSec;
                   log(`[风控防线] 拟人搜索间隔退避 ${sleepSec.toFixed(1)} 秒 (基础 ${baseSec}s + 浮动 ${jitterSec}s)...`);
+                  
+                  browserManager.updateState({
+                    status: 'dwelling',
+                    activeAccountId: accountId,
+                    activeAccountName: account.name || account.user,
+                    currentKeyword: word,
+                    searchRounds: `${i} / ${maxSearches}`,
+                    nextIntervalSec: Math.round(sleepSec),
+                    currentAction: `[${account.name || account.user}] 风控退避拟人休眠 ${sleepSec.toFixed(1)}s，防频控冷冻...`
+                  });
+
                   await new Promise((r) => setTimeout(r, sleepSec * 1000));
 
                   if (i % 3 === 0 || i === maxSearches) {
@@ -463,7 +487,7 @@ export class TaskManager {
               log(`🎉 账号 [${account.name}] 任务执行完成！今日积分: ${finalData.todayPoints} 分, 可用余额: ${finalData.balance} 分, 连签: ${finalData.streakDays} 天`);
               notifier.sendSettlementReport(account, finalData).catch(() => {});
             } finally {
-              await page.close().catch(() => {});
+              if (page && typeof page.close === 'function') { await page.close().catch(() => {}); }
             }
           }
         );
@@ -535,7 +559,7 @@ export class TaskManager {
             logger.log('🎉', `[收割入账] 账号 [${account.name}] 权威对账完毕 - 可用余额: ${finalData.balance} 分, 待领额外积分已同步更新为: ${finalData.claimablePoints} 分`);
             notifier.sendSettlementReport(account, finalData).catch(() => {});
           } finally {
-            await page.close().catch(() => {});
+            if (page && typeof page.close === 'function') { await page.close().catch(() => {}); }
           }
         }
       );
