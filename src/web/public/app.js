@@ -1836,14 +1836,17 @@ document.addEventListener("DOMContentLoaded", () => {
       const data = await res.json();
       
       // 启动动态对账轮询，每 1.5 秒更新一次大盘，直到官方账本完成收割并实时同步分值
-      let rounds = 0;
+      let elapsed = 0;
       const pollTimer = setInterval(async () => {
-        rounds++;
-        await refreshDashboard();
-        if (rounds >= 10) {
+        elapsed += 1500;
+        const statusData = await refreshDashboard();
+        const stillBusy = statusData && (statusData.isBusy || statusData.runningAccountId);
+        // 持续轮询直到后台收割与对账流程完全结束，或达到 90 秒安全超时上限
+        if (!stillBusy || elapsed >= 90000) {
           clearInterval(pollTimer);
           claimBtn.disabled = false;
           claimBtn.innerHTML = "<span>一键领取 ➜</span>";
+          await refreshDashboard();
         }
       }, 1500);
     } catch (e) {

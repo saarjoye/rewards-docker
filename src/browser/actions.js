@@ -533,15 +533,17 @@ export async function harvestClaimablePointsWithVirtualPointer(page, options = {
     }
 
     if (await claimButton.isVisible().catch(() => false)) {
-      const btnBox = await claimButton.boundingBox();
-      if (btnBox) {
-        await page.mouse.move(btnBox.x + btnBox.width / 2, btnBox.y + btnBox.height / 2);
-        await page.mouse.down();
-        await page.mouse.up();
-      } else {
-        await claimButton.click({ force: true });
+      try {
+        await claimButton.scrollIntoViewIfNeeded().catch(() => {});
+        await claimButton.click({ timeout: 6000 });
+      } catch {
+        const btnBox = await claimButton.boundingBox();
+        if (btnBox) {
+          await page.mouse.click(btnBox.x + btnBox.width / 2, btnBox.y + btnBox.height / 2);
+        }
       }
-      logger.log('👆', '已点击抽屉内「领取积分」按钮，等待官方余额与待领取状态入账...', '', accountPrefix);
+      await claimButton.dispatchEvent('click').catch(() => {});
+      logger.log('👆', '已真实点击抽屉内「领取积分」按钮，向微软服务端提交领奖请求...', '', accountPrefix);
     } else {
       logger.log('⚠️', '抽屉已展开但未定位到激活的「领取积分」按钮，直接触发回验对账', '', accountPrefix);
     }
