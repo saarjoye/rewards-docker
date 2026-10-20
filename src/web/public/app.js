@@ -1786,8 +1786,17 @@ document.addEventListener("DOMContentLoaded", () => {
     claimBtn.disabled = true;
     claimBtn.innerHTML = "<span>⏳ 正在收割...</span>";
 
+    const selectBoardView = document.getElementById("select-board-view");
+    const targetAccountId = (viewMode === "single" && selectedAccountId)
+      ? selectedAccountId
+      : (selectBoardView ? selectBoardView.value : "all");
+
     try {
-      const res = await fetch("/api/system/harvest", { method: "POST" });
+      const res = await fetch("/api/system/harvest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accountId: targetAccountId })
+      });
       const data = await res.json();
       
       // 启动动态对账轮询，每 1.5 秒更新一次大盘，直到官方账本完成收割并实时同步分值

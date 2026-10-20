@@ -254,7 +254,7 @@ export function createServer() {
     res.json({
       success: true,
       schedulerRunning: scheduler.running,
-      isBusy: !!taskManager.runningAccountId,
+      isBusy: !!taskManager.runningAccountId || !!taskManager.isQueueRunning,
       runningAccountId: taskManager.runningAccountId,
       runningAccountName: taskManager.runningAccountName || '',
       currentTaskSection: taskManager.currentTaskSection || '',
@@ -392,16 +392,32 @@ export function createServer() {
     res.json({ success: true, account: acc, sourcePath: result.path });
   });
 
-  // 7. 手动触发午夜额外积分收割
+  // 7. 手动触发额外积分收割 (支持指定单账号或全量多账号)
   app.post('/api/system/harvest', async (req, res) => {
+    const { accountId } = req.body || {};
+    if (accountId && accountId !== 'all') {
+      const account = configManager.getAccount(accountId);
+      if (!account) return res.status(404).json({ success: false, message: '账号不存在' });
+      (async () => {
+        await taskManager.harvestMidnightClaimable(accountId);
+      })();
+      return res.json({ success: true, message: `已启动账号 [${account.name || account.user}] 的专属额外积分收割` });
+    }
+
     const accounts = configManager.getAccounts().filter((a) => a.enabled);
     (async () => {
-      for (const a of accounts) {
-        await taskManager.harvestMidnightClaimable(a.id);
-        await new Promise((r) => setTimeout(r, 5000));
+      taskManager.isQueueRunning = true;
+      try {
+        for (const a of accounts) {
+          if (taskManager.shouldStop) break;
+          await taskManager.harvestMidnightClaimable(a.id);
+          await new Promise((r) => setTimeout(r, 5000));
+        }
+      } finally {
+        taskManager.isQueueRunning = false;
       }
     })();
-    res.json({ success: true, message: '已触发额外积分收割，正在后台穿透 React Aria 抽屉' });
+    res.json({ success: true, message: `已启动全量 ${accounts.length} 个账号的额外积分收割` });
   });
 
   // 8. 获取历史统计趋势

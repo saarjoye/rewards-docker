@@ -36,6 +36,7 @@ export class TaskManager {
     this.currentTaskSection = '';
     this.currentTaskName = '';
     this.shouldStop = false;
+    this.isQueueRunning = false;
   }
 
   isAccountRunning(accountId) {

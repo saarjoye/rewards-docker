@@ -382,37 +382,39 @@ export async function harvestClaimablePointsWithVirtualPointer(page, options = {
       await claimBtn.click({ force: true }).catch(() => {});
     }
 
-    // 2. 等待抽屉异步完全加载 (4 秒)
-    logger.log('⏳', '等待抽屉内容与「领取积分」黑色按钮异步加载完成...', '', accountPrefix);
-    await new Promise((r) => setTimeout(r, 4000));
+    // 2. 轮询等待抽屉内容与「领取积分」黑色按钮异步渲染 (最长等待 14 秒，防慢速网络与低配容器)
+    logger.log('⏳', '等待抽屉内容与「领取积分」黑色按钮异步加载完成 (动态轮询守护)...', '', accountPrefix);
 
-    // 3. 在抽屉内定位黑色「领取积分」按钮 (使用已实测验证通过的选择器与虚拟指针)
-    const blackClaimBtn = await page.$('div[role="dialog"] button:has-text("领取积分"), button:has-text("领取积分")');
-    if (blackClaimBtn && (await blackClaimBtn.isVisible().catch(() => false))) {
-      const btnBox = await blackClaimBtn.boundingBox();
-      if (btnBox) {
-        logger.log('🎯', '成功捕获到抽屉内的黑色已激活「领取积分」按钮，立即派发真实指针点击！', '', accountPrefix);
-        await page.mouse.move(btnBox.x + btnBox.width / 2, btnBox.y + btnBox.height / 2);
-        await page.mouse.down();
-        await page.mouse.up();
-        await new Promise((r) => setTimeout(r, 4500));
-        logger.log('🎉', '恭喜！抽屉内黑色「领取积分」按钮点击完成，已成功收割入账！', '', accountPrefix);
-        return { harvested: true, points: claimablePointsNum || 3 };
+    for (let t = 1; t <= 28; t++) {
+      await new Promise((r) => setTimeout(r, 500));
+
+      const blackClaimBtn = await page.$('div[role="dialog"] button:has-text("领取积分"), button:has-text("领取积分"), [aria-modal="true"] button:has-text("领取积分")');
+      if (blackClaimBtn && (await blackClaimBtn.isVisible().catch(() => false))) {
+        const btnBox = await blackClaimBtn.boundingBox();
+        if (btnBox) {
+          logger.log('🎯', `第 ${(t * 0.5).toFixed(1)} 秒成功捕获到抽屉内的黑色已激活「领取积分」按钮，立即派发真实指针点击！`, '', accountPrefix);
+          await page.mouse.move(btnBox.x + btnBox.width / 2, btnBox.y + btnBox.height / 2);
+          await page.mouse.down();
+          await page.mouse.up();
+          await new Promise((r) => setTimeout(r, 4500));
+          logger.log('🎉', '恭喜！抽屉内黑色「领取积分」按钮点击完成，已成功收割入账！', '', accountPrefix);
+          return { harvested: true, points: claimablePointsNum || 3 };
+        }
+      }
+
+      // 检查抽屉内是否显示「当前没有要领取的积分」
+      const dialogText = await page.evaluate(() => {
+        const d = document.querySelector('div[role="dialog"], [aria-modal="true"]');
+        return d ? d.innerText : '';
+      }).catch(() => '');
+
+      if (dialogText.includes('当前没有要领取的积分') || dialogText.includes('已成功领取')) {
+        logger.log('ℹ️', '抽屉内部已领完或归零 (当前没有要领取的积分)，已确认成功！', '', accountPrefix);
+        return { harvested: true, points: 0 };
       }
     }
 
-    // 检查抽屉内是否显示「当前没有要领取的积分」
-    const dialogText = await page.evaluate(() => {
-      const d = document.querySelector('div[role="dialog"]');
-      return d ? d.innerText : '';
-    }).catch(() => '');
-
-    if (dialogText.includes('当前没有要领取的积分') || dialogText.includes('已成功领取')) {
-      logger.log('ℹ️', '抽屉内部已领完或归零 (当前没有要领取的积分)，已确认成功！', '', accountPrefix);
-      return { harvested: true, points: 0 };
-    }
-
-    logger.log('⚠️', '未能捕获到激活态的「领取积分」按钮，可能已处于归零状态', '', accountPrefix);
+    logger.log('⚠️', '等待 14 秒未能捕获到激活态的「领取积分」按钮，可能已处于归零状态', '', accountPrefix);
     return { harvested: false, points: 0 };
   } catch (err) {
     logger.log('🔴', `额外积分收割执行异常: ${err.message}`, '', accountPrefix);
