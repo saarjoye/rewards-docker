@@ -1725,24 +1725,42 @@ document.addEventListener("DOMContentLoaded", () => {
     evtSource.onerror = () => setTimeout(connectLogs, 4000);
   }
 
-  document.getElementById("btn-toggle-scroll")?.addEventListener("click", function () {
-    autoScroll = !autoScroll;
-    this.textContent = autoScroll ? "暂停滚动" : "恢复滚动";
-  });
-  
-    const closeLogModal = () => document.getElementById("modal-logs")?.classList.add("hidden");
-    document.getElementById("close-logs-modal")?.addEventListener("click", closeLogModal);
-    document.getElementById("btn-close-logs-bottom")?.addEventListener("click", closeLogModal);
+  function updateScrollButtonState() {
+    const bottomBtn = document.getElementById("btn-toggle-scroll-bottom");
+    if (bottomBtn) {
+      bottomBtn.textContent = autoScroll ? "⏸ 暂停滚动" : "▶ 恢复滚动";
+    }
+  }
 
-    document.getElementById("btn-toggle-scroll-bottom")?.addEventListener("click", () => {
-      document.getElementById("btn-toggle-scroll")?.click();
-    });
-    document.getElementById("btn-clear-logs-bottom")?.addEventListener("click", () => {
-      document.getElementById("btn-clear-logs")?.click();
-    });
-    document.getElementById("btn-scroll-bottom")?.addEventListener("click", () => {
-      if (logTerminal) logTerminal.scrollTop = logTerminal.scrollHeight;
-    });
+  document.getElementById("btn-toggle-scroll-bottom")?.addEventListener("click", () => {
+    autoScroll = !autoScroll;
+    updateScrollButtonState();
+    if (autoScroll && logTerminal) {
+      logTerminal.scrollTop = logTerminal.scrollHeight;
+    }
+  });
+
+  document.getElementById("btn-clear-logs-bottom")?.addEventListener("click", () => {
+    if (logTerminal) logTerminal.innerHTML = "";
+  });
+
+  document.getElementById("btn-scroll-bottom")?.addEventListener("click", () => {
+    if (logTerminal) logTerminal.scrollTop = logTerminal.scrollHeight;
+  });
+
+  const closeLogModal = () => document.getElementById("modal-logs")?.classList.add("hidden");
+  document.getElementById("btn-close-logs-bottom")?.addEventListener("click", closeLogModal);
+  document.getElementById("close-logs-modal")?.addEventListener("click", closeLogModal);
+
+  // 打开日志模态框时同步按钮状态为 ⏸ 暂停滚动
+  document.getElementById("btn-open-terminal")?.addEventListener("click", () => {
+    autoScroll = true;
+    updateScrollButtonState();
+  });
+  document.getElementById("menu-open-logs")?.addEventListener("click", () => {
+    autoScroll = true;
+    updateScrollButtonState();
+  });
 
   document.getElementById("btn-clear-stream")?.addEventListener("click", () => {
     const sBox = document.getElementById("stream-terminal-list");

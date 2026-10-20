@@ -257,34 +257,45 @@ export async function penetratePunchCardQuest(page, questUrl, options = {}) {
     await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 35000 });
     await new Promise((r) => setTimeout(r, 2500));
 
-    // 扫描子步骤卡片
-    const stepCards = await page.$('a[href*="bing.com"][class*="rounded-cornerCtrlRest"], a[class*="bg-bgCtrlBrandRest"], div[data-bi-area="PunchCardStep"], a[href*="/quest/"], a.c-call-to-action');
+    // 扫描子步骤卡片 (使用 page.$ 严防 null.length 异常)
+    let stepCards = (await page.$('a[href*="bing.com"][class*="rounded-cornerCtrlRest"], a[class*="bg-bgCtrlBrandRest"], div[data-bi-area="PunchCardStep"], a[href*="/quest/"], a.c-call-to-action')) || [];
+    if (stepCards.length === 0) {
+      stepCards = (await page.$('a[class*="rounded-cornerCtrlRest"], a[class*="Button"], button[class*="bg-bgCtrlBrandRest"]')) || [];
+    }
     logger.log('🎯', `打孔卡内部发现 ${stepCards.length} 个子步骤`, '', accountPrefix);
 
     for (let j = 0; j < stepCards.length; j++) {
       const step = stepCards[j];
       try {
         const text = await step.innerText().catch(() => '');
-        // 时间锁判定：第 N 天解锁 / 明天再来 -> 安全跳过，防风控
         if (text.includes('明天再来') || text.includes('天解锁')) {
           logger.log('⏳', `打孔卡第 ${j + 1} 步存在时间锁 [明天再来]，打上【明日解锁】标签安全跳过`, '', accountPrefix);
           continue;
         }
 
-        if (await step.isVisible()) {
-          const [stepPopup] = await Promise.all([
-            page.context().waitForEvent('page', { timeout: 6000 }).catch(() => null),
-            step.click()
-          ]);
+        const href = await step.getAttribute('href').catch(() => null);
+        let stepPopup = null;
 
-          if (stepPopup) {
-            await stepPopup.waitForLoadState('domcontentloaded').catch(() => {});
-            await solveQuizOrPoll(stepPopup, { accountPrefix });
-            await new Promise((r) => setTimeout(r, 4000));
-            await stepPopup.close();
-          } else {
-            await new Promise((r) => setTimeout(r, 2500));
-          }
+        if (href && href.startsWith('http')) {
+          stepPopup = await page.context().newPage();
+          await stepPopup.goto(href, { waitUntil: 'domcontentloaded', timeout: 35000 }).catch(() => {});
+        } else if (await step.isVisible().catch(() => false)) {
+          const [p] = await Promise.all([
+            page.context().waitForEvent('page', { timeout: 8000 }).catch(() => null),
+            step.click({ force: true, timeout: 6000 }).catch(() => {})
+          ]);
+          stepPopup = p;
+        }
+
+        if (stepPopup) {
+          await stepPopup.waitForLoadState('domcontentloaded').catch(() => {});
+          await solveQuizOrPoll(stepPopup, { accountPrefix });
+          await stepPopup.mouse.wheel(0, 200).catch(() => {});
+          await new Promise((r) => setTimeout(r, 4500));
+          await stepPopup.close().catch(() => {});
+          logger.log('✅', `打孔卡子步骤 ${j + 1} 穿透打卡成功`, '', accountPrefix);
+        } else {
+          await new Promise((r) => setTimeout(r, 2500));
         }
       } catch (eStep) {
         logger.log('⚠️', `推进打孔卡子步骤 ${j + 1} 异常: ${eStep.message}`, '', accountPrefix);
@@ -498,7 +509,7 @@ export async function penetrateDailyActivities(page, options = {}) {
           await solveQuizOrPoll(popup, { accountPrefix });
           // 模拟真人滚轮浏览
           await popup.mouse.wheel(0, 250).catch(() => {});
-          await new Promise((r) => setTimeout(r, 4500)); // 驻留 4.5 秒确保微软遥测入账
+          await new Promise((r) => setTimeout(r, 5500)); // 驻留 5.5 秒确保微软遥测入账
           await popup.close().catch(() => {});
           executedCount++;
           logger.log('✅', `日常任务第 ${i + 1} 项 (${briefName}) 交互完成，积分遥测已上报`, '', accountPrefix);
