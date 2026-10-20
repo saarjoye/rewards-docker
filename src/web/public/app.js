@@ -1385,6 +1385,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
       if (document.getElementById("cfg-sched-enabled")) document.getElementById("cfg-sched-enabled").checked = sched.enabled !== false;
       if (document.getElementById("cfg-sched-cron")) document.getElementById("cfg-sched-cron").value = sched.cron || "*/25 * * * *";
+      if (document.getElementById("cfg-sched-remaining-retries")) {
+        document.getElementById("cfg-sched-remaining-retries").value = sched.maxRemainingRetries !== undefined ? sched.maxRemainingRetries : 2;
+      }
 
       if (document.getElementById("cfg-wework-robot")) document.getElementById("cfg-wework-robot").value = notify.weworkRobot || "";
       if (document.getElementById("cfg-dingding-robot")) document.getElementById("cfg-dingding-robot").value = notify.dingdingRobot || "";
@@ -1510,7 +1513,8 @@ document.addEventListener("DOMContentLoaded", () => {
       },
       scheduler: {
         enabled: document.getElementById("cfg-sched-enabled")?.checked,
-        cron: document.getElementById("cfg-sched-cron")?.value.trim()
+        cron: document.getElementById("cfg-sched-cron")?.value.trim(),
+        maxRemainingRetries: document.getElementById("cfg-sched-remaining-retries") ? Math.max(0, parseInt(document.getElementById("cfg-sched-remaining-retries").value, 10) || 0) : 2
       },
       notify: {
         weworkRobot: document.getElementById("cfg-wework-robot")?.value.trim(),

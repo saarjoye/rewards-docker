@@ -34,7 +34,9 @@ const DEFAULT_CONFIG = {
       '21:00-01:00'
     ],
     randomJitterMinutes: 30,
-    midnightHarvest: true
+    midnightHarvest: true,
+    cron: '*/25 * * * *',
+    maxRemainingRetries: 2
   },
   // 方案 A：极致拟人安全搜索风控配置 (60~180秒退避 + 0~30秒抖动 + 停滞熔断)
   network: {

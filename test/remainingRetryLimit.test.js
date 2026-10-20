@@ -4,7 +4,7 @@ import configManager, { getTodayDateString } from '../src/config.js';
 import taskManager from '../src/core/taskManager.js';
 import { writeBrowserSession, deleteBrowserSession } from '../src/identity/browserSession.js';
 
-test('未完成任务最多重试 2 次保护，防止死循环', async () => {
+test('未完成任务最多重试 2 次保护与配置中心设 0 不重试测试', async () => {
   const testAccId = 'test_retry_limit_acc';
   const todayStr = getTodayDateString();
 
@@ -21,7 +21,7 @@ test('未完成任务最多重试 2 次保护，防止死循环', async () => {
     cookies: [{ name: '_U', value: 'mock_u', domain: 'bing.com' }]
   });
 
-  // Mock fetchOfficialTaskSnapshot and fetchOfficialDashboard to avoid real browser network
+  // Mock fetchOfficialTaskSnapshot and fetchOfficialDashboard
   const origSnapshot = taskManager.fetchOfficialTaskSnapshot;
   const origDash = taskManager.fetchOfficialDashboard;
   taskManager.fetchOfficialTaskSnapshot = async () => ({ hasWork: false, hasUnknown: false, details: {} });
@@ -34,6 +34,9 @@ test('未完成任务最多重试 2 次保护，防止死循环', async () => {
   });
 
   try {
+    // 1. 默认或设置 maxRemainingRetries = 2
+    configManager.updateGlobalSettings({ scheduler: { maxRemainingRetries: 2 } });
+
     // 第一次尝试 remaining -> 成功执行 (count 变为 1)
     await taskManager.runAccountTasks(testAccId, { taskScope: 'remaining' });
     let acc = configManager.getAccount(testAccId);
@@ -53,12 +56,24 @@ test('未完成任务最多重试 2 次保护，防止死循环', async () => {
 
     // 带 force: true 手动强行重跑 -> 允许绕过限制
     await taskManager.runAccountTasks(testAccId, { taskScope: 'remaining', force: true });
-    acc = configManager.getAccount(testAccId);
-    assert.equal(acc.remainingRetryCount, 2);
+
+    // 2. 配置中心设置 0 则完全不重试未完成任务
+    configManager.updateGlobalSettings({ scheduler: { maxRemainingRetries: 0 } });
+    configManager.upsertAccount({
+      id: testAccId,
+      remainingRetryCount: 0,
+      remainingRetriesDate: todayStr
+    });
+
+    const resZero = await taskManager.runAccountTasks(testAccId, { taskScope: 'remaining' });
+    assert.equal(resZero.skipped, true);
+    assert.equal(resZero.reason, 'remaining-retries-disabled');
+
   } finally {
     taskManager.fetchOfficialTaskSnapshot = origSnapshot;
     taskManager.fetchOfficialDashboard = origDash;
     configManager.deleteAccount(testAccId);
     deleteBrowserSession(testAccId);
+    configManager.updateGlobalSettings({ scheduler: { maxRemainingRetries: 2 } });
   }
 });

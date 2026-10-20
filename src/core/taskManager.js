@@ -467,12 +467,24 @@ export class TaskManager {
     const taskScope = options.taskScope || 'all';
     const todayStr = getTodayDateString();
 
-    // 未完成任务最多重试 2 次保护，防止无法完成的外部项目死循环一直跑
+    // 未完成任务自动重试次数控制：可在配置中心自行设置，设为 0 则不自动重试未完成任务
     if (taskScope === 'remaining' && !options.force) {
+      const fullCfg = configManager.get();
+      const configuredMax = fullCfg.scheduler?.maxRemainingRetries !== undefined
+        ? Number(fullCfg.scheduler.maxRemainingRetries)
+        : (fullCfg.taskOptions?.maxRemainingRetries !== undefined ? Number(fullCfg.taskOptions.maxRemainingRetries) : 2);
+      const maxRetries = options.maxRemainingRetries !== undefined
+        ? Number(options.maxRemainingRetries)
+        : configuredMax;
+
+      if (maxRetries === 0) {
+        logger.log('🛑', `[重试保护] 账号 [${account.name}] 未完成任务重试次数配置为 0，跳过自动补做。`, '', account.name);
+        return { success: true, skipped: true, reason: 'remaining-retries-disabled' };
+      }
+
       const retryCount = (account.remainingRetriesDate === todayStr) ? (Number(account.remainingRetryCount) || 0) : 0;
-      const maxRetries = Number(options.maxRemainingRetries || 2);
       if (retryCount >= maxRetries) {
-        logger.log('🛑', `[重试保护] 账号 [${account.name}] 今日未完成剩余任务已执行 ${retryCount} 次（已达上限 ${maxRetries} 次），安全跳过，防止反复死循环。`, '', account.name);
+        logger.log('🛑', `[重试保护] 账号 [${account.name}] 今日未完成剩余任务已执行 ${retryCount} 次（已达配置上限 ${maxRetries} 次），安全跳过，防止反复死循环。`, '', account.name);
         return { success: true, skipped: true, reason: 'max-remaining-retries-reached' };
       }
       configManager.upsertAccount({
