@@ -422,9 +422,16 @@ export class TaskManager {
                     nextIntervalSec: 0,
                     currentAction: `[${account.name || account.user}] 正在拟人键入并搜索: "${word}" (${i}/${maxSearches})`
                   });
-                  const searchRes = await performHumanizedSearch(page, word, { accountPrefix: account.name });
-                  if (searchRes && typeof searchRes.goto === 'function') {
-                    page = searchRes;
+                  let searchRes = null;
+                  try {
+                    searchRes = await performHumanizedSearch(page, word, { accountPrefix: account.name, context });
+                    if (searchRes && typeof searchRes.goto === 'function') {
+                      page = searchRes;
+                    }
+                  } catch (searchErr) {
+                    log(`⚠️ 第 ${i}/${maxSearches} 轮搜索遭遇瞬态异常 (${searchErr.message})，自愈视口并继续下一轮...`);
+                    try { if (page && typeof page.close === 'function') await page.close().catch(() => {}); } catch {}
+                    try { page = await context.newPage(); } catch {}
                   }
 
                   // 精准拟人睡眠：基础秒数 + [0, 随机浮动秒数]，杜绝硬编码 168 秒

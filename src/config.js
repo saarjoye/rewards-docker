@@ -185,7 +185,8 @@ class ConfigManager {
       enabled: accountData.enabled !== undefined ? accountData.enabled : (existing?.enabled !== false),
       status: accountData.status || (existing?.status || 'ready'),
       balance: accountData.balance !== undefined ? accountData.balance : (existing?.balance || 0),
-      todayEarned: accountData.todayEarned !== undefined ? accountData.todayEarned : (existing?.todayEarned || 0),
+      todayEarned: accountData.todayEarned !== undefined ? Math.max(Number(accountData.todayEarned) || 0, existing?.todayEarned || 0) : (existing?.todayEarned || 0),
+      slot: accountData.slot || existing?.slot || 'auto',
       streakDays: accountData.streakDays !== undefined ? accountData.streakDays : (existing?.streakDays || 0),
       claimablePoints: accountData.claimablePoints !== undefined ? accountData.claimablePoints : (existing?.claimablePoints || 0),
       lastRun: accountData.lastRun || (existing?.lastRun || null)

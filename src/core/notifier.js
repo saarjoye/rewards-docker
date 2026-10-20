@@ -156,6 +156,59 @@ export class Notifier {
   /**
    * 测试连通性
    */
+  async sendWeWorkBot(webhookUrlOrKey, title, content) {
+    if (!webhookUrlOrKey) throw new Error('未提供企业微信群机器人 Webhook Key 或 URL');
+    const url = webhookUrlOrKey.startsWith('http')
+      ? webhookUrlOrKey
+      : `https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=${webhookUrlOrKey}`;
+
+    const payload = {
+      msgtype: 'markdown',
+      markdown: { content: `### 🎁 ${title}\n\n${content}\n\n> 🤖 来自 Microsoft Rewards 自动化托管平台` }
+    };
+
+    const res = await networkClient.request({
+      url,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      data: JSON.stringify(payload)
+    });
+    const data = typeof res === 'string' ? JSON.parse(res) : res;
+    if (data && Number(data.errcode) !== 0) {
+      throw new Error(data.errmsg || 'Webhook 发送失败');
+    }
+    logger.log('📢', '「企业微信群机器人」消息推送成功！');
+    return true;
+  }
+
+  async sendDingTalkBot(tokenOrUrl, title, content) {
+    if (!tokenOrUrl) throw new Error('未提供钉钉群机器人 Access Token 或 URL');
+    const url = tokenOrUrl.startsWith('http')
+      ? tokenOrUrl
+      : `https://oapi.dingtalk.com/robot/send?access_token=${tokenOrUrl}`;
+
+    const payload = {
+      msgtype: 'markdown',
+      markdown: {
+        title,
+        text: `### 🎁 ${title}\n\n${content}\n\n> 🤖 来自 Microsoft Rewards 自动化托管平台`
+      }
+    };
+
+    const res = await networkClient.request({
+      url,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      data: JSON.stringify(payload)
+    });
+    const data = typeof res === 'string' ? JSON.parse(res) : res;
+    if (data && Number(data.errcode) !== 0) {
+      throw new Error(data.errmsg || '钉钉机器人发送失败');
+    }
+    logger.log('📢', '「钉钉群机器人」消息推送成功！');
+    return true;
+  }
+
   async testChannel(cfgOverrides = {}) {
     const saved = configManager.get().notify?.weworkApp || {};
     let secret = cfgOverrides.secret;

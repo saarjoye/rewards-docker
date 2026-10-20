@@ -1,3 +1,13 @@
+
+  function formatSlotName(slot) {
+    if (!slot || slot === 'auto') return '智能错峰';
+    if (slot === '09:00-13:00') return '早间 09-13点';
+    if (slot === '13:00-17:00') return '午间 13-17点';
+    if (slot === '17:00-21:00') return '晚间 17-21点';
+    if (slot === '21:00-01:00') return '夜间 21-01点';
+    return slot;
+  }
+
 document.addEventListener("DOMContentLoaded", () => {
   function getAccountDisplayName(a, idx = 0) {
     if (!a) return '默认账号';
@@ -182,6 +192,7 @@ document.addEventListener("DOMContentLoaded", () => {
       renderDropdownMenu();
       renderAccountsList();
       renderTopAccountCards();
+      renderBoardDropdown();
       renderActivityList(); renderTopTasks();
       renderChartBars(today);
       const boardToday = document.getElementById("board-today-points");
@@ -373,6 +384,20 @@ document.addEventListener("DOMContentLoaded", () => {
     }).join("");
   }
 
+  
+  function renderBoardDropdown() {
+    const selectBoardView = document.getElementById("select-board-view");
+    if (!selectBoardView) return;
+    const currentVal = viewMode === "all" ? "all" : (selectedAccountId || "all");
+    const opts = ['<option value="all">🏛 全部账号汇总</option>'];
+    accounts.forEach((a, idx) => {
+      const dName = getAccountDisplayName(a, idx);
+      opts.push('<option value="' + a.id + '">👤 ' + escapeHtml(dName) + '</option>');
+    });
+    selectBoardView.innerHTML = opts.join('');
+    selectBoardView.value = currentVal;
+  }
+
   function renderAccountsList() {
     if (!accountsScrollList) return;
     if (accounts.length === 0) {
@@ -453,7 +478,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const colorClasses = ['bar-yellow', 'bar-green', 'bar-orange', 'bar-blue', 'bar-purple'];
 
-    container.innerHTML = accounts.map((acc, idx) => {
+    const cardItems = accounts.map((acc, idx) => {
       const today = acc.todayEarned || 0;
       const balance = (acc.balance || 0).toLocaleString();
       const pct = Math.min(100, Math.round((today / 174) * 100));
@@ -483,7 +508,8 @@ document.addEventListener("DOMContentLoaded", () => {
         logoTitle = '账号状态异常 (' + (acc.status || '需注意') + ') (异常黄色)';
       }
 
-      const subLabel = '可用 ' + balance + ' 分';
+      const slotLabel = formatSlotName(acc.slot);
+      const subLabel = '可用 ' + balance + ' 分 · ' + slotLabel;
 
       return (
         '<section class="metric-card ' + (isAct ? 'active-card' : '') + '" onclick="switchView(\'single\', \'' + acc.id + '\')" title="点击切换查看 [' + escapeHtml(displayName) + '] 独立看板">' +
@@ -491,6 +517,7 @@ document.addEventListener("DOMContentLoaded", () => {
             '<div class="metric-title-group">' +
               '<span class="metric-icon ' + logoStatusClass + '" title="' + logoTitle + '">👤</span>' +
               '<span class="metric-label" title="' + escapeHtml(acc.name || acc.user) + '">' + escapeHtml(displayName) + '</span>' +
+              '<button type="button" class="btn-card-edit-quick" onclick="event.stopPropagation(); window.openEditAccountModal(\'' + acc.id + '\')" title="编辑账号与时段">✏️</button>' +
             '</div>' +
             '<span class="metric-number">' + today + '</span>' +
           '</div>' +
@@ -503,7 +530,14 @@ document.addEventListener("DOMContentLoaded", () => {
           '</div>' +
         '</section>'
       );
-    }).join('');
+    });
+
+    const addDashedCard = '<div class="add-account-dashed-card" onclick="window.openAddAccountModal()" title="添加新的微软托管账号">' +
+      '<span style="font-size: 20px;">➕</span>' +
+      '<span>添加账号</span>' +
+    '</div>';
+
+    container.innerHTML = cardItems.join('') + addDashedCard;
   }
 
   function renderDropdownMenu() {
@@ -543,6 +577,8 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("acc-pass").value = "";
     document.getElementById("acc-proxy").value = "";
     document.getElementById("acc-enabled").checked = true;
+    const slotSelectAdd = document.getElementById("acc-slot"); if (slotSelectAdd) slotSelectAdd.value = "auto";
+    const testBtnAdd = document.getElementById("btn-test-account-login"); if (testBtnAdd) testBtnAdd.style.display = "none";
     document.getElementById("account-modal-title").textContent = "添加微软托管账号";
     document.getElementById("modal-account")?.classList.remove("hidden");
   };
@@ -557,6 +593,8 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("acc-pass").value = "******";
     document.getElementById("acc-proxy").value = acc.proxy || "";
     document.getElementById("acc-enabled").checked = acc.enabled !== false;
+    const slotSelect = document.getElementById("acc-slot"); if (slotSelect) slotSelect.value = acc.slot || "auto";
+    const testBtnEdit = document.getElementById("btn-test-account-login"); if (testBtnEdit) testBtnEdit.style.display = "inline-block";
     document.getElementById("account-modal-title").textContent = "编辑微软托管账号资料";
     document.getElementById("modal-account")?.classList.remove("hidden");
   };
@@ -565,6 +603,7 @@ document.addEventListener("DOMContentLoaded", () => {
     viewMode = mode;
     selectedAccountId = accId;
     accountDropdownMenu?.classList.add("hidden");
+    renderBoardDropdown();
 
     // 关键联动：当用户点击账号池卡片时，看板顶部的下拉框同步切换！
     const selectBoardView = document.getElementById("select-board-view");
@@ -824,6 +863,17 @@ document.addEventListener("DOMContentLoaded", () => {
       selectTargetAcc.innerHTML = accounts
         .map((a) => `<option value="${a.id}">${escapeHtml(a.name || a.user)} (${escapeHtml(a.user)})</option>`)
         .join("");
+    }
+    const isSingle = viewMode === "single" && selectedAccountId;
+    const radioSingle = document.querySelector('input[name="run-acc-scope"][value="single"]');
+    const radioAll = document.querySelector('input[name="run-acc-scope"][value="all"]');
+    if (isSingle) {
+      if (radioSingle) radioSingle.checked = true;
+      if (groupSingleAcc) groupSingleAcc.style.display = "block";
+      if (selectTargetAcc) selectTargetAcc.value = selectedAccountId;
+    } else {
+      if (radioAll) radioAll.checked = true;
+      if (groupSingleAcc) groupSingleAcc.style.display = "none";
     }
     modalRunTasks?.classList.remove("hidden");
   }
@@ -1562,12 +1612,13 @@ document.addEventListener("DOMContentLoaded", () => {
     const pass = document.getElementById("acc-pass")?.value;
     const proxy = document.getElementById("acc-proxy")?.value.trim();
     const enabled = document.getElementById("acc-enabled")?.checked;
+    const slot = document.getElementById("acc-slot")?.value || "auto";
 
     try {
       const res = await fetch("/api/accounts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id, name, user, pass, proxy, enabled })
+        body: JSON.stringify({ id, name, user, pass, proxy, enabled, slot })
       });
       const data = await res.json();
       if (data.success) {
@@ -1741,5 +1792,180 @@ document.addEventListener("DOMContentLoaded", () => {
   };
 
   setTimeout(adaptivePollingCycle, 2000);
+
+
+  // =========================================================================
+  // 全月积分收益日历透视弹窗逻辑 (支持月份切换、账号筛选、时段筛选)
+  // =========================================================================
+  const modalMonthCalendar = document.getElementById("modal-month-calendar");
+  let calCurrentYear = new Date().getFullYear();
+  let calCurrentMonth = new Date().getMonth() + 1;
+
+  function formatYearMonth(y, m) {
+    return y + '-' + String(m).padStart(2, '0');
+  }
+
+  async function renderMonthCalendar() {
+    if (!modalMonthCalendar || modalMonthCalendar.classList.contains("hidden")) return;
+    const ymStr = formatYearMonth(calCurrentYear, calCurrentMonth);
+    const labelEl = document.getElementById("label-current-month");
+    if (labelEl) labelEl.textContent = calCurrentYear + '年' + calCurrentMonth + '月';
+
+    const selAcc = document.getElementById("select-cal-account");
+    const targetAccId = selAcc ? selAcc.value : "all";
+
+    // 动态填充账号下拉
+    if (selAcc && selAcc.options.length <= 1) {
+      selAcc.innerHTML = '<option value="all">🌐 全部账号汇总</option>' +
+        accounts.map((a, idx) => '<option value="' + a.id + '">👤 ' + escapeHtml(getAccountDisplayName(a, idx)) + '</option>').join('');
+      if (selectedAccountId) selAcc.value = selectedAccountId;
+    }
+
+    try {
+      const res = await fetch('/api/history?month=' + ymStr + '&accountId=' + targetAccId);
+      const data = await res.json();
+      const records = (data && data.history) || [];
+      const recMap = {};
+      let totalEarned = 0;
+      let activeDaysCount = 0;
+
+      records.forEach(r => {
+        recMap[r.date] = r;
+        if ((r.earned || 0) > 0) {
+          totalEarned += r.earned;
+          activeDaysCount++;
+        }
+      });
+
+      const firstDayDate = new Date(calCurrentYear, calCurrentMonth - 1, 1);
+      let startDayOfWeek = firstDayDate.getDay();
+      if (startDayOfWeek === 0) startDayOfWeek = 7;
+      const emptyCellsBefore = startDayOfWeek - 1;
+
+      const daysInMonth = new Date(calCurrentYear, calCurrentMonth, 0).getDate();
+      const todayStr = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()).replace(/\//g, '-');
+
+      const gridEl = document.getElementById("calendar-days-grid");
+      if (gridEl) {
+        const cells = [];
+        for (let i = 0; i < emptyCellsBefore; i++) {
+          cells.push('<div class="cal-day-cell empty"></div>');
+        }
+        for (let day = 1; day <= daysInMonth; day++) {
+          const dayStr = ymStr + '-' + String(day).padStart(2, '0');
+          const isToday = dayStr === todayStr;
+          const rec = recMap[dayStr];
+          const pts = rec ? (rec.earned || 0) : 0;
+          const hasPoints = pts > 0;
+
+          cells.push(
+            '<div class="cal-day-cell ' + (isToday ? 'today ' : '') + (hasPoints ? 'has-points' : '') + '">' +
+              '<div class="cal-day-top">' +
+                '<span class="cal-day-num">' + day + '日</span>' +
+                (isToday ? '<span class="cal-today-badge">今天</span>' : '') +
+              '</div>' +
+              '<div class="cal-day-body">' +
+                (hasPoints ? ('<span class="cal-pts-val">+' + pts + '</span><span class="cal-pts-unit">分</span>') : '<span class="cal-pts-none">-</span>') +
+              '</div>' +
+              '<div class="cal-day-sub">' + (rec && rec.balance ? (rec.balance.toLocaleString() + '结余') : '') + '</div>' +
+            '</div>'
+          );
+        }
+        gridEl.innerHTML = cells.join('');
+      }
+
+      const kpiTotal = document.getElementById("month-kpi-total");
+      if (kpiTotal) kpiTotal.textContent = totalEarned.toLocaleString() + " 分";
+      const kpiDays = document.getElementById("month-kpi-days");
+      if (kpiDays) kpiDays.textContent = activeDaysCount + " 天";
+      const kpiAvg = document.getElementById("month-kpi-avg");
+      const avgPts = activeDaysCount > 0 ? Math.round(totalEarned / activeDaysCount) : 0;
+      if (kpiAvg) kpiAvg.textContent = avgPts + " 分";
+    } catch (e) {
+      console.error('Failed to load month calendar:', e);
+    }
+  }
+
+  document.getElementById("btn-open-month-modal")?.addEventListener("click", () => {
+    modalMonthCalendar?.classList.remove("hidden");
+    renderMonthCalendar();
+  });
+  document.getElementById("close-month-modal-x")?.addEventListener("click", () => modalMonthCalendar?.classList.add("hidden"));
+  document.getElementById("btn-close-month-modal")?.addEventListener("click", () => modalMonthCalendar?.classList.add("hidden"));
+
+  document.getElementById("btn-month-prev")?.addEventListener("click", () => {
+    calCurrentMonth--;
+    if (calCurrentMonth < 1) { calCurrentMonth = 12; calCurrentYear--; }
+    renderMonthCalendar();
+  });
+  document.getElementById("btn-month-next")?.addEventListener("click", () => {
+    calCurrentMonth++;
+    if (calCurrentMonth > 12) { calCurrentMonth = 1; calCurrentYear++; }
+    renderMonthCalendar();
+  });
+  document.getElementById("btn-month-today")?.addEventListener("click", () => {
+    calCurrentYear = new Date().getFullYear();
+    calCurrentMonth = new Date().getMonth() + 1;
+    renderMonthCalendar();
+  });
+  document.getElementById("select-cal-account")?.addEventListener("change", renderMonthCalendar);
+  document.getElementById("select-cal-slot")?.addEventListener("change", renderMonthCalendar);
+
+  // 测试账号登录状态
+  document.getElementById("btn-test-account-login")?.addEventListener("click", async () => {
+    const accId = document.getElementById("acc-id")?.value;
+    if (!accId) {
+      alert("请先保存账号后再进行登录状态测试！");
+      return;
+    }
+    const btn = document.getElementById("btn-test-account-login");
+    btn.disabled = true;
+    btn.textContent = "⏳ 正在探测登录凭据...";
+    try {
+      const res = await fetch('/api/health?accountId=' + accId);
+      const data = await res.json();
+      btn.disabled = false;
+      btn.textContent = "🔍 开始检测登录状态";
+      const r = (data.results && data.results[0]) || {};
+      alert("账号检测结果: " + (r.status === 'ok' ? "✅ 登录凭据正常且有效！" : ("⚠️ 状态: " + (r.detail || r.status))));
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = "🔍 开始检测登录状态";
+      alert("检测异常: " + e.message);
+    }
+  });
+
+  // 测试机器人 Webhook
+  document.getElementById("btn-test-wework-bot")?.addEventListener("click", async () => {
+    const target = document.getElementById("cfg-wework-robot")?.value.trim();
+    if (!target) return alert("请先输入企业微信机器人 Webhook Key 或完整链接！");
+    try {
+      const res = await fetch("/api/notify/test-bot", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "wework", target })
+      });
+      const data = await res.json();
+      alert(data.message || (data.success ? "企业微信机器人测试消息发送成功！" : "发送失败"));
+    } catch (e) {
+      alert("测试异常: " + e.message);
+    }
+  });
+
+  document.getElementById("btn-test-dingtalk-bot")?.addEventListener("click", async () => {
+    const target = document.getElementById("cfg-dingding-robot")?.value.trim();
+    if (!target) return alert("请先输入钉钉机器人 Access Token 或完整链接！");
+    try {
+      const res = await fetch("/api/notify/test-bot", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "dingtalk", target })
+      });
+      const data = await res.json();
+      alert(data.message || (data.success ? "钉钉机器人测试消息发送成功！" : "发送失败"));
+    } catch (e) {
+      alert("测试异常: " + e.message);
+    }
+  });
 
 });

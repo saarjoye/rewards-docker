@@ -213,6 +213,8 @@ export function createServer() {
               const data = await taskManager.fetchOfficialDashboard(context, account);
               configManager.upsertAccount({
                 id: account.id,
+                name: account.name,
+                user: account.user,
                 balance: data.balance,
                 todayEarned: data.todayPoints,
                 streakDays: data.streakDays,
@@ -404,7 +406,11 @@ export function createServer() {
 
   // 8. 获取历史统计趋势
   app.get('/api/history', (req, res) => {
-    const { accountId, days } = req.query;
+    const { accountId, days, month } = req.query;
+    if (month) {
+      const list = historyManager.getMonthHistory(accountId, month);
+      return res.json({ success: true, history: list, month });
+    }
     const list = historyManager.getHistory(accountId, Number(days) || 14);
     res.json({ success: true, history: list });
   });
@@ -427,6 +433,23 @@ export function createServer() {
       res.json({ success: true, notify: configManager.getPublicConfig().notify });
     } catch (e) {
       res.status(500).json({ success: false, message: e.message });
+    }
+  });
+
+  // 测试机器人 Webhook 连通性
+  app.post('/api/notify/test-bot', async (req, res) => {
+    try {
+      const { type, target } = req.body || {};
+      if (type === 'wework') {
+        await notifier.sendWeWorkBot(target, '企业微信群机器人连通性测试', '如果你收到此条消息，说明企业微信机器人 Webhook 已经 100% 连通生效！');
+      } else if (type === 'dingtalk') {
+        await notifier.sendDingTalkBot(target, '钉钉群机器人连通性测试', '如果你收到此条消息，说明钉钉群机器人 Webhook 已经 100% 连通生效！');
+      } else {
+        throw new Error('未知机器人类型');
+      }
+      res.json({ success: true, message: '测试消息已成功推送送达！' });
+    } catch (e) {
+      res.status(400).json({ success: false, message: e.message });
     }
   });
 

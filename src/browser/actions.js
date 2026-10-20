@@ -38,72 +38,101 @@ async function humanMouseMove(page, targetX, targetY) {
  * 拟人化必应 PC 搜索执行
  */
 export async function performHumanizedSearch(page, queryWord, options = {}) {
-  const { accountPrefix = '' } = options;
+  const { accountPrefix = '', context = null } = options;
   const word = queryWord || getRandomSearchWord();
+  const ctx = context || (page && typeof page.context === 'function' ? page.context() : null);
 
-  browserManager.updateState({ status: "typing", currentAction: `正在模拟真人搜索关键词: "${word}"` });
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      if (!page || page.isClosed()) {
+        if (ctx) {
+          logger.log('🔄', '检测到视口未就绪，正在创建独立视口...', '', accountPrefix);
+          page = await ctx.newPage();
+        } else {
+          throw new Error('Target page is closed and no context available');
+        }
+      }
 
-  // 1. 打开必应首页 (带 Page crashed 异常崩溃自动重建页面防护)
-  try {
-    if (!page || page.isClosed()) throw new Error('Target page is closed');
-    await page.goto('https://cn.bing.com/', { waitUntil: 'domcontentloaded', timeout: 35000 });
-  } catch (err) {
-    if (err.message && (err.message.includes('crashed') || err.message.includes('Target page') || err.message.includes('closed'))) {
-      logger.log('🔄', '检测到页面崩溃异常，正在新建独立视口页面自动恢复...', '', accountPrefix);
-      const newPage = await page.context().newPage();
-      page = newPage;
-      await page.goto('https://cn.bing.com/', { waitUntil: 'domcontentloaded', timeout: 35000 });
-    } else {
-      throw err;
+      browserManager.updateState({ status: 'typing', currentAction: `正在模拟真人搜索关键词: "${word}"` });
+
+      // 1. 打开必应首页 (带崩溃异常捕获与自愈)
+      try {
+        await page.goto('https://cn.bing.com/', { waitUntil: 'domcontentloaded', timeout: 35000 });
+      } catch (gotoErr) {
+        if (gotoErr.message && (gotoErr.message.includes('crashed') || gotoErr.message.includes('closed') || gotoErr.message.includes('Target'))) {
+          throw gotoErr;
+        }
+      }
+      await new Promise((r) => setTimeout(r, 1000 + Math.random() * 600));
+
+      // 2. 定位搜索框
+      let searchInput = await page.$('#sb_form_q, input[name="q"]').catch(() => null);
+      if (!searchInput) {
+        await page.goto(`https://cn.bing.com/search?q=${encodeURIComponent(word)}`, { waitUntil: 'domcontentloaded', timeout: 35000 });
+      } else {
+        const box = await searchInput.boundingBox().catch(() => null);
+        if (box) {
+          await humanMouseMove(page, box.x + box.width / 2, box.y + box.height / 2);
+          await page.mouse.down();
+          await page.mouse.up();
+        } else {
+          await searchInput.click().catch(() => {});
+        }
+
+        // 3. 拟人键入关键词
+        await searchInput.fill('').catch(() => {});
+        if (typeof searchInput.type === 'function') {
+          await searchInput.type(word, { delay: 35 + Math.random() * 40 }).catch(() => searchInput.fill(word));
+        } else {
+          await searchInput.fill(word).catch(() => {});
+        }
+        await new Promise((r) => setTimeout(r, 400 + Math.random() * 400));
+
+        // 4. 提交搜索并等待结果页 (带崩溃自愈防护)
+        try {
+          await Promise.all([
+            page.keyboard.press('Enter'),
+            page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 25000 }).catch(() => {})
+          ]);
+        } catch (submitErr) {
+          if (submitErr.message && (submitErr.message.includes('crashed') || submitErr.message.includes('closed') || submitErr.message.includes('Target'))) {
+            throw submitErr;
+          }
+          await page.goto(`https://cn.bing.com/search?q=${encodeURIComponent(word)}`, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+        }
+      }
+
+      // 5. 结果页随机微滚与真人驻留 (3~6 秒)
+      try {
+        const scrollAmount = 200 + Math.floor(Math.random() * 400);
+        await page.mouse.wheel(0, scrollAmount);
+        await new Promise((r) => setTimeout(r, 800 + Math.random() * 800));
+        await page.mouse.wheel(0, -scrollAmount / 2);
+      } catch {}
+
+      browserManager.updateState({ status: 'dwelling', currentAction: '结果页微滚驻留触发遥测...' });
+      const dwellTime = 3000 + Math.random() * 2500;
+      await new Promise((r) => setTimeout(r, dwellTime));
+
+      return page;
+    } catch (err) {
+      const isCrash = err.message && (err.message.includes('crashed') || err.message.includes('Target') || err.message.includes('closed') || err.message.includes('destroyed'));
+      if (isCrash && attempt < 2 && ctx) {
+        logger.log('🔄', `搜索过程中视口瞬态崩溃 (${err.message})，立即自愈新建视口自动重试...`, '', accountPrefix);
+        try { if (page && typeof page.close === 'function') await page.close().catch(() => {}); } catch {}
+        try {
+          page = await ctx.newPage();
+          await page.goto(`https://cn.bing.com/search?q=${encodeURIComponent(word)}`, { waitUntil: 'domcontentloaded', timeout: 35000 });
+          await new Promise((r) => setTimeout(r, 3500));
+          return page;
+        } catch (recoverErr) {}
+      }
+      if (attempt >= 2) throw err;
     }
   }
-  await new Promise((r) => setTimeout(r, 1200 + Math.random() * 800));
-
-  // 2. 定位搜索框
-  const searchInput = await page.$('#sb_form_q, input[name="q"]');
-  if (!searchInput) {
-    throw new Error('未能在必应首页定位到搜索框元素 #sb_form_q');
-  }
-
-  const box = await searchInput.boundingBox();
-  if (box) {
-    await humanMouseMove(page, box.x + box.width / 2, box.y + box.height / 2);
-    await page.mouse.down();
-    await page.mouse.up();
-  } else {
-    await searchInput.click();
-  }
-
-  // 3. 拟人键入关键词
-  await searchInput.fill('');
-  if (typeof searchInput.type === "function") { await searchInput.type(word, { delay: 35 + Math.random() * 40 }); } else { await searchInput.fill(word); }
-  await new Promise((r) => setTimeout(r, 500 + Math.random() * 500));
-
-  // 4. 提交搜索并等待结果页
-  await Promise.all([
-    page.keyboard.press('Enter'),
-    page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {})
-  ]);
-
-  // 5. 结果页随机微滚与真人驻留 (4~8 秒)
-  try {
-    const scrollAmount = 200 + Math.floor(Math.random() * 400);
-    await page.mouse.wheel(0, scrollAmount);
-    await new Promise((r) => setTimeout(r, 1000 + Math.random() * 1000));
-    await page.mouse.wheel(0, -scrollAmount / 2);
-  } catch {}
-
-  browserManager.updateState({ status: "dwelling", currentAction: "结果页微滚驻留触发遥测..." });
-  const dwellTime = 4000 + Math.random() * 3000;
-  await new Promise((r) => setTimeout(r, dwellTime));
-
-  // 必须返回最新的有效 Page 实例，杜绝将 page 变量覆盖为布尔值导致 page.close is not a function 异常
   return page;
 }
 
-/**
- * 自动识别并完成 Quiz / Poll 页面内的问答选项
- */
 export async function solveQuizOrPoll(page, options = {}) {
   const { accountPrefix = '' } = options;
   try {
@@ -278,33 +307,16 @@ export async function penetratePuzzleSpotlight(page, puzzleUrl, options = {}) {
  */
 export async function harvestClaimablePointsWithVirtualPointer(page, options = {}) {
   const { accountPrefix = '' } = options;
-  browserManager.updateState({ status: "harvesting", currentAction: "展开 React Aria 抽屉收割额外待领积分..." });
+  browserManager.updateState({ status: 'harvesting', currentAction: '展开 React Aria 抽屉收割额外待领积分...' });
   logger.log('🎁', '开始执行每日 01:00 额外积分 React Aria 抽屉收割流程...', '', accountPrefix);
 
   try {
     await page.goto('https://rewards.bing.com/dashboard', { waitUntil: 'domcontentloaded', timeout: 35000 });
-    await new Promise((r) => setTimeout(r, 2500));
+    await new Promise((r) => setTimeout(r, 3000));
 
-    // 1. 精确定位「可领取」抽屉触发卡片按钮 (严格排除用户个人资料头像、可用积分大容器与退出登录)
-    const disclosureLocator = page.locator('button[aria-expanded], button[aria-haspopup="dialog"], button:has-text("可领取")')
-      .filter({ hasNotText: '可用积分' })
-      .filter({ hasNotText: '退出登录' })
-      .filter({ hasNotText: 'Microsoft' });
-
-    let claimBtn = null;
-    const count = await disclosureLocator.count();
-    for (let i = 0; i < count; i++) {
-      const btn = disclosureLocator.nth(i);
-      const isVis = await btn.isVisible().catch(() => false);
-      if (!isVis) continue;
-      const txt = await btn.innerText().catch(() => '');
-      if (txt.includes('可领取') || txt.includes('领取')) {
-        claimBtn = btn;
-        break;
-      }
-    }
-
-    if (!claimBtn) {
+    // 1. 精确定位「可领取」抽屉触发卡片按钮
+    const claimBtn = await page.$('button:has-text("可领取")');
+    if (!claimBtn || !(await claimBtn.isVisible().catch(() => false))) {
       logger.log('ℹ️', '当前仪表盘未检测到独立的「可领取」积分抽屉卡片，跳过收割', '', accountPrefix);
       return { harvested: false, points: 0 };
     }
@@ -312,54 +324,54 @@ export async function harvestClaimablePointsWithVirtualPointer(page, options = {
     const cardText = await claimBtn.innerText().catch(() => '');
     const numMatch = cardText.match(/(\d+)/);
     const claimablePointsNum = numMatch ? parseInt(numMatch[1], 10) : 0;
+
+    // 若卡片显示 0 分，已处于全部领完状态
+    if (claimablePointsNum === 0 || cardText.includes('可领取\n\n0') || cardText.includes('可领取 0')) {
+      logger.log('ℹ️', '可领取卡片标识为 0 分，已处于全部领完状态，无需重复领取', '', accountPrefix);
+      return { harvested: true, points: 0 };
+    }
+
     logger.log('💰', `精准锁定官方「可领取」卡片 (标识分值: ${claimablePointsNum} 分)，正在派发点击展开抽屉...`, '', accountPrefix);
 
-    // 精准点击卡片正中央，坚决杜绝点偏到旁边的头像
-    await claimBtn.click({ force: true, timeout: 8000 });
-    logger.log('👆', '已精准触发「可领取」卡片展开抽屉事件...', '', accountPrefix);
+    // 虚拟指针派发 pointerdown / pointerup 触发 React Aria 抽屉
+    const box = await claimBtn.boundingBox();
+    if (box) {
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await page.mouse.down();
+      await page.mouse.up();
+      logger.log('👆', '已精准触发「可领取」卡片展开抽屉事件...', '', accountPrefix);
+    } else {
+      await claimBtn.click({ force: true }).catch(() => {});
+    }
 
-    // 2. 轮询等待 React Aria 抽屉容器与内部黑色「领取积分」按钮 (最长等待 12 秒)
+    // 2. 等待抽屉异步完全加载 (4 秒)
     logger.log('⏳', '等待抽屉内容与「领取积分」黑色按钮异步加载完成...', '', accountPrefix);
-    let harvestSuccess = false;
+    await new Promise((r) => setTimeout(r, 4000));
 
-    for (let sec = 1; sec <= 24; sec++) {
-      await new Promise((r) => setTimeout(r, 500));
-
-      // 锁定抽屉容器
-      const dialog = page.locator('div[role="dialog"], [aria-modal="true"], section[aria-label*="领取"], div:has(> h2:text("领取积分"))').first();
-      const isDialogVis = await dialog.isVisible().catch(() => false);
-
-      if (isDialogVis) {
-        // 在抽屉容器内部查找黑色激活的「领取积分」按钮
-        const innerClaimBtns = dialog.locator('button:not([disabled])').filter({ hasText: /领取/ });
-        const btnCount = await innerClaimBtns.count();
-
-        for (let bIdx = 0; bIdx < btnCount; bIdx++) {
-          const btn = innerClaimBtns.nth(bIdx);
-          const ariaDisabled = await btn.getAttribute('aria-disabled');
-          if (ariaDisabled !== 'true') {
-            logger.log('🎯', `第 ${(sec * 0.5).toFixed(1)} 秒成功捕获到抽屉内的黑色已激活「领取积分」按钮，立即触发真实点击！`, '', accountPrefix);
-            await btn.click({ force: true });
-            harvestSuccess = true;
-            break;
-          }
-        }
-
-        if (harvestSuccess) break;
-
-        // 检查抽屉内是否显示「当前没有要领取的积分」
-        const dialogText = await dialog.innerText().catch(() => '');
-        if (dialogText.includes('当前没有要领取的积分')) {
-          logger.log('ℹ️', '抽屉内部账本确认为 0 分 (当前没有要领取的积分)，外部卡片「3」系微软官方营销占位符，已全部领完无需重复领取！', '', accountPrefix);
-          return { harvested: true, points: 0 };
-        }
+    // 3. 在抽屉内定位黑色「领取积分」按钮 (使用已实测验证通过的选择器与虚拟指针)
+    const blackClaimBtn = await page.$('div[role="dialog"] button:has-text("领取积分"), button:has-text("领取积分")');
+    if (blackClaimBtn && (await blackClaimBtn.isVisible().catch(() => false))) {
+      const btnBox = await blackClaimBtn.boundingBox();
+      if (btnBox) {
+        logger.log('🎯', '成功捕获到抽屉内的黑色已激活「领取积分」按钮，立即派发真实指针点击！', '', accountPrefix);
+        await page.mouse.move(btnBox.x + btnBox.width / 2, btnBox.y + btnBox.height / 2);
+        await page.mouse.down();
+        await page.mouse.up();
+        await new Promise((r) => setTimeout(r, 4500));
+        logger.log('🎉', '恭喜！抽屉内黑色「领取积分」按钮点击完成，已成功收割入账！', '', accountPrefix);
+        return { harvested: true, points: claimablePointsNum || 3 };
       }
     }
 
-    if (harvestSuccess) {
-      await new Promise((r) => setTimeout(r, 3500));
-      logger.log('🎉', '恭喜！抽屉内黑色「领取积分」按钮点击完成，已成功收割入账！', '', accountPrefix);
-      return { harvested: true, points: claimablePointsNum || 3 };
+    // 检查抽屉内是否显示「当前没有要领取的积分」
+    const dialogText = await page.evaluate(() => {
+      const d = document.querySelector('div[role="dialog"]');
+      return d ? d.innerText : '';
+    }).catch(() => '');
+
+    if (dialogText.includes('当前没有要领取的积分') || dialogText.includes('已成功领取')) {
+      logger.log('ℹ️', '抽屉内部已领完或归零 (当前没有要领取的积分)，已确认成功！', '', accountPrefix);
+      return { harvested: true, points: 0 };
     }
 
     logger.log('⚠️', '未能捕获到激活态的「领取积分」按钮，可能已处于归零状态', '', accountPrefix);

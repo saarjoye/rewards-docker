@@ -4013,3 +4013,291 @@ input:focus, select:focus, textarea:focus {
   border-color: #0369a1 !important;
   transform: translateY(-1px) !important;
 }
+
+/* ============================================================
+   彻底修复顶部选定账号卡片红框边框被截断问题 + 卡片快速编辑按钮
+   ============================================================ */
+.accounts-cards-row {
+  display: flex !important;
+  flex-direction: row !important;
+  overflow-x: auto !important;
+  overflow-y: visible !important; /* 关键：严禁裁切高亮边框与阴影 */
+  gap: 12px !important;
+  padding: 6px 4px 12px 4px !important; /* 留出充足上下呼吸空间 */
+  min-height: 106px !important;
+  height: auto !important;
+  width: 100% !important;
+  box-sizing: border-box !important;
+}
+
+.accounts-cards-row .metric-card {
+  min-width: 250px !important;
+  max-width: 275px !important;
+  height: 94px !important;
+  min-height: 94px !important;
+  max-height: 94px !important;
+  padding: 10px 14px !important;
+  box-sizing: border-box !important;
+  position: relative !important;
+}
+
+.accounts-cards-row .metric-card.active-card {
+  border: 2px solid #ff5722 !important;
+  box-shadow: 0 4px 18px rgba(255, 87, 34, 0.3) !important;
+  outline: none !important;
+}
+
+/* 卡片右上角极速编辑小铅笔按钮 */
+.btn-card-edit-quick {
+  cursor: pointer !important;
+  background: #ffffff !important;
+  border: 1px solid #cbd5e1 !important;
+  color: #0284c7 !important;
+  font-size: 11px !important;
+  width: 22px !important;
+  height: 22px !important;
+  border-radius: 6px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  padding: 0 !important;
+  margin-left: 6px !important;
+  transition: all 0.2s ease !important;
+  opacity: 0.8 !important;
+}
+.btn-card-edit-quick:hover {
+  opacity: 1 !important;
+  background: #f0f9ff !important;
+  border-color: #0284c7 !important;
+  transform: scale(1.1) !important;
+}
+
+/* 顶部账号横条末尾的虚线加号卡片 */
+.add-account-dashed-card {
+  min-width: 130px !important;
+  max-width: 130px !important;
+  height: 94px !important;
+  border: 2px dashed #cbd5e1 !important;
+  border-radius: 18px !important;
+  background: rgba(255, 255, 255, 0.6) !important;
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 4px !important;
+  cursor: pointer !important;
+  color: #64748b !important;
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  transition: all 0.2s ease !important;
+  flex-shrink: 0 !important;
+}
+.add-account-dashed-card:hover {
+  border-color: #ff5722 !important;
+  color: #ff5722 !important;
+  background: #ffffff !important;
+  transform: translateY(-2px) !important;
+}
+
+/* 弹窗内的错峰时段设定药丸按钮组 */
+.slot-select-pills {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  gap: 6px !important;
+  margin-top: 6px !important;
+}
+
+.acc-slot-pill {
+  cursor: pointer !important;
+  background: #ffffff !important;
+  border: 1px solid #cbd5e1 !important;
+  border-radius: 8px !important;
+  padding: 6px 12px !important;
+  font-size: 11.5px !important;
+  font-weight: 700 !important;
+  color: #334155 !important;
+  transition: all 0.2s ease !important;
+}
+.acc-slot-pill:hover {
+  background: #f8fafc !important;
+  border-color: #94a3b8 !important;
+}
+.acc-slot-pill.active {
+  background: linear-gradient(135deg, #ff5722, #f4511e) !important;
+  color: #ffffff !important;
+  border-color: #ff5722 !important;
+  box-shadow: 0 2px 6px rgba(255, 87, 34, 0.3) !important;
+}
+
+
+/* 实时记录纯白高雅终端视口 */
+.stream-terminal-white {
+  background: #ffffff !important;
+  border: 1px solid #e2e8f0 !important;
+  border-radius: 12px !important;
+  padding: 10px 12px !important;
+  font-family: var(--font-mono) !important;
+  font-size: 11.5px !important;
+  color: #334155 !important;
+  line-height: 1.6 !important;
+  flex: 1 1 auto !important;
+  min-height: 140px !important;
+  max-height: 190px !important;
+  overflow-y: auto !important;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.02) !important;
+}
+.stream-terminal-white::-webkit-scrollbar {
+  width: 4px;
+}
+.stream-terminal-white::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+
+/* 顶部栏添加账号按钮 */
+.btn-top-add-acc {
+  cursor: pointer !important;
+  background: linear-gradient(135deg, #ff5722, #f4511e) !important;
+  color: #ffffff !important;
+  border: none !important;
+  border-radius: 20px !important;
+  padding: 6px 14px !important;
+  font-size: 12px !important;
+  font-weight: 750 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 4px !important;
+  box-shadow: 0 2px 8px rgba(255, 87, 34, 0.3) !important;
+  transition: all 0.2s ease !important;
+}
+.btn-top-add-acc:hover {
+  transform: translateY(-1px) !important;
+  box-shadow: 0 4px 12px rgba(255, 87, 34, 0.4) !important;
+}
+
+/* 积分日历查看全月按钮 */
+.btn-month-calendar-open {
+  cursor: pointer !important;
+  background: #ffffff !important;
+  border: 1px solid #cbd5e1 !important;
+  border-radius: 8px !important;
+  padding: 4px 10px !important;
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  color: #0284c7 !important;
+  transition: all 0.2s ease !important;
+}
+.btn-month-calendar-open:hover {
+  background: #f0f9ff !important;
+  border-color: #0284c7 !important;
+  transform: translateY(-1px) !important;
+}
+
+/* 月度日历弹窗样式 */
+.btn-cal-nav {
+  cursor: pointer !important;
+  background: #ffffff !important;
+  border: 1px solid #cbd5e1 !important;
+  border-radius: 8px !important;
+  padding: 5px 12px !important;
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  color: #334155 !important;
+  transition: all 0.2s ease !important;
+}
+.btn-cal-nav:hover {
+  background: #f8fafc !important;
+  border-color: #94a3b8 !important;
+}
+.btn-cal-today {
+  cursor: pointer !important;
+  background: #f1f5f9 !important;
+  border: 1px solid #cbd5e1 !important;
+  border-radius: 8px !important;
+  padding: 5px 10px !important;
+  font-size: 11.5px !important;
+  font-weight: 700 !important;
+  color: #475569 !important;
+}
+.calendar-weekday-header {
+  display: grid !important;
+  grid-template-columns: repeat(7, 1fr) !important;
+  gap: 6px !important;
+  text-align: center !important;
+  font-weight: 750 !important;
+  font-size: 12px !important;
+  color: #64748b !important;
+  padding-bottom: 8px !important;
+  border-bottom: 1px solid #e2e8f0 !important;
+}
+.calendar-days-grid {
+  display: grid !important;
+  grid-template-columns: repeat(7, 1fr) !important;
+  gap: 6px !important;
+  margin-top: 8px !important;
+}
+.cal-day-cell {
+  background: #ffffff !important;
+  border: 1px solid #e2e8f0 !important;
+  border-radius: 10px !important;
+  padding: 8px 6px !important;
+  min-height: 64px !important;
+  display: flex !important;
+  flex-direction: column !important;
+  justify-content: space-between !important;
+  transition: all 0.2s ease !important;
+}
+.cal-day-cell:hover {
+  border-color: #0284c7 !important;
+  box-shadow: 0 4px 12px rgba(2, 132, 199, 0.12) !important;
+  transform: translateY(-2px) !important;
+}
+.cal-day-cell.today {
+  border: 2px solid #ff5722 !important;
+  background: #fff7ed !important;
+}
+.cal-day-cell.empty {
+  background: transparent !important;
+  border: none !important;
+  pointer-events: none !important;
+}
+.cal-day-top {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+}
+.cal-day-num {
+  font-size: 12px !important;
+  font-weight: 750 !important;
+  color: #334155 !important;
+}
+.cal-today-badge {
+  background: #ff5722 !important;
+  color: #ffffff !important;
+  font-size: 9.5px !important;
+  font-weight: 700 !important;
+  padding: 1px 5px !important;
+  border-radius: 4px !important;
+}
+.cal-day-body {
+  margin: 4px 0 !important;
+}
+.cal-pts-val {
+  font-size: 14px !important;
+  font-weight: 850 !important;
+  color: #10b981 !important;
+}
+.cal-pts-unit {
+  font-size: 10px !important;
+  color: #64748b !important;
+  margin-left: 2px !important;
+}
+.cal-pts-none {
+  font-size: 12px !important;
+  color: #cbd5e1 !important;
+  font-weight: 700 !important;
+}
+.cal-day-sub {
+  font-size: 9.5px !important;
+  color: #94a3b8 !important;
+}

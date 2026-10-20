@@ -18,6 +18,9 @@ export function extractOfficialTodayPoints(flightText = '', html = '') {
   const combined = `${flightText}\n${html}`;
 
   const patterns = [
+    // English patterns
+    /Today's points\s*[:\n\r]+\s*([0-9,]+)/i,
+    /Daily points\s*[:\n\r]+\s*([0-9,]+)/i,
     // 文本行模式：今日积分 \n 70
     /今日积分\s*[:\n\r]+\s*([0-9,]+)/i,
     /今日积分[^0-9]{1,120}?([0-9,]+)/i,

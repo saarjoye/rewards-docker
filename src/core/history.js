@@ -52,6 +52,30 @@ class HistoryManager {
     this.save();
   }
 
+  getMonthHistory(accountId, yearMonth) {
+    const accounts = this.data.accounts || {};
+    const targetAccounts = (!accountId || accountId === 'all') ? Object.keys(accounts) : [accountId];
+    const mapByDate = {};
+
+    for (const accId of targetAccounts) {
+      const records = accounts[accId] || [];
+      for (const rec of records) {
+        if (!rec.date || !rec.date.startsWith(yearMonth)) continue;
+        if (!mapByDate[rec.date]) {
+          mapByDate[rec.date] = { date: rec.date, earned: 0, balance: 0, details: [] };
+        }
+        mapByDate[rec.date].earned += (rec.earned || 0);
+        mapByDate[rec.date].balance += (rec.balance || 0);
+        mapByDate[rec.date].details.push({
+          accountId: accId,
+          earned: rec.earned || 0,
+          balance: rec.balance || 0
+        });
+      }
+    }
+    return Object.values(mapByDate).sort((a, b) => a.date.localeCompare(b.date));
+  }
+
   getHistory(accountId, days = 14) {
     const list = (this.data.accounts && this.data.accounts[accountId]) || [];
     return list.slice(-days);

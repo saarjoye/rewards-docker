@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Rewards 自动任务系统 (v6.1.7)</title>
+  <title>Rewards 自动任务系统 (v6.1.8)</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -13,7 +13,7 @@
       <div class="sidebar-top">
         <div class="brand">
           <div class="brand-logo-sq">🎁</div>
-          <span class="brand-name">Rewards<span class="brand-dot">.v6.1.7</span></span>
+          <span class="brand-name">Rewards<span class="brand-dot">.v6.1.8</span></span>
         </div>
 
         <div class="store-selector-wrap">
@@ -70,7 +70,7 @@
         </button>
         <div class="mobile-nav-brand">
           <span style="font-size: 18px;">🎁</span>
-          <span class="mobile-nav-title">Rewards<span class="brand-dot">.v6.1.7</span></span>
+          <span class="mobile-nav-title">Rewards<span class="brand-dot">.v6.1.8</span></span>
         </div>
         <button type="button" class="mobile-quick-btn" id="btn-mobile-quick-run">🚀 执行</button>
       </div>
@@ -79,6 +79,9 @@
       <header class="topbar">
         <div class="topbar-welcome">
           <div class="topbar-left-controls">
+            <button type="button" class="btn-top-add-acc" id="btn-topbar-add-account" onclick="window.openAddAccountModal()">
+              ➕ 添加账号
+            </button>
             <div class="view-mode-capsule">
               <button class="mode-pill active" id="btn-mode-all">🌐 全账号合计</button>
               <button class="mode-pill" id="btn-mode-single">👤 单账号明细</button>
@@ -128,11 +131,9 @@
               <span class="box-sub">每日积分增长历史记录</span>
             </div>
             <div class="box-header-ctrls">
-              <select class="select-pill" id="chart-range">
-                <option>近 7 天</option>
-                <option>近 14 天</option>
-              </select>
-              <span class="arrow-btn">↗</span>
+              <button type="button" class="btn-month-calendar-open" id="btn-open-month-modal" title="点击展开全月积分收益日历与时段透视">
+                📅 查看全月 ↗
+              </button>
             </div>
           </div>
           <div class="chart-container">
@@ -216,7 +217,7 @@
             </div>
           </div>
           <!-- 实时执行记录终端视口 (自动向下滚动，展示实时作业流水) -->
-          <div class="stream-terminal-dark" id="stream-terminal-list">
+          <div class="stream-terminal-white" id="stream-terminal-list">
             <div class="stream-log-row" style="color: #64748b;">[系统就绪] 等待任务触发，实时作业流将同步在此滚动呈现...</div>
           </div>
         </section>
@@ -335,13 +336,27 @@
           <label>独立代理网络 (可选)</label>
           <input type="text" id="acc-proxy" placeholder="http://127.0.0.1:7890 或 socks5://...">
         </div>
+                <div class="f-group">
+          <label for="acc-slot">执行错峰时段分配</label>
+          <select id="acc-slot" class="f-select" style="padding: 9px 12px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 13px; width: 100%; outline: none;">
+            <option value="auto">🎲 自动智能错峰 (由系统排队轮询)</option>
+            <option value="09:00-13:00">🌅 早间时段 (09:00 - 13:00)</option>
+            <option value="13:00-17:00">☀️ 午间时段 (13:00 - 17:00)</option>
+            <option value="17:00-21:00">🌆 晚间时段 (17:00 - 21:00)</option>
+            <option value="21:00-01:00">🌙 深夜时段 (21:00 - 01:00)</option>
+          </select>
+          <span class="f-hint">多账号分配在同个时段时，系统将依序执行并插入安全随机退避，绝不混淆凭据</span>
+        </div>
         <div class="f-checkbox">
           <input type="checkbox" id="acc-enabled" checked>
           <label for="acc-enabled">启用此账号参与 4 大时段错峰自动调度</label>
         </div>
-        <div class="modal-foot">
-          <button type="submit" class="btn-confirm-orange">保存并启动自主登录</button>
-          <button type="button" class="btn-cancel" id="cancel-account-modal">取消</button>
+        <div class="modal-foot" style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+          <button type="button" class="btn-cancel" id="btn-test-account-login" style="border: 1px solid #0284c7; color: #0284c7; font-weight: 700; padding: 7px 12px; border-radius: 8px;">🔍 开始检测登录状态</button>
+          <div style="display: flex; gap: 8px;">
+            <button type="submit" class="btn-confirm-orange">保存账号资料</button>
+            <button type="button" class="btn-cancel" id="cancel-account-modal">取消</button>
+          </div>
         </div>
       </form>
     </div>
@@ -625,10 +640,20 @@
         <!-- 当前账号专属凭据与网络快速配置 -->
         <div class="cfg-card-box">
           <div class="cfg-box-title">🌐 当前账号独立网络代理与状态</div>
-          <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 10px; margin-top: 8px;">
+          <div style="display: grid; grid-template-columns: 2fr 1.2fr 1fr; gap: 10px; margin-top: 8px;">
             <div class="f-group" style="margin-bottom: 0;">
               <label>专属代理地址</label>
               <input type="text" id="cfg-acc-inline-proxy" placeholder="如 http://127.0.0.1:7890 (留空使用全局)">
+            </div>
+            <div class="f-group" style="margin-bottom: 0;">
+              <label>执行错峰时段</label>
+              <select id="cfg-acc-inline-slot" class="f-select" style="padding: 9px; border-radius: 8px; border: 1px solid #cbd5e1;">
+                <option value="auto">🎲 自动智能错峰</option>
+                <option value="09:00-13:00">🌅 早间 (09:00-13:00)</option>
+                <option value="13:00-17:00">☀️ 午间 (13:00-17:00)</option>
+                <option value="17:00-21:00">🌆 晚间 (17:00-21:00)</option>
+                <option value="21:00-01:00">🌙 深夜 (21:00-01:00)</option>
+              </select>
             </div>
             <div class="f-group" style="margin-bottom: 0;">
               <label>启用状态</label>
@@ -866,5 +891,79 @@
   </div>
 
   <script src="app.js"></script>
+
+  <!-- 模态框 6：全月积分收益日历与时段透视 (悬浮窗口，支持月份切换与时段筛选) -->
+  <div id="modal-month-calendar" class="modal-backdrop hidden">
+    <div class="modal-card modal-card-xl" style="max-width: 950px; width: 100%; max-height: 90vh; display: flex; flex-direction: column;">
+      <div class="modal-head" style="display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #e2e8f0; padding-bottom: 12px; flex-shrink: 0;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 20px;">📅</span>
+          <h3 class="modal-h3">全月积分收益日历透视</h3>
+        </div>
+        <button type="button" class="modal-close-pill" id="close-month-modal-x" title="关闭窗口">✕ 关闭</button>
+      </div>
+
+      <!-- 顶部控制条：月份切换器 + 账号切换 + 时段筛选 -->
+      <div class="month-calendar-toolbar" style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 0; border-bottom: 1px solid #f1f5f9; flex-shrink: 0;">
+        <div class="month-nav-group" style="display: flex; align-items: center; gap: 8px;">
+          <button type="button" class="btn-cal-nav" id="btn-month-prev" title="上一月">◀ 上一月</button>
+          <span class="current-month-label" id="label-current-month" style="font-weight: 800; font-size: 15px; color: #1e293b; min-width: 110px; text-align: center;">2026年10月</span>
+          <button type="button" class="btn-cal-nav" id="btn-month-next" title="下一月">下一月 ▶</button>
+          <button type="button" class="btn-cal-today" id="btn-month-today">今天</button>
+        </div>
+
+        <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+          <div style="display: flex; align-items: center; gap: 6px;">
+            <label style="font-size: 12px; font-weight: 700; color: #475569;">账号:</label>
+            <select id="select-cal-account" class="select-pill" style="min-width: 140px;">
+              <!-- 动态填充账号 -->
+            </select>
+          </div>
+          <div style="display: flex; align-items: center; gap: 6px;">
+            <label style="font-size: 12px; font-weight: 700; color: #475569;">时段筛选:</label>
+            <select id="select-cal-slot" class="select-pill" style="min-width: 150px;">
+              <option value="all">全部时段</option>
+              <option value="09:00-13:00">早间 (09:00-13:00)</option>
+              <option value="13:00-17:00">午间 (13:00-17:00)</option>
+              <option value="17:00-21:00">晚间 (17:00-21:00)</option>
+              <option value="21:00-01:00">深夜 (21:00-01:00)</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- 月度核心汇总 KPI 卡片 -->
+      <div class="month-kpi-summary" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 14px 0 16px 0; flex-shrink: 0;">
+        <div class="kpi-mini-card" style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 10px 14px;">
+          <span style="font-size: 11px; color: #64748b; font-weight: 600;">月度积分总产出</span>
+          <div style="font-size: 20px; font-weight: 850; color: #0284c7; margin-top: 2px;" id="month-kpi-total">0 分</div>
+        </div>
+        <div class="kpi-mini-card" style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 10px 14px;">
+          <span style="font-size: 11px; color: #64748b; font-weight: 600;">打卡达标天数</span>
+          <div style="font-size: 20px; font-weight: 850; color: #10b981; margin-top: 2px;" id="month-kpi-days">0 天</div>
+        </div>
+        <div class="kpi-mini-card" style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 10px 14px;">
+          <span style="font-size: 11px; color: #64748b; font-weight: 600;">日均积分收益</span>
+          <div style="font-size: 20px; font-weight: 850; color: #ff5722; margin-top: 2px;" id="month-kpi-avg">0 分</div>
+        </div>
+      </div>
+
+      <!-- 日历网格视图 (周一至周日表头 + 1~31日格子) -->
+      <div class="calendar-grid-container" style="flex: 1; overflow-y: auto; padding-right: 4px;">
+        <div class="calendar-weekday-header">
+          <div>一</div><div>二</div><div>三</div><div>四</div><div>五</div><div>六</div><div>日</div>
+        </div>
+        <div class="calendar-days-grid" id="calendar-days-grid">
+          <!-- 动态渲染日历格子 -->
+        </div>
+      </div>
+
+      <div class="modal-foot" style="flex-shrink: 0; padding-top: 12px; border-top: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center;">
+        <span style="font-size: 11px; color: #94a3b8;">💡 提示：按日卡片展示当日各账号打卡增长明细与总额</span>
+        <button type="button" class="btn-cancel" id="btn-close-month-modal">关闭窗口</button>
+      </div>
+    </div>
+  </div>
+
 </body>
 </html>
