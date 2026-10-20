@@ -246,6 +246,12 @@ export function createServer() {
     }
   });
 
+  // 0. 最近30天官网快照（用于积分日历与账号卡片的统一口径）
+  app.get('/api/history/recent', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ success: true, snapshots: historyManager.getRecentAll(30) });
+  });
+
   // 1. 获取全盘状态与账号数据看板
   app.get('/api/status', (req, res) => {
     const cfg = configManager.getPublicConfig();
@@ -266,7 +272,11 @@ export function createServer() {
       scheduler: cfg.scheduler || {},
       searchSettings: cfg.searchSettings || {},
       notify: cfg.notify,
-      accounts
+      accounts: accounts.map((a) => ({
+        ...a,
+        hasOfficialData: Number(a.lastSyncAt || 0) > 0 && a.todayEarned != null && a.balance != null,
+        dataState: a.dataState || (Number(a.lastSyncAt || 0) > 0 ? 'complete' : 'unknown')
+      }))
     });
   });
 
@@ -532,12 +542,25 @@ export function createServer() {
     return res.send(svg.trim());
   });
 
+  // 12.a 日志轮询兜底（用于反向代理缓冲 SSE 的场景）
+  app.get('/api/logs/recent', (req, res) => {
+    const since = Number(req.query.since || 0);
+    const limit = Math.min(Number(req.query.limit) || 200, 600);
+    const list = logger.getRecentLogs(limit).filter((item) => Number(item.id.split('.')[0]) > since);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ success: true, logs: list, serverTime: Date.now() });
+  });
+
   // 12. SSE 实时日志推流
   app.get('/api/logs/stream', (req, res) => {
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
-    res.flushHeaders();
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.setHeader('Content-Encoding', 'identity');
+    if (typeof res.flushHeaders === 'function') res.flushHeaders();
+    res.write(': connected\n\n');
+    const heartbeat = setInterval(() => { try { res.write(': heartbeat\n\n'); } catch {} }, 15000);
 
     const recent = logger.getRecentLogs(80);
     for (const item of recent) {
@@ -549,6 +572,7 @@ export function createServer() {
     });
 
     req.on('close', () => {
+      clearInterval(heartbeat);
       unsubscribe();
     });
   });

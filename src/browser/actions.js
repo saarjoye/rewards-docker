@@ -466,7 +466,7 @@ export async function harvestClaimablePointsWithVirtualPointer(page, options = {
 }
 
 export async function penetrateDailyActivities(page, options = {}) {
-  const { accountPrefix = '' } = options;
+  const { accountPrefix = '', pendingKeys = null } = options;
   browserManager.updateState({ status: "navigating", currentAction: "执行【板块 4: 日常任务】点击穿透与答题..." });
   logger.log('📋', '>>> 开始执行【板块 4: 日常任务 (Daily Activities)】<<<', '', accountPrefix);
 
@@ -504,6 +504,12 @@ export async function penetrateDailyActivities(page, options = {}) {
         // 如果卡片已经打钩已完成，跳过
         if (cardText.includes('已完成') || cardText.includes('Completed') || cardText.includes('✔')) {
           continue;
+        }
+
+        const hrefNow = await card.getAttribute('href').catch(() => null);
+        if (Array.isArray(pendingKeys) && pendingKeys.length) {
+          const matched = pendingKeys.some((k) => k && ((hrefNow && k === hrefNow) || cardText.includes(String(k).slice(0, 12))));
+          if (!matched) continue;
         }
 
         const briefName = cardText.slice(0, 25).replace(/\n/g, ' ');

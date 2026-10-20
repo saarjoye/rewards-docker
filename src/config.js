@@ -189,7 +189,10 @@ class ConfigManager {
       slot: accountData.slot || existing?.slot || 'auto',
       streakDays: accountData.streakDays !== undefined ? accountData.streakDays : (existing?.streakDays || 0),
       claimablePoints: accountData.claimablePoints !== undefined ? accountData.claimablePoints : (existing?.claimablePoints || 0),
-      lastRun: accountData.lastRun || (existing?.lastRun || null)
+      lastRun: accountData.lastRun || (existing?.lastRun || null),
+      lastSyncAt: accountData.lastSyncAt !== undefined ? accountData.lastSyncAt : (existing?.lastSyncAt || null),
+      dataState: accountData.dataState || existing?.dataState || 'unknown',
+      officialTasks: accountData.officialTasks !== undefined ? accountData.officialTasks : (existing?.officialTasks || null)
     };
 
     if (idx >= 0) {

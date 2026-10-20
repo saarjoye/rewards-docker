@@ -4351,3 +4351,54 @@ input:focus, select:focus, textarea:focus {
   border-color: #94a3b8 !important;
   transform: translateY(-1px) !important;
 }
+
+/* ===== v6.3 unified dashboard additions ===== */
+.bento-grid { grid-template-rows: 105px minmax(300px, 1.45fr) minmax(260px, 1.1fr) !important; }
+.box-live-stream { min-height: 0 !important; }
+.box-live-stream .stream-terminal-white {
+  height: auto !important;
+  max-height: none !important;
+  min-height: 0 !important;
+  flex: 1 1 auto !important;
+  overflow-y: auto !important;
+}
+.box-task-gaps, .box-scheduler-queue { display:flex !important; flex-direction:column !important; min-height:0 !important; }
+.task-gaps-list, .queue-list { flex:1 1 auto; min-height:0; overflow-y:auto; display:flex; flex-direction:column; gap:8px; }
+.task-gap-card { background:#fff; border:1px solid var(--border,#e2e8f0); border-radius:12px; padding:9px 10px; display:flex; flex-direction:column; gap:7px; }
+.task-gap-account { display:flex; align-items:center; gap:7px; font-size:12.5px; font-weight:750; color:#1e293b; }
+.task-gap-dot,.queue-status-dot { width:8px; height:8px; border-radius:50%; background:#fb7185; flex:0 0 auto; }
+.task-gap-dot.running,.queue-status-dot.queue-running { background:#10b981; }
+.queue-status-dot.queue-error { background:#f59e0b; }
+.task-gap-pills { display:flex; flex-wrap:wrap; gap:5px; }
+.task-gap-pill { display:inline-flex; align-items:center; gap:4px; border-radius:7px; padding:3px 7px; font-size:10.5px; border:1px solid #e2e8f0; background:#f8fafc; color:#475569; white-space:nowrap; }
+.task-gap-pill b { font-weight:750; color:#334155; }
+.task-gap-pill.task-state-done { background:#f0fdf4; border-color:#bbf7d0; color:#15803d; }
+.task-gap-pill.task-state-pending { background:#fff7ed; border-color:#fed7aa; color:#c2410c; }
+.task-gap-pill.task-state-unknown { background:#f1f5f9; border-color:#cbd5e1; color:#64748b; }
+.queue-row { display:grid; grid-template-columns:1.2fr 1fr .75fr 1.15fr; align-items:center; gap:8px; padding:8px 9px; border:1px solid #e2e8f0; border-radius:10px; background:#fff; font-size:11px; }
+.queue-account { display:flex; align-items:center; gap:6px; min-width:0; }
+.queue-account b { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#1e293b; }
+.queue-slot,.queue-sync { color:#64748b; font-size:10.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.queue-state { font-weight:750; font-size:10.5px; white-space:nowrap; }
+.queue-state.queue-running { color:#059669; }
+.queue-state.queue-waiting { color:#64748b; }
+.queue-state.queue-error { color:#d97706; }
+.empty-state { display:flex; align-items:center; justify-content:center; min-height:90px; color:#94a3b8; font-size:11.5px; }
+.chip-neutral { background:#f1f5f9; border-color:#e2e8f0; color:#64748b; }
+.btn-icon-compact { width:26px; height:26px; border:1px solid #cbd5e1; border-radius:7px; background:#fff; color:#475569; cursor:pointer; }
+.btn-icon-compact:hover { background:#f8fafc; border-color:#94a3b8; }
+.calendar-toolbar-hint { font-size:11.5px; color:#64748b; font-weight:600; }
+.cal-day-cell.no-data .cal-pts-none { color:#94a3b8; font-size:10.5px; }
+.cal-day-cell .cal-day-sub { overflow:hidden; text-overflow:ellipsis; }
+.bar-pillar.bar-unknown { background:repeating-linear-gradient(45deg,#e2e8f0,#e2e8f0 5px,#f1f5f9 5px,#f1f5f9 10px) !important; box-shadow:none !important; }
+@media (max-width: 992px) {
+  .queue-row { grid-template-columns:1fr 1fr; }
+}
+
+.calendar-day-tooltip { position: fixed; z-index: 100000; display:none; width:220px; padding:10px 12px; background:#0f172a; color:#f8fafc; border-radius:10px; box-shadow:0 10px 28px rgba(15,23,42,.28); font-size:11px; pointer-events:none; }
+.cal-tip-date { font-weight:750; margin-bottom:5px; }
+.cal-tip-total { color:#f8fafc; padding-bottom:6px; border-bottom:1px solid rgba(255,255,255,.16); margin-bottom:6px; }
+.cal-tip-total b { color:#fb923c; font-size:14px; }
+.cal-tip-row { display:flex; justify-content:space-between; gap:12px; padding:2px 0; color:#cbd5e1; }
+.cal-tip-row b { color:#fff; }
+.cal-tip-empty { color:#94a3b8; }

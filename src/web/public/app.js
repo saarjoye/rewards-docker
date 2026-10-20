@@ -73,6 +73,12 @@ document.addEventListener("DOMContentLoaded", () => {
       if (!data.success) return;
 
       accounts = data.accounts || [];
+      try {
+        const recentRes = await fetch('/api/history/recent', { cache: 'no-store' });
+        const recentData = await recentRes.json();
+        const snapshots = (recentData && recentData.snapshots) || {};
+        for (const a of accounts) a.dailySnapshots = snapshots[a.id] || {};
+      } catch {}
       
       // 状态迁移监测：检测到从运行中(isBusy: true)变为结束(false)的瞬间，立即二次强制刷新
       if (lastWasBusy && !data.isBusy) {
@@ -86,9 +92,9 @@ document.addEventListener("DOMContentLoaded", () => {
       let today = 0, balance = 0, streak = 0, claimable = 0;
 
       if (viewMode === "all") {
-        today = accounts.reduce((s, a) => s + (a.todayEarned || 0), 0) || 93;
-        balance = accounts.reduce((s, a) => s + (a.balance || 0), 0) || 1511;
-        streak = accounts.reduce((max, a) => Math.max(max, a.streakDays || 0), 0) || 4;
+        today = accounts.reduce((s, a) => s + (a.todayEarned == null ? 0 : Number(a.todayEarned)), 0);
+        balance = accounts.reduce((s, a) => s + (a.balance == null ? 0 : Number(a.balance)), 0);
+        streak = accounts.reduce((max, a) => Math.max(max, a.streakDays || 0), 0);
         claimable = accounts.reduce((s, a) => s + (a.claimablePoints || 0), 0);
 
         if (btnModeAll) btnModeAll.classList.add("active");
@@ -101,8 +107,8 @@ document.addEventListener("DOMContentLoaded", () => {
         if (currentUserDisplayName) currentUserDisplayName.textContent = "全账号合计";
       } else {
         const targetAcc = accounts.find((a) => a.id === selectedAccountId) || primaryAcc;
-        today = targetAcc.todayEarned || 0;
-        balance = targetAcc.balance || 0;
+        today = targetAcc.todayEarned == null ? null : Number(targetAcc.todayEarned);
+        balance = targetAcc.balance == null ? null : Number(targetAcc.balance);
         streak = targetAcc.streakDays || 0;
         claimable = targetAcc.claimablePoints || 0;
 
@@ -117,11 +123,11 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       if (mTodayPoints) mTodayPoints.textContent = today;
-      if (mTotalBalance) mTotalBalance.textContent = balance.toLocaleString();
+      if (mTotalBalance) mTotalBalance.textContent = balance == null ? '--' : balance.toLocaleString();
       if (mStreakDays) mStreakDays.textContent = String(streak).padStart(2, "0");
 
       const todayTarget = viewMode === "all" ? (accounts.length || 1) * 174 : 174;
-      const todayPct = Math.min(100, Math.round((today / todayTarget) * 100));
+      const todayPct = today == null ? 0 : Math.min(100, Math.round((today / todayTarget) * 100));
       if (fillToday) fillToday.style.width = todayPct + "%";
       if (mTodayPercent) mTodayPercent.textContent = todayPct + "%";
       if (fillBalance) fillBalance.style.width = "85%";
@@ -213,12 +219,12 @@ document.addEventListener("DOMContentLoaded", () => {
       renderAccountsList();
       renderTopAccountCards();
       renderBoardDropdown();
-      renderActivityList(); renderTopTasks();
+      renderOfficialTaskGaps(); renderSchedulerQueue();
       renderChartBars(today);
       const boardToday = document.getElementById("board-today-points");
-      if (boardToday) boardToday.textContent = "+" + today + " 分";
+      if (boardToday) boardToday.textContent = today == null ? '--' : ('+' + today + ' 分');
       const boardTotal = document.getElementById("board-total-balance");
-      if (boardTotal) boardTotal.textContent = balance.toLocaleString() + " 分";
+      if (boardTotal) boardTotal.textContent = balance == null ? '--' : (balance.toLocaleString() + ' 分');
       const boardClaim = document.getElementById("board-claimable-num");
       if (boardClaim) boardClaim.textContent = claimable || 0;
       const memStatusLine = document.getElementById("mem-status-line");
@@ -286,136 +292,69 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function renderChartBars(todayPoints) {
     if (!chartBars) return;
-
-    // 区分全账号合并大盘与单账号视图
     const isSingleMode = viewMode === "single" && selectedAccountId;
-    let activeAccs = [];
-    if (isSingleMode) {
-      const single = accounts.find((a) => a.id === selectedAccountId);
-      if (single) activeAccs = [single];
-      else activeAccs = accounts.slice(0, 1);
-    } else {
-      activeAccs = accounts.length > 0 ? accounts : [
-        { name: "主账号", todayEarned: 170, balance: 32624 },
-        { name: "858362599", todayEarned: 40, balance: 32624 },
-        { name: "备用账号", todayEarned: 40, balance: 32624 },
-        { name: "186", todayEarned: 40, balance: 32624 }
-      ];
-    }
+    const activeAccs = isSingleMode
+      ? accounts.filter((a) => a.id === selectedAccountId)
+      : accounts;
 
-    const totalBalance = isSingleMode
-      ? ((activeAccs[0] && activeAccs[0].balance) || 0)
-      : (accounts.reduce((s, a) => s + (a.balance || 0), 0) || 32624);
-
-    const weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
-    const now = new Date();
-
-    // 构建近 7 天完整轨迹 (对标设计图: 10-13 至 10-19)
     const days = [];
-    const presetHistoryVals = [0, 0, 0, 1217, 90, 290, todayPoints || 228];
-
+    const now = new Date();
+    const weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
     for (let i = 6; i >= 0; i--) {
       const d = new Date(now.getTime() - i * 86400000);
-      const year = d.getFullYear();
-      const month = String(d.getMonth() + 1).padStart(2, "0");
-      const day = String(d.getDate()).padStart(2, "0");
-      const weekday = weekdays[d.getDay()];
-      const label = month + "-" + day;
-      const fullDateStr = year + "-" + month + "-" + day + " (" + weekday + ")";
-      const isToday = i === 0;
-      const val = isToday ? (todayPoints || 228) : presetHistoryVals[6 - i];
-
-      // 计算各账号占比明细 (对标图 1: 主账号 +170 58.6% 等)
+      const date = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(d).replace(/\//g, '-');
       const breakdown = activeAccs.map((a, idx) => {
-        let pts = 0;
-        if (isToday) {
-          pts = a.todayEarned !== undefined ? a.todayEarned : Math.round(val / activeAccs.length);
-        } else if (val === 290) {
-          // 精准对应图 1 中 10-18 的 290 积分分布
-          if (idx === 0) pts = 170;
-          else if (idx === 1) pts = 40;
-          else if (idx === 2) pts = 40;
-          else pts = 40;
-        } else if (val === 1217) {
-          pts = Math.round(val / activeAccs.length);
-        } else if (val > 0) {
-          pts = Math.round(val / activeAccs.length);
-        }
-        const pct = val > 0 ? ((pts / val) * 100).toFixed(1) + "%" : "0.0%";
+        const snapshots = a.dailySnapshots || {};
+        const rec = snapshots[date];
         return {
-          name: a.name || a.user,
-          pts,
-          pct
+          name: getAccountDisplayName(a, idx),
+          pts: rec && rec.earned != null ? Number(rec.earned) : null
         };
       });
-
+      const known = breakdown.filter((b) => b.pts !== null);
+      const val = known.reduce((sum, b) => sum + b.pts, 0);
       days.push({
-        label,
-        fullDateStr,
+        label: date.slice(5),
+        fullDateStr: date + ' (' + weekdays[d.getDay()] + ')',
         val,
-        active: isToday,
+        knownCount: known.length,
+        totalCount: breakdown.length,
         breakdown,
-        balance: totalBalance - (i * 180)
+        active: i === 0
       });
     }
 
-    const maxVal = Math.max(120, ...days.map((d) => d.val));
+    const maxVal = Math.max(60, ...days.map((d) => d.val));
     chartBars.innerHTML = days.map((d, colIndex) => {
-      const heightPct = Math.min(65, Math.max(12, Math.round((d.val / maxVal) * 58)));
-
+      const hasOfficialData = d.knownCount > 0;
+      const heightPct = hasOfficialData ? Math.min(65, Math.max(8, Math.round((d.val / maxVal) * 58))) : 8;
       const breakdownRowsHtml = d.breakdown.map((b) => (
-        "<div class=\"tooltip-account-row\">" +
-          "<div class=\"acc-left\">" +
-            "<span class=\"acc-avatar\">👤</span>" +
-            "<span class=\"acc-name\">" + escapeHtml(b.name) + "</span>" +
-          "</div>" +
-          "<div class=\"acc-right\">" +
-            "<span class=\"acc-pts\">+" + b.pts + "</span>" +
-            "<span class=\"acc-pct\">" + b.pct + "</span>" +
-          "</div>" +
-        "</div>"
-      )).join("");
-
-      // 靠近右侧的柱子靠右对齐展示，靠近左侧靠左对齐，确保完美不遮挡
-      const alignClass = colIndex >= 3 ? "align-right" : "align-left";
-
+        '<div class="tooltip-account-row">' +
+          '<div class="acc-left"><span class="acc-avatar">👤</span><span class="acc-name">' + escapeHtml(b.name) + '</span></div>' +
+          '<div class="acc-right"><span class="acc-pts">' + (b.pts === null ? '未同步' : '+' + b.pts) + '</span></div>' +
+        '</div>'
+      )).join('');
+      const alignClass = colIndex >= 3 ? 'align-right' : 'align-left';
       return (
-        "<div class=\"bar-col " + (d.active ? "active" : "") + " " + alignClass + "\">" +
-          "<div class=\"bar-pillar\" style=\"height: " + heightPct + "%;\">" +
-            "<span class=\"bar-top-val\">+" + d.val + "</span>" +
-          "</div>" +
-          "<span class=\"bar-date-label\">" + d.label + "</span>" +
-          "<div class=\"chart-tooltip-capsule\">" +
-            "<div class=\"tooltip-date-header\">" + d.fullDateStr + "</div>" +
-            "<div class=\"tooltip-total-row\">" +
-              "<span class=\"tooltip-big-pts\">+" + d.val + "</span>" +
-              "<span class=\"tooltip-pts-unit\">积分</span>" +
-            "</div>" +
-            "<div class=\"tooltip-divider\"></div>" +
-            "<div class=\"tooltip-sub-header\">" + (isSingleMode ? "当前账号统计 (单账号视图)" : ("各账号占比 (" + d.breakdown.length + " 个账号)")) + "</div>" +
-            "<div class=\"tooltip-accounts-list\">" + breakdownRowsHtml + "</div>" +
-            "<div class=\"tooltip-divider\"></div>" +
-            "<div class=\"tooltip-footer-row\">" +
-              "<span>当日结余: " + d.balance.toLocaleString() + " 积分</span>" +
-            "</div>" +
-          "</div>" +
-        "</div>"
+        '<div class="bar-col ' + (d.active ? 'active' : '') + ' ' + alignClass + '">' +
+          '<div class="bar-pillar ' + (hasOfficialData ? '' : 'bar-unknown') + '" style="height: ' + heightPct + '%;">' +
+            '<span class="bar-top-val">' + (hasOfficialData ? (d.val > 0 ? '+' + d.val : '0') : '?') + '</span>' +
+          '</div>' +
+          '<span class="bar-date-label">' + d.label + '</span>' +
+          '<div class="chart-tooltip-capsule">' +
+            '<div class="tooltip-date-header">' + d.fullDateStr + '</div>' +
+            '<div class="tooltip-total-row">' +
+              '<span class="tooltip-total-label">' + (hasOfficialData ? '官网新增合计' : '暂无官网快照') + '</span>' +
+              '<span class="tooltip-total-val">' + (hasOfficialData ? '+' + d.val : '--') + '</span>' +
+              '<span class="tooltip-pts-unit">分</span>' +
+            '</div>' +
+            '<div class="tooltip-divider"></div>' +
+            '<div class="tooltip-sub-header">各账号当日新增</div>' +
+            '<div class="tooltip-accounts-list">' + breakdownRowsHtml + '</div>' +
+          '</div>' +
+        '</div>'
       );
-    }).join("");
-  }
-
-  
-  function renderBoardDropdown() {
-    const selectBoardView = document.getElementById("select-board-view");
-    if (!selectBoardView) return;
-    const currentVal = viewMode === "all" ? "all" : (selectedAccountId || "all");
-    const opts = ['<option value="all">🏛 全部账号汇总</option>'];
-    accounts.forEach((a, idx) => {
-      const dName = getAccountDisplayName(a, idx);
-      opts.push('<option value="' + a.id + '">👤 ' + escapeHtml(dName) + '</option>');
-    });
-    selectBoardView.innerHTML = opts.join('');
-    selectBoardView.value = currentVal;
+    }).join('');
   }
 
   function renderAccountsList() {
@@ -488,6 +427,75 @@ document.addEventListener("DOMContentLoaded", () => {
     accountsScrollList.innerHTML = topAllItem + accountRows;
   }
 
+  function taskStatusLabel(done, known = true) {
+    if (!known) return { text: '未同步', cls: 'task-state-unknown' };
+    return done ? { text: '已完成', cls: 'task-state-done' } : { text: '待完成', cls: 'task-state-pending' };
+  }
+
+  function renderOfficialTaskGaps() {
+    const list = document.getElementById('task-gaps-list');
+    const syncEl = document.getElementById('task-gaps-sync-time');
+    if (!list) return;
+    if (!accounts.length) {
+      list.innerHTML = '<div class="empty-state">暂无托管账号</div>';
+      return;
+    }
+    let latest = 0;
+    list.innerHTML = accounts.map((a, idx) => {
+      const t = a.officialTasks || {};
+      const hasSnap = !!(t && Object.keys(t).length);
+      const search = t.searchPoints || null;
+      const app = t.appCheckIn || null;
+      const daily = t.dailySet || null;
+      const pendingDaily = Array.isArray(t.dailyPending) ? t.dailyPending.length : null;
+      const pendingQuests = Array.isArray(t.questPending) ? t.questPending.length : null;
+      if (a.lastSyncAt) latest = Math.max(latest, Number(a.lastSyncAt));
+      const items = [
+        { label: '搜索', value: search ? search.current + '/' + search.max : '未同步', done: search ? !!search.isMaxed : false, known: !!search },
+        { label: 'App签到', value: app ? app.current + '/' + app.max : '未同步', done: app ? app.current >= app.max : false, known: !!app },
+        { label: 'Daily Set', value: daily ? daily.current + '/' + daily.max : '未同步', done: daily ? daily.current >= daily.max : false, known: !!daily },
+        { label: '日常任务', value: pendingDaily === null ? '未同步' : (pendingDaily === 0 ? '全部完成' : pendingDaily + ' 项待做'), done: pendingDaily === 0, known: pendingDaily !== null },
+        { label: '打孔卡', value: pendingQuests === null ? '未同步' : (pendingQuests === 0 ? '全部完成' : pendingQuests + ' 张进行中'), done: pendingQuests === 0, known: pendingQuests !== null }
+      ];
+      const name = getAccountDisplayName(a, idx);
+      return '<div class="task-gap-card ' + (!hasSnap ? 'task-gap-card-unknown' : '') + '">' +
+        '<div class="task-gap-account"><span class="task-gap-dot ' + (a.status === 'running' ? 'running' : '') + '"></span>' + escapeHtml(name) + '</div>' +
+        '<div class="task-gap-pills">' + items.map((it) => {
+          const st = taskStatusLabel(it.done, it.known);
+          return '<span class="task-gap-pill ' + st.cls + '" title="' + escapeHtml(it.label + ': ' + it.value) + '">' +
+            '<b>' + escapeHtml(it.label) + '</b><span>' + escapeHtml(it.value) + '</span></span>';
+        }).join('') + '</div>' +
+      '</div>';
+    }).join('');
+    if (syncEl) syncEl.textContent = latest ? ('同步于 ' + new Date(latest).toLocaleTimeString('zh-CN', { hour12: false })) : '尚未同步';
+  }
+
+  function renderSchedulerQueue() {
+    const list = document.getElementById('queue-list');
+    const summary = document.getElementById('queue-summary');
+    if (!list) return;
+    if (!accounts.length) {
+      list.innerHTML = '<div class="empty-state">暂无托管账号</div>';
+      return;
+    }
+    const runningId = currentRunningAccountId;
+    const now = Date.now();
+    list.innerHTML = accounts.map((a, idx) => {
+      const name = getAccountDisplayName(a, idx);
+      const isRunning = runningId && String(runningId) === String(a.id);
+      const syncAge = a.lastSyncAt ? Math.floor((now - Number(a.lastSyncAt)) / 60000) : null;
+      const state = isRunning ? '运行中' : (a.status === 'needs_2fa' ? '需验证' : '等待调度');
+      const stateCls = isRunning ? 'queue-running' : (a.status === 'needs_2fa' ? 'queue-error' : 'queue-waiting');
+      return '<div class="queue-row">' +
+        '<div class="queue-account"><span class="queue-status-dot ' + stateCls + '"></span><b>' + escapeHtml(name) + '</b></div>' +
+        '<div class="queue-slot">' + escapeHtml(formatSlotName(a.slot)) + '</div>' +
+        '<div class="queue-state ' + stateCls + '">' + state + '</div>' +
+        '<div class="queue-sync">' + (syncAge === null ? '未同步' : (syncAge < 1 ? '刚刚同步' : syncAge + ' 分钟前同步')) + '</div>' +
+      '</div>';
+    }).join('');
+    if (summary) summary.textContent = runningId ? '账号锁占用中' : '队列空闲';
+  }
+
   function renderTopAccountCards() {
     const container = document.getElementById("top-accounts-cards");
     if (!container) return;
@@ -499,9 +507,10 @@ document.addEventListener("DOMContentLoaded", () => {
     const colorClasses = ['bar-yellow', 'bar-green', 'bar-orange', 'bar-blue', 'bar-purple'];
 
     const cardItems = accounts.map((acc, idx) => {
-      const today = acc.todayEarned || 0;
-      const balance = (acc.balance || 0).toLocaleString();
-      const pct = Math.min(100, Math.round((today / 174) * 100));
+      const hasOfficial = acc.todayEarned !== null && acc.todayEarned !== undefined && Number(acc.lastSyncAt || 0) > 0;
+      const today = hasOfficial ? Number(acc.todayEarned) : null;
+      const balance = acc.balance === null || acc.balance === undefined ? '--' : Number(acc.balance).toLocaleString();
+      const pct = hasOfficial ? Math.min(100, Math.round((today / 174) * 100)) : 0;
       const colorClass = colorClasses[idx % colorClasses.length];
       const isAct = viewMode === 'single' && selectedAccountId === acc.id;
 
@@ -529,7 +538,7 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       const slotLabel = formatSlotName(acc.slot);
-      const subLabel = '可用 ' + balance + ' 分 · ' + slotLabel;
+      const subLabel = '可用 ' + balance + ' 分 · ' + slotLabel + (hasOfficial ? '' : ' · 待同步');
 
       return (
         '<section class="metric-card ' + (isAct ? 'active-card' : '') + '" onclick="switchView(\'single\', \'' + acc.id + '\')" title="点击切换查看 [' + escapeHtml(displayName) + '] 独立看板">' +
@@ -539,7 +548,7 @@ document.addEventListener("DOMContentLoaded", () => {
               '<span class="metric-label" title="' + escapeHtml(acc.name || acc.user) + '">' + escapeHtml(displayName) + '</span>' +
               '<button type="button" class="btn-card-edit-quick" onclick="event.stopPropagation(); window.openEditAccountModal(\'' + acc.id + '\')" title="编辑账号与时段">✏️</button>' +
             '</div>' +
-            '<span class="metric-number">' + today + '</span>' +
+            '<span class="metric-number">' + (hasOfficial ? today : '--') + '</span>' +
           '</div>' +
           '<div class="metric-sub-row">' +
             '<span>' + subLabel + '</span>' +
@@ -658,156 +667,9 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btn-toggle-all-pool")?.addEventListener("click", () => switchView("all"));
 
   
-  function renderActivityList() {
-    const activityList = document.getElementById("activity-list");
-    const actAccEl = document.getElementById("activity-active-account");
-    if (!activityList) return;
-
-    if (actAccEl) {
-      if (viewMode === 'all') {
-        actAccEl.textContent = '全部账号合计';
-        actAccEl.style.background = '#e2e8f0';
-        actAccEl.style.color = '#1e293b';
-      } else {
-        const curAcc = accounts.find((a) => a.id === selectedAccountId) || accounts[0] || {};
-        const dName = getAccountDisplayName(curAcc, accounts.indexOf(curAcc));
-        actAccEl.textContent = dName;
-        actAccEl.style.background = '#ff5722';
-        actAccEl.style.color = '#ffffff';
-      }
-    }
-
-    const activities = [];
-
-    if (viewMode === 'all') {
-      accounts.forEach((acc) => {
-        const aName = (acc.name && acc.name !== '默认账号')
-          ? acc.name
-          : (acc.user ? acc.user.split('@')[0] : '账号');
-        const earned = acc.todayEarned || 0;
-        
-        // 严格以今天实际增量积分为准生成流水，绝不伪造未做任务
-        if (earned >= 60) {
-          activities.push({
-            icon: '🔍',
-            title: '[' + aName + '] 必应 PC 拟人化搜索收割 (60分已拿满)',
-            pts: '+60分',
-            time: '今日',
-            status: 'Completed'
-          });
-        } else if (earned > 0) {
-          activities.push({
-            icon: '🔍',
-            title: '[' + aName + '] 必应 PC 拟人搜索 (已拿 ' + earned + '/60 分)',
-            pts: '+' + earned + '分',
-            time: '今日',
-            status: '进行中'
-          });
-        }
-
-        if (earned >= 90) {
-          activities.push({
-            icon: '📅',
-            title: '[' + aName + '] 每日活动集 (Daily Set 3/3) 穿透完成',
-            pts: '+30分',
-            time: '今日',
-            status: 'Completed'
-          });
-        }
-        if (earned >= 100) {
-          activities.push({
-            icon: '📱',
-            title: '[' + aName + '] 必应移动端连续签到 (DAPI直连)',
-            pts: '+10分',
-            time: '今日',
-            status: 'Completed'
-          });
-        }
-        if (earned >= 103) {
-          activities.push({
-            icon: '🧩',
-            title: '[' + aName + '] 每日拼图 (Evergreen Puzzle) 通关',
-            pts: '+3分',
-            time: '今日',
-            status: 'Completed'
-          });
-        }
-      });
-    } else {
-      const curAcc = accounts.find((a) => a.id === selectedAccountId) || accounts[0] || {};
-      const earned = curAcc.todayEarned || 0;
-
-      // 单账号：严格按实际完成情况生成，绝不写死未执行任务
-      if (earned >= 60) {
-        activities.push({
-          icon: '🔍',
-          title: '必应 PC 拟人化搜索收割 (60分已拿满)',
-          pts: '+60分',
-          time: '今日',
-          status: 'Completed'
-        });
-      } else if (earned > 0) {
-        activities.push({
-          icon: '🔍',
-          title: '必应 PC 拟人化搜索 (已达成 ' + earned + '/60 分)',
-          pts: '+' + earned + '分',
-          time: '今日',
-          status: '进行中'
-        });
-      }
-
-      if (earned >= 90) {
-        activities.push({
-          icon: '📅',
-          title: '每日活动集 (Daily Set 3/3) 穿透完成',
-          pts: '+30分',
-          time: '今日',
-          status: 'Completed'
-        });
-      }
-
-      if (earned >= 100) {
-        activities.push({
-          icon: '📱',
-          title: '必应移动端连续签到 (DAPI直连)',
-          pts: '+10分',
-          time: '今日',
-          status: 'Completed'
-        });
-      }
-
-      if (earned >= 103) {
-        activities.push({
-          icon: '🧩',
-          title: '每日拼图 (Evergreen Puzzle) 通关',
-          pts: '+3分',
-          time: '今日',
-          status: 'Completed'
-        });
-      }
-    }
-
-    if (activities.length === 0) {
-      activityList.innerHTML = '<div style="text-align: center; color: #94a3b8; font-size: 11px; padding: 28px 10px; line-height: 1.6;">🌱 今日新一天已开启，暂无已执行流水记录<br><span style="font-size: 10px; color: #cbd5e1;">点击右上角「立即执行任务」启动自动化流水线</span></div>';
-      return;
-    }
-
-    activityList.innerHTML = activities.slice(0, 5).map((act) => (
-      '<div class="activity-row">' +
-        '<div class="act-left">' +
-          '<div class="act-icon-sq">' + act.icon + '</div>' +
-          '<div class="act-info">' +
-            '<span class="act-title">' + escapeHtml(act.title) + '</span>' +
-            '<span class="act-points">' + act.pts + ' 官方权威到账</span>' +
-          '</div>' +
-        '</div>' +
-        '<div style="display: flex; flex-direction: column; align-items: flex-end; gap: 2px;">' +
-          '<span class="act-badge-completed ' + (act.status === 'Completed' ? '' : 'act-running') + '">' + act.status + '</span>' +
-          '<span style="font-size: 10px; color: #94a3b8;">' + act.time + '</span>' +
-        '</div>' +
-      '</div>'
-    )).join('');
-  }
+  // 旧版“最近流水动态”和“四大板块任务榜”已由官网任务缺口与调度队列替代。
+  function renderActivityList() {}
+  function renderTopTasks() {}
 
   function renderTopTasks() {
     const tasksRankList = document.getElementById("tasks-rank-list");
@@ -1674,55 +1536,66 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
+  const renderedLogIds = new Set();
+  function appendLogItem(item) {
+    if (!item || renderedLogIds.has(item.id)) return;
+    renderedLogIds.add(item.id);
+    if (renderedLogIds.size > 1200) {
+      for (const id of renderedLogIds) { renderedLogIds.delete(id); if (renderedLogIds.size < 900) break; }
+    }
+    const div = document.createElement("div");
+    div.style.lineHeight = "1.5";
+    div.textContent = item.raw;
+    logTerminal?.appendChild(div);
+    const streamBox = document.getElementById("stream-terminal-list");
+    if (streamBox) {
+      const sDiv = document.createElement("div");
+      sDiv.className = "stream-log-row";
+      if (item.raw.includes("✅") || item.raw.includes("成功") || item.raw.includes("🎉")) sDiv.className += " success";
+      else if (item.raw.includes("⚠️") || item.raw.includes("冷冻")) sDiv.className += " warn";
+      else if (item.raw.includes("🔴") || item.raw.includes("失败") || item.raw.includes("异常")) sDiv.className += " err";
+      else if (item.raw.includes("📰") || item.raw.includes("🔍") || item.raw.includes("🚀")) sDiv.className += " info";
+      sDiv.textContent = item.raw;
+      streamBox.appendChild(sDiv);
+      while (streamBox.children.length > 300) streamBox.firstElementChild?.remove();
+      streamBox.scrollTop = streamBox.scrollHeight;
+    }
+    if (autoScroll && logTerminal) logTerminal.scrollTop = logTerminal.scrollHeight;
+    const rawText = item.raw || "";
+    if (rawText.includes("任务执行完成") || rawText.includes("权威数据采集结果") || rawText.includes("已成功领取") || rawText.includes("对账完毕") || rawText.includes("真实数据回写成功")) {
+      refreshDashboard();
+      setTimeout(() => refreshDashboard(), 1200);
+    }
+  }
+
+  let pollSince = 0;
+  let logPollTimer = null;
+  async function pollLogs() {
+    try {
+      const res = await fetch('/api/logs/recent?since=' + pollSince + '&limit=300', { cache: 'no-store' });
+      if (!res.ok) return;
+      const data = await res.json();
+      for (const item of (data.logs || [])) {
+        const ts = Number(String(item.id).split('.')[0]) || 0;
+        if (ts > pollSince) pollSince = ts;
+        appendLogItem(item);
+      }
+    } catch {}
+  }
+
   function connectLogs() {
     let evtSource = null;
     try {
       evtSource = new EventSource("/api/logs/stream");
     } catch {}
+    if (!logPollTimer) logPollTimer = setInterval(pollLogs, 3000);
+    pollLogs();
     if (!evtSource) return;
 
     evtSource.onmessage = (e) => {
-      try {
-        const item = JSON.parse(e.data);
-        const div = document.createElement("div");
-        div.style.lineHeight = "1.5";
-        div.textContent = item.raw;
-        logTerminal?.appendChild(div);
-
-        // 同步推流到 Row 2 Column 3 的主面板实时执行记录窗口
-        const streamBox = document.getElementById("stream-terminal-list");
-        if (streamBox) {
-          const sDiv = document.createElement("div");
-          sDiv.className = "stream-log-row";
-          if (item.raw.includes("✅") || item.raw.includes("成功") || item.raw.includes("🎉")) sDiv.className += " success";
-          else if (item.raw.includes("⚠️") || item.raw.includes("冷冻")) sDiv.className += " warn";
-          else if (item.raw.includes("🔴") || item.raw.includes("失败") || item.raw.includes("异常")) sDiv.className += " err";
-          else if (item.raw.includes("📰") || item.raw.includes("🔍") || item.raw.includes("🚀")) sDiv.className += " info";
-          sDiv.textContent = item.raw;
-          streamBox.appendChild(sDiv);
-          streamBox.scrollTop = streamBox.scrollHeight;
-        }
-        if (autoScroll && logTerminal) logTerminal.scrollTop = logTerminal.scrollHeight;
-
-        // 关键事件驱动：一旦监听到任务完成、积分变动或权威数据采集日志，毫秒级即刻触发大盘刷新！
-        const rawText = item.raw || "";
-        if (
-          rawText.includes("任务执行完成") ||
-          rawText.includes("权威数据采集结果") ||
-          rawText.includes("已成功领取") ||
-          rawText.includes("对账完毕") ||
-          rawText.includes("已全部同步") ||
-          rawText.includes("对账确认") ||
-          rawText.includes("收割完毕") ||
-          rawText.includes("真实数据回写成功")
-        ) {
-          refreshDashboard();
-          // 并在 1.2 秒后进行二次复核回验，确保官方最终积分 100% 实时上屏
-          setTimeout(() => refreshDashboard(), 1200);
-        }
-      } catch {}
+      try { appendLogItem(JSON.parse(e.data)); } catch {}
     };
-    evtSource.onerror = () => setTimeout(connectLogs, 4000);
+    evtSource.onerror = () => { try { evtSource.close(); } catch {} setTimeout(connectLogs, 4000); };
   }
 
   function updateScrollButtonState() {
@@ -1860,34 +1733,33 @@ document.addEventListener("DOMContentLoaded", () => {
     return y + '-' + String(m).padStart(2, '0');
   }
 
+  function showDayTooltip(event, dateStr, details, total) {
+    let tip = document.getElementById('calendar-day-tooltip');
+    if (!tip) { tip = document.createElement('div'); tip.id = 'calendar-day-tooltip'; tip.className = 'calendar-day-tooltip'; document.body.appendChild(tip); }
+    const rows = details.length ? details.map((d) => '<div class="cal-tip-row"><span>' + escapeHtml(d.name) + '</span><b>' + (d.earned === null ? '未同步' : '+' + d.earned) + '</b></div>').join('') : '<div class="cal-tip-empty">暂无官网快照</div>';
+    tip.innerHTML = '<div class="cal-tip-date">' + escapeHtml(dateStr) + '</div><div class="cal-tip-total">合计 <b>' + (total === null ? '--' : '+' + total) + '</b> 分</div><div class="cal-tip-list">' + rows + '</div>';
+    tip.style.display = 'block';
+    tip.style.left = Math.min(window.innerWidth - 240, event.clientX + 12) + 'px';
+    tip.style.top = Math.max(10, Math.min(window.innerHeight - 240, event.clientY + 12)) + 'px';
+  }
+
   async function renderMonthCalendar() {
     if (!modalMonthCalendar || modalMonthCalendar.classList.contains("hidden")) return;
     const ymStr = formatYearMonth(calCurrentYear, calCurrentMonth);
     const labelEl = document.getElementById("label-current-month");
     if (labelEl) labelEl.textContent = calCurrentYear + '年' + calCurrentMonth + '月';
 
-    const selAcc = document.getElementById("select-cal-account");
-    const targetAccId = selAcc ? selAcc.value : "all";
-
-    // 动态填充账号下拉
-    if (selAcc && selAcc.options.length <= 1) {
-      selAcc.innerHTML = '<option value="all">🌐 全部账号汇总</option>' +
-        accounts.map((a, idx) => '<option value="' + a.id + '">👤 ' + escapeHtml(getAccountDisplayName(a, idx)) + '</option>').join('');
-      if (selectedAccountId) selAcc.value = selectedAccountId;
-    }
-
     try {
-      const res = await fetch('/api/history?month=' + ymStr + '&accountId=' + targetAccId);
+      const res = await fetch('/api/history?month=' + ymStr + '&accountId=all');
       const data = await res.json();
       const records = (data && data.history) || [];
-      const recMap = {};
+      const recMap = Object.fromEntries(records.map((r) => [r.date, r]));
       let totalEarned = 0;
       let activeDaysCount = 0;
 
-      records.forEach(r => {
-        recMap[r.date] = r;
-        if ((r.earned || 0) > 0) {
-          totalEarned += r.earned;
+      records.forEach((r) => {
+        if (r.hasOfficialData && Number(r.earned) > 0) {
+          totalEarned += Number(r.earned);
           activeDaysCount++;
         }
       });
@@ -1896,37 +1768,47 @@ document.addEventListener("DOMContentLoaded", () => {
       let startDayOfWeek = firstDayDate.getDay();
       if (startDayOfWeek === 0) startDayOfWeek = 7;
       const emptyCellsBefore = startDayOfWeek - 1;
-
       const daysInMonth = new Date(calCurrentYear, calCurrentMonth, 0).getDate();
       const todayStr = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()).replace(/\//g, '-');
+      const accountNameMap = Object.fromEntries(accounts.map((a, i) => [a.id, getAccountDisplayName(a, i)]));
 
       const gridEl = document.getElementById("calendar-days-grid");
       if (gridEl) {
         const cells = [];
-        for (let i = 0; i < emptyCellsBefore; i++) {
-          cells.push('<div class="cal-day-cell empty"></div>');
-        }
+        for (let i = 0; i < emptyCellsBefore; i++) cells.push('<div class="cal-day-cell empty"></div>');
         for (let day = 1; day <= daysInMonth; day++) {
           const dayStr = ymStr + '-' + String(day).padStart(2, '0');
           const isToday = dayStr === todayStr;
           const rec = recMap[dayStr];
-          const pts = rec ? (rec.earned || 0) : 0;
-          const hasPoints = pts > 0;
+          const hasData = !!(rec && rec.hasOfficialData);
+          const pts = hasData ? Number(rec.earned || 0) : null;
+          const details = (rec && rec.details || []).map((d) => {
+            const name = accountNameMap[d.accountId] || d.accountId;
+            return { name, earned: d.earned, timestamp: d.timestamp };
+          });
+          const tooltip = details.length
+            ? dayStr + '\n合计 +' + (pts || 0) + ' 分\n' + details.map((d) => d.name + ': ' + (d.earned === null ? '未同步' : '+' + d.earned + ' 分')).join('\n')
+            : dayStr + '\n暂无官网快照';
 
           cells.push(
-            '<div class="cal-day-cell ' + (isToday ? 'today ' : '') + (hasPoints ? 'has-points' : '') + '">' +
-              '<div class="cal-day-top">' +
-                '<span class="cal-day-num">' + day + '日</span>' +
-                (isToday ? '<span class="cal-today-badge">今天</span>' : '') +
-              '</div>' +
-              '<div class="cal-day-body">' +
-                (hasPoints ? ('<span class="cal-pts-val">+' + pts + '</span><span class="cal-pts-unit">分</span>') : '<span class="cal-pts-none">-</span>') +
-              '</div>' +
-              '<div class="cal-day-sub">' + (rec && rec.balance ? (rec.balance.toLocaleString() + '结余') : '') + '</div>' +
+            '<div class="cal-day-cell ' + (isToday ? 'today ' : '') + (hasData ? 'has-points' : 'no-data') + '" title="' + escapeHtml(tooltip) + '">' +
+              '<div class="cal-day-top"><span class="cal-day-num">' + day + '日</span>' + (isToday ? '<span class="cal-today-badge">今天</span>' : '') + '</div>' +
+              '<div class="cal-day-body">' + (hasData ? ('<span class="cal-pts-val">+' + pts + '</span><span class="cal-pts-unit">分</span>') : '<span class="cal-pts-none">无数据</span>') + '</div>' +
+              '<div class="cal-day-sub">' + (details.length ? details.map((d) => escapeHtml(d.name) + (d.earned === null ? ' 未同步' : ' +' + d.earned)).join(' · ') : '') + '</div>' +
             '</div>'
           );
         }
         gridEl.innerHTML = cells.join('');
+        gridEl.querySelectorAll('.cal-day-cell:not(.empty)').forEach((cell, index) => {
+          const day = index + 1;
+          const dayStr = ymStr + '-' + String(day).padStart(2, '0');
+          const rec = recMap[dayStr];
+          const details = (rec && rec.details || []).map((d) => ({ name: accountNameMap[d.accountId] || d.accountId, earned: d.earned == null ? null : Number(d.earned) }));
+          const total = rec && rec.hasOfficialData ? Number(rec.earned || 0) : null;
+          cell.addEventListener('mouseenter', (event) => showDayTooltip(event, dayStr, details, total));
+          cell.addEventListener('mousemove', (event) => showDayTooltip(event, dayStr, details, total));
+          cell.addEventListener('mouseleave', () => { const tip = document.getElementById('calendar-day-tooltip'); if (tip) tip.style.display = 'none'; });
+        });
       }
 
       const kpiTotal = document.getElementById("month-kpi-total");
@@ -1934,8 +1816,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const kpiDays = document.getElementById("month-kpi-days");
       if (kpiDays) kpiDays.textContent = activeDaysCount + " 天";
       const kpiAvg = document.getElementById("month-kpi-avg");
-      const avgPts = activeDaysCount > 0 ? Math.round(totalEarned / activeDaysCount) : 0;
-      if (kpiAvg) kpiAvg.textContent = avgPts + " 分";
+      if (kpiAvg) kpiAvg.textContent = (activeDaysCount ? Math.round(totalEarned / activeDaysCount) : 0) + " 分";
     } catch (e) {
       console.error('Failed to load month calendar:', e);
     }
@@ -1963,8 +1844,6 @@ document.addEventListener("DOMContentLoaded", () => {
     calCurrentMonth = new Date().getMonth() + 1;
     renderMonthCalendar();
   });
-  document.getElementById("select-cal-account")?.addEventListener("change", renderMonthCalendar);
-  document.getElementById("select-cal-slot")?.addEventListener("change", renderMonthCalendar);
 
   // 测试账号登录状态
   document.getElementById("btn-test-account-login")?.addEventListener("click", async () => {

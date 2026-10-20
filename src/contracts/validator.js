@@ -150,9 +150,9 @@ export function extractOfficialSearchPoints(text = '') {
     if (!match) continue;
     const current = parseInt(match[1], 10);
     const max = parseInt(match[2], 10);
-    // 连续打卡的“搜索: 1/1”不是 PC 搜索积分上限，排除这种误识别。
+    // 连续打卡的“搜索: 1/1”不是积分明细中的搜索上限，排除这种误识别。
     if (max <= 1) continue;
-    return { current, max, isMaxed: max > 0 && current >= max };
+    return { current, max, isMaxed: max > 0 && current >= max, source: 'points-detail' };
   }
   return null;
 }

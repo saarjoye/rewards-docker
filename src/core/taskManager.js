@@ -341,197 +341,138 @@ export class TaskManager {
           async (browser, context) => {
             log('同步初始官网成效看板...');
             this.currentTaskName = '同步官网初始真实看板...';
+            // 先读取官网实时任务快照，供后续执行分支与历史快照共同使用。
+            let officialTasks = null;
+            try {
+              officialTasks = await this.fetchOfficialTaskSnapshot(context, account);
+            } catch (snapshotErr) {
+              log(`⚠️ 官网实时任务判定失败，将安全回退到完整执行: ${snapshotErr.message}`);
+            }
             const initialData = await this.fetchOfficialDashboard(context, account);
             configManager.upsertAccount({
               id: accountId,
               balance: initialData.balance,
               todayEarned: initialData.todayPoints,
               streakDays: initialData.streakDays,
-              claimablePoints: initialData.claimablePoints
+              claimablePoints: initialData.claimablePoints,
+              lastSyncAt: Date.now(),
+              dataState: 'complete'
+            });
+            historyManager.recordDaily(accountId, {
+              todayEarned: initialData.todayPoints,
+              balance: initialData.balance,
+              streakDays: initialData.streakDays,
+              claimablePoints: initialData.claimablePoints,
+              officialTasks,
+              source: 'official-sync'
             });
 
             let page = await context.newPage();
 
             try {
-              // 所有模式都先读取官网实时 DOM 快照；remaining 仅执行未完成项，all 跳过已完成项。
-              let officialTasks = null;
-              try {
-                officialTasks = await this.fetchOfficialTaskSnapshot(context, account);
-              } catch (snapshotErr) {
-                log(`⚠️ 官网实时任务判定失败，将安全回退到完整执行: ${snapshotErr.message}`);
-              }
-              const shouldRun = (kind) => {
-                if (!officialTasks) return true;
-                if (taskScope !== 'remaining') return true;
-                if (kind === 'search') return officialTasks.needSearch;
-                if (kind === 'dailySet') return officialTasks.needDailySet;
-                if (kind === 'quests') return officialTasks.needQuests;
-                if (kind === 'dailyActivities') return officialTasks.needDailyActivities;
-                return true;
-              };
+              // 官网任务快照已在上方获取。remaining 模式只执行官网明确未完成的项目。
               if (taskScope === 'remaining' && officialTasks) {
-                log(`🎯 [官网实时判定] 选择补做项: dailySet=${officialTasks.needDailySet}, dailyActivities=${officialTasks.needDailyActivities}, quests=${officialTasks.needQuests}, search=${officialTasks.needSearch}, appSign=${officialTasks.needAppSign}`);
-                log(`🎯 [官网实时判定] 剩余任务: 搜索=${officialTasks.needSearch ? '待做' : '已完成'}, 移动签到=${officialTasks.needAppSign ? '待做' : '已完成'}, 打孔卡=${officialTasks.needQuests ? '待做' : '已完成'}, 日常任务=${officialTasks.needDailyActivities ? '待做' : '已完成'}`);
+                log(`🎯 [官网实时判定] 剩余: 搜索=${officialTasks.needSearch ? '待做' : '已完成'}, App=${officialTasks.needAppSign ? '待做' : '已完成'}, DailySet=${officialTasks.needDailySet ? '待做' : '已完成'}, 日常任务=${officialTasks.needDailyActivities ? '待做' : '已完成'}, 打孔卡=${officialTasks.needQuests ? '待做' : '已完成'}`);
                 if (!officialTasks.hasWork) {
-                  log('✅ [剩余任务] 官网实时状态显示今日可执行任务已全部完成，无需启动浏览器任务。');
+                  log('✅ [剩余任务] 官网实时状态显示今日可执行任务已全部完成。');
                   const cleanData = await this.fetchOfficialDashboard(context, account);
-                  configManager.upsertAccount({ id: accountId, status: 'ready', balance: cleanData.balance, todayEarned: cleanData.todayPoints, streakDays: cleanData.streakDays, claimablePoints: cleanData.claimablePoints, lastRun: Date.now() });
+                  configManager.upsertAccount({ id: accountId, status: 'ready', balance: cleanData.balance, todayEarned: cleanData.todayPoints, streakDays: cleanData.streakDays, claimablePoints: cleanData.claimablePoints, officialTasks, lastSyncAt: Date.now(), dataState: 'complete', lastRun: Date.now() });
+                  historyManager.recordDaily(accountId, { todayEarned: cleanData.todayPoints, balance: cleanData.balance, streakDays: cleanData.streakDays, claimablePoints: cleanData.claimablePoints, officialTasks, source: 'official-sync' });
                   return;
                 }
               }
 
-              // 【板块 1: 连续打卡任务 (Streaks)】
-              if ((taskScope === 'all' || taskScope === 'dailySet') && shouldRun('dailySet')) {
+              const runDailySet = taskScope === 'all' || taskScope === 'dailySet' || (taskScope === 'remaining' && officialTasks?.needDailySet);
+              const runQuests = taskScope === 'all' || taskScope === 'quests' || (taskScope === 'remaining' && officialTasks?.needQuests);
+              const runDailyActs = taskScope === 'all' || taskScope === 'puzzle' || taskScope === 'dailyActivities' || (taskScope === 'remaining' && officialTasks?.needDailyActivities);
+              const runSearch = taskScope === 'all' || taskScope === 'search' || (taskScope === 'remaining' && officialTasks?.needSearch);
+
+              if (runDailySet) {
                 this.currentTaskSection = '板块 1: 连续打卡';
                 this.currentTaskName = '每日活动集 (Daily Set 3/3 弹窗点击)';
                 log('>>> 执行【板块 1: 连续打卡任务 (Streaks)】每日活动集 (Daily Set 3/3)...');
                 await penetrateDailySetActivities(page, { accountPrefix: account.name });
               }
-
               if (this.shouldStop) throw new Error('任务已被用户主动中断');
 
-              // 【板块 2: 升级活动 (Level Up)】随日常打卡与搜索自动达成
               log('>>> 检查【板块 2: 升级活动 (Level Up)】(随日常打卡与搜索自动驱动累积)...');
 
-              // 【板块 3: 任务 (Punch Cards / Quests)】
-              if ((taskScope === 'all' || taskScope === 'quests') && shouldRun('quests')) {
+              if (runQuests) {
                 this.currentTaskSection = '板块 3: 打孔卡任务';
                 this.currentTaskName = '多步任务打孔卡 (Punch Cards)';
                 log('>>> 执行【板块 3: 任务 (Punch Cards / Quests)】多步打孔卡...');
-                // 1. 扫描 /earn 页面中所有进行中的打孔卡链接 (如万圣节礼遇、Rewards App weekly 等)
-                let onPageQuestUrls = [];
-                try {
-                  await page.goto('https://rewards.bing.com/earn', { waitUntil: 'domcontentloaded', timeout: 35000 });
-                  await new Promise(r => setTimeout(r, 2000));
-                  onPageQuestUrls = await page.evaluate(() => {
-                    const links = Array.from(document.querySelectorAll('a[href*="/quest/"]'));
-                    return Array.from(new Set(links.map(a => a.getAttribute('href')).filter(Boolean)));
-                  });
-                } catch {}
-
-                const allQuestHrefs = new Set(onPageQuestUrls);
-                (initialData.parsedCards || []).forEach(c => {
-                  if (c.destination && c.destination.includes('/quest/')) allQuestHrefs.add(c.destination);
-                });
-
-                log(`检索到 ${allQuestHrefs.size} 个进行中的多步打孔卡任务`);
-                for (const qUrl of allQuestHrefs) {
+                const pending = officialTasks?.questPending || [];
+                const questHrefs = pending.length
+                  ? pending.map((q) => q.href).filter(Boolean)
+                  : await page.evaluate(() => [...new Set([...document.querySelectorAll('a[href*="/quest/"]')].map((a) => a.getAttribute('href')).filter(Boolean))]).catch(() => []);
+                log(`检索到 ${questHrefs.length} 个待推进打孔卡任务`);
+                for (const qUrl of questHrefs) {
                   if (this.shouldStop) break;
-                  await penetratePunchCardQuest(page, qUrl, { accountPrefix: account.name });
+                  if (qUrl) await penetratePunchCardQuest(page, qUrl, { accountPrefix: account.name });
                 }
               }
-
               if (this.shouldStop) throw new Error('任务已被用户主动中断');
 
-              // 【板块 4: 日常任务 (Daily Activities)】(含 Veggie burgers, Fossil favorites, 完成此拼图等全量活动)
-              if ((taskScope === 'all' || taskScope === 'puzzle' || taskScope === 'dailyActivities') && shouldRun('dailyActivities')) {
+              if (runDailyActs) {
                 this.currentTaskSection = '板块 4: 日常任务';
                 this.currentTaskName = '日常任务穿透打卡 (Daily Activities)';
                 log('>>> 执行【板块 4: 日常任务 (Daily Activities)】日常活动与拼图全量穿透...');
-                await penetrateDailyActivities(page, { accountPrefix: account.name });
+                await penetrateDailyActivities(page, {
+                  accountPrefix: account.name,
+                  pendingKeys: officialTasks?.dailyPending?.map((x) => x.key || x.href || x.title) || null
+                });
               }
-
               if (this.shouldStop) throw new Error('任务已被用户主动中断');
 
-              // PC Search
-              if ((taskScope === 'all' || taskScope === 'search' || taskScope === 'remaining') && shouldRun('search')) {
+              let needsSearchSecondPass = false;
+              if (runSearch) {
                 this.currentTaskName = '必应 PC 拟人搜索收割 (跑满 60 分)';
                 log('执行板块 1-核心: 必应 PC 拟人化搜索收割 (跑满 60 分)...');
-
                 const fullCfg = configManager.get();
                 const taskOpts = fullCfg.taskOptions || {};
                 const searchCfg = fullCfg.searchSettings || {};
                 const maxSearches = searchCfg.maxDailySearches || 30;
-
-                // 严格以用户在配置中心设定的节奏为准 (例如 18s + 6s，停滞 10 次)
                 const baseSec = Number(taskOpts.baseIntervalSec) || 18;
                 const jitterSec = Number(taskOpts.randomJitterSec) || 6;
                 const stagnationThreshold = Number(taskOpts.stagnationLimit) || 10;
-
-                let needsSearchSecondPass = false;
                 const stagnationGuard = new SearchStagnationGuard(stagnationThreshold, account.name);
                 stagnationGuard.recordObservation(initialData.todayPoints);
-
-                
-                // 先行检查今日 PC 搜索是否已在官网跑满 60/60 分
-                const initialSearchCap = extractOfficialSearchPoints(initialData.combinedRawText);
-                if (initialSearchCap && initialSearchCap.isMaxed) {
-                  log(`🎉 [已达上限] 官网权威账本确认今日必应搜索已跑满 ${initialSearchCap.current}/${initialSearchCap.max} 分！无需多余搜索，立即安全跳过！`);
+                const initialSearchCap = officialTasks?.searchPoints || extractOfficialSearchPoints(initialData.combinedRawText);
+                if (initialSearchCap?.isMaxed) {
+                  log(`🎉 [已达上限] 官网必应搜索已跑满 ${initialSearchCap.current}/${initialSearchCap.max} 分，安全跳过。`);
                 } else {
-for (let i = 1; i <= maxSearches; i++) {
-                  if (this.shouldStop) {
-                    log('检测到用户中断指令，退出搜索循环！');
-                    break;
-                  }
-                  if (stagnationGuard.isTripped()) break;
-
-                  const word = getRandomSearchWord();
-                  this.currentTaskName = `必应 PC 搜索 (第 ${i}/${maxSearches} 轮: "${word}")`;
-                  log(`正在执行第 ${i}/${maxSearches} 轮搜索: "${word}"...`);
-
-                  browserManager.updateState({
-                    status: 'typing',
-                    activeAccountId: accountId,
-                    activeAccountName: account.name || account.user,
-                    currentKeyword: word,
-                    searchRounds: `${i} / ${maxSearches}`,
-                    nextIntervalSec: 0,
-                    currentAction: `[${account.name || account.user}] 正在拟人键入并搜索: "${word}" (${i}/${maxSearches})`
-                  });
-                  let searchRes = null;
-                  try {
-                    searchRes = await performHumanizedSearch(page, word, { accountPrefix: account.name, context });
-                    if (searchRes && typeof searchRes.goto === 'function') {
-                      page = searchRes;
+                  for (let i = 1; i <= maxSearches; i++) {
+                    if (this.shouldStop || stagnationGuard.isTripped()) break;
+                    const word = getRandomSearchWord();
+                    this.currentTaskName = `必应 PC 搜索 (第 ${i}/${maxSearches} 轮: "${word}")`;
+                    log(`正在执行第 ${i}/${maxSearches} 轮搜索: "${word}"...`);
+                    let searchRes = null;
+                    try {
+                      searchRes = await performHumanizedSearch(page, word, { accountPrefix: account.name, context });
+                      if (searchRes && typeof searchRes.goto === 'function') page = searchRes;
+                    } catch (searchErr) {
+                      log(`⚠️ 第 ${i}/${maxSearches} 轮搜索瞬态异常，自愈后继续: ${searchErr.message}`);
+                      try { if (page && typeof page.close === 'function') await page.close().catch(() => {}); } catch {}
+                      try { page = await context.newPage(); } catch {}
                     }
-                  } catch (searchErr) {
-                    log(`⚠️ 第 ${i}/${maxSearches} 轮搜索遭遇瞬态异常 (${searchErr.message})，自愈视口并继续下一轮...`);
-                    try { if (page && typeof page.close === 'function') await page.close().catch(() => {}); } catch {}
-                    try { page = await context.newPage(); } catch {}
-                  }
-
-                  // 精准拟人睡眠：基础秒数 + [0, 随机浮动秒数]，杜绝硬编码 168 秒
-                  const sleepSec = baseSec + Math.random() * jitterSec;
-                  log(`[风控防线] 拟人搜索间隔退避 ${sleepSec.toFixed(1)} 秒 (基础 ${baseSec}s + 浮动 ${jitterSec}s)...`);
-                  
-                  browserManager.updateState({
-                    status: 'dwelling',
-                    activeAccountId: accountId,
-                    activeAccountName: account.name || account.user,
-                    currentKeyword: word,
-                    searchRounds: `${i} / ${maxSearches}`,
-                    nextIntervalSec: Math.round(sleepSec),
-                    nextSearchTargetTime: Date.now() + Math.round(sleepSec * 1000),
-                    currentAction: `[${account.name || account.user}] 风控退避拟人休眠 ${sleepSec.toFixed(1)}s，防频控冷冻...`
-                  });
-
-                  await new Promise((r) => setTimeout(r, sleepSec * 1000));
-
-                  if (i % 3 === 0 || i === maxSearches) {
-                    const checkData = await this.fetchOfficialDashboard(context, account);
-                    const searchMidCap = extractOfficialSearchPoints(checkData.combinedRawText);
-                    if (searchMidCap && searchMidCap.isMaxed) {
-                      log(`🎉 [搜索达标] 官网必应搜索已跑满 ${searchMidCap.current}/${searchMidCap.max} 分上限！立即安全退出搜索循环！`);
-                      break;
+                    const sleepSec = baseSec + Math.random() * jitterSec;
+                    log(`[风控防线] 拟人搜索间隔退避 ${sleepSec.toFixed(1)} 秒 (基础 ${baseSec}s + 浮动 ${jitterSec}s)...`);
+                    await new Promise((r) => setTimeout(r, sleepSec * 1000));
+                    if (i % 3 === 0 || i === maxSearches) {
+                      const checkData = await this.fetchOfficialDashboard(context, account);
+                      const midCap = extractOfficialSearchPoints(checkData.combinedRawText);
+                      if (midCap?.isMaxed) { log(`🎉 [搜索达标] 已跑满 ${midCap.current}/${midCap.max} 分。`); break; }
+                      const obs = stagnationGuard.recordObservation(checkData.todayPoints);
+                      configManager.upsertAccount({ id: accountId, todayEarned: checkData.todayPoints, balance: checkData.balance });
+                      if (obs.stagnant && stagnationGuard.consecutiveStagnantCount >= 2) {
+                        log('⏳ [搜索遇阻暂缓] 连续 2 次无增量，暂缓搜索，完成其他板块后再回眸。');
+                        needsSearchSecondPass = true;
+                        break;
+                      }
+                      if (obs.tripped) break;
                     }
-                    const obs = stagnationGuard.recordObservation(checkData.todayPoints);
-                    configManager.upsertAccount({
-                      id: accountId,
-                      todayEarned: checkData.todayPoints,
-                      balance: checkData.balance
-                    });
-
-                    // 关键智能脱困：若连续 2 次无增量 (+0分)，不再硬熬！立即暂缓搜索，先切入后续板块
-                    if (obs.stagnant && stagnationGuard.consecutiveStagnantCount >= 2) {
-                      log(`⏳ [搜索遇阻暂缓] 检测到搜索连续停滞 (+0分)，启动智能脱困机制：暂缓搜索，优先执行后续板块任务，待全部跑完后再返回执行第 2 轮搜索补分！`);
-                      needsSearchSecondPass = true;
-                      break;
-                    }
-                    if (obs.tripped) break;
                   }
                 }
-              }
-
               }
 
               // 最终结算与回验
@@ -542,7 +483,7 @@ for (let i = 1; i <= maxSearches; i++) {
               let finalData = null;
               for (let round = 1; round <= 3; round++) {
                 finalData = await this.fetchOfficialDashboard(context, account);
-                finalData.officialTasks = liveTasks;
+                finalData.officialTasks = officialTasks;
                 if (finalData.todayPoints > (initialData.todayPoints || 0)) break;
                 await new Promise((r) => setTimeout(r, 5000));
               }
@@ -554,13 +495,18 @@ for (let i = 1; i <= maxSearches; i++) {
                 todayEarned: finalData.todayPoints,
                 streakDays: finalData.streakDays,
                 claimablePoints: finalData.claimablePoints,
-                lastRun: Date.now()
+                lastRun: Date.now(),
+                lastSyncAt: Date.now(),
+                dataState: 'complete'
               });
 
               historyManager.recordDaily(accountId, {
                 todayEarned: finalData.todayPoints,
                 balance: finalData.balance,
-                streakDays: finalData.streakDays
+                streakDays: finalData.streakDays,
+                claimablePoints: finalData.claimablePoints,
+                officialTasks: finalData.officialTasks || officialTasks || null,
+                source: 'official-sync'
               });
 
               // 二次回眸：若此前搜索遭遇停滞，在所有板块结束后进行一次验证性补测
@@ -578,32 +524,8 @@ for (let i = 1; i <= maxSearches; i++) {
                 }
               }
 
-              // 单账号自动补偿：先用官网实时 DOM 判定，不再依赖本地积分阈值猜测
-              if ((taskScope === 'all' || taskScope === 'remaining') && options.allowRemedy !== false && !this.shouldStop) {
-                const liveTasks = await this.fetchOfficialTaskSnapshot(context, account).catch(() => null);
-                if (liveTasks && liveTasks.hasWork) {
-                  log('🔄 [官网补偿] 官网仍有未完成项目，自动执行补漏扫尾...');
-                  if (liveTasks.needAppSign) {
-                    const dapiRetry = new DapiClient(account, tokens, (refreshedTokens) => {
-                      session.tokens = refreshedTokens;
-                      writeBrowserSession(accountId, session);
-                    });
-                    await dapiRetry.performAppCheckIn().catch(() => {});
-                  }
-                  if (liveTasks.needDailyActivities) {
-                    await penetrateDailyActivities(page, { accountPrefix: account.name, onlyPending: true }).catch(() => {});
-                  }
-                  if (liveTasks.needQuests) {
-                    for (const q of (liveTasks.questPending || [])) {
-                      if (q.href) await penetratePunchCardQuest(page, q.href, { accountPrefix: account.name }).catch(() => {});
-                    }
-                  }
-                  finalData = await this.fetchOfficialDashboard(context, account);
-                }
-              }
-
               log(`🎉 账号 [${account.name}] 任务执行完成！今日积分: ${finalData.todayPoints} 分, 可用余额: ${finalData.balance} 分, 连签: ${finalData.streakDays} 天`);
-              notifier.sendSettlementReport(account, finalData).catch(() => {});
+              notifier.sendSettlementReport(account, { ...finalData, taskStatusText: officialTasks?.hasWork ? '官网任务仍有未完成项，已执行剩余任务扫描' : '官网任务已全部完成' }).catch(() => {});
             } finally {
               if (page && typeof page.close === 'function') { await page.close().catch(() => {}); }
             }
@@ -653,7 +575,9 @@ for (let i = 1; i <= maxSearches; i++) {
             if (!cardText || cardText === title) continue;
             const href = el.getAttribute('href') || '';
             const disabled = !!el.disabled || el.getAttribute('aria-disabled') === 'true';
-            const done = /已完成|Completed|✔/.test(cardText) || (title === '任务' && /\b5\/5\b/.test(cardText));
+            const progressMatch = cardText.match(/(\d+)\s*\/\s*(\d+)\s*个任务/);
+            const done = /已完成|Completed|✔/.test(cardText) ||
+              (title === '任务' && progressMatch && Number(progressMatch[1]) >= Number(progressMatch[2]));
             cards.push({
               section: title,
               title: cardText.slice(0, 200),
@@ -711,10 +635,16 @@ for (let i = 1; i <= maxSearches; i++) {
       if (await pointsCard.count()) {
         const box = await pointsCard.boundingBox();
         if (box) {
-          await pointsCard.click({ force: true });
+          // React Aria 在无头 Chromium 下对普通 click 偶发不展开，使用完整按压事件链。
+          await pointsCard.evaluate((el) => {
+            for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+              el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window, button: 0 }));
+            }
+          }).catch(() => {});
+          await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2).catch(() => {});
           // React Aria 抽屉存在异步渲染，不能只等固定 1.2 秒
           let detailText = '';
-          for (let i = 0; i < 12; i++) {
+          for (let i = 0; i < 30; i++) {
             await new Promise((r) => setTimeout(r, 500));
             detailText = await page.evaluate(() => {
               const d = document.querySelector('[role="dialog"], [aria-modal="true"]');

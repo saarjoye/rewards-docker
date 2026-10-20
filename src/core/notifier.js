@@ -152,7 +152,7 @@ export class Notifier {
       `> **账户可用总额**：\`${(stats.balance || 0).toLocaleString()} 分\``,
       `> **连续打卡天数**：\`${stats.streakDays || 0} 天\``,
       `> **待领抽屉积分**：\`${stats.claimablePoints || 0} 分 (01:00已收割)\``,
-      `> **执行状态**：\`全部板块已成功对标官网\``
+      `> **执行状态**：\`${stats.taskStatusText || '官网对账完成'}\``
     ].join('\n\n');
 
     try {
