@@ -4365,13 +4365,56 @@ input:focus, select:focus, textarea:focus {
 }
 .box-task-gaps, .box-scheduler-queue { display:flex !important; flex-direction:column !important; min-height:0 !important; }
 .task-gaps-list, .queue-list { flex:1 1 auto; min-height:0; overflow-y:auto; display:flex; flex-direction:column; gap:8px; }
-.task-gap-card { background:#fff; border:1px solid var(--border,#e2e8f0); border-radius:12px; padding:9px 10px; display:flex; flex-direction:column; gap:7px; }
-.task-gap-account { display:flex; align-items:center; gap:7px; font-size:12.5px; font-weight:750; color:#1e293b; }
+.task-gap-card {
+  background: #fff;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 12px;
+  padding: 8px 12px;
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 12px !important;
+}
+.task-gap-account {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 750;
+  color: #1e293b;
+  flex-shrink: 0 !important;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .task-gap-dot,.queue-status-dot { width:8px; height:8px; border-radius:50%; background:#fb7185; flex:0 0 auto; }
 .task-gap-dot.running,.queue-status-dot.queue-running { background:#10b981; }
 .queue-status-dot.queue-error { background:#f59e0b; }
-.task-gap-pills { display:flex; flex-wrap:wrap; gap:5px; }
-.task-gap-pill { display:inline-flex; align-items:center; gap:4px; border-radius:7px; padding:3px 7px; font-size:10.5px; border:1px solid #e2e8f0; background:#f8fafc; color:#475569; white-space:nowrap; }
+.task-gap-pills {
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  align-items: center !important;
+  gap: 6px !important;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.task-gap-pills::-webkit-scrollbar { display: none; }
+.task-gap-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  border-radius: 6px;
+  padding: 2px 5px !important;
+  font-size: 10px !important;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  color: #475569;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
 .task-gap-pill b { font-weight:750; color:#334155; }
 .task-gap-pill.task-state-done { background:#f0fdf4; border-color:#bbf7d0; color:#15803d; }
 .task-gap-pill.task-state-pending { background:#fff7ed; border-color:#fed7aa; color:#c2410c; }

@@ -553,20 +553,35 @@ document.addEventListener("DOMContentLoaded", () => {
       const pendingQuests = Array.isArray(t.questPending) ? t.questPending.length : null;
       if (a.lastSyncAt) latest = Math.max(latest, Number(a.lastSyncAt) || 0);
 
+      const hasOfficial = a.todayEarned !== null && a.todayEarned !== undefined && Number(a.lastSyncAt || 0) > 0;
+      const todayPts = hasOfficial ? Number(a.todayEarned) : null;
+
+      // 搜索项：优先取官方明确值，若官方抽屉未捕获则结合今日分值智能对齐（与上方浮窗完全同源）
+      let searchItem = counterTaskItem('搜索', t.searchPoints);
+      if (!searchItem.known && hasOfficial) {
+        const maxS = (t.searchPoints && t.searchPoints.max) || (todayPts >= 60 ? 60 : 30);
+        searchItem = {
+          label: '搜索',
+          known: true,
+          value: (todayPts >= maxS ? maxS : Math.min(maxS, todayPts)) + '/' + maxS,
+          done: todayPts >= maxS
+        };
+      }
+
       const items = [
-        counterTaskItem('搜索', t.searchPoints),
-        counterTaskItem('App签到', t.appCheckIn),
-        counterTaskItem('Daily Set', t.dailySet),
+        searchItem,
+        counterTaskItem('签到', t.appCheckIn),
+        counterTaskItem('Daily', t.dailySet),
         {
-          label: '日常任务',
+          label: '日常',
           known: pendingDaily !== null,
-          value: pendingDaily === null ? '未知' : (pendingDaily === 0 ? '全部完成' : pendingDaily + ' 项待做'),
+          value: pendingDaily === null ? '未知' : (pendingDaily === 0 ? '全部完成' : pendingDaily + '项待做'),
           done: pendingDaily === 0
         },
         {
           label: '打孔卡',
           known: pendingQuests !== null,
-          value: pendingQuests === null ? '未知' : (pendingQuests === 0 ? '全部完成' : pendingQuests + ' 张进行中'),
+          value: pendingQuests === null ? '未知' : (pendingQuests === 0 ? '全部完成' : pendingQuests + '张进行中'),
           done: pendingQuests === 0
         }
       ];

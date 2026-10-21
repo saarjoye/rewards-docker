@@ -6,7 +6,7 @@ import { createServer } from './web/server.js';
 async function bootstrap() {
   console.log(`
   ==============================================================
-  🎁 Microsoft Rewards 全自动化架构平台 (v6.5.0 官方多账号全自动标准版)
+  🎁 Microsoft Rewards 全自动化架构平台 (v6.5.1 官方多账号全自动标准版)
   ==============================================================
   `);
 
