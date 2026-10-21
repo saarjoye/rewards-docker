@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Rewards 自动任务系统 (v6.4.1)</title>
+  <title>Rewards 自动任务系统 (v6.4.2)</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -13,7 +13,7 @@
       <div class="sidebar-top">
         <div class="brand">
           <div class="brand-logo-sq">🎁</div>
-          <span class="brand-name">Rewards<span class="brand-dot">.v6.4.1</span></span>
+          <span class="brand-name">Rewards<span class="brand-dot">.v6.4.2</span></span>
         </div>
 
         <div class="store-selector-wrap">
@@ -70,7 +70,7 @@
         </button>
         <div class="mobile-nav-brand">
           <span style="font-size: 18px;">🎁</span>
-          <span class="mobile-nav-title">Rewards<span class="brand-dot">.v6.4.1</span></span>
+          <span class="mobile-nav-title">Rewards<span class="brand-dot">.v6.4.2</span></span>
         </div>
         <button type="button" class="mobile-quick-btn" id="btn-mobile-quick-run">🚀 执行</button>
       </div>
@@ -601,7 +601,7 @@
         <button class="cfg-tab active" data-cfgtab="account"><span class="cfg-icon">👤</span> 账号与凭证</button>
         <button class="cfg-tab" data-cfgtab="network"><span class="cfg-icon">🌐</span> 网络与代理</button>
         <button class="cfg-tab" data-cfgtab="tasks"><span class="cfg-icon">⚡</span> 任务与防风控</button>
-        <button class="cfg-tab" data-cfgtab="scheduler"><span class="cfg-icon">⏰</span> 定时巡检</button>
+        <button class="cfg-tab" data-cfgtab="scheduler"><span class="cfg-icon">⏰</span> 定时与重试调度</button>
         <button class="cfg-tab" data-cfgtab="notify"><span class="cfg-icon">🔔</span> 消息推送</button>
       </div>
 
@@ -751,10 +751,21 @@
           <span class="f-hint">常用预设：*/25 * * * * (每25分钟检测一次) | 0 8,12,18 * * * (每天8点、12点、18点)</span>
         </div>
 
-        <div class="f-group" style="margin-top: 14px;">
-          <label style="font-weight: 700;">未完成任务自动重试次数</label>
-          <input type="number" id="cfg-sched-remaining-retries" min="0" max="10" value="2" placeholder="默认 2 次 (设为 0 则不重试)">
-          <span class="f-hint">自动补做未完成任务时的最大重试次数。设为 0 则不自动重试未完成任务，防止死循环。</span>
+        <div class="cfg-card-box" style="margin-top: 14px; border-left: 4px solid #10b981; padding: 14px;">
+          <div class="cfg-box-title" style="color: #10b981; font-size: 13.5px; font-weight: 800; display: flex; align-items: center; gap: 6px;">
+            <span>🔄</span> 未完成任务每日自动补做与重试规划
+          </div>
+          <div class="f-group" style="margin-top: 10px;">
+            <label style="font-weight: 700;">每日自动重试次数上限</label>
+            <input type="number" id="cfg-sched-remaining-retries" min="0" max="10" value="2" placeholder="默认 2 次 (设为 0 则不重试)">
+            <span class="f-hint">设为 0 则彻底禁用未完成任务自动重试；设为 1 则每天只重试 1 次，防止频繁死循环。</span>
+          </div>
+
+          <div class="f-group" style="margin-top: 12px;">
+            <label style="font-weight: 700;">每日自动重试启动时间 (HH:mm)</label>
+            <input type="text" id="cfg-sched-remaining-time" value="20:00" placeholder="如 20:00">
+            <span class="f-hint">指定每天几点准时开始自动重试（例如 20:00），白天静置等待微软释放新任务后再执行。</span>
+          </div>
         </div>
 
         <div class="cfg-card-box" style="margin-top: 16px;">

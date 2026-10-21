@@ -1675,7 +1675,8 @@ document.addEventListener("DOMContentLoaded", () => {
       scheduler: {
         enabled: document.getElementById("cfg-sched-enabled")?.checked,
         cron: document.getElementById("cfg-sched-cron")?.value.trim(),
-        maxRemainingRetries: document.getElementById("cfg-sched-remaining-retries") ? Math.max(0, parseInt(document.getElementById("cfg-sched-remaining-retries").value, 10) || 0) : 2
+        maxRemainingRetries: document.getElementById("cfg-sched-remaining-retries") ? Math.max(0, parseInt(document.getElementById("cfg-sched-remaining-retries").value, 10) || 0) : 2,
+        remainingRetryTime: document.getElementById("cfg-sched-remaining-time")?.value.trim() || "20:00"
       },
       notify: {
         weworkRobot: document.getElementById("cfg-wework-robot")?.value.trim(),
