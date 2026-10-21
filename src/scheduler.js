@@ -45,29 +45,56 @@ class Scheduler {
       { id: '21:00-01:00', label: '夜间时段 (21:00 - 01:00)', cron: '10 21 * * *', index: 3 }
     ];
 
-    // 3. 用户自定义 Cron 自动定时巡检（若开启并配置了有效表达式）
+    // 3. 每日未完成任务准点自动重试巡检（支持用户自定义时段，如 20:00，默认每天 20:00 准点触发）
     const cfg = configManager.get().scheduler;
-    const customCron = (cfg && cfg.cron) ? cfg.cron.trim() : '*/25 * * * *';
-    if (cron.validate(customCron)) {
-      const inspectJob = cron.schedule(
-        customCron,
+    const retryTime = (cfg && cfg.remainingRetryTime) ? cfg.remainingRetryTime.trim() : '20:00';
+    let retryCron = '0 20 * * *'; // 默认每天 20:00
+
+    if (/^\d{1,2}:\d{1,2}$/.test(retryTime)) {
+      const [h, m] = retryTime.split(':').map(Number);
+      if (h >= 0 && h <= 23 && m >= 0 && m <= 59) {
+        retryCron = `${m} ${h} * * *`;
+      }
+    } else if (cron.validate(retryTime)) {
+      retryCron = retryTime;
+    }
+
+    if (cron.validate(retryCron)) {
+      logger.log('⏰', `未完成任务每日自动补做时段已设定: 每天 ${retryTime} 准点启动 (Cron: ${retryCron})`);
+      const retryJob = cron.schedule(
+        retryCron,
         async () => {
           const currentCfg = configManager.get().scheduler;
           if (!currentCfg || !currentCfg.enabled) return;
-          if (taskManager.isQueueRunning || taskManager.runningAccountId) {
-            logger.log('ℹ️', '[定时自动巡检] 当前有任务正在执行中，跳过本次巡检');
+
+          const configuredMax = currentCfg.maxRemainingRetries !== undefined
+            ? Number(currentCfg.maxRemainingRetries)
+            : 2;
+          if (configuredMax === 0) {
+            logger.log('🛑', '[未完成任务准点补做] 重试次数配置为 0，跳过今日自动补做。');
             return;
           }
-          logger.log('⏰', '>>> 触发后台自动定时巡检流水线 (模式: 补全剩余未完成任务) <<<');
+
+          if (taskManager.isQueueRunning || taskManager.runningAccountId) {
+            logger.log('ℹ️', '[未完成任务准点补做] 当前有任务正在执行中，将在 5 分钟后自动重试触发');
+            setTimeout(() => {
+              if (!taskManager.isQueueRunning && !taskManager.runningAccountId) {
+                taskManager.runAllAccountsTasks({ taskScope: 'remaining' }).catch(() => {});
+              }
+            }, 5 * 60 * 1000);
+            return;
+          }
+
+          logger.log('⏰', `>>> 到达每日 ${retryTime} 未完成任务自动补做窗口，启动全账号剩余任务扫描流水线 <<<`);
           try {
             await taskManager.runAllAccountsTasks({ taskScope: 'remaining' });
           } catch (e) {
-            logger.log('⚠️', `[定时自动巡检] 执行异常: ${e.message}`);
+            logger.log('⚠️', `[未完成任务准点补做] 执行异常: ${e.message}`);
           }
         },
         { timezone: 'Asia/Shanghai' }
       );
-      this.jobs.push(inspectJob);
+      this.jobs.push(retryJob);
     }
 
     for (const slotDef of slotDefinitions) {

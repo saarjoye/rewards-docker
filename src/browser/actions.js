@@ -184,69 +184,126 @@ export async function solveQuizOrPoll(page, options = {}) {
 }
 
 /**
- * 每日活动集 (Daily Set 3/3) 真机弹窗点击穿透 (含自动答题)
+ * 每日活动集 (Daily Set 3/3) 真机抽屉穿透 (全面适配微软全新改版 /earn 架构)
  */
 export async function penetrateDailySetActivities(page, options = {}) {
   const { accountPrefix = '' } = options;
-  browserManager.updateState({ status: "navigating", currentAction: "打开仪表盘执行每日活动集 (Daily Set) 穿透..." });
-  logger.log('📅', '打开 Rewards 仪表盘执行每日活动集 (Daily Set) 点击穿透...', '', accountPrefix);
+  browserManager.updateState({ status: "navigating", currentAction: "展开每日活动集 (Daily Set) 抽屉并穿透打卡..." });
+  logger.log('📅', '正在执行每日活动集 (Daily Set 3/3) 穿透打卡流程...', '', accountPrefix);
 
-  await page.goto('https://rewards.bing.com/dashboard', { waitUntil: 'domcontentloaded', timeout: 35000 });
-  await new Promise((r) => setTimeout(r, 2500));
+  // 1. 优先在 /earn 页面查找「每日连续打卡活动」或带有「活动:」的卡片
+  try {
+    const curUrl = page.url() || '';
+    if (!curUrl.includes('/earn')) {
+      await page.goto('https://rewards.bing.com/earn', { waitUntil: 'commit', timeout: 35000 });
+      await new Promise((r) => setTimeout(r, 3500));
+    }
+  } catch {
+    await page.goto('https://rewards.bing.com/earn', { waitUntil: 'commit', timeout: 35000 }).catch(() => {});
+    await new Promise((r) => setTimeout(r, 3500));
+  }
 
-  // 先行清理可能遮挡视口的祝贺弹窗 (如「干得漂亮」等 bg-bgSmoke 浮层)
   await dismissCelebrationOverlay(page);
 
-  // 查找 Daily Set 区域内的未完成活动链接
-  const links = await page.$$('#dailyset a[target="_blank"], div[data-bi-area="DailySet"] a, div[class*="DailySet"] a');
-  logger.log('📅', `检索到 Daily Set 区域内包含 ${links.length} 个活动项目`, '', accountPrefix);
+  // 检查卡片是否已存在
+  let dailyCard = page.locator('button, [role="button"], div[class*="cursor-pointer"], a').filter({ hasText: '每日连续打卡活动' }).first();
+  if (!(await dailyCard.count())) {
+    dailyCard = page.locator('button, [role="button"], div[class*="cursor-pointer"], a').filter({ hasText: '活动:' }).first();
+  }
 
   let clickedCount = 0;
-  for (let i = 0; i < links.length; i++) {
-    let popup = null;
-    const link = links[i];
-    try {
-      if (!(await link.isVisible().catch(() => false))) continue;
 
-      // 每次点击前确保无遮挡蒙层
-      await dismissCelebrationOverlay(page);
+  if (await dailyCard.count()) {
+    const cardText = (await dailyCard.innerText().catch(() => '')).replace(/\n/g, ' ');
+    if (cardText.includes('活动: 3/3') || cardText.includes('已完成全部 3 项活动')) {
+      logger.log('🎉', '官网显示今日每日活动集已全部完成 (活动: 3/3)，安全跳过。', '', accountPrefix);
+      return 3;
+    }
 
-      const href = await link.getAttribute('href').catch(() => null);
+    logger.log('👆', '派发虚拟指针点击展开「每日连续打卡活动」抽屉...', '', accountPrefix);
+    await dailyCard.click({ force: true }).catch(() => {});
+    await new Promise((r) => setTimeout(r, 2500));
 
-      if (href && href.startsWith('http')) {
-        popup = await page.context().newPage();
-        await popup.goto(href, { waitUntil: 'domcontentloaded', timeout: 35000 }).catch(() => {});
-      } else {
-        const [p] = await Promise.all([
-          page.context().waitForEvent('page', { timeout: 8000 }).catch(() => null),
-          link.click({ force: true, timeout: 6000 }).catch(() => {})
-        ]);
-        popup = p;
+    const drawer = page.locator('[role="dialog"], section[role="dialog"]').first();
+    if (await drawer.isVisible().catch(() => false)) {
+      // 找到抽屉内全部活动条目
+      const rawLinks = await drawer.locator('a[target="_blank"], a[href*="http"], a[href*="bing.com"], a[class*="cursor-pointer"]').all();
+      logger.log('📅', `Daily Set 抽屉内检测到 ${rawLinks.length} 个候选活动链接`, '', accountPrefix);
+
+      for (let i = 0; i < rawLinks.length; i++) {
+        let popup = null;
+        const link = rawLinks[i];
+        try {
+          const text = (await link.innerText().catch(() => '')).replace(/\n/g, ' ').trim();
+          if (!text || text.includes('已完成') || text.includes('权益') || text.includes('说明') || text.includes('了解')) {
+            continue;
+          }
+
+          const href = await link.getAttribute('href').catch(() => null);
+          logger.log('🚀', `触发 Daily Set 抽屉任务 [${text.slice(0, 30)}] 交互...`, '', accountPrefix);
+
+          if (href && href.startsWith('http')) {
+            popup = await page.context().newPage();
+            await popup.goto(href, { waitUntil: 'commit', timeout: 35000 }).catch(() => {});
+          } else {
+            const [p] = await Promise.all([
+              page.context().waitForEvent('page', { timeout: 8000 }).catch(() => null),
+              link.click({ force: true, timeout: 6000 }).catch(() => {})
+            ]);
+            popup = p;
+          }
+
+          if (popup) {
+            await popup.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
+            await solveQuizOrPoll(popup, { accountPrefix });
+            await popup.mouse.wheel(0, 200).catch(() => {});
+            await new Promise((r) => setTimeout(r, 4500));
+            await popup.close().catch(() => {});
+          } else {
+            await new Promise((r) => setTimeout(r, 3000));
+          }
+          clickedCount++;
+          await new Promise((r) => setTimeout(r, 1500));
+        } catch (itemErr) {
+          logger.log('⚠️', `推进 Daily Set 抽屉活动项异常: ${itemErr.message}`, '', accountPrefix);
+        } finally {
+          if (popup && !popup.isClosed()) await popup.close().catch(() => {});
+        }
       }
 
-      if (popup) {
-        logger.log('🚀', `触发 Daily Set 弹窗第 ${i + 1} 项，驻留触发遥测...`, '', accountPrefix);
-        await popup.waitForLoadState('domcontentloaded').catch(() => {});
-        await solveQuizOrPoll(popup, { accountPrefix });
-        await new Promise((r) => setTimeout(r, 4500));
-        await popup.close().catch(() => {});
-      } else {
-        await new Promise((r) => setTimeout(r, 3000));
-      }
-      clickedCount++;
-
-      // 点击完成后再次清理可能弹出的「干得漂亮」连击祝贺框，杜绝阻断后续卡片
-      await dismissCelebrationOverlay(page);
-      await new Promise((r) => setTimeout(r, 1500));
-    } catch (e) {
-      logger.log('⚠️', `点击 Daily Set 活动项 ${i + 1} 异常: ${e.message}`, '', accountPrefix);
-      await dismissCelebrationOverlay(page);
-    } finally {
-      if (popup && !popup.isClosed()) await popup.close().catch(() => {});
+      // 关闭抽屉
+      await page.keyboard.press('Escape').catch(() => {});
+      await new Promise((r) => setTimeout(r, 1000));
+      logger.log('✅', `Daily Set 抽屉真机穿透完毕，共成功交互 ${clickedCount} 项活动`, '', accountPrefix);
+      return clickedCount;
     }
   }
 
-  logger.log('✅', `Daily Set 真机交互完成，共穿透点击 ${clickedCount} 项活动`, '', accountPrefix);
+  // 兜底降级：若 /earn 抽屉未唤起，回退至旧版 /dashboard 页面检查
+  logger.log('ℹ️', '未定位到 /earn 抽屉结构，回退检查 /dashboard 页面...', '', accountPrefix);
+  await page.goto('https://rewards.bing.com/dashboard', { waitUntil: 'commit', timeout: 35000 }).catch(() => {});
+  await new Promise((r) => setTimeout(r, 2500));
+  await dismissCelebrationOverlay(page);
+
+  const links = await page.$('#dailyset a[target="_blank"], div[data-bi-area="DailySet"] a, div[class*="DailySet"] a');
+  for (let i = 0; i < links.length; i++) {
+    let popup = null;
+    try {
+      const link = links[i];
+      if (!(await link.isVisible().catch(() => false))) continue;
+      const href = await link.getAttribute('href').catch(() => null);
+      if (href && href.startsWith('http')) {
+        popup = await page.context().newPage();
+        await popup.goto(href, { waitUntil: 'commit', timeout: 35000 }).catch(() => {});
+      }
+      if (popup) {
+        await solveQuizOrPoll(popup, { accountPrefix });
+        await new Promise((r) => setTimeout(r, 4500));
+        await popup.close().catch(() => {});
+      }
+      clickedCount++;
+    } catch {}
+  }
   return clickedCount;
 }
 

@@ -36,7 +36,8 @@ const DEFAULT_CONFIG = {
     randomJitterMinutes: 30,
     midnightHarvest: true,
     cron: '*/25 * * * *',
-    maxRemainingRetries: 2
+    maxRemainingRetries: 2,
+    remainingRetryTime: '20:00'
   },
   // 方案 A：极致拟人安全搜索风控配置 (60~180秒退避 + 0~30秒抖动 + 停滞熔断)
   network: {
@@ -231,14 +232,31 @@ class ConfigManager {
     }
     if (settings.notify) {
       const currentNotify = this.config.notify || {};
+      const currentWw = currentNotify.weworkApp || {};
+      const incomingWw = settings.notify.weworkApp || {};
+
+      let wwSecret = incomingWw.secret;
+      if (!wwSecret || wwSecret === SECRET_PLACEHOLDER) {
+        wwSecret = currentWw.secret || '';
+      }
+
+      let wwBaseUrl = incomingWw.baseUrl !== undefined ? String(incomingWw.baseUrl).trim() : '';
+      if (!wwBaseUrl && currentWw.baseUrl) {
+        wwBaseUrl = currentWw.baseUrl;
+      } else if (!wwBaseUrl) {
+        wwBaseUrl = 'https://qyapi.weixin.qq.com';
+      }
+
       this.config.notify = {
         ...currentNotify,
         ...settings.notify,
         weworkRobot: settings.notify.weworkRobot !== undefined ? settings.notify.weworkRobot : (currentNotify.weworkRobot || ''),
         dingdingRobot: settings.notify.dingdingRobot !== undefined ? settings.notify.dingdingRobot : (currentNotify.dingdingRobot || ''),
         weworkApp: {
-          ...currentNotify.weworkApp,
-          ...(settings.notify.weworkApp || {})
+          ...currentWw,
+          ...incomingWw,
+          baseUrl: wwBaseUrl,
+          secret: wwSecret
         }
       };
     }

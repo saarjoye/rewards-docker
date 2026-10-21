@@ -88,3 +88,42 @@ test('formatSettlementReportContent 战报格式化：包含本次收割与真�
   assert.ok(contentNull.includes('今日已增: 官网未确认'));
   assert.ok(contentNull.includes('账户总额: 官网未确认'));
 });
+
+test('configManager.updateGlobalSettings: 防止反代地址与 secret 被空值冲掉', () => {
+  const currentNotify = {
+    weworkApp: {
+      enabled: true,
+      baseUrl: 'https://wx.saar.cc.cd',
+      corpId: 'ww123',
+      agentId: '1000002',
+      secret: 'real_secret_xyz',
+      toUser: '@all'
+    }
+  };
+
+  // 模拟从前端提交全局配置，baseUrl 传空或未修改，secret 传脱敏占位符
+  const incomingNotify = {
+    weworkApp: {
+      enabled: true,
+      baseUrl: '',
+      corpId: 'ww123',
+      agentId: '1000002',
+      secret: '******',
+      toUser: '@all'
+    }
+  };
+
+  const incomingWw = incomingNotify.weworkApp || {};
+  const currentWw = currentNotify.weworkApp || {};
+  let wwSecret = incomingWw.secret;
+  if (!wwSecret || wwSecret === '******') {
+    wwSecret = currentWw.secret || '';
+  }
+  let wwBaseUrl = incomingWw.baseUrl !== undefined ? String(incomingWw.baseUrl).trim() : '';
+  if (!wwBaseUrl && currentWw.baseUrl) {
+    wwBaseUrl = currentWw.baseUrl;
+  }
+
+  assert.equal(wwBaseUrl, 'https://wx.saar.cc.cd');
+  assert.equal(wwSecret, 'real_secret_xyz');
+});

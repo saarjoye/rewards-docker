@@ -83,32 +83,69 @@ export class DapiClient {
   }
 
   /**
-   * 移动端每日 App 签入 (Streaks 板块: 签到: 1/1)
+   * 移动端每日 App 签入 (Streaks 板块: 签到: 1/1 - 对标 Sapphire type 103 协议规范)
    */
   async performAppCheckIn() {
-    logger.log('📱', '正在执行必应应用连续打卡 (DAPI 网关直连签入)...', '', this.account.name);
+    logger.log('📱', '正在执行必应应用连续打卡 (DAPI Sapphire 网关直连签入)...', '', this.account.name);
+    try {
+      const token = await this.getValidToken();
+      const activityId = generateDapiActivityId();
+
+      const payload = {
+        risk_context: {},
+        type: 103, // 核心：Sapphire Daily Check-In 类型代码为 103
+        channel: 'SAIOS',
+        attributes: {},
+        id: activityId,
+        amount: 1,
+        country: 'CN'
+      };
+
+      const res = await networkClient.request({
+        url: `${DAPI_CONFIG.endpoint}/activities`,
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          'Accept': '*/*',
+          'User-Agent': 'Mozilla/5.0 (iPad; CPU iPad OS 26_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Mobile/15E148 Safari/605.1.15 BingSapphire/33.4.440603001',
+          'X-Rewards-AppId': 'SAIOS/33.4.440603001',
+          'X-Rewards-PartnerId': 'startapp',
+          'X-Rewards-Country': 'CN',
+          'X-Rewards-Language': 'zh-hans',
+          'X-Rewards-Flights': 'rwgobig',
+          'X-Rewards-IsMobile': 'true'
+        },
+        data: JSON.stringify(payload),
+        proxy: this.account.proxy
+      });
+
+      if (res && res.code === 0) {
+        const gained = res.response?.activity?.p ?? res.response?.creditedPoints ?? 0;
+        const newBalance = res.response?.balance ?? null;
+        logger.log('✅', `必应移动端签到成功！本次入账: +${gained} 分${newBalance ? `，最新余额: ${newBalance} 分` : ''}，官网已点亮 [签到: 1/1]！`, '', this.account.name);
+        return { success: true, gained, balance: newBalance };
+      }
+    } catch (e) {
+      logger.log('⚠️', `Sapphire 移动端直连签到异常: ${e.message}，尝试备用候选通道...`, '', this.account.name);
+    }
+
+    // 备用通道回退
     const offerCandidates = [
       'Gamification_DailyCheckIn',
       'Gamification_Sapphire_DailyCheckIn',
-      'Sapphire_DailyCheckIn',
-      'ENUS_appcheckin_streak',
-      'Gamification_BingApp_DailyCheckIn'
+      'Sapphire_DailyCheckIn'
     ];
-
-    let checkInSuccess = false;
     for (const offerId of offerCandidates) {
       try {
         const res = await this.submitActivity(offerId);
-        logger.log('✅', `必应移动端签到成功 (${offerId})，已在官网点亮 [签到: 1/1]！`, '', this.account.name);
-        checkInSuccess = true;
-        break;
+        logger.log('✅', `必应移动端签到备用通道成功 (${offerId})！`, '', this.account.name);
+        return { success: true };
       } catch (e) {}
     }
 
-    if (!checkInSuccess) {
-      logger.log('⚠️', '移动端备用签到请求尝试完毕', '', this.account.name);
-    }
-    return { success: checkInSuccess };
+    logger.log('⚠️', '必应移动端签到未能在当前轮次点亮 (可等待稍后重试或确认移动 Token)', '', this.account.name);
+    return { success: false };
   }
 
   /**

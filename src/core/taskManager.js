@@ -741,7 +741,11 @@ export class TaskManager {
                       const midCap = midSnapshot.searchPoints;
                       if (midCap?.isMaxed) { log(`🎉 [搜索达标] 已跑满 ${midCap.current}/${midCap.max} 分。`); break; }
                       const obs = stagnationGuard.recordObservation(checkData.todayPoints);
-                      const checkUpdate = { id: accountId };
+                      const checkUpdate = {
+                        id: accountId,
+                        lastSyncAt: Date.now(),
+                        officialTasks: midSnapshot
+                      };
                       if (checkData.sources?.todayPoints === 'live') checkUpdate.todayEarned = checkData.todayPoints;
                       if (checkData.sources?.balance === 'live') checkUpdate.balance = checkData.balance;
                       if (checkData.sources?.streakDays === 'live') checkUpdate.streakDays = checkData.streakDays;

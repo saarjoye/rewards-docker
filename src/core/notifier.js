@@ -80,6 +80,7 @@ export class Notifier {
   }
 
   async getAccessToken(cfg, forceRefresh = false) {
+    const baseUrl = buildWeWorkAppBaseUrl(cfg.baseUrl);
     const key = this.getCacheKey(cfg);
     const now = Date.now();
 
@@ -99,7 +100,8 @@ export class Notifier {
 
     const data = typeof res === 'string' ? JSON.parse(res) : res;
     if (!data || Number(data.errcode) !== 0 || !data.access_token) {
-      throw new Error(`企业微信应用获取 Token 失败: ${data?.errmsg || '未知响应'}`);
+      const baseHint = baseUrl !== WEWORK_DEFAULT_BASE_URL ? ` (反代: ${baseUrl})` : ' (直连官方)';
+    throw new Error(`企业微信应用获取 Token 失败${baseHint}: ${data?.errmsg || '未知响应'}`);
     }
 
     const expiresIn = Math.max(60, Number(data.expires_in) || 7200);

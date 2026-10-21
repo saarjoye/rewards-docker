@@ -1546,6 +1546,9 @@ document.addEventListener("DOMContentLoaded", () => {
       if (document.getElementById("cfg-sched-remaining-retries")) {
         document.getElementById("cfg-sched-remaining-retries").value = sched.maxRemainingRetries !== undefined ? sched.maxRemainingRetries : 2;
       }
+      if (document.getElementById("cfg-sched-remaining-time")) {
+        document.getElementById("cfg-sched-remaining-time").value = sched.remainingRetryTime || "20:00";
+      }
 
       if (document.getElementById("cfg-wework-robot")) document.getElementById("cfg-wework-robot").value = notify.weworkRobot || "";
       if (document.getElementById("cfg-dingding-robot")) document.getElementById("cfg-dingding-robot").value = notify.dingdingRobot || "";
