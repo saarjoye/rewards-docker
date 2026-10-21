@@ -393,11 +393,19 @@ document.addEventListener("DOMContentLoaded", () => {
     for (let i = 6; i >= 0; i--) {
       const d = new Date(now.getTime() - i * 86400000);
       const date = formatShanghaiDate(d);
+      const isToday = (i === 0) || (date === formatShanghaiDate(now));
       const breakdown = activeAccs.map((a, idx) => {
         const rec = getDailySnapshot(a, date);
+        let pts = null;
+        if (isToday) {
+          const hasLiveToday = a && a.todayEarned !== null && a.todayEarned !== undefined && Number(a.lastSyncAt || 0) > 0;
+          pts = hasLiveToday ? finiteNumberOrNull(a.todayEarned) : (rec ? finiteNumberOrNull(rec.earned) : null);
+        } else {
+          pts = rec ? finiteNumberOrNull(rec.earned) : null;
+        }
         return {
           name: getAccountDisplayName(a, idx),
-          pts: rec ? finiteNumberOrNull(rec.earned) : null
+          pts
         };
       });
       const known = breakdown.filter((b) => b.pts !== null);

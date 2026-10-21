@@ -608,26 +608,30 @@ export async function harvestClaimablePointsWithVirtualPointer(page, options = {
 
     await drawer.waitFor({ state: "visible", timeout: 8000 }).catch(() => {});
 
-    // 在抽屉内部寻找可见的「领取积分」按钮，彻底杜绝全局 .first() 选中隐藏模版死等超时
+    // 在抽屉内部寻找可见的「领取积分」按钮，支持 9 分等大额多按钮形态
     const dialogScope = (await drawer.count()) ? drawer : page;
-    let claimButton = dialogScope.locator('button').filter({ hasText: claimButtonLabel }).last();
-    if (!(await claimButton.isVisible().catch(() => false))) {
-      claimButton = dialogScope.locator('button:has-text("领取积分"), button:has-text("领取"), [role="dialog"] button.group\\/ctrl').first();
+    await dialogScope.waitFor({ state: 'visible', timeout: 8000 }).catch(() => {});
+    await new Promise((r) => setTimeout(r, 1500));
+
+    let claimButtons = await dialogScope.locator('button:has-text("领取积分"), button:has-text("领取"), [role="dialog"] button.group\\/ctrl, button[class*="Brand"]').all();
+    if (!claimButtons || claimButtons.length === 0) {
+      claimButtons = await dialogScope.locator('button').filter({ hasText: claimButtonLabel }).all();
     }
 
-    if (await claimButton.isVisible().catch(() => false)) {
-      try {
-        await claimButton.scrollIntoViewIfNeeded().catch(() => {});
-        await claimButton.click({ timeout: 6000 });
-      } catch {
-        const btnBox = await claimButton.boundingBox();
-        if (btnBox) {
-          await page.mouse.click(btnBox.x + btnBox.width / 2, btnBox.y + btnBox.height / 2);
-        }
+    let clickedClaim = false;
+    for (const btn of claimButtons) {
+      if (await btn.isVisible().catch(() => false)) {
+        try {
+          await btn.scrollIntoViewIfNeeded().catch(() => {});
+          await btn.click({ force: true, timeout: 6000 });
+          await btn.dispatchEvent('click').catch(() => {});
+          clickedClaim = true;
+          logger.log('👆', '已真实点击抽屉内「领取积分」按钮，向微软服务端提交领奖请求...', '', accountPrefix);
+          await new Promise((r) => setTimeout(r, 1200));
+        } catch {}
       }
-      await claimButton.dispatchEvent('click').catch(() => {});
-      logger.log('👆', '已真实点击抽屉内「领取积分」按钮，向微软服务端提交领奖请求...', '', accountPrefix);
-    } else {
+    }
+    if (!clickedClaim) {
       logger.log('⚠️', '抽屉已展开但未定位到激活的「领取积分」按钮，直接触发回验对账', '', accountPrefix);
     }
     logger.log('\u{1f446}', '\u5df2\u70b9\u51fb\u300c\u9886\u53d6\u79ef\u5206\u300d\uff0c\u7b49\u5f85\u5b98\u65b9\u4f59\u989d\u4e0e\u5f85\u9886\u53d6\u72b6\u6001\u5165\u8d26...', '', accountPrefix);
