@@ -236,7 +236,7 @@ class ConfigManager {
       const incomingWw = settings.notify.weworkApp || {};
 
       let wwSecret = incomingWw.secret;
-      if (!wwSecret || wwSecret === SECRET_PLACEHOLDER) {
+      if (!wwSecret || wwSecret === SECRET_PLACEHOLDER || /^\*+$/.test(String(wwSecret).trim())) {
         wwSecret = currentWw.secret || '';
       }
 

@@ -1686,7 +1686,10 @@ document.addEventListener("DOMContentLoaded", () => {
           baseUrl: document.getElementById("cfg-ww-baseurl")?.value.trim(),
           corpId: document.getElementById("cfg-ww-corpid")?.value.trim(),
           agentId: document.getElementById("cfg-ww-agentid")?.value.trim(),
-          secret: document.getElementById("cfg-ww-secret")?.value.trim(),
+          secret: (function() {
+            const v = document.getElementById("cfg-ww-secret")?.value.trim() || "";
+            return /^\*+$/.test(v) ? "" : v;
+          })(),
           toUser: document.getElementById("cfg-ww-touser")?.value.trim(),
           maxRetries: Number(document.getElementById("cfg-ww-retries")?.value) || 5
         }
