@@ -585,6 +585,8 @@ export class TaskManager {
               log(`⚠️ 官网实时任务判定失败；remaining 模式将按未知处理且不执行未确认任务: ${snapshotErr.message}`);
             }
             const initialData = await this.fetchOfficialDashboard(context, account);
+            const initialToday = initialData?.todayPoints ?? null;
+            const initialBalance = initialData?.balance ?? null;
             const initialAccountUpdate = { id: accountId, lastSyncAt: Date.now() };
             if (initialData.sources?.balance === 'live') initialAccountUpdate.balance = initialData.balance;
             if (initialData.sources?.todayPoints === 'live') initialAccountUpdate.todayEarned = initialData.todayPoints;
@@ -842,11 +844,20 @@ export class TaskManager {
 
               const settledToday = finalData.sources?.todayPoints === 'live' ? finalData.todayPoints : null;
               const settledBalance = finalData.sources?.balance === 'live' ? finalData.balance : null;
+
+              let taskHarvestedPoints = null;
+              if (settledToday !== null && initialToday !== null && settledToday >= initialToday) {
+                taskHarvestedPoints = settledToday - initialToday;
+              } else if (settledBalance !== null && initialBalance !== null && settledBalance >= initialBalance) {
+                taskHarvestedPoints = settledBalance - initialBalance;
+              }
+
               log(`🎉 账号 [${account.name}] 任务对账完成：今日积分 ${settledToday === null ? '未确认' : settledToday + ' 分'}，可用余额 ${settledBalance === null ? '未确认' : settledBalance + ' 分'}，连签 ${finalData.streakDays || 0} 天`);
               notifier.sendSettlementReport(account, {
                 ...finalData,
                 todayEarned: settledToday,
                 balance: settledBalance,
+                harvestedPoints: taskHarvestedPoints,
                 claimablePoints: finalData.sources?.claimablePoints === 'live' ? finalData.claimablePoints : null
               }).catch(() => {});
             } finally {
@@ -1066,6 +1077,16 @@ export class TaskManager {
               source: 'harvest-reconcile'
             });
 
+            const harvestedPoints = verified
+              ? ((Number.isFinite(beforeBalance) && Number.isFinite(finalBalance) && finalBalance > beforeBalance)
+                  ? (finalBalance - beforeBalance)
+                  : (harvestResult?.points || (harvestResult?.before?.points || 0)))
+              : 0;
+
+            const settledToday = finalData.sources?.todayPoints === 'live'
+              ? finalData.todayPoints
+              : (account.todayEarned ?? null);
+
             if (verified) {
               logger.log('\u{1f389}', '[收割入账] ' + account.name + ' 已核验到账 - 余额: ' + finalBalance + ' 分, 剩余待领: 0 分');
             } else {
@@ -1074,10 +1095,12 @@ export class TaskManager {
 
             notifier.sendSettlementReport(account, {
               ...finalData,
+              todayEarned: settledToday,
+              harvestedPoints,
               balance: storedBalance,
               claimablePoints: storedClaimable,
               taskStatusText: verified
-                ? '额外积分已核验到账'
+                ? `额外积分已核验到账 (+${harvestedPoints} 分)`
                 : (status === 'already-empty'
                   ? '官网当前无待领取积分（未发生领取）'
                   : '额外积分未确认到账')

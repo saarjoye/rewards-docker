@@ -34,6 +34,42 @@ export function buildWeWorkAppSendUrl(baseUrl, accessToken) {
   return `${base}/cgi-bin/message/send?access_token=${encodeURIComponent(String(accessToken || '').trim())}`;
 }
 
+/**
+ * 格式化每日任务结算与 01:00 对账战报文本内容
+ */
+export function formatSettlementReportContent(account, stats = {}) {
+  const metric = (value, unit = ' 分') => {
+    if (value === null || value === undefined || !Number.isFinite(Number(value))) return '官网未确认';
+    return Number(value).toLocaleString() + unit;
+  };
+
+  const formatHarvested = (value) => {
+    if (value === null || value === undefined || !Number.isFinite(Number(value))) return '官网未确认';
+    const n = Number(value);
+    return (n > 0 ? `+${n.toLocaleString()}` : `${n.toLocaleString()}`) + ' 分';
+  };
+
+  const cleanStatus = String(stats.taskStatusText || '官网对账完成').replace(/[#*`>]/g, '').trim();
+
+  const todayValue = (stats.todayEarned !== undefined && stats.todayEarned !== null)
+    ? stats.todayEarned
+    : ((stats.todayPoints !== undefined && stats.todayPoints !== null) ? stats.todayPoints : account.todayEarned);
+
+  const harvestedValue = stats.harvestedPoints !== undefined && stats.harvestedPoints !== null
+    ? stats.harvestedPoints
+    : (stats.deltaPoints !== undefined && stats.deltaPoints !== null ? stats.deltaPoints : null);
+
+  return [
+    `托管账号: ${account.name || account.user}`,
+    `本次收割: ${formatHarvested(harvestedValue)}`,
+    `今日已增: ${metric(todayValue)}`,
+    `账户总额: ${metric(stats.balance)}`,
+    `连续打卡: ${metric(stats.streakDays, ' 天')}`,
+    `待领额外: ${metric(stats.claimablePoints)}`,
+    `执行状态: ${cleanStatus}`
+  ].join('\n');
+}
+
 export class Notifier {
   constructor() {
     this.tokenCache = new Map();
