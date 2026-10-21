@@ -604,6 +604,155 @@ document.addEventListener("DOMContentLoaded", () => {
     if (summary) summary.textContent = runningId ? '账号锁占用中' : '队列空闲';
   }
 
+  // =========================================================================
+  // 顶部账号卡片悬浮任务进度浮窗 (Tooltip)
+  // =========================================================================
+  function getOrCreateAccountTooltip() {
+    let tip = document.getElementById('account-task-tooltip');
+    if (!tip) {
+      tip = document.createElement('div');
+      tip.id = 'account-task-tooltip';
+      tip.className = 'account-task-tooltip';
+      document.body.appendChild(tip);
+    }
+    return tip;
+  }
+
+  function showAccountTaskTooltip(event, acc, cardEl) {
+    const tip = getOrCreateAccountTooltip();
+    const idx = accounts.indexOf(acc);
+    const displayName = getAccountDisplayName(acc, idx);
+    const initial = displayName[0].toUpperCase();
+    const hasOfficial = acc.todayEarned !== null && acc.todayEarned !== undefined && Number(acc.lastSyncAt || 0) > 0;
+    const today = hasOfficial ? Number(acc.todayEarned) : null;
+    const balance = acc.balance === null || acc.balance === undefined ? '--' : Number(acc.balance).toLocaleString();
+    const pct = hasOfficial ? Math.min(100, Math.round((today / 174) * 100)) : 0;
+
+    const t = acc.officialTasks && typeof acc.officialTasks === 'object' ? acc.officialTasks : {};
+    const hasTasks = Object.keys(t).length > 0;
+
+    // 1. 必应 PC 搜索
+    const searchCap = t.searchPoints;
+    const searchKnown = searchCap && searchCap.current !== null && searchCap.max !== null;
+    const searchDone = searchKnown && (searchCap.isMaxed || searchCap.current >= searchCap.max);
+    const searchVal = searchKnown
+      ? (searchCap.current + '/' + searchCap.max + ' 分')
+      : (hasOfficial ? (today >= 60 ? '60/60 分' : (Math.min(60, today) + '/60 分')) : '未同步');
+    const searchDoneReal = searchKnown ? searchDone : (hasOfficial && today >= 60);
+
+    // 2. 必应 App 签到
+    const appCap = t.appCheckIn;
+    const appKnown = appCap && appCap.current !== null;
+    const appDone = appKnown ? (appCap.current >= (appCap.max || 1)) : (hasOfficial && today >= 100);
+    const appVal = appKnown ? (appCap.current + '/' + (appCap.max || 1)) : (appDone ? '1/1' : '待签到');
+
+    // 3. 每日活动集 (Daily Set)
+    const dsCap = t.dailySet;
+    const dsKnown = dsCap && dsCap.current !== null;
+    const dsDone = dsKnown ? (dsCap.current >= (dsCap.max || 3)) : (hasOfficial && today >= 90);
+    const dsVal = dsKnown ? (dsCap.current + '/' + (dsCap.max || 3) + ' 项') : (dsDone ? '3/3 项' : '待推进');
+
+    // 4. 日常活动与问答 (Daily Activities)
+    const pendingDaily = Array.isArray(t.dailyPending) ? t.dailyPending : null;
+    const dailyDone = pendingDaily !== null ? (pendingDaily.length === 0) : false;
+    let dailyVal = '全部完成 🟢';
+    if (pendingDaily && pendingDaily.length > 0) {
+      const firstRaw = typeof pendingDaily[0] === 'string' ? pendingDaily[0] : (pendingDaily[0].title || '');
+      const firstHint = firstRaw.split(/s+/).slice(0, 2).join(' ');
+      dailyVal = pendingDaily.length + ' 项待做' + (firstHint ? ' (' + escapeHtml(firstHint) + ')' : '') + ' 🟠';
+    } else if (!hasTasks) {
+      dailyVal = hasOfficial ? '已同步 🟢' : '待同步 ⚪';
+    }
+
+    // 5. 多步打孔卡 (Punch Cards / Quests)
+    const pendingQuests = Array.isArray(t.questPending) ? t.questPending : null;
+    const questDone = pendingQuests !== null ? (pendingQuests.length === 0) : false;
+    let questVal = '全部完成 🟢';
+    if (pendingQuests && pendingQuests.length > 0) {
+      const firstQRaw = typeof pendingQuests[0] === 'string' ? pendingQuests[0] : (pendingQuests[0].title || '');
+      const firstQHint = firstQRaw.split(/s+/).slice(0, 2).join(' ');
+      questVal = pendingQuests.length + ' 张进行中' + (firstQHint ? ' (' + escapeHtml(firstQHint) + ')' : '') + ' 🟠';
+    } else if (!hasTasks) {
+      questVal = hasOfficial ? '已同步 🟢' : '待同步 ⚪';
+    }
+
+    const syncAgeText = acc.lastSyncAt ? Math.floor((Date.now() - Number(acc.lastSyncAt)) / 60000) : null;
+    const syncTimeStr = syncAgeText === null ? '未同步' : (syncAgeText < 1 ? '刚刚同步' : syncAgeText + ' 分钟前');
+
+    tip.innerHTML = (
+      '<div class="att-head">' +
+        '<div class="att-user-row">' +
+          '<span class="att-avatar">' + initial + '</span>' +
+          '<div class="att-meta">' +
+            '<div class="att-name">' + escapeHtml(displayName) + '</div>' +
+            '<div class="att-user-desc">' + (acc.user ? escapeHtml(acc.user) : '微软托管账号') + '</div>' +
+          '</div>' +
+        '</div>' +
+        '<div class="att-today-badge">' + (hasOfficial ? ('+' + today + ' 分') : '--') + ' <span class="att-pct">(' + pct + '%)</span></div>' +
+      '</div>' +
+      '<div class="att-divider"></div>' +
+      '<div class="att-section-label">当日官方任务达成进度</div>' +
+      '<div class="att-task-list">' +
+        '<div class="att-task-row">' +
+          '<span class="att-task-name">🔍 必应 PC 搜索</span>' +
+          '<span class="att-task-val ' + (searchDoneReal ? 'status-done' : 'status-pending') + '">' + escapeHtml(searchVal) + (searchDoneReal ? ' 🟢' : ' 🟠') + '</span>' +
+        '</div>' +
+        '<div class="att-task-row">' +
+          '<span class="att-task-name">📱 必应 App 签到</span>' +
+          '<span class="att-task-val ' + (appDone ? 'status-done' : 'status-pending') + '">' + escapeHtml(appVal) + (appDone ? ' 🟢' : ' 🟠') + '</span>' +
+        '</div>' +
+        '<div class="att-task-row">' +
+          '<span class="att-task-name">📅 每日活动集 (Daily)</span>' +
+          '<span class="att-task-val ' + (dsDone ? 'status-done' : 'status-pending') + '">' + escapeHtml(dsVal) + (dsDone ? ' 🟢' : ' 🟠') + '</span>' +
+        '</div>' +
+        '<div class="att-task-row">' +
+          '<span class="att-task-name">📋 日常活动与问答</span>' +
+          '<span class="att-task-val ' + (dailyDone ? 'status-done' : 'status-pending') + '">' + dailyVal + '</span>' +
+        '</div>' +
+        '<div class="att-task-row">' +
+          '<span class="att-task-name">🎯 多步打孔卡 (Quests)</span>' +
+          '<span class="att-task-val ' + (questDone ? 'status-done' : 'status-pending') + '">' + questVal + '</span>' +
+        '</div>' +
+      '</div>' +
+      '<div class="att-divider"></div>' +
+      '<div class="att-footer">' +
+        '<span class="att-badge">🎁 待领: ' + (acc.claimablePoints || 0) + ' 分</span>' +
+        '<span class="att-badge">🔥 连签: ' + (acc.streakDays || 0) + ' 天</span>' +
+        '<span class="att-badge">💰 可用: ' + balance + ' 分</span>' +
+        '<span class="att-badge att-sync">🕒 ' + syncTimeStr + '</span>' +
+      '</div>'
+    );
+
+    tip.style.display = 'block';
+    updateAccountTaskTooltipPos(event, cardEl);
+  }
+
+  function updateAccountTaskTooltipPos(event, cardEl) {
+    const tip = document.getElementById('account-task-tooltip');
+    if (!tip || tip.style.display === 'none') return;
+    const rect = cardEl.getBoundingClientRect();
+    const tipWidth = 320;
+    
+    let left = rect.left;
+    if (left + tipWidth > window.innerWidth - 16) {
+      left = Math.max(16, rect.right - tipWidth);
+    }
+    
+    let top = rect.bottom + 10;
+    const tipHeight = tip.offsetHeight || 250;
+    if (top + tipHeight > window.innerHeight - 16) {
+      top = Math.max(16, rect.top - tipHeight - 10);
+    }
+    
+    tip.style.left = left + 'px';
+    tip.style.top = top + 'px';
+  }
+
+  function hideAccountTaskTooltip() {
+    const tip = document.getElementById('account-task-tooltip');
+    if (tip) tip.style.display = 'none';
+  }
+
   function renderTopAccountCards() {
     const container = document.getElementById("top-accounts-cards");
     if (!container) return;
@@ -649,7 +798,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const subLabel = '可用 ' + balance + ' 分 · ' + slotLabel + (hasOfficial ? '' : ' · 待同步');
 
       return (
-        '<section class="metric-card ' + (isAct ? 'active-card' : '') + '" onclick="switchView(\'single\', \'' + acc.id + '\')" title="点击切换查看 [' + escapeHtml(displayName) + '] 独立看板">' +
+        '<section class="metric-card ' + (isAct ? 'active-card' : '') + '" onclick="switchView(\'single\', \'' + acc.id + '\')" data-acc-idx="' + idx + '">' +
           '<div class="metric-header">' +
             '<div class="metric-title-group">' +
               '<span class="metric-icon ' + logoStatusClass + '" title="' + logoTitle + '">👤</span>' +
@@ -683,6 +832,15 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     container.innerHTML = cardItems.join('') + dashedCards.join('');
+
+    container.querySelectorAll('.metric-card').forEach((cardEl) => {
+      const cardIdx = Number(cardEl.getAttribute('data-acc-idx'));
+      const cardAcc = accounts[cardIdx];
+      if (!cardAcc) return;
+      cardEl.addEventListener('mouseenter', (e) => showAccountTaskTooltip(e, cardAcc, cardEl));
+      cardEl.addEventListener('mousemove', (e) => updateAccountTaskTooltipPos(e, cardEl));
+      cardEl.addEventListener('mouseleave', hideAccountTaskTooltip);
+    });
   }
 
   function renderDropdownMenu() {

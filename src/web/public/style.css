@@ -4402,3 +4402,151 @@ input:focus, select:focus, textarea:focus {
 .cal-tip-row { display:flex; justify-content:space-between; gap:12px; padding:2px 0; color:#cbd5e1; }
 .cal-tip-row b { color:#fff; }
 .cal-tip-empty { color:#94a3b8; }
+
+
+/* ==============================================================
+   👤 顶部账号卡片悬浮任务进度浮窗 (Tooltip)
+   ============================================================== */
+#account-task-tooltip {
+  position: fixed !important;
+  z-index: 100000 !important;
+  display: none;
+  width: 320px;
+  background: #182234 !important;
+  border: 1px solid rgba(255, 255, 255, 0.16) !important;
+  border-radius: 14px !important;
+  padding: 14px 16px !important;
+  color: #ffffff !important;
+  box-shadow: 0 20px 45px rgba(0, 0, 0, 0.6) !important;
+  pointer-events: none !important;
+  font-size: 12px !important;
+  line-height: 1.5 !important;
+  box-sizing: border-box !important;
+}
+
+#account-task-tooltip .att-head {
+  display: flex !important;
+  justify-content: space-between !important;
+  align-items: center !important;
+}
+
+#account-task-tooltip .att-user-row {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+}
+
+#account-task-tooltip .att-avatar {
+  width: 28px !important;
+  height: 28px !important;
+  border-radius: 8px !important;
+  background: rgba(255, 255, 255, 0.12) !important;
+  color: #38bdf8 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  font-weight: 800 !important;
+  font-size: 13px !important;
+}
+
+#account-task-tooltip .att-meta {
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+#account-task-tooltip .att-name {
+  font-weight: 700 !important;
+  font-size: 13px !important;
+  color: #ffffff !important;
+}
+
+#account-task-tooltip .att-user-desc {
+  font-size: 10.5px !important;
+  color: #94a3b8 !important;
+}
+
+#account-task-tooltip .att-today-badge {
+  font-weight: 800 !important;
+  font-size: 13px !important;
+  color: #10b981 !important;
+  background: rgba(16, 185, 129, 0.12) !important;
+  padding: 3px 8px !important;
+  border-radius: 6px !important;
+  border: 1px solid rgba(16, 185, 129, 0.25) !important;
+}
+
+#account-task-tooltip .att-pct {
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  color: #6ee7b7 !important;
+}
+
+#account-task-tooltip .att-divider {
+  height: 1px !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+  margin: 10px 0 !important;
+}
+
+#account-task-tooltip .att-section-label {
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  color: #94a3b8 !important;
+  margin-bottom: 8px !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.5px !important;
+}
+
+#account-task-tooltip .att-task-list {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 7px !important;
+}
+
+#account-task-tooltip .att-task-row {
+  display: flex !important;
+  justify-content: space-between !important;
+  align-items: center !important;
+  font-size: 11.5px !important;
+}
+
+#account-task-tooltip .att-task-name {
+  color: #e2e8f0 !important;
+  font-weight: 500 !important;
+}
+
+#account-task-tooltip .att-task-val {
+  font-weight: 600 !important;
+  text-align: right !important;
+  max-width: 175px !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+#account-task-tooltip .att-task-val.status-done {
+  color: #34d399 !important;
+}
+
+#account-task-tooltip .att-task-val.status-pending {
+  color: #fb923c !important;
+}
+
+#account-task-tooltip .att-footer {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  gap: 6px !important;
+}
+
+#account-task-tooltip .att-badge {
+  background: rgba(255, 255, 255, 0.06) !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  padding: 3px 7px !important;
+  border-radius: 6px !important;
+  font-size: 10.5px !important;
+  color: #cbd5e1 !important;
+}
+
+#account-task-tooltip .att-badge.att-sync {
+  color: #94a3b8 !important;
+  margin-left: auto !important;
+}
