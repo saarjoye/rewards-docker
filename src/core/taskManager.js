@@ -277,9 +277,17 @@ export class TaskManager {
           try {
             await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
           } catch (navErr) {
-            if (navErr.message.includes('Timeout') || navErr.message.includes('timeout')) {
-              log(`访问 ${name} 等待 DOM 事件超时，降级为轻量连接模式直连...`);
-              if (page.isClosed()) page = await context.newPage();
+            const isCrashOrTimeout = navErr.message && (
+              navErr.message.includes('Timeout') ||
+              navErr.message.includes('timeout') ||
+              navErr.message.includes('crashed') ||
+              navErr.message.includes('Target') ||
+              navErr.message.includes('closed')
+            );
+            if (isCrashOrTimeout) {
+              log(`访问 ${name} 遇到网络延迟或视口重载 (${navErr.message})，降级为轻量直连模式自愈...`);
+              try { if (page && !page.isClosed()) await page.close().catch(() => {}); } catch {}
+              page = await context.newPage();
               await page.goto(url, { waitUntil: 'commit', timeout: 25000 });
             } else {
               throw navErr;
@@ -695,6 +703,9 @@ export class TaskManager {
                 this.currentTaskName = '每日活动集 (Daily Set 3/3 弹窗点击)';
                 log('>>> 执行【板块 1: 连续打卡任务 (Streaks)】每日活动集 (Daily Set 3/3)...');
                 await penetrateDailySetActivities(page, { accountPrefix: account.name });
+                if (taskScope === 'dailySet' && officialTasks?.dailyPending?.length > 0) {
+                  log(`💡 [执行指引] 每日活动集 (Daily Set) 已处理完毕；检测到尚有 ${officialTasks.dailyPending.length} 项日常任务待做 (如: ${officialTasks.dailyPending.slice(0, 2).map(x => (x.title || x)).join(', ')})，若需执行请选择【仅日常活动与问答】或【仅执行未完成剩余任务】模式。`);
+                }
               }
               if (this.shouldStop) throw new Error(TASK_STOP_MESSAGE);
 
@@ -1085,6 +1096,8 @@ export class TaskManager {
           const page = await context.newPage();
           try {
             const harvestResult = await harvestClaimablePointsWithVirtualPointer(page, { accountPrefix: account.name });
+            await new Promise((r) => setTimeout(r, 2500));
+            if (page && !page.isClosed()) { await page.close().catch(() => {}); }
             const finalData = await this.fetchOfficialDashboard(context, account, { allowCachedFallback: false });
             const liveClaimable = finalData.sources?.claimablePoints === 'live';
             const liveBalance = finalData.sources?.balance === 'live';

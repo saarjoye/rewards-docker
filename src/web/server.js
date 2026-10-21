@@ -473,10 +473,15 @@ export function createServer() {
       taskManager.beginRun('全量额外积分收割队列');
       taskManager.isQueueRunning = true;
       try {
-        for (const a of accounts) {
+        for (let i = 0; i < accounts.length; i++) {
+          const a = accounts[i];
           if (taskManager.shouldStop) break;
           await taskManager.harvestMidnightClaimable(a.id);
-          if (!(await taskManager.waitUnlessStopped(5000))) break;
+          if (i < accounts.length - 1) {
+            const cooldown = 15000 + Math.random() * 5000;
+            logger.log('❄️', `账号切换物理隔离冷却 ${Math.round(cooldown / 1000)} 秒...`);
+            if (!(await taskManager.waitUnlessStopped(cooldown))) break;
+          }
         }
       } finally {
         taskManager.isQueueRunning = false;
