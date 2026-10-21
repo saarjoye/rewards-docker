@@ -3961,7 +3961,8 @@ input:focus, select:focus, textarea:focus {
   height: 38px !important;
   min-height: 38px !important;
   max-height: 38px !important;
-  padding: 0 16px !important;
+  padding: 0 11px !important;
+  font-size: 13px !important;
   border-radius: 10px !important;
   font-size: 13px !important;
   font-weight: 700 !important;

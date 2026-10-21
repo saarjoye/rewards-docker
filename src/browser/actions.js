@@ -184,7 +184,7 @@ export async function solveQuizOrPoll(page, options = {}) {
 }
 
 /**
- * 每日活动集 (Daily Set 3/3) 真机抽屉穿透 (全面适配微软全新改版 /earn 架构)
+ * 每日活动集 (Daily Set 3/3) 真机抽屉实体穿透 (全面适配微软全新改版 /earn 架构)
  */
 export async function penetrateDailySetActivities(page, options = {}) {
   const { accountPrefix = '' } = options;
@@ -226,44 +226,47 @@ export async function penetrateDailySetActivities(page, options = {}) {
 
     const drawer = page.locator('[role="dialog"], section[role="dialog"]').first();
     if (await drawer.isVisible().catch(() => false)) {
-      // 找到抽屉内全部活动条目
-      const rawLinks = await drawer.locator('a[target="_blank"], a[href*="http"], a[href*="bing.com"], a[class*="cursor-pointer"]').all();
-      logger.log('📅', `Daily Set 抽屉内检测到 ${rawLinks.length} 个候选活动链接`, '', accountPrefix);
+      // 循环穿透：每次动态查找尚未标记为「已完成」的活动链接，杜绝 React 重绘导致的 Stale Element 缺陷
+      for (let attempt = 1; attempt <= 5; attempt++) {
+        const unfinished = await drawer.locator('a.group\\/ctrl[href*="bing.com/search"]').all();
+        let targetLink = null;
+        let targetTitle = '';
 
-      for (let i = 0; i < rawLinks.length; i++) {
+        for (const l of unfinished) {
+          const txt = (await l.innerText().catch(() => '')).replace(/\n/g, ' ').trim();
+          if (!txt || txt.includes('已完成') || txt.includes('权益') || txt.includes('说明')) continue;
+          targetLink = l;
+          targetTitle = txt.slice(0, 30);
+          break;
+        }
+
+        if (!targetLink) {
+          logger.log('🎉', 'Daily Set 抽屉内所有活动均已标记为 [已完成] 状态！', '', accountPrefix);
+          break;
+        }
+
+        logger.log('🚀', `触发 Daily Set 抽屉任务 [${targetTitle}] 真实实体点击...`, '', accountPrefix);
+
         let popup = null;
-        const link = rawLinks[i];
         try {
-          const text = (await link.innerText().catch(() => '')).replace(/\n/g, ' ').trim();
-          if (!text || text.includes('已完成') || text.includes('权益') || text.includes('说明') || text.includes('了解')) {
-            continue;
-          }
-
-          const href = await link.getAttribute('href').catch(() => null);
-          logger.log('🚀', `触发 Daily Set 抽屉任务 [${text.slice(0, 30)}] 交互...`, '', accountPrefix);
-
-          if (href && href.startsWith('http')) {
-            popup = await page.context().newPage();
-            await popup.goto(href, { waitUntil: 'commit', timeout: 35000 }).catch(() => {});
-          } else {
-            const [p] = await Promise.all([
-              page.context().waitForEvent('page', { timeout: 8000 }).catch(() => null),
-              link.click({ force: true, timeout: 6000 }).catch(() => {})
-            ]);
-            popup = p;
-          }
+          const [p] = await Promise.all([
+            page.context().waitForEvent('page', { timeout: 10000 }).catch(() => null),
+            targetLink.click({ force: true }).catch(() => {})
+          ]);
+          popup = p;
 
           if (popup) {
-            await popup.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
+            await popup.waitForLoadState('domcontentloaded').catch(() => {});
             await solveQuizOrPoll(popup, { accountPrefix });
-            await popup.mouse.wheel(0, 200).catch(() => {});
-            await new Promise((r) => setTimeout(r, 4500));
+            await popup.mouse.wheel(0, 300).catch(() => {});
+            logger.log('⏳', `留足 6 秒让微软服务端确认 [${targetTitle}] 打卡遥测...`, '', accountPrefix);
+            await new Promise((r) => setTimeout(r, 6000));
             await popup.close().catch(() => {});
           } else {
-            await new Promise((r) => setTimeout(r, 3000));
+            await new Promise((r) => setTimeout(r, 4000));
           }
           clickedCount++;
-          await new Promise((r) => setTimeout(r, 1500));
+          await new Promise((r) => setTimeout(r, 2000));
         } catch (itemErr) {
           logger.log('⚠️', `推进 Daily Set 抽屉活动项异常: ${itemErr.message}`, '', accountPrefix);
         } finally {
@@ -285,7 +288,7 @@ export async function penetrateDailySetActivities(page, options = {}) {
   await new Promise((r) => setTimeout(r, 2500));
   await dismissCelebrationOverlay(page);
 
-  const links = await page.$('#dailyset a[target="_blank"], div[data-bi-area="DailySet"] a, div[class*="DailySet"] a');
+  const links = await page.$$('#dailyset a[target="_blank"], div[data-bi-area="DailySet"] a, div[class*="DailySet"] a');
   for (let i = 0; i < links.length; i++) {
     let popup = null;
     try {
@@ -306,7 +309,6 @@ export async function penetrateDailySetActivities(page, options = {}) {
   }
   return clickedCount;
 }
-
 async function dismissCelebrationOverlay(page) {
   try {
     const closeBtn = await page.$('div.bg-bgSmoke button, [data-rac] button[aria-label*="关闭"], div[class*="Smoke"] button, button:has-text("关闭"), button:has-text("知道了"), button:has-text("确定")');
