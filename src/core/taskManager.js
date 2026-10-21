@@ -698,13 +698,17 @@ export class TaskManager {
               const runSearch = taskPlan.search;
 
               if (runDailySet) {
-                page = await ensureHealthyPage(page);
                 this.currentTaskSection = '板块 1: 连续打卡';
-                this.currentTaskName = '每日活动集 (Daily Set 3/3 弹窗点击)';
+                this.currentTaskName = '每日活动集 (Daily Set 3/3 抽屉打卡)';
                 log('>>> 执行【板块 1: 连续打卡任务 (Streaks)】每日活动集 (Daily Set 3/3)...');
-                await penetrateDailySetActivities(page, { accountPrefix: account.name });
-                if (taskScope === 'dailySet' && officialTasks?.dailyPending?.length > 0) {
-                  log(`💡 [执行指引] 每日活动集 (Daily Set) 已处理完毕；检测到尚有 ${officialTasks.dailyPending.length} 项日常任务待做 (如: ${officialTasks.dailyPending.slice(0, 2).map(x => (x.title || x)).join(', ')})，若需执行请选择【仅日常活动与问答】或【仅执行未完成剩余任务】模式。`);
+                const setPage = await context.newPage();
+                try {
+                  await penetrateDailySetActivities(setPage, { accountPrefix: account.name });
+                  if (taskScope === 'dailySet' && officialTasks?.dailyPending?.length > 0) {
+                    log(`💡 [执行指引] 每日活动集 (Daily Set) 已处理完毕；检测到尚有 ${officialTasks.dailyPending.length} 项日常任务待做 (如: ${officialTasks.dailyPending.slice(0, 2).map(x => (x.title || x)).join(', ')})，若需执行请选择【仅日常活动与问答】或【仅执行未完成剩余任务】模式。`);
+                  }
+                } finally {
+                  if (setPage && !setPage.isClosed()) await setPage.close().catch(() => {});
                 }
               }
               if (this.shouldStop) throw new Error(TASK_STOP_MESSAGE);
@@ -712,24 +716,34 @@ export class TaskManager {
               log('>>> 检查【板块 2: 升级活动 (Level Up)】(随日常打卡与搜索自动驱动累积)...');
 
               if (runQuests) {
-                page = await ensureHealthyPage(page);
                 this.currentTaskSection = '板块 3: 打孔卡任务';
                 this.currentTaskName = '多步任务打孔卡 (Punch Cards)';
                 log('>>> 执行【板块 3: 任务 (Punch Cards / Quests)】多步打孔卡...');
-                // remaining 仅使用官方快照中明确的待做 quest；不能回退到页面扫描。
                 const questHrefs = taskScope === 'remaining'
                   ? (officialTasks?.questPending || []).map((q) => q.href).filter(Boolean)
                   : (officialTasks?.questPending?.length
                     ? officialTasks.questPending.map((q) => q.href).filter(Boolean)
-                    : await page.evaluate(() => [...new Set([...document.querySelectorAll('a[href*="/quest/"]')].map((a) => a.getAttribute('href')).filter(Boolean))]).catch(() => []));
+                    : await (async () => {
+                        const tempP = await context.newPage();
+                        try {
+                          await tempP.goto('https://rewards.bing.com/earn', { waitUntil: 'commit', timeout: 25000 });
+                          return await tempP.evaluate(() => [...new Set([...document.querySelectorAll('a[href*="/quest/"]')].map((a) => a.getAttribute('href')).filter(Boolean))]);
+                        } catch { return []; } finally { await tempP.close().catch(() => {}); }
+                      })());
+
                 log(`检索到 ${questHrefs.length} 个待推进打孔卡任务`);
                 const completedTodayHrefs = [];
                 for (const qUrl of questHrefs) {
                   if (this.shouldStop) throw new Error(TASK_STOP_MESSAGE);
                   if (qUrl) {
-                    const questRes = await penetratePunchCardQuest(page, qUrl, { accountPrefix: account.name });
-                    if (questRes !== false) {
-                      completedTodayHrefs.push(qUrl);
+                    const questPage = await context.newPage();
+                    try {
+                      const questRes = await penetratePunchCardQuest(questPage, qUrl, { accountPrefix: account.name });
+                      if (questRes !== false) {
+                        completedTodayHrefs.push(qUrl);
+                      }
+                    } finally {
+                      if (questPage && !questPage.isClosed()) await questPage.close().catch(() => {});
                     }
                   }
                 }
@@ -748,14 +762,17 @@ export class TaskManager {
               if (this.shouldStop) throw new Error(TASK_STOP_MESSAGE);
 
               if (runDailyActs) {
-                page = await ensureHealthyPage(page);
                 this.currentTaskSection = '板块 4: 日常任务';
-                this.currentTaskName = '日常任务穿透打卡 (Daily Activities)';
+                this.currentTaskName = '日常活动与问答 (Daily Activities)';
                 log('>>> 执行【板块 4: 日常任务 (Daily Activities)】日常活动与拼图全量穿透...');
                 const pendingKeys = officialTasks?.dailyPending?.map((x) => x.key || x.href || x.title) || null;
-                // remaining 只执行官网快照列出的待做项；绝不退化成全量穿透。
                 if (taskScope !== 'remaining' || pendingKeys) {
-                  await penetrateDailyActivities(page, { accountPrefix: account.name, pendingKeys });
+                  const actPage = await context.newPage();
+                  try {
+                    await penetrateDailyActivities(actPage, { accountPrefix: account.name, pendingKeys });
+                  } finally {
+                    if (actPage && !actPage.isClosed()) await actPage.close().catch(() => {});
+                  }
                 }
               }
               if (this.shouldStop) throw new Error(TASK_STOP_MESSAGE);
