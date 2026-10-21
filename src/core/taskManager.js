@@ -625,6 +625,18 @@ export class TaskManager {
               source: 'official-sync'
             });
 
+            const ensureHealthyPage = async (p) => {
+              try {
+                if (!p || p.isClosed()) return await context.newPage();
+                await p.evaluate(() => 1);
+                return p;
+              } catch (err) {
+                log(`🔄 检测到前置视口状态异常 (${err.message})，立即自愈新建独立健康视口...`);
+                try { if (p && !p.isClosed()) await p.close().catch(() => {}); } catch {}
+                return await context.newPage();
+              }
+            };
+
             let page = await context.newPage();
 
             try {
@@ -678,6 +690,7 @@ export class TaskManager {
               const runSearch = taskPlan.search;
 
               if (runDailySet) {
+                page = await ensureHealthyPage(page);
                 this.currentTaskSection = '板块 1: 连续打卡';
                 this.currentTaskName = '每日活动集 (Daily Set 3/3 弹窗点击)';
                 log('>>> 执行【板块 1: 连续打卡任务 (Streaks)】每日活动集 (Daily Set 3/3)...');
@@ -688,6 +701,7 @@ export class TaskManager {
               log('>>> 检查【板块 2: 升级活动 (Level Up)】(随日常打卡与搜索自动驱动累积)...');
 
               if (runQuests) {
+                page = await ensureHealthyPage(page);
                 this.currentTaskSection = '板块 3: 打孔卡任务';
                 this.currentTaskName = '多步任务打孔卡 (Punch Cards)';
                 log('>>> 执行【板块 3: 任务 (Punch Cards / Quests)】多步打孔卡...');
@@ -723,6 +737,7 @@ export class TaskManager {
               if (this.shouldStop) throw new Error(TASK_STOP_MESSAGE);
 
               if (runDailyActs) {
+                page = await ensureHealthyPage(page);
                 this.currentTaskSection = '板块 4: 日常任务';
                 this.currentTaskName = '日常任务穿透打卡 (Daily Activities)';
                 log('>>> 执行【板块 4: 日常任务 (Daily Activities)】日常活动与拼图全量穿透...');
@@ -736,6 +751,7 @@ export class TaskManager {
 
               let needsSearchSecondPass = false;
               if (runSearch) {
+                page = await ensureHealthyPage(page);
                 this.currentTaskName = '必应 PC 拟人搜索收割 (跑满官网上限)';
                 log('执行板块 1-核心: 必应 PC 拟人化搜索收割 (跑满官网上限)...');
                 const fullCfg = configManager.get();
