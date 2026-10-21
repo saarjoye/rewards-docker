@@ -106,14 +106,20 @@ export class BrowserManager {
     const launchArgs = [
       '--no-sandbox',
       '--disable-setuid-sandbox',
-      '--renderer-process-limit=1',
       '--disable-dev-shm-usage',
       '--no-zygote',
-      '--disable-features=IsolateOrigins,site-per-process',
       '--disable-gpu',
       '--disable-software-rasterizer',
       '--disable-breakpad',
       '--disable-crash-reporter',
+      '--js-flags=--max-old-space-size=512',
+      '--disable-background-networking',
+      '--disable-default-apps',
+      '--disable-extensions',
+      '--disable-sync',
+      '--disable-translate',
+      '--mute-audio',
+      '--no-first-run',
       '--blink-settings=imagesEnabled=true'
     ];
 

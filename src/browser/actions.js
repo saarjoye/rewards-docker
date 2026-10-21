@@ -428,14 +428,40 @@ export async function penetratePunchCardQuest(page, questUrl, options = {}) {
   const fullUrl = questUrl.startsWith('http') ? questUrl : `https://rewards.bing.com${questUrl}`;
   logger.log('🎯', `进入多步打孔卡子路由: ${fullUrl}`, '', accountPrefix);
 
-  try {
-    await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 35000 });
-    await new Promise((r) => setTimeout(r, 2500));
+  const context = (page && typeof page.context === 'function') ? page.context() : null;
+  let activePage = page;
 
-    // 扫描子步骤卡片 (使用 page.$ 获取所有子步骤链接/按钮)
-    let stepCards = await page.$$('a[href*="redirect?"], a[href*="bing.com"][class*="rounded-cornerCtrlRest"], a[class*="bgCtrlBrandRest"], div[data-bi-area="PunchCardStep"] a, a[href*="/quest/"], a.c-call-to-action');
+  try {
+    for (let navAttempt = 1; navAttempt <= 2; navAttempt++) {
+      try {
+        if (!activePage || activePage.isClosed()) {
+          if (context) activePage = await context.newPage();
+        }
+        try {
+          await activePage.goto(fullUrl, { waitUntil: 'commit', timeout: 35000 });
+        } catch (gotoErr) {
+          if (gotoErr.message && (gotoErr.message.includes('crashed') || gotoErr.message.includes('Target') || gotoErr.message.includes('closed'))) {
+            throw gotoErr;
+          }
+        }
+        await new Promise((r) => setTimeout(r, 2500));
+        break;
+      } catch (navErr) {
+        const isCrash = navErr.message && (navErr.message.includes('crashed') || navErr.message.includes('Target') || navErr.message.includes('closed'));
+        if (isCrash && navAttempt < 2 && context) {
+          logger.log('🔄', `打孔卡视口瞬态崩溃 (${navErr.message})，立即自愈新建视口重试...`, '', accountPrefix);
+          try { if (activePage && !activePage.isClosed()) await activePage.close().catch(() => {}); } catch {}
+          activePage = await context.newPage();
+        } else {
+          throw navErr;
+        }
+      }
+    }
+
+    // 扫描子步骤卡片 (使用 activePage.$$ 获取所有子步骤链接/按钮)
+    let stepCards = await activePage.$$('a[href*="redirect?"], a[href*="bing.com"][class*="rounded-cornerCtrlRest"], a[class*="bgCtrlBrandRest"], div[data-bi-area="PunchCardStep"] a, a[href*="/quest/"], a.c-call-to-action');
     if (!stepCards || stepCards.length === 0) {
-      stepCards = await page.$$('a[class*="rounded-cornerCtrlRest"], a[class*="Button"], button[class*="bg-bgCtrlBrandRest"], a:has-text("立即激活"), a:has-text("开始"), a:has-text("加入")');
+      stepCards = await activePage.$$('a[class*="rounded-cornerCtrlRest"], a[class*="Button"], button[class*="bg-bgCtrlBrandRest"], a:has-text("立即激活"), a:has-text("开始"), a:has-text("加入")');
     }
     logger.log('🎯', `打孔卡内部发现 ${stepCards.length} 个子步骤`, '', accountPrefix);
 
@@ -452,18 +478,20 @@ export async function penetratePunchCardQuest(page, questUrl, options = {}) {
         const href = await step.getAttribute('href').catch(() => null);
 
         if (href && href.startsWith('http')) {
-          stepPopup = await page.context().newPage();
-          await stepPopup.goto(href, { waitUntil: 'domcontentloaded', timeout: 35000 }).catch(() => {});
+          if (context) {
+            stepPopup = await context.newPage();
+            await stepPopup.goto(href, { waitUntil: 'commit', timeout: 35000 }).catch(() => {});
+          }
         } else if (await step.isVisible().catch(() => false)) {
           const [p] = await Promise.all([
-            page.context().waitForEvent('page', { timeout: 8000 }).catch(() => null),
+            activePage.context().waitForEvent('page', { timeout: 8000 }).catch(() => null),
             step.click({ force: true, timeout: 6000 }).catch(() => {})
           ]);
           stepPopup = p;
         }
 
         if (stepPopup) {
-          await stepPopup.waitForLoadState('domcontentloaded').catch(() => {});
+          await stepPopup.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
           await solveQuizOrPoll(stepPopup, { accountPrefix });
           await stepPopup.mouse.wheel(0, 200).catch(() => {});
           await new Promise((r) => setTimeout(r, 4500));
@@ -484,10 +512,6 @@ export async function penetratePunchCardQuest(page, questUrl, options = {}) {
     return false;
   }
 }
-
-/**
- * 拼图任务 (ZHstar Evergreen Puzzle) 目标落地页访问
- */
 export async function penetratePuzzleSpotlight(page, puzzleUrl, options = {}) {
   const { accountPrefix = '' } = options;
   const target = puzzleUrl || 'https://www.bing.com/spotlight/imagepuzzle';
@@ -673,19 +697,40 @@ export async function penetrateDailyActivities(page, options = {}) {
     return 0;
   }
 
-  try {
-    await page.goto('https://rewards.bing.com/earn', { waitUntil: 'domcontentloaded', timeout: 35000 });
-    await new Promise((resolve) => setTimeout(resolve, 3000));
-    await dismissCelebrationOverlay(page);
+  const context = (page && typeof page.context === 'function') ? page.context() : null;
+  let activePage = page;
 
-    const dailyRoot = page.locator('div.react-aria-Disclosure').filter({ has: page.locator('h2', { hasText: '日常任务' }) }).first();
+  try {
+    for (let navAttempt = 1; navAttempt <= 2; navAttempt++) {
+      try {
+        if (!activePage || activePage.isClosed()) {
+          if (context) activePage = await context.newPage();
+        }
+        await activePage.goto('https://rewards.bing.com/earn', { waitUntil: 'commit', timeout: 35000 });
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        break;
+      } catch (navErr) {
+        const isCrash = navErr.message && (navErr.message.includes('crashed') || navErr.message.includes('Target') || navErr.message.includes('closed'));
+        if (isCrash && navAttempt < 2 && context) {
+          logger.log('🔄', `日常任务视口瞬态崩溃 (${navErr.message})，立即自愈新建视口重试...`, '', accountPrefix);
+          try { if (activePage && !activePage.isClosed()) await activePage.close().catch(() => {}); } catch {}
+          activePage = await context.newPage();
+        } else {
+          throw navErr;
+        }
+      }
+    }
+
+    await dismissCelebrationOverlay(activePage);
+
+    const dailyRoot = activePage.locator('div.react-aria-Disclosure, div[class*="Disclosure"]').filter({ has: activePage.locator('h2', { hasText: '日常任务' }) }).first();
     await dailyRoot.waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
     let cards = [];
     if (await dailyRoot.count()) {
       cards = await dailyRoot.locator('a').all();
     }
     if (!cards || cards.length === 0) {
-      cards = await page.$$('a[class*="rounded-cornerCardDefault"][href*="bing.com"]');
+      cards = await activePage.$$('a[class*="rounded-cornerCardDefault"][href*="bing.com"]');
     }
     logger.log('📋', `检索到【日常任务】区域内包含 ${cards.length} 个活动项目`, '', accountPrefix);
 
