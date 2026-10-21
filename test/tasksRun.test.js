@@ -123,3 +123,36 @@ test('remaining 只执行官网明确 true 的任务，unknown 不会被当成�
     search: false
   });
 });
+
+test('多步打孔卡当日已推进记忆保护：排除已推进任务，防止死循环重复执行', () => {
+  const questHref = '/earn/quest/WW_pcparent_FY27_Duolingo3M_punchcard';
+  const now = new Date();
+  const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+
+  const accountDone = {
+    dailyQuestsDone: {
+      date: todayStr,
+      hrefs: [questHref]
+    }
+  };
+
+  const snapshot = buildOfficialTaskSnapshot({
+    text: '搜索: 1/1\n活动: 3/3\n签到: 1/1',
+    sections: [
+      {
+        title: '任务',
+        cards: [
+          { title: '通过 Microsoft Rewards 解锁免费 Super Duolingo 1/6 个任务', href: questHref, done: false, disabled: false }
+        ]
+      }
+    ],
+    searchPoints: { current: 60, max: 60, isMaxed: true },
+    account: accountDone
+  });
+
+  // 验证已被当日记忆排除，不再列入待做项
+  assert.equal(snapshot.questPending.length, 0);
+  assert.equal(snapshot.needQuests, false);
+  assert.equal(snapshot.questsTodayDone, true);
+  assert.equal(snapshot.hasWork, false);
+});

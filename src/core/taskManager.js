@@ -82,7 +82,7 @@ export function describeOfficialNeed(value) {
  * Build a tri-state task snapshot from official DOM evidence.
  * null means unknown. Unknown never becomes work and never counts as complete.
  */
-export function buildOfficialTaskSnapshot({ text = '', sections = [], searchPoints = null } = {}) {
+export function buildOfficialTaskSnapshot({ text = '', sections = [], searchPoints = null, account = null } = {}) {
   const lines = String(text || '').split('\n').map((line) => line.trim()).filter(Boolean);
   const counter = (re) => {
     for (const line of lines) {
@@ -92,6 +92,11 @@ export function buildOfficialTaskSnapshot({ text = '', sections = [], searchPoin
     return null;
   };
 
+  const todayStr = getTodayDateString();
+  const todayDoneQuests = (account?.dailyQuestsDone?.date === todayStr)
+    ? (account.dailyQuestsDone.hrefs || [])
+    : [];
+
   const searchStreak = counter(/^搜索\s*:\s*([0-9]+)\s*\/\s*([0-9]+)$/);
   const dailySet = counter(/^活动\s*:\s*([0-9]+)\s*\/\s*([0-9]+)$/);
   const appCheckIn = counter(/^签到\s*:\s*([0-9]+)\s*\/\s*([0-9]+)$/);
@@ -100,7 +105,14 @@ export function buildOfficialTaskSnapshot({ text = '', sections = [], searchPoin
   const dailyCards = dailySection?.cards || [];
   const questCards = questSection?.cards || [];
   const dailyPending = dailyCards.filter((card) => !card.done && !card.disabled && card.executable !== false);
-  const questPending = questCards.filter((card) => !card.done && !card.disabled);
+
+  // 关键：若打孔卡今天已推进（打卡过或检测到明日解锁），从待做列表中剔除，防止死循环重跑
+  const questPending = questCards.filter((card) => {
+    if (card.done || card.disabled) return false;
+    const cardHref = card.href || '';
+    const isDoneToday = todayDoneQuests.some((doneHref) => doneHref && (cardHref.includes(doneHref) || doneHref.includes(cardHref)));
+    return !isDoneToday;
+  });
 
   const needSearch = searchPoints ? !searchPoints.isMaxed : null;
   const needDailySet = dailySet ? dailySet.current < dailySet.max : null;
@@ -118,6 +130,9 @@ export function buildOfficialTaskSnapshot({ text = '', sections = [], searchPoin
     .filter(([, value]) => value === null)
     .map(([key]) => key);
 
+  const questsTodayCount = questCards.filter((card) => !card.done && !card.disabled).length;
+  const questsTodayDone = questsTodayCount > 0 && questPending.length === 0;
+
   return {
     searchStreak,
     dailySet,
@@ -125,6 +140,7 @@ export function buildOfficialTaskSnapshot({ text = '', sections = [], searchPoin
     searchPoints,
     dailyPending,
     questPending,
+    questsTodayDone,
     needSearch,
     needDailySet,
     needAppSign,
@@ -138,6 +154,7 @@ export function buildOfficialTaskSnapshot({ text = '', sections = [], searchPoin
       appCheckIn,
       dailyPending: dailyPending.map((card) => card.title),
       questPending: questPending.map((card) => card.title),
+      questsTodayDone,
       searchPoints: searchPoints || { unknown: true },
       state,
       unknown
@@ -681,9 +698,26 @@ export class TaskManager {
                     ? officialTasks.questPending.map((q) => q.href).filter(Boolean)
                     : await page.evaluate(() => [...new Set([...document.querySelectorAll('a[href*="/quest/"]')].map((a) => a.getAttribute('href')).filter(Boolean))]).catch(() => []));
                 log(`检索到 ${questHrefs.length} 个待推进打孔卡任务`);
+                const completedTodayHrefs = [];
                 for (const qUrl of questHrefs) {
                   if (this.shouldStop) throw new Error(TASK_STOP_MESSAGE);
-                  if (qUrl) await penetratePunchCardQuest(page, qUrl, { accountPrefix: account.name });
+                  if (qUrl) {
+                    const questRes = await penetratePunchCardQuest(page, qUrl, { accountPrefix: account.name });
+                    if (questRes !== false) {
+                      completedTodayHrefs.push(qUrl);
+                    }
+                  }
+                }
+                if (completedTodayHrefs.length > 0) {
+                  const currentQuestsDone = (account.dailyQuestsDone?.date === todayStr)
+                    ? (account.dailyQuestsDone.hrefs || [])
+                    : [];
+                  const updatedQuestsDone = [...new Set([...currentQuestsDone, ...completedTodayHrefs])];
+                  account.dailyQuestsDone = { date: todayStr, hrefs: updatedQuestsDone };
+                  configManager.upsertAccount({
+                    id: accountId,
+                    dailyQuestsDone: account.dailyQuestsDone
+                  });
                 }
               }
               if (this.shouldStop) throw new Error(TASK_STOP_MESSAGE);
@@ -973,7 +1007,8 @@ export class TaskManager {
       const snapshotResult = buildOfficialTaskSnapshot({
         text: snapshot.text,
         sections: snapshot.sections,
-        searchPoints
+        searchPoints,
+        account
       });
       log(`实时任务判定: ${JSON.stringify(snapshotResult.details)}`);
       return snapshotResult;
