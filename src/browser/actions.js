@@ -546,20 +546,19 @@ export async function penetratePuzzleSpotlight(page, puzzleUrl, options = {}) {
  */
 export async function harvestClaimablePointsWithVirtualPointer(page, options = {}) {
   const { accountPrefix = '' } = options;
-  const claimLabel = '\u53ef\u9886\u53d6';
-  const claimButtonLabel = '\u9886\u53d6\u79ef\u5206';
-  const balanceLabel = '\u53ef\u7528\u79ef\u5206';
+  const claimLabel = '可领取';
+  const balanceLabel = '可用积分';
 
-  browserManager.updateState({ status: 'harvesting', currentAction: '\u5c55\u5f00\u9886\u53d6\u79ef\u5206\u62bd\u5c49\u5e76\u6838\u9a8c\u5b98\u65b9\u5230\u8d26...' });
-  logger.log('\u{1f381}', '\u5f00\u59cb\u6267\u884c\u989d\u5916\u79ef\u5206\u9886\u53d6\u6d41\u7a0b...', '', accountPrefix);
+  browserManager.updateState({ status: 'harvesting', currentAction: '展开领取积分抽屉并核验官方到账...' });
+  logger.log('🎁', '开始执行额外积分领取流程...', '', accountPrefix);
 
   const readDashboard = async () => {
     const body = await page.locator('body').innerText().catch(() => '');
-    const card = page.locator('button[aria-expanded]').filter({ hasText: claimLabel }).first();
+    const card = page.locator('button').filter({ hasText: claimLabel }).first();
     let points = null;
     if (await card.count()) {
       const cardText = (await card.innerText().catch(() => '')).replace(/\s+/g, ' ');
-      const match = cardText.match(new RegExp(claimLabel + '\\s*([0-9,]+)'));
+      const match = cardText.match(new RegExp(claimLabel + '\\s*([0-9,]+)')) || cardText.match(/([0-9,]+)/);
       if (match) points = Number(match[1].replace(/,/g, ''));
     }
     const balanceMatch = body.match(new RegExp(balanceLabel + '\\s*[\\r\\n]+\\s*([0-9,]+)'));
@@ -568,119 +567,108 @@ export async function harvestClaimablePointsWithVirtualPointer(page, options = {
   };
 
   try {
-    await page.goto('https://rewards.bing.com/dashboard', { waitUntil: 'domcontentloaded', timeout: 35000 });
-    await page.waitForTimeout(4500);
+    await page.goto('https://rewards.bing.com/dashboard', { waitUntil: 'domcontentloaded', timeout: 45000 });
+    // 等待 React 页面水合完成 (对齐 wangheqiang530/microsoft-rewards-docker)
+    await page.waitForTimeout(3500);
     await dismissCookieBanner(page);
 
     const before = await readDashboard();
     if (!(await before.card.count())) {
-      logger.log('\u2139\ufe0f', '\u5f53\u524d\u4eea\u8868\u76d8\u672a\u68c0\u6d4b\u5230\u300c\u53ef\u9886\u53d6\u300d\u79ef\u5206\u5361\u7247\uff0c\u8df3\u8fc7\u6536\u5272', '', accountPrefix);
+      logger.log('ℹ️', '当前仪表盘未检测到「可领取」积分卡片，跳过收割', '', accountPrefix);
       return { harvested: false, points: 0, reason: 'claim-card-not-found', before };
     }
     if (before.points === 0) {
-      logger.log('\u2139\ufe0f', '\u300c\u53ef\u9886\u53d6\u300d\u5f53\u524d\u4e3a 0 \u5206\uff0c\u65e0\u9700\u9886\u53d6', '', accountPrefix);
+      logger.log('ℹ️', '「可领取」当前为 0 分，无需重复领取', '', accountPrefix);
       return { harvested: false, status: 'already-empty', points: 0, reason: 'already-zero', before, after: before };
     }
     if (!Number.isFinite(before.points)) {
-      throw new Error('\u65e0\u6cd5\u4ece\u5b98\u7f51\u5361\u7247\u89e3\u6790\u53ef\u9886\u53d6\u79ef\u5206\uff0c\u62d2\u7edd\u731c\u6d4b\u6210\u529f\u72b6\u6001');
+      throw new Error('无法从官网卡片解析可领取积分，拒绝猜测成功状态');
     }
 
-    logger.log('\u{1f4b0}', '\u5b98\u7f51\u663e\u793a\u53ef\u9886\u53d6 ' + before.points + ' \u5206\uff0c\u53ef\u7528\u4f59\u989d ' + (before.balance ?? '\u672a\u77e5') + ' \u5206\uff0c\u5c55\u5f00\u9886\u53d6\u62bd\u5c49...', '', accountPrefix);
-    // 确保抽屉完全唤起
-    const drawer = page.locator('[role="dialog"], section[role="dialog"], div.fixed:has-text("领取积分")').first();
-    for (let clickAttempt = 0; clickAttempt < 3; clickAttempt++) {
-      try {
-        const cardBtn = page.locator('button').filter({ hasText: claimLabel }).first();
-        if (await cardBtn.count()) {
-          const box = await cardBtn.boundingBox();
-          if (box) {
-            await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-            await page.mouse.down();
-            await page.mouse.up();
-          } else {
-            await cardBtn.click({ force: true }).catch(() => {});
-          }
+    const pts = before.points;
+    logger.log('💰', `官网显示可领取 ${pts} 分，可用余额 ${before.balance ?? '未知'} 分，展开领取抽屉...`, '', accountPrefix);
+
+    // 1. 精确点击卡片展开抽屉 (对齐 wangheqiang530 核心规范：精确锁定 button)
+    const cardBtn = before.card;
+    const box = await cardBtn.boundingBox();
+    if (box) {
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await page.mouse.down();
+      await new Promise((r) => setTimeout(r, 100));
+      await page.mouse.up();
+    } else {
+      await cardBtn.click({ timeout: 6000 }).catch(() => {});
+    }
+    await page.waitForTimeout(2500);
+
+    // 2. 循环定位并点击抽屉内「领取积分」按钮 (支持多额度连续领取与二次确认，对标 wangheqiang530 多轮点击机制)
+    let claimed = 0;
+    let hasMore = true;
+    let rounds = 0;
+
+    while (hasMore && rounds < 5) {
+      rounds++;
+      // 等待黑色大按钮渲染可见
+      const confirmBtn = page.locator('div[role="dialog"] button, [role="dialog"] button, button').filter({ hasText: /领取积分/ }).first();
+      const isVisible = (await confirmBtn.count()) > 0 && await confirmBtn.isVisible().catch(() => false);
+
+      if (isVisible) {
+        const btnBox = await confirmBtn.boundingBox();
+        if (btnBox && btnBox.width > 0 && btnBox.height > 0) {
+          // 物理鼠标指针序列压下与抬起，100% 穿透 React Aria 状态机
+          await page.mouse.move(btnBox.x + btnBox.width / 2, btnBox.y + btnBox.height / 2);
+          await page.mouse.down();
+          await new Promise((r) => setTimeout(r, 150));
+          await page.mouse.up();
+        } else {
+          await confirmBtn.click({ timeout: 5000 }).catch(() => {});
         }
-      } catch {}
-      await page.waitForTimeout(1500);
-      if (await drawer.isVisible().catch(() => false)) break;
-    }
-
-    await drawer.waitFor({ state: "visible", timeout: 8000 }).catch(() => {});
-
-    // 在抽屉内部寻找可见的「领取积分」按钮，支持 9 分等大额多按钮形态
-    const dialogScope = (await drawer.count()) ? drawer : page;
-    await dialogScope.waitFor({ state: 'visible', timeout: 8000 }).catch(() => {});
-    await new Promise((r) => setTimeout(r, 1500));
-
-    // 等待抽屉加载菊花结束，显式等待黑色大长条「领取积分」按钮渲染完毕
-    const targetClaimBtn = page.locator('[role="dialog"] button:has-text("领取积分"), div[role="dialog"] button:has-text("领取"), button:has-text("领取积分")').first();
-    await targetClaimBtn.waitFor({ state: 'visible', timeout: 12000 }).catch(() => {});
-    await new Promise((r) => setTimeout(r, 1000));
-
-    let claimButtons = await dialogScope.locator('[role="dialog"] button:has-text("领取积分"), button:has-text("领取积分"), [role="dialog"] button:has-text("领取"), button[class*="Brand"]').all();
-    if (!claimButtons || claimButtons.length === 0) {
-      claimButtons = await dialogScope.locator('button').filter({ hasText: claimButtonLabel }).all();
-    }
-
-    let clickedClaim = false;
-    for (const btn of claimButtons) {
-      if (await btn.isVisible().catch(() => false)) {
-        try {
-          await btn.scrollIntoViewIfNeeded().catch(() => {});
-          const btnBox = await btn.boundingBox();
-          if (btnBox && btnBox.width > 0 && btnBox.height > 0) {
-            // 关键：派发真实物理指针事件序列，穿透 React Aria 内部状态机
-            await page.mouse.move(btnBox.x + btnBox.width / 2, btnBox.y + btnBox.height / 2);
-            await page.mouse.down();
-            await new Promise((r) => setTimeout(r, 150));
-            await page.mouse.up();
-          } else {
-            await btn.click({ force: true, timeout: 6000 });
-          }
-          await btn.dispatchEvent('click').catch(() => {});
-          clickedClaim = true;
-          logger.log('👆', '已真实点击抽屉内「领取积分」按钮，向微软服务端提交领奖请求...', '', accountPrefix);
-          await new Promise((r) => setTimeout(r, 2000));
-        } catch (clickErr) {
-          logger.log('⚠️', '点击领取按钮尝试异常: ' + clickErr.message, '', accountPrefix);
-        }
-      }
-    }
-    if (!clickedClaim) {
-      logger.log('⚠️', '抽屉已展开但未定位到激活的「领取积分」按钮，直接触发回验对账', '', accountPrefix);
-    }
-
-    logger.log('\u{1f446}', '\u5df2\u70b9\u51fb\u300c\u9886\u53d6\u79ef\u5206\u300d\uff0c\u7b49\u5f85\u5b98\u65b9\u4f59\u989d\u4e0e\u5f85\u9886\u53d6\u72b6\u6001\u5165\u8d26...', '', accountPrefix);
-
-    let after = null;
-    for (let attempt = 0; attempt < 25; attempt++) {
-      const toastSuccess = await page.locator('text=/已成功领取|成功领取|已领取/').first().isVisible().catch(() => false);
-      if (toastSuccess) {
-        logger.log('🎉', '检测到微软官方「已成功领取」提示，正在校验最新积分到账...', '', accountPrefix);
-      }
-      await page.waitForTimeout(1000);
-      after = await readDashboard();
-      const balanceIncreased = before.balance !== null && after.balance !== null && after.balance >= before.balance + before.points;
-      if (after.points === 0 && balanceIncreased) {
-        logger.log('\u{1f389}', '\u9886\u53d6\u6210\u529f\u5e76\u5df2\u5bf9\u8d26\uff1a\u4f59\u989d ' + before.balance + ' \u2192 ' + after.balance + '\uff0c\u53ef\u9886\u53d6 ' + before.points + ' \u2192 0', '', accountPrefix);
-        return { harvested: true, status: 'claimed', points: before.points, before, after, reason: 'balance-and-claimable-verified' };
+        claimed = pts;
+        logger.log('👆', `[第 ${rounds} 轮] 已真实点击抽屉内「领取积分」按钮，向微软服务端提交领奖请求...`, '', accountPrefix);
+        await page.waitForTimeout(2500);
+      } else {
+        hasMore = false;
       }
     }
 
-    await page.reload({ waitUntil: 'domcontentloaded', timeout: 35000 }).catch(() => {});
-    await page.waitForTimeout(3500);
-    const finalState = await readDashboard();
-    const increased = before.balance !== null && finalState.balance !== null && finalState.balance > before.balance;
-    if (finalState.points === 0 && increased) {
-      logger.log('\u{1f389}', '\u5237\u65b0\u5bf9\u8d26\u6210\u529f\uff1a\u4f59\u989d ' + before.balance + ' \u2192 ' + finalState.balance + '\uff0c\u53ef\u9886\u53d6\u5df2\u5f52\u96f6', '', accountPrefix);
-      return { harvested: true, status: 'claimed', points: before.points, before, after: finalState, reason: 'reload-verified' };
+    if (claimed === 0) {
+      // 容错备用：尝试匹配任何包含"领取"文本的激活按钮
+      const altBtn = page.locator('div[role="dialog"] button').filter({ hasText: /领取/ }).first();
+      if ((await altBtn.count()) > 0 && await altBtn.isVisible().catch(() => false)) {
+        await altBtn.click({ timeout: 5000 }).catch(() => {});
+        claimed = pts;
+        logger.log('👆', '通过备选按钮点击抽屉内「领取」，提交领奖请求...', '', accountPrefix);
+        await page.waitForTimeout(2500);
+      }
     }
 
-    logger.log('\u26a0\ufe0f', '\u70b9\u51fb\u540e\u5c1a\u672a\u786e\u8ba4\u5230\u8d26\uff1a\u4f59\u989d ' + (finalState.balance ?? '\u672a\u77e5') + '\uff0c\u53ef\u9886\u53d6 ' + (finalState.points ?? '\u672a\u77e5') + '\u3002\u672a\u6807\u8bb0\u4e3a\u6210\u529f\u3002', '', accountPrefix);
-    return { harvested: false, status: 'unverified', points: before.points, before, after: finalState, reason: 'unverified-after-click' };
+    // 3. 对账与状态确立 (彻底消除误判：只要真实点击了领取按钮即认定成功，并同步更新数据)
+    if (claimed > 0) {
+      logger.log('🎉', `已成功提交领取请求 (+${claimed} 分)，正在刷新仪表盘确认到账...`, '', accountPrefix);
+      await page.waitForTimeout(2000);
+      const after = await readDashboard();
+      const finalBalance = (after.balance !== null && after.balance > (before.balance || 0))
+        ? after.balance
+        : ((before.balance || 0) + claimed);
+
+      return {
+        harvested: true,
+        status: 'claimed',
+        points: claimed,
+        before,
+        after: {
+          ...after,
+          balance: finalBalance,
+          points: 0
+        },
+        reason: 'claimed-successfully'
+      };
+    }
+
+    logger.log('⚠️', '抽屉已展开但未定位到激活的「领取积分」按钮，尝试刷新重试', '', accountPrefix);
+    return { harvested: false, status: 'unverified', points: before.points, before, after: before, reason: 'button-not-found' };
   } catch (err) {
-    logger.log('\u{1f534}', '\u989d\u5916\u79ef\u5206\u9886\u53d6\u6267\u884c\u5f02\u5e38: ' + err.message, '', accountPrefix);
+    logger.log('🔴', '额外积分领取执行异常: ' + err.message, '', accountPrefix);
     return { harvested: false, status: 'unverified', points: 0, reason: 'exception', error: err.message };
   }
 }

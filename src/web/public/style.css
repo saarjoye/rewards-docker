@@ -5195,3 +5195,80 @@ input:focus, select:focus, textarea:focus {
   border-color: #86efac !important;
   transform: translateY(-1px) !important;
 }
+
+
+/* 100% 对齐 wangheqiang530 官方 7 天连签节点样式 */
+.streak-step-node {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 750;
+  transition: all 0.2s ease;
+  user-select: none;
+}
+
+.streak-step-node.done-circle {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: #0284c7;
+  color: #ffffff;
+  border: 1.5px solid #0284c7;
+}
+
+.streak-step-node.active-pill {
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 13px;
+  background: #0284c7;
+  color: #ffffff;
+  border: 1.5px solid #0284c7;
+  gap: 3px;
+}
+
+.streak-step-node.pending-circle {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: #f8fafc;
+  color: #94a3b8;
+  border: 1.5px dashed #cbd5e1;
+}
+
+.streak-step-node.goal-pill {
+  height: 26px;
+  padding: 0 9px;
+  border-radius: 13px;
+  gap: 3px;
+}
+
+.streak-step-node.goal-pill.done {
+  background: #10b981;
+  border: 1.5px solid #10b981;
+  color: #ffffff;
+}
+
+.streak-step-node.goal-pill.pending {
+  background: #fef3c7;
+  border: 1.5px solid #f59e0b;
+  color: #b45309;
+}
+
+.step-check {
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.step-num {
+  font-size: 10.5px;
+}
+
+.step-star {
+  font-size: 11px;
+}
+
+.step-pts {
+  font-size: 10px;
+  font-weight: 800;
+}

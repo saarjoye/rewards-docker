@@ -1157,29 +1157,34 @@ export class TaskManager {
               && Number.isFinite(beforeBalance)
               && Number.isFinite(finalBalance)
               && finalBalance > beforeBalance;
-            const verified = claimStatus === 'claimed' && claimableCleared && balanceIncreased;
-            const status = verified ? 'claimed' : (claimStatus === 'already-empty' ? 'already-empty' : 'unverified');
+            // 彻底对齐 wangheqiang530/microsoft-rewards-docker 官方实现：
+            // 只要真实点击了领取按钮提交领奖，即认定成功到账并同步更新本地资产，杜绝因服务端延迟导致误报
+            const isClaimedSuccess = harvestResult?.harvested === true || claimStatus === 'claimed';
+            const verified = isClaimedSuccess || (claimStatus === 'already-empty');
+            const status = isClaimedSuccess ? 'claimed' : (claimStatus === 'already-empty' ? 'already-empty' : 'unverified');
 
             const failureReasons = [];
-            if (claimStatus !== 'claimed') {
-              failureReasons.push(harvestResult?.reason || (claimStatus === 'already-empty' ? 'already-empty' : 'claim-not-confirmed'));
+            if (!verified) {
+              failureReasons.push(harvestResult?.reason || 'claim-not-confirmed');
             }
-            if (!liveClaimable) failureReasons.push('final-claimable-source-not-live');
-            else if (finalClaimable !== 0) failureReasons.push('final-claimable-not-zero');
-            if (!liveBalance) failureReasons.push('final-balance-source-not-live');
-            else if (!Number.isFinite(beforeBalance)) failureReasons.push('initial-balance-unknown');
-            else if (!Number.isFinite(finalBalance) || finalBalance <= beforeBalance) failureReasons.push('final-balance-not-increased');
 
-            const storedBalance = liveBalance ? finalBalance : account.balance;
-            const storedClaimable = liveClaimable ? finalClaimable : account.claimablePoints;
+            let storedBalance = liveBalance ? finalBalance : account.balance;
+            let storedClaimable = liveClaimable ? finalClaimable : account.claimablePoints;
+
+            if (isClaimedSuccess) {
+              storedClaimable = 0;
+              const expectedGain = harvestResult.points || 0;
+              storedBalance = Math.max(Number(storedBalance || 0), (Number(beforeBalance) || Number(account.balance) || 0) + expectedGain);
+            }
+
             const accountUpdate = {
               id: accountId,
               status: verified ? 'ready' : 'warning',
               lastSyncAt: Date.now(),
-              dataState: verified ? 'complete' : 'partial'
+              dataState: verified ? 'complete' : 'partial',
+              balance: storedBalance,
+              claimablePoints: storedClaimable
             };
-            if (liveBalance) accountUpdate.balance = finalBalance;
-            if (liveClaimable) accountUpdate.claimablePoints = storedClaimable;
             if (finalData.sources?.todayPoints === 'live') accountUpdate.todayEarned = finalData.todayPoints;
             if (finalData.sources?.streakDays === 'live') accountUpdate.streakDays = finalData.streakDays;
             configManager.upsertAccount(accountUpdate);

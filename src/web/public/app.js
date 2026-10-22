@@ -894,23 +894,44 @@ document.addEventListener("DOMContentLoaded", () => {
     const t = (isTodaySync && acc.officialTasks && typeof acc.officialTasks === 'object') ? acc.officialTasks : {};
 
     // 1. 渲染连续打卡 7 天圆圈轨道 (100% 对标竞品图 1)
-    const renderTrackCircles = (containerId, curStreak, maxStreak, tagElId, trackLabel) => {
+    // 100% 对齐参考项目 wangheqiang530/microsoft-rewards-docker 官方 7 天轨道规范
+    const renderTrackCircles = (containerId, streakObj, fallbackDays, fallbackDone, tagElId, trackTitle) => {
       const c = document.getElementById(containerId);
       const tag = document.getElementById(tagElId);
       if (!c) return;
-      const cur = Math.max(0, Math.min(maxStreak, curStreak));
-      if (tag) tag.textContent = '已连签 ' + cur + '/' + maxStreak + ' 天';
 
-      let dotsHtml = '';
-      for (let i = 1; i <= maxStreak; i++) {
-        const isDone = i <= cur;
-        if (i === maxStreak) {
-          dotsHtml += '<div class="streak-circle reward-pill ' + (isDone ? 'done' : '') + '">' + (isDone ? '✔ +100' : '+100') + '</div>';
+      let completedDays = 0;
+      if (streakObj && typeof streakObj.completedDays === 'number') {
+        completedDays = Number(streakObj.completedDays || 0);
+      } else if (streakObj && typeof streakObj.current === 'number') {
+        completedDays = Number(streakObj.current || 0);
+      } else if (fallbackDays) {
+        completedDays = (fallbackDays % 7) || (fallbackDone ? 7 : 0);
+      } else if (fallbackDone) {
+        completedDays = 1;
+      }
+      completedDays = Math.min(7, Math.max(0, completedDays));
+
+      if (tag) tag.textContent = '已连签 ' + completedDays + ' / 7 天';
+
+      let nodesHtml = '';
+      for (let d = 1; d <= 6; d++) {
+        if (d < completedDays) {
+          nodesHtml += '<div class="streak-step-node done-circle" title="第 ' + d + ' 天：已打卡"><span class="step-check">✓</span></div>';
+        } else if (d === completedDays && completedDays > 0) {
+          nodesHtml += '<div class="streak-step-node active-pill" title="第 ' + d + ' 天：已打卡达成"><span class="step-check">✓</span><span class="step-num">' + d + '</span></div>';
         } else {
-          dotsHtml += '<div class="streak-circle ' + (isDone ? 'done' : '') + '">' + (isDone ? '✔' : i) + '</div>';
+          nodesHtml += '<div class="streak-step-node pending-circle" title="第 ' + d + ' 天：待打卡"><span class="step-num">' + d + '</span></div>';
         }
       }
-      c.innerHTML = dotsHtml;
+
+      if (completedDays >= 7) {
+        nodesHtml += '<div class="streak-step-node goal-pill done" title="第 7 天：连续达成 100 积分大奖！"><span class="step-star">✦</span><span class="step-pts">+100</span></div>';
+      } else {
+        nodesHtml += '<div class="streak-step-node goal-pill pending" title="第 7 天：达成额外奖励 100 积分"><span class="step-star">✦</span><span class="step-pts">+100</span></div>';
+      }
+
+      c.innerHTML = nodesHtml;
     };
 
     // 严格以官网权威数据为准：若官网有明确连续子天数则展示，若无则展示今日真实打卡达成状态
@@ -918,17 +939,10 @@ document.addEventListener("DOMContentLoaded", () => {
     const dailyDoneToday = (t.dailySet && t.dailySet.current >= (t.dailySet.max || 3)) || todayPts >= 90;
     const appDoneToday = (t.appCheckIn && t.appCheckIn.current >= (t.appCheckIn.max || 1)) || todayPts >= 100;
 
-    const sVal = t.searchStreak ? (t.searchStreak.current || 0) : (searchDoneToday ? 1 : 0);
-    const dVal = t.dailySet ? (t.dailySet.current || 0) : (dailyDoneToday ? 1 : 0);
-    const aVal = t.appCheckIn ? (t.appCheckIn.current || 0) : (appDoneToday ? 1 : 0);
-
-    const sMax = (t.searchStreak && t.searchStreak.max) ? t.searchStreak.max : (t.searchStreak ? 7 : 1);
-    const dMax = (t.dailySet && t.dailySet.max) ? t.dailySet.max : (t.dailySet ? 7 : 1);
-    const aMax = (t.appCheckIn && t.appCheckIn.max) ? t.appCheckIn.max : (t.appCheckIn ? 7 : 1);
-
-    renderTrackCircles('streak-circles-search', sVal, sMax, 'track-search-tag', '必应搜索');
-    renderTrackCircles('streak-circles-daily', dVal, dMax, 'track-daily-tag', '每日活动集');
-    renderTrackCircles('streak-circles-app', aVal, aMax, 'track-app-tag', '移动端签到');
+    // 对齐 wangheqiang530 官方 7 天连签渲染：传递官网对象 + 全局连签兜底
+    renderTrackCircles('streak-circles-search', t.searchStreak, streakDays, searchDoneToday, 'track-search-tag', '必应搜索');
+    renderTrackCircles('streak-circles-daily', t.dailySet, streakDays, dailyDoneToday, 'track-daily-tag', '每日活动集');
+    renderTrackCircles('streak-circles-app', t.appCheckIn, streakDays, appDoneToday, 'track-app-tag', '移动端签到');
 
     // 2. 渲染今日核心自动化任务卡片网格 (对标竞品图 1 中部 6 大卡片)
     const taskGrid = document.getElementById('drawer-task-grid');
