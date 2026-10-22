@@ -5272,3 +5272,23 @@ input:focus, select:focus, textarea:focus {
   font-size: 10px;
   font-weight: 800;
 }
+
+
+/* 调度队列完成态与待补做态高亮 */
+.queue-state.queue-done {
+  color: #10b981 !important;
+  font-weight: 750 !important;
+}
+
+.queue-status-dot.queue-done {
+  background: #10b981 !important;
+}
+
+.queue-state.queue-pending {
+  color: #f59e0b !important;
+  font-weight: 750 !important;
+}
+
+.queue-status-dot.queue-pending {
+  background: #f59e0b !important;
+}

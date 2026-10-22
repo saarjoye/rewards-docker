@@ -114,7 +114,12 @@ export function buildOfficialTaskSnapshot({ text = '', sections = [], searchPoin
     return !isDoneToday;
   });
 
-  const needSearch = searchPoints ? !searchPoints.isMaxed : null;
+  const todayEarnedNum = Number(account?.todayEarned || 0);
+  let needSearch = searchPoints ? !searchPoints.isMaxed : null;
+  // 智能权威判定：若今日官方已增积分已达 60 分以上（甚至像 177 分满额），权威表明搜索配额必已满额，绝不误判为未知项
+  if (needSearch === null && todayEarnedNum >= 60) {
+    needSearch = false;
+  }
   const needDailySet = dailySet ? dailySet.current < dailySet.max : null;
   const needAppSign = appCheckIn ? appCheckIn.current < appCheckIn.max : null;
   const needDailyActivities = dailySection ? dailyPending.length > 0 : null;

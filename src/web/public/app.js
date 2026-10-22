@@ -773,18 +773,50 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const runningId = currentRunningAccountId;
     const now = Date.now();
+    const nextTimeStr = (nextScheduledTaskCache && nextScheduledTaskCache.time) ? nextScheduledTaskCache.time : '13:20';
+
     list.innerHTML = accounts.map((a, idx) => {
       const name = getAccountDisplayName(a, idx);
       const isRunning = runningId && String(runningId) === String(a.id);
       const isToday = isSameLocalDay(a.lastSyncAt);
       const syncAge = (a.lastSyncAt && isToday) ? Math.floor((now - Number(a.lastSyncAt)) / 60000) : null;
-      const state = isRunning ? '运行中' : (a.status === 'needs_2fa' ? '需验证' : '等待调度');
-      const stateCls = isRunning ? 'queue-running' : (a.status === 'needs_2fa' ? 'queue-error' : 'queue-waiting');
-      return '<div class="queue-row" onclick="window.openTaskDrawer(\'' + a.id + '\')" style="cursor: pointer;" title="点击查看 [' + escapeHtml(name) + '] 任务全景">' +
-        '<div class="queue-account"><span class="queue-status-dot ' + stateCls + '"></span><b>' + escapeHtml(name) + '</b></div>' +
-        '<div class="queue-slot">' + escapeHtml(formatSlotName(a.slot)) + '</div>' +
-        '<div class="queue-state ' + stateCls + '">' + state + '</div>' +
-        '<div class="queue-sync">' + (syncAge === null ? '今日待同步' : (syncAge < 1 ? '刚刚同步' : syncAge + ' 分钟前同步')) + '</div>' +
+      const todayPts = isToday ? Number(a.todayEarned || 0) : 0;
+      const isFullyDone = todayPts >= 160;
+
+      let stateText = '等待调度';
+      let stateCls = 'queue-waiting';
+      let scheduleHint = '下次: ' + nextTimeStr;
+
+      if (isRunning) {
+        stateText = '正在作业...';
+        stateCls = 'queue-running';
+        scheduleHint = '正在执行中';
+      } else if (a.status === 'needs_2fa') {
+        stateText = '需2FA验证';
+        stateCls = 'queue-error';
+        scheduleHint = '已暂停等待验证';
+      } else if (isFullyDone) {
+        stateText = '今日已拿满 ✔';
+        stateCls = 'queue-done';
+        scheduleHint = '后续时段智能跳过';
+      } else if (todayPts > 0) {
+        stateText = '待补做 (' + todayPts + '分)';
+        stateCls = 'queue-pending';
+        scheduleHint = '下次: ' + nextTimeStr + ' 接力';
+      } else {
+        stateText = '待首跑 (0分)';
+        stateCls = 'queue-waiting';
+        scheduleHint = '下次: ' + nextTimeStr;
+      }
+
+      const slotDisplay = (!a.slot || a.slot === 'auto') ? '4大时段全轮巡' : formatSlotName(a.slot);
+      const auditText = syncAge === null ? '今日待首跑' : (syncAge < 1 ? '刚刚巡检' : '上次巡检 ' + syncAge + '分前');
+
+      return '<div class="queue-row" onclick="window.openTaskDrawer(\'' + a.id + '\')" style="cursor: pointer;" title="点击查看 [' + escapeHtml(name) + '] 完整任务全景清单">' +
+        '<div class="queue-account"><span class="queue-status-dot ' + stateCls + '"></span><b class="acc-name-txt" style="max-width: 85px;" title="' + escapeHtml(name) + '">' + escapeHtml(name) + '</b></div>' +
+        '<div class="queue-slot" title="错峰时段设定">' + escapeHtml(slotDisplay) + '</div>' +
+        '<div class="queue-state ' + stateCls + '" title="' + scheduleHint + '">' + stateText + '</div>' +
+        '<div class="queue-sync" title="' + scheduleHint + ' · ' + auditText + '">' + scheduleHint + '</div>' +
       '</div>';
     }).join('');
     if (summary) summary.textContent = runningId ? '账号锁占用中' : '队列空闲';

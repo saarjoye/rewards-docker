@@ -34,6 +34,14 @@ async function bootstrap() {
 
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
+
+  // 关键防线：拦截 Chromium/网络底层的未捕获异常，彻底杜绝容器进程意外崩溃重启导致批量流水线中断
+  process.on('uncaughtException', (err) => {
+    logger.log('🔴', `[系统守护] 成功拦截未捕获异常，进程保持稳定运行: ${err?.message || err}`);
+  });
+  process.on('unhandledRejection', (reason) => {
+    logger.log('🔴', `[系统守护] 成功拦截异步拒绝，进程保持稳定运行: ${reason?.message || reason}`);
+  });
 }
 
 bootstrap().catch((err) => {

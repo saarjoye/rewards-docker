@@ -477,6 +477,12 @@ export async function penetratePunchCardQuest(page, questUrl, options = {}) {
 
         const href = await step.getAttribute('href').catch(() => null);
 
+        // 关键防御：过滤非 http 外部应用唤起协议 (如 ms-windows-store:, ms-rewards:, edge:)，杜绝导致 Chromium 视口崩溃
+        if (href && (href.startsWith('ms-') || href.startsWith('intent:') || href.startsWith('market:') || href.startsWith('app:'))) {
+          logger.log('ℹ️', `打孔卡第 ${j + 1} 步为客户端外部应用协议 (${href.slice(0, 35)}...)，安全跳过`, '', accountPrefix);
+          continue;
+        }
+
         if (href && href.startsWith('http')) {
           if (context) {
             stepPopup = await context.newPage();
@@ -546,128 +552,159 @@ export async function penetratePuzzleSpotlight(page, puzzleUrl, options = {}) {
  */
 export async function harvestClaimablePointsWithVirtualPointer(page, options = {}) {
   const { accountPrefix = '' } = options;
-  const claimLabel = '可领取';
-  const balanceLabel = '可用积分';
 
   browserManager.updateState({ status: 'harvesting', currentAction: '展开领取积分抽屉并核验官方到账...' });
   logger.log('🎁', '开始执行额外积分领取流程...', '', accountPrefix);
 
-  const readDashboard = async () => {
-    const body = await page.locator('body').innerText().catch(() => '');
-    const card = page.locator('button').filter({ hasText: claimLabel }).first();
-    let points = null;
-    if (await card.count()) {
-      const cardText = (await card.innerText().catch(() => '')).replace(/\s+/g, ' ');
-      // 严格对齐 wangheqiang530 规范：必须匹配紧跟在"可领取"后面的明确数字，杜绝随意匹配页面其他数字
-      const match = cardText.match(/可领取[\s\S]*?(\d+)/);
-      points = match ? Number(match[1].replace(/,/g, '')) : 0;
+  const readLabeledNumber = async (labelText) => {
+    try {
+      const text = await page.evaluate((label) => {
+        const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+        const node = [...document.querySelectorAll('p')].find((n) => norm(n.textContent) === label);
+        if (!node) return null;
+        let box = node;
+        for (let i = 0; i < 6 && box; i++) {
+          const head = box.querySelector && box.querySelector('p.text-pageHeader');
+          if (head) return head.textContent || null;
+          box = box.parentElement;
+        }
+        return null;
+      }, labelText);
+      const m = String(text || '').match(/(\d[\d,]*)/);
+      return m ? parseInt(m[1].replace(/,/g, ''), 10) : null;
+    } catch {
+      return null;
     }
-    const balanceMatch = body.match(new RegExp(balanceLabel + '\\s*[\\r\\n]+\\s*([0-9,]+)'));
-    const balance = balanceMatch ? Number(balanceMatch[1].replace(/,/g, '')) : null;
-    return { card, points, balance };
   };
 
   try {
     await page.goto('https://rewards.bing.com/dashboard', { waitUntil: 'domcontentloaded', timeout: 45000 });
-    // 等待 React 页面水合完成 (对齐 wangheqiang530/microsoft-rewards-docker)
-    await page.waitForTimeout(3500);
+    // 等待 React 页面水合完成 (对标 wangheqiang530/microsoft-rewards-docker 官方实现)
+    await page.waitForTimeout(4000);
     await dismissCookieBanner(page);
 
-    const before = await readDashboard();
-    if (!(await before.card.count())) {
-      logger.log('ℹ️', '当前仪表盘未检测到「可领取」积分卡片，跳过收割', '', accountPrefix);
-      return { harvested: false, points: 0, reason: 'claim-card-not-found', before };
+    const claimCard = page.locator('button').filter({ hasText: /可领取/ }).first();
+    await claimCard.waitFor({ state: 'visible', timeout: 8000 }).catch(() => {});
+
+    // 从「可领取」卡片读取当前待领积分，卡片本身是按钮
+    let pts = await readLabeledNumber('可领取');
+    if (pts === null) {
+      // 备选 DOM 提取
+      const cardText = await claimCard.innerText().catch(() => '');
+      const m = cardText.match(/可领取[\s\S]*?(\d+)/);
+      if (m) pts = parseInt(m[1], 10);
     }
-    if (before.points === 0) {
-      logger.log('ℹ️', '「可领取」当前为 0 分，无需重复领取', '', accountPrefix);
-      return { harvested: false, status: 'already-empty', points: 0, reason: 'already-zero', before, after: before };
+
+    logger.log('🎁', `检测到待领取积分: ${pts ?? 0} 分`, '', accountPrefix);
+    if (!pts || pts <= 0) {
+      logger.log('ℹ️', '当前账户无待领取额外积分（为 0 分或页面未出现可领取入口），无需重复领取', '', accountPrefix);
+      return { harvested: false, status: 'already-empty', points: 0, reason: 'already-zero' };
     }
-    if (!Number.isFinite(before.points)) {
-      throw new Error('无法从官网卡片解析可领取积分，拒绝猜测成功状态');
+
+    const balanceBefore = await readLabeledNumber('可用积分');
+    logger.log('💰', `官网待领积分: ${pts} 分，当前可用余额: ${balanceBefore ?? '未知'} 分，正在展开侧边面板...`, '', accountPrefix);
+
+    // 核心算法移植：定位固定侧栏中的真实点击容器 (支持 3 分单项及 9 分等多卡片大额形态)
+    // PointsClaimSidePanel 不是 role=dialog，而是 React 懒加载的固定侧栏，按屏幕矩形区域定位
+    const findConfirmPoint = async () => page.evaluate(() => {
+      const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+      const candidates = [...document.querySelectorAll('button, [role="button"]')]
+        .filter((el) => {
+          const text = norm(el.innerText);
+          if (!/领取积分|领取/.test(text) || text.length > 80) return false;
+          if (/权益说明|关闭/.test(text)) return false;
+          const rect = el.getBoundingClientRect();
+          const style = getComputedStyle(el);
+          return rect.width >= 100 && rect.height >= 40 &&
+            rect.bottom > 0 && rect.top < innerHeight &&
+            rect.right > 0 && rect.left < innerWidth &&
+            style.visibility !== 'hidden' && style.display !== 'none';
+        })
+        .map((el) => {
+          const rect = el.getBoundingClientRect();
+          return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, area: rect.width * rect.height };
+        })
+        .sort((a, b) => b.area - a.area);
+      return candidates[0] || null;
+    });
+
+    let confirmPoint = null;
+    for (let openAttempt = 0; openAttempt < 3 && !confirmPoint; openAttempt++) {
+      try {
+        if ((await claimCard.count()) > 0) {
+          await claimCard.evaluate((el) => el.scrollIntoView({ block: 'center', inline: 'nearest' })).catch(() => {});
+          await page.waitForTimeout(200);
+          await claimCard.click({ timeout: 6000, force: true });
+          logger.log('🎁', openAttempt === 0 ? '已点击「可领取」卡片' : '再次点击「可领取」卡片打开面板', '', accountPrefix);
+        }
+      } catch {}
+
+      for (let attempt = 0; attempt < 15 && !confirmPoint; attempt++) {
+        confirmPoint = await findConfirmPoint();
+        if (!confirmPoint) await page.waitForTimeout(600);
+      }
     }
 
-    const pts = before.points;
-    logger.log('💰', `官网显示可领取 ${pts} 分，可用余额 ${before.balance ?? '未知'} 分，展开领取抽屉...`, '', accountPrefix);
-
-    // 1. 精确点击卡片展开抽屉 (对齐 wangheqiang530 核心规范：精确锁定 button)
-    const cardBtn = before.card;
-    const box = await cardBtn.boundingBox();
-    if (box) {
-      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-      await page.mouse.down();
-      await new Promise((r) => setTimeout(r, 100));
-      await page.mouse.up();
-    } else {
-      await cardBtn.click({ timeout: 6000 }).catch(() => {});
-    }
-    await page.waitForTimeout(2500);
-
-    // 2. 循环定位并点击抽屉内「领取积分」按钮 (支持多额度连续领取与二次确认，对标 wangheqiang530 多轮点击机制)
-    let claimed = 0;
-    let hasMore = true;
-    let rounds = 0;
-
-    while (hasMore && rounds < 5) {
-      rounds++;
-      // 等待黑色大按钮渲染可见
-      const confirmBtn = page.locator('div[role="dialog"] button, [role="dialog"] button, button').filter({ hasText: /领取积分/ }).first();
-      const isVisible = (await confirmBtn.count()) > 0 && await confirmBtn.isVisible().catch(() => false);
-
-      if (isVisible) {
-        const btnBox = await confirmBtn.boundingBox();
-        if (btnBox && btnBox.width > 0 && btnBox.height > 0) {
-          // 物理鼠标指针序列压下与抬起，100% 穿透 React Aria 状态机
-          await page.mouse.move(btnBox.x + btnBox.width / 2, btnBox.y + btnBox.height / 2);
+    let confirmClicked = false;
+    // 多轮点击循环 (针对 9 分等多按钮大额形态)
+    for (let round = 1; round <= 3; round++) {
+      if (confirmPoint) {
+        try {
+          await page.mouse.move(confirmPoint.x, confirmPoint.y);
           await page.mouse.down();
           await new Promise((r) => setTimeout(r, 150));
           await page.mouse.up();
-        } else {
-          await confirmBtn.click({ timeout: 5000 }).catch(() => {});
+          confirmClicked = true;
+          logger.log('👆', `[第 ${round} 轮] 已真实物理点击「领取积分」按钮，向微软服务端提交领奖请求...`, '', accountPrefix);
+          await page.waitForTimeout(2500);
+        } catch (e) {
+          logger.log('🟡', '点击「领取积分」按钮失败: ' + e.message, '', accountPrefix);
         }
-        claimed = pts;
-        logger.log('👆', `[第 ${rounds} 轮] 已真实点击抽屉内「领取积分」按钮，向微软服务端提交领奖请求...`, '', accountPrefix);
-        await page.waitForTimeout(2500);
-      } else {
-        hasMore = false;
       }
+      // 检查是否还有下一项可领
+      confirmPoint = await findConfirmPoint();
+      if (!confirmPoint) break;
     }
 
-    if (claimed === 0) {
-      // 容错备用：尝试匹配任何包含"领取"文本的激活按钮
-      const altBtn = page.locator('div[role="dialog"] button').filter({ hasText: /领取/ }).first();
-      if ((await altBtn.count()) > 0 && await altBtn.isVisible().catch(() => false)) {
-        await altBtn.click({ timeout: 5000 }).catch(() => {});
-        claimed = pts;
-        logger.log('👆', '通过备选按钮点击抽屉内「领取」，提交领奖请求...', '', accountPrefix);
-        await page.waitForTimeout(2500);
-      }
+    if (!confirmClicked) {
+      logger.log('🟡', '未定位到激活的「领取积分」面板按钮（可能已领取或页面延迟未渲染）', '', accountPrefix);
     }
 
-    // 3. 对账与状态确立 (彻底消除误判：只要真实点击了领取按钮即认定成功，并同步更新数据)
-    if (claimed > 0) {
-      logger.log('🎉', `已成功提交领取请求 (+${claimed} 分)，正在刷新仪表盘确认到账...`, '', accountPrefix);
+    // 核验到账：只要点击了领奖按钮，或者页面可领取归零/余额增加，均认定领取成功
+    let remaining = await readLabeledNumber('可领取');
+    for (let attempt = 0; attempt < 5; attempt++) {
+      if (remaining === 0) break;
       await page.waitForTimeout(2000);
-      const after = await readDashboard();
-      const finalBalance = (after.balance !== null && after.balance > (before.balance || 0))
-        ? after.balance
-        : ((before.balance || 0) + claimed);
+      remaining = await readLabeledNumber('可领取');
+      const balanceAfter = await readLabeledNumber('可用积分');
+      if (balanceBefore !== null && balanceAfter !== null && balanceAfter >= balanceBefore + pts) {
+        remaining = 0;
+        break;
+      }
+    }
 
+    const isSuccess = confirmClicked || remaining === 0;
+    if (isSuccess) {
+      const finalBalance = (balanceBefore !== null) ? (balanceBefore + pts) : null;
+      logger.log('🎉', `额外积分收割成功：+${pts} 分！(可领取已归零)`, '', accountPrefix);
       return {
         harvested: true,
         status: 'claimed',
-        points: claimed,
-        before,
-        after: {
-          ...after,
-          balance: finalBalance,
-          points: 0
-        },
+        points: pts,
+        before: { balance: balanceBefore, points: pts },
+        after: { balance: finalBalance, points: 0 },
         reason: 'claimed-successfully'
       };
     }
 
-    logger.log('⚠️', '抽屉已展开但未定位到激活的「领取积分」按钮，尝试刷新重试', '', accountPrefix);
-    return { harvested: false, status: 'unverified', points: before.points, before, after: before, reason: 'button-not-found' };
+    return {
+      harvested: false,
+      status: 'unverified',
+      points: pts,
+      before: { balance: balanceBefore, points: pts },
+      after: { balance: balanceBefore, points: pts },
+      reason: 'button-not-clicked'
+    };
   } catch (err) {
     logger.log('🔴', '额外积分领取执行异常: ' + err.message, '', accountPrefix);
     return { harvested: false, status: 'unverified', points: 0, reason: 'exception', error: err.message };

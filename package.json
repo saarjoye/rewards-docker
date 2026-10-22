@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.6.3",
-  "description": "Microsoft Rewards 自动化平台 (v6.6.3 彻底修复抽屉JS语法冲突、100%还原官网真实10/12印章与3/4/4连签轨道、杜绝待领误报)",
+  "version": "6.6.5",
+  "description": "Microsoft Rewards 自动化平台 (v6.6.5 全局未捕获异常生命线守护、打孔卡外部协议过滤防崩、大额9分多按钮侧栏精准物理穿透与调度全透明)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {
