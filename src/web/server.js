@@ -34,7 +34,7 @@ export function createServer() {
 
   // === 安全网关：验证管理员登录状态 ===
   app.use((req, res, next) => {
-    const publicPaths = ['/api/auth/status', '/api/auth/setup', '/api/auth/login', '/login.html', '/style.css'];
+    const publicPaths = ['/api/auth/status', '/api/auth/setup', '/api/auth/login', '/login.html', '/style.css', '/app.js', '/favicon.ico'];
     if (publicPaths.includes(req.path) || req.path.startsWith('/assets/')) {
       return next();
     }

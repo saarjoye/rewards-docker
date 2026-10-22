@@ -1,4 +1,57 @@
 
+let topbarCountdownTarget = 0;
+let isSystemBusy = false;
+let taskStartTimestamp = null;
+
+function formatCountdownHMS(diffMs) {
+  const totalSec = Math.max(0, Math.floor(diffMs / 1000));
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+}
+
+function tickTopbarMarqueeTimer() {
+  const marqueeTimer = document.getElementById('topbar-marquee-timer');
+  if (!marqueeTimer) return;
+
+  if (isSystemBusy && taskStartTimestamp) {
+    const elapsedSec = Math.max(0, Math.floor((Date.now() - taskStartTimestamp) / 1000));
+    const m = Math.floor(elapsedSec / 60);
+    const s = elapsedSec % 60;
+    marqueeTimer.textContent = '已耗时 ' + (m > 0 ? (m + '分' + s + '秒') : (s + '秒'));
+    marqueeTimer.style.display = 'inline-block';
+    marqueeTimer.style.background = '#fef3c7';
+    marqueeTimer.style.color = '#b45309';
+    marqueeTimer.style.borderColor = '#fde68a';
+  } else if (!isSystemBusy && topbarCountdownTarget > Date.now()) {
+    const diff = topbarCountdownTarget - Date.now();
+    marqueeTimer.textContent = '倒计时 ' + formatCountdownHMS(diff);
+    marqueeTimer.style.display = 'inline-block';
+    marqueeTimer.style.background = '#e0f2fe';
+    marqueeTimer.style.color = '#0284c7';
+    marqueeTimer.style.borderColor = '#bae6fd';
+  } else if (!isSystemBusy && topbarCountdownTarget > 0) {
+    marqueeTimer.textContent = '即将启动';
+    marqueeTimer.style.display = 'inline-block';
+  }
+}
+setInterval(tickTopbarMarqueeTimer, 1000);
+
+
+// 全局前置导出抽屉方法，确保任何内联 onclick 均可正常响应
+window.openTaskDrawer = function(id) {
+  if (typeof window.__openTaskDrawerInternal === 'function') {
+    window.__openTaskDrawerInternal(id);
+  } else {
+    console.warn('openTaskDrawer: 抽屉模块正在初始化中，延迟触发...', id);
+    setTimeout(() => {
+      if (typeof window.__openTaskDrawerInternal === 'function') window.__openTaskDrawerInternal(id);
+    }, 150);
+  }
+};
+
+
   let countdownTargetTime = 0;
   function tickCountdown() {
     const monNext = document.getElementById("mon-next-interval");
@@ -24,7 +77,7 @@
     return slot;
   }
 
-document.addEventListener("DOMContentLoaded", () => {
+function initApp() {
   function getAccountDisplayName(a, idx = 0) {
     if (!a) return '默认账号';
     if (a.name && a.name !== '默认账号') return a.name;
@@ -339,6 +392,9 @@ document.addEventListener("DOMContentLoaded", () => {
       const marqueeText = document.getElementById("topbar-marquee-text");
       const marqueeTimer = document.getElementById("topbar-marquee-timer");
 
+      isSystemBusy = isBusy;
+      taskStartTimestamp = data.taskStartTime || null;
+
       if (data.isBusy) {
         if (marqueeBadge) {
           marqueeBadge.textContent = "🚀 执行中";
@@ -349,26 +405,41 @@ document.addEventListener("DOMContentLoaded", () => {
           marqueeText.textContent = "[" + accLabel + "] 正在执行 [" + currentTaskLabel + "]";
           marqueeText.title = marqueeText.textContent;
         }
-        if (marqueeTimer && data.taskStartTime) {
-          const elapsedSec = Math.max(0, Math.floor((Date.now() - data.taskStartTime) / 1000));
-          const m = Math.floor(elapsedSec / 60);
-          const s = elapsedSec % 60;
-          marqueeTimer.textContent = "已耗时 " + (m > 0 ? (m + "分" + s + "秒") : (s + "秒"));
-          marqueeTimer.style.display = "inline-block";
-        }
+        tickTopbarMarqueeTimer();
       } else {
-        if (marqueeBadge) {
-          marqueeBadge.textContent = "● 就绪";
-          marqueeBadge.className = "marquee-badge";
-        }
-        if (marqueeText) {
-          marqueeText.textContent = "全系统错峰巡检待命中 · 各托管账号环境准备就绪";
-        }
-        if (marqueeTimer) {
-          marqueeTimer.style.display = "none";
+        const nextTask = data.nextScheduledTask;
+        if (nextTask && nextTask.enabled) {
+          const pendingAcc = accounts.find((a) => {
+            const isToday = isSameLocalDay(a.lastSyncAt);
+            const pts = isToday ? Number(a.todayEarned || 0) : 0;
+            return pts < 160;
+          });
+          const targetName = pendingAcc ? getAccountDisplayName(pendingAcc) : (accounts[0] ? getAccountDisplayName(accounts[0]) : "各托管账号");
+          const pendingCount = accounts.filter((a) => (isSameLocalDay(a.lastSyncAt) ? Number(a.todayEarned || 0) : 0) < 160).length;
+
+          if (marqueeBadge) {
+            marqueeBadge.textContent = "⏰ 定时 " + (nextTask.time || "17:15");
+            marqueeBadge.className = "marquee-badge";
+          }
+          if (marqueeText) {
+            marqueeText.textContent = "待执行: [" + targetName + "] · " + pendingCount + " 户待巡检";
+            marqueeText.title = marqueeText.textContent;
+          }
+          topbarCountdownTarget = nextTask.targetTimestamp || (Date.now() + (nextTask.diffSec || 0) * 1000);
+          tickTopbarMarqueeTimer();
+        } else {
+          if (marqueeBadge) {
+            marqueeBadge.textContent = "● 就绪";
+            marqueeBadge.className = "marquee-badge";
+          }
+          if (marqueeText) {
+            marqueeText.textContent = "全系统错峰巡检待命中 · 各托管账号环境准备就绪";
+          }
+          if (marqueeTimer) {
+            marqueeTimer.style.display = "none";
+          }
         }
       }
-
       const liveImg = document.getElementById("live-screencast-img");
       if (liveImg) liveImg.src = "/api/browser/screenshot?_t=" + Date.now();
       return data;
@@ -832,7 +903,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // =========================================================================
   let activeDrawerAccountId = null;
 
-  window.openTaskDrawer = function(accountId) {
+  window.__openTaskDrawerInternal = function openTaskDrawerImpl(accountId) {
     try {
       const acc = accounts.find((a) => String(a.id) === String(accountId));
       if (!acc) {
@@ -2741,4 +2812,60 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-});
+}
+
+// 安全生命周期驱动：无论页面处于 loading 还是 complete，均保证 100% 初始化生效
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", initApp);
+} else {
+  initApp();
+}
+      isSystemBusy = isBusy;
+      taskStartTimestamp = data.taskStartTime || null;
+
+      if (data.isBusy) {
+        if (marqueeBadge) {
+          marqueeBadge.textContent = "🚀 执行中";
+          marqueeBadge.className = "marquee-badge running";
+        }
+        if (marqueeText) {
+          const accLabel = data.runningAccountName || "微软托管账号";
+          marqueeText.textContent = "[" + accLabel + "] 正在执行 [" + currentTaskLabel + "]";
+          marqueeText.title = marqueeText.textContent;
+        }
+        tickTopbarMarqueeTimer();
+      } else {
+        const nextTask = data.nextScheduledTask;
+        if (nextTask && nextTask.enabled) {
+          const pendingAcc = accounts.find((a) => {
+            const isToday = isSameLocalDay(a.lastSyncAt);
+            const pts = isToday ? Number(a.todayEarned || 0) : 0;
+            return pts < 160;
+          });
+          const targetName = pendingAcc ? getAccountDisplayName(pendingAcc) : (accounts[0] ? getAccountDisplayName(accounts[0]) : '各托管账号');
+          const pendingCount = accounts.filter((a) => (isSameLocalDay(a.lastSyncAt) ? Number(a.todayEarned || 0) : 0) < 160).length;
+
+          if (marqueeBadge) {
+            marqueeBadge.textContent = "⏰ 下次调度: " + (nextTask.time || "17:15");
+            marqueeBadge.className = "marquee-badge";
+          }
+          if (marqueeText) {
+            marqueeText.textContent = "下次接力: [" + targetName + "] (" + (nextTask.name || "错峰时段") + ") · 剩余 " + pendingCount + " 户待巡检";
+            marqueeText.title = marqueeText.textContent;
+          }
+          topbarCountdownTarget = nextTask.targetTimestamp || (Date.now() + (nextTask.diffSec || 0) * 1000);
+          tickTopbarMarqueeTimer();
+        } else {
+          if (marqueeBadge) {
+            marqueeBadge.textContent = "● 就绪";
+            marqueeBadge.className = "marquee-badge";
+          }
+          if (marqueeText) {
+            marqueeText.textContent = "全系统错峰巡检待命中 · 各托管账号环境准备就绪";
+          }
+          if (marqueeTimer) {
+            marqueeTimer.style.display = "none";
+          }
+        }
+      }
+

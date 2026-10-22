@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.6.6",
-  "description": "Microsoft Rewards 自动化平台 (v6.6.6 真实今日积分195与搜索3/60配额精准锚定、打孔卡35s硬超时熔断与收割侧栏穿透)",
+  "version": "6.6.7",
+  "description": "Microsoft Rewards 自动化平台 (v6.6.7 顶栏高动态倒计时与接力账号透明化、打孔卡多协议深度防御与单步秒级硬熔断、搜索全量兜底补满、全景任务抽屉稳定唤起)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {
@@ -22,6 +22,7 @@
     "axios": "^1.7.9",
     "express": "^4.21.2",
     "https-proxy-agent": "^7.0.6",
+    "isomorphic-git": "^1.44.3",
     "node-cron": "^3.0.3",
     "patchright-core": "^1.64.0",
     "socks-proxy-agent": "^8.0.5"

@@ -1,3 +1,18 @@
+
+function isExternalAppProtocol(url) {
+  if (!url || typeof url !== 'string') return false;
+  const lower = url.trim().toLowerCase();
+  return lower.startsWith('ms-') ||
+         lower.startsWith('microsoft-edge:') ||
+         lower.startsWith('mswindowsstore:') ||
+         lower.startsWith('intent:') ||
+         lower.startsWith('market:') ||
+         lower.startsWith('app:') ||
+         lower.startsWith('bing:') ||
+         lower.startsWith('rewards:') ||
+         lower.startsWith('javascript:');
+}
+
 import logger from '../logger.js';
 import browserManager from './browser.js';
 import { classifyTaskFeasibility } from '../contracts/streaks.js';
@@ -149,8 +164,8 @@ export async function performHumanizedSearch(page, queryWord, options = {}) {
 
 export async function solveQuizOrPoll(page, options = {}) {
   const { accountPrefix = '' } = options;
+  if (!page || page.isClosed()) return false;
   try {
-    // 探测问答选项容器（如 .wk_ans、div[role="radio"]、input[type="radio"]、button[data-bi-area] 等）
     const optionSelectors = [
       'input.wk_ans, .wk_ans, div.wk_option',
       'div[role="radio"], button[role="radio"]',
@@ -160,25 +175,25 @@ export async function solveQuizOrPoll(page, options = {}) {
     ];
 
     for (const sel of optionSelectors) {
-      const optionsFound = await page.$$(sel);
+      if (page.isClosed()) break;
+      const optionsFound = await page.$(sel).catch(() => []);
       if (optionsFound && optionsFound.length > 0) {
-        logger.log('🧩', `探测到 Quiz/Poll 答题选项，自动点击第 1 项提交答案...`, '', accountPrefix);
+        logger.log('🧩', '探测到 Quiz/Poll 答题选项，自动点击第 1 项提交答案...', '', accountPrefix);
         const targetOption = optionsFound[0];
-        if (await targetOption.isVisible()) {
-          await targetOption.click();
-          await new Promise((r) => setTimeout(r, 2500));
-          // 尝试点击「下一题」或确认
-          const nextBtn = await page.$('input[value*="下一题"], button:has-text("下一题"), input[value*="提交"], button:has-text("提交")');
-          if (nextBtn && await nextBtn.isVisible()) {
-            await nextBtn.click();
-            await new Promise((r) => setTimeout(r, 2000));
+        if (await targetOption.isVisible().catch(() => false)) {
+          await targetOption.click().catch(() => {});
+          await new Promise((r) => setTimeout(r, 1200));
+          const nextBtn = await page.$('input[value*="下一题"], button:has-text("下一题"), input[value*="提交"], button:has-text("提交")').catch(() => null);
+          if (nextBtn && await nextBtn.isVisible().catch(() => false)) {
+            await nextBtn.click().catch(() => {});
+            await new Promise((r) => setTimeout(r, 1000));
           }
           return true;
         }
       }
     }
   } catch (e) {
-    logger.log('⚠️', `Quiz/Poll 交互尝试: ${e.message}`, '', accountPrefix);
+    // 页面重定向或销毁时静默处理
   }
   return false;
 }
