@@ -937,12 +937,11 @@ document.addEventListener("DOMContentLoaded", () => {
         if (!c) return;
 
         let completedDays = 0;
-        if (streakObj && typeof streakObj.completedDays === 'number' && streakObj.completedDays > 0) {
+        // 严格以微软官方真实返回为准：若官方未返回该子项连签天数，老老实实显示实际打卡完成度，绝不本地模7瞎猜
+        if (streakObj && typeof streakObj.completedDays === 'number') {
           completedDays = Number(streakObj.completedDays || 0);
-        } else if (streakObj && typeof streakObj.current === 'number' && streakObj.current > 0) {
+        } else if (streakObj && typeof streakObj.current === 'number') {
           completedDays = Number(streakObj.current || 0);
-        } else if (fallbackDays) {
-          completedDays = (fallbackDays % 7) || (fallbackDone ? 7 : 0);
         } else if (fallbackDone) {
           completedDays = 1;
         }
@@ -1030,20 +1029,19 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       // 3. 渲染官方多步打孔卡 (Quests 详细列表，100% 对标竞品具体任务卡片)
+      // 3. 渲染官方多步打孔卡 (Quests 纯真实官网列表，彻底消除任何写死硬编码假数据)
       const questsList = document.getElementById('drawer-quests-list');
       const questsCountEl = document.getElementById('drawer-quests-count');
       if (questsList) {
-        const allQuests = Array.isArray(t.allQuestCards) && t.allQuestCards.length > 0
-          ? t.allQuestCards
-          : [
-              { title: '50分的万圣节礼遇', current: 6, total: 6, done: true, percent: 100, isCooling: false, rewardPts: 50 },
-              { title: '通过 Microsoft Rewards 解锁免费 Super Duolingo', current: 4, total: 6, done: false, percent: 67, isCooling: true, rewardPts: 50 },
-              { title: '桌面奖励应用每周专属任务', current: 4, total: 8, done: false, percent: 50, isCooling: false, rewardPts: 20 },
-              { title: '十月必看五大亮点：服饰、玩具、手机、超值优惠和AI设备', current: 5, total: 5, done: true, percent: 100, isCooling: false, rewardPts: 50 }
-            ];
+        const allQuests = Array.isArray(t.allQuestCards) ? t.allQuestCards : [];
 
-        const activeCount = allQuests.filter((q) => !q.done).length;
-        if (questsCountEl) questsCountEl.textContent = activeCount === 0 ? '全部已达成' : (activeCount + ' 张进行中');
+        if (allQuests.length === 0) {
+          if (questsCountEl) questsCountEl.textContent = isTodaySync ? '官方无待做打孔卡' : '待同步';
+          questsList.innerHTML = '<div style="padding: 16px; text-align: center; color: #94a3b8; font-size: 12px; background: #f8fafc; border: 1px dashed #e2e8f0; border-radius: 10px;">' +
+            (isTodaySync ? '官方当前无未完成打孔卡任务' : '今日尚未同步官网权威数据，点击下方按钮发起同步') + '</div>';
+        } else {
+          const activeCount = allQuests.filter((q) => !q.done).length;
+          if (questsCountEl) questsCountEl.textContent = activeCount === 0 ? '全部已达成' : (activeCount + ' 张进行中');
 
         questsList.innerHTML = allQuests.map((q) => {
           let tagCls = 'tag-pending';
@@ -1070,6 +1068,7 @@ document.addEventListener("DOMContentLoaded", () => {
             '</div>' +
           '</div>';
         }).join('');
+        }
       }
     } catch (err) {
       console.error('renderTaskDrawer 内部渲染异常:', err);
