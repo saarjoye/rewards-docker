@@ -873,11 +873,11 @@ function initApp() {
       } else if (todayPts > 0) {
         stateText = '待补做 (' + todayPts + '分)';
         stateCls = 'queue-pending';
-        scheduleHint = '下次: ' + nextTimeStr + ' 接力';
+        scheduleHint = runningId ? '当前批次排队中 · 即将接力' : ('下次: ' + nextTimeStr + ' 接力');
       } else {
         stateText = '待首跑 (0分)';
         stateCls = 'queue-waiting';
-        scheduleHint = '下次: ' + nextTimeStr;
+        scheduleHint = runningId ? '当前批次排队中 · 即将接力' : ('下次: ' + nextTimeStr);
       }
 
       const slotDisplay = (!a.slot || a.slot === 'auto') ? '4大时段全轮巡' : formatSlotName(a.slot);
