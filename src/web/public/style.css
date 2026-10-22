@@ -4419,7 +4419,7 @@ input:focus, select:focus, textarea:focus {
 .task-gap-pill.task-state-done { background:#f0fdf4; border-color:#bbf7d0; color:#15803d; }
 .task-gap-pill.task-state-pending { background:#fff7ed; border-color:#fed7aa; color:#c2410c; }
 .task-gap-pill.task-state-unknown { background:#f1f5f9; border-color:#cbd5e1; color:#64748b; }
-.queue-row { display:grid; grid-template-columns:1.2fr 1fr .75fr 1.15fr; align-items:center; gap:8px; padding:8px 9px; border:1px solid #e2e8f0; border-radius:10px; background:#fff; font-size:11px; }
+.queue-row { display:grid; grid-template-columns:1.1fr 0.85fr 0.8fr 1.45fr; align-items:center; gap:8px; padding:8px 9px; border:1px solid #e2e8f0; border-radius:10px; background:#fff; font-size:11px; }
 .queue-account { display:flex; align-items:center; gap:6px; min-width:0; }
 .queue-account b { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#1e293b; }
 .queue-slot,.queue-sync { color:#64748b; font-size:10.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
