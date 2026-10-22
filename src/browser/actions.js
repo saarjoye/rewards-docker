@@ -613,7 +613,12 @@ export async function harvestClaimablePointsWithVirtualPointer(page, options = {
     await dialogScope.waitFor({ state: 'visible', timeout: 8000 }).catch(() => {});
     await new Promise((r) => setTimeout(r, 1500));
 
-    let claimButtons = await dialogScope.locator('button:has-text("领取积分"), button:has-text("领取"), [role="dialog"] button.group\\/ctrl, button[class*="Brand"]').all();
+    // 等待抽屉加载菊花结束，显式等待黑色大长条「领取积分」按钮渲染完毕
+    const targetClaimBtn = page.locator('[role="dialog"] button:has-text("领取积分"), div[role="dialog"] button:has-text("领取"), button:has-text("领取积分")').first();
+    await targetClaimBtn.waitFor({ state: 'visible', timeout: 12000 }).catch(() => {});
+    await new Promise((r) => setTimeout(r, 1000));
+
+    let claimButtons = await dialogScope.locator('[role="dialog"] button:has-text("领取积分"), button:has-text("领取积分"), [role="dialog"] button:has-text("领取"), button[class*="Brand"]').all();
     if (!claimButtons || claimButtons.length === 0) {
       claimButtons = await dialogScope.locator('button').filter({ hasText: claimButtonLabel }).all();
     }
@@ -623,21 +628,37 @@ export async function harvestClaimablePointsWithVirtualPointer(page, options = {
       if (await btn.isVisible().catch(() => false)) {
         try {
           await btn.scrollIntoViewIfNeeded().catch(() => {});
-          await btn.click({ force: true, timeout: 6000 });
+          const btnBox = await btn.boundingBox();
+          if (btnBox && btnBox.width > 0 && btnBox.height > 0) {
+            // 关键：派发真实物理指针事件序列，穿透 React Aria 内部状态机
+            await page.mouse.move(btnBox.x + btnBox.width / 2, btnBox.y + btnBox.height / 2);
+            await page.mouse.down();
+            await new Promise((r) => setTimeout(r, 150));
+            await page.mouse.up();
+          } else {
+            await btn.click({ force: true, timeout: 6000 });
+          }
           await btn.dispatchEvent('click').catch(() => {});
           clickedClaim = true;
           logger.log('👆', '已真实点击抽屉内「领取积分」按钮，向微软服务端提交领奖请求...', '', accountPrefix);
-          await new Promise((r) => setTimeout(r, 1200));
-        } catch {}
+          await new Promise((r) => setTimeout(r, 2000));
+        } catch (clickErr) {
+          logger.log('⚠️', '点击领取按钮尝试异常: ' + clickErr.message, '', accountPrefix);
+        }
       }
     }
     if (!clickedClaim) {
       logger.log('⚠️', '抽屉已展开但未定位到激活的「领取积分」按钮，直接触发回验对账', '', accountPrefix);
     }
+
     logger.log('\u{1f446}', '\u5df2\u70b9\u51fb\u300c\u9886\u53d6\u79ef\u5206\u300d\uff0c\u7b49\u5f85\u5b98\u65b9\u4f59\u989d\u4e0e\u5f85\u9886\u53d6\u72b6\u6001\u5165\u8d26...', '', accountPrefix);
 
     let after = null;
-    for (let attempt = 0; attempt < 20; attempt++) {
+    for (let attempt = 0; attempt < 25; attempt++) {
+      const toastSuccess = await page.locator('text=/已成功领取|成功领取|已领取/').first().isVisible().catch(() => false);
+      if (toastSuccess) {
+        logger.log('🎉', '检测到微软官方「已成功领取」提示，正在校验最新积分到账...', '', accountPrefix);
+      }
       await page.waitForTimeout(1000);
       after = await readDashboard();
       const balanceIncreased = before.balance !== null && after.balance !== null && after.balance >= before.balance + before.points;
