@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.6.1",
-  "description": "Microsoft Rewards 自动化平台 (v6.6.1 吸收对齐官方收割多轮指针穿透机制、修复详情按钮自适应、原生连签轨道与全时段智能调度)",
+  "version": "6.6.2",
+  "description": "Microsoft Rewards 自动化平台 (v6.6.2 官网真实12印章与RSC连续打卡模型完整解析、杜绝待领积分误报与抽屉多轮收割加固)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {

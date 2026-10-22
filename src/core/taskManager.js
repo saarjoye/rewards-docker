@@ -24,7 +24,7 @@ import {
   extractOfficialClaimablePoints
 } from '../contracts/validator.js';
 import { concatFlightChunks, extractOfferObjects } from '../contracts/flightParse.js';
-import { buildUnifiedTaskBoard, classifyTaskFeasibility } from '../contracts/streaks.js';
+import { buildUnifiedTaskBoard, classifyTaskFeasibility, extractStreakModels, extractOfficialStamps } from '../contracts/streaks.js';
 import historyManager from './history.js';
 import notifier from './notifier.js';
 
@@ -82,7 +82,7 @@ export function describeOfficialNeed(value) {
  * Build a tri-state task snapshot from official DOM evidence.
  * null means unknown. Unknown never becomes work and never counts as complete.
  */
-export function buildOfficialTaskSnapshot({ text = '', sections = [], searchPoints = null, account = null } = {}) {
+export function buildOfficialTaskSnapshot({ text = '', sections = [], searchPoints = null, account = null, streaks = {}, stamps = null } = {}) {
   const lines = String(text || '').split('\n').map((line) => line.trim()).filter(Boolean);
   const counter = (re) => {
     for (const line of lines) {
@@ -176,10 +176,14 @@ export function buildOfficialTaskSnapshot({ text = '', sections = [], searchPoin
     needQuests,
     hasWork: Object.values(state).some((value) => value === true),
     hasUnknown: unknown.length > 0,
+    streaks,
+    stamps,
     details: {
       searchStreak,
       dailySet,
       appCheckIn,
+      streaks,
+      stamps,
       dailyPending: dailyPending.map((card) => card.title),
       questPending: questPending.map((card) => card.title),
       allQuestCards,
@@ -446,6 +450,10 @@ export class TaskManager {
       parsedCards
     );
 
+    const combinedRaw = (flightChunks || "") + "\n" + (earnHtml || "") + "\n" + (dashHtml || "");
+    const streaks = extractStreakModels(combinedRaw);
+    const stamps = extractOfficialStamps(combinedRaw);
+
     return {
       todayPoints: todayPoints !== null ? todayPoints : 0,
       balance: balance !== null ? balance : 0,
@@ -454,7 +462,9 @@ export class TaskManager {
       taskBoard,
       parsedCards,
       sources,
-      combinedRawText: (flightChunks || "") + "\n" + (earnHtml || "") + "\n" + (dashHtml || "")
+      streaks,
+      stamps,
+      combinedRawText: combinedRaw
     };
   }
 
@@ -647,7 +657,7 @@ export class TaskManager {
             if (initialData.sources?.todayPoints === 'live') initialAccountUpdate.todayEarned = initialData.todayPoints;
             if (initialData.sources?.streakDays === 'live') initialAccountUpdate.streakDays = initialData.streakDays;
             if (initialData.sources?.claimablePoints === 'live') initialAccountUpdate.claimablePoints = initialData.claimablePoints;
-            if (officialTasks) initialAccountUpdate.officialTasks = officialTasks;
+            if (officialTasks) { initialAccountUpdate.officialTasks = officialTasks; if (officialTasks.streaks) initialAccountUpdate.streaks = officialTasks.streaks; if (officialTasks.stamps) initialAccountUpdate.stamps = officialTasks.stamps; }
             initialAccountUpdate.dataState = initialData.sources?.balance === 'live'
               && initialData.sources?.todayPoints === 'live'
               && officialTasks
@@ -1078,11 +1088,18 @@ export class TaskManager {
         }
       }
 
+      const pageHtml = await page.content().catch(() => '');
+      const rawAll = (snapshot.text || '') + '\n' + pageHtml;
+      const liveStreaks = extractStreakModels(rawAll);
+      const liveStamps = extractOfficialStamps(rawAll);
+
       const snapshotResult = buildOfficialTaskSnapshot({
         text: snapshot.text,
         sections: snapshot.sections,
         searchPoints,
-        account
+        account,
+        streaks: liveStreaks,
+        stamps: liveStamps
       });
       log(`实时任务判定: ${JSON.stringify(snapshotResult.details)}`);
       return snapshotResult;

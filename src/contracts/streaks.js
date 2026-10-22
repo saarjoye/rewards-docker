@@ -242,3 +242,81 @@ export function buildUnifiedTaskBoard(flightData = {}, rawCards = []) {
 
   return board;
 }
+
+
+/**
+ * 通过括号平衡解析微软官方 RSC Flight 中独立的 streak JSON 模型
+ * 100% 对齐参考项目 wangheqiang530/microsoft-rewards-docker
+ */
+export function extractStreakModels(...texts) {
+  const result = {};
+  const parseOne = (text) => {
+    if (!text) return;
+    const marker = '"model":{"streak":{';
+    let pos = 0;
+    while (true) {
+      const idx = text.indexOf(marker, pos);
+      if (idx === -1) break;
+      const start = idx + marker.length - 1;
+      let depth = 0;
+      let end = -1;
+      for (let i = start; i < text.length && i < start + 3000; i++) {
+        if (text[i] === '{') depth++;
+        else if (text[i] === '}') {
+          depth--;
+          if (depth === 0) { end = i + 1; break; }
+        }
+      }
+      if (end !== -1) {
+        const raw = text.slice(start, end).replace(/:\$undefined/g, ':null').replace(/:\$D[^",}]+/g, ':null');
+        try {
+          const obj = JSON.parse(raw);
+          if (obj.partner) {
+            result[obj.partner] = {
+              completedDays: Number(obj.completedDays ?? 0),
+              currentDay: Number(obj.currentDay ?? 0),
+              activitiesCompleted: Number(obj.activitiesCompleted ?? 0),
+              activitiesTotal: Number(obj.activitiesTotal ?? 0),
+              isCurrentDayCompleted: !!obj.isCurrentDayCompleted
+            };
+          }
+        } catch {
+          const mPartner = raw.match(/"partner":"([^"]+)"/);
+          if (mPartner) {
+            const p = mPartner[1];
+            const pick = (re) => { const m = raw.match(re); return m ? Number(m[1]) : 0; };
+            result[p] = {
+              completedDays: pick(/"completedDays":(\d+)/),
+              currentDay: pick(/"currentDay":(\d+)/),
+              activitiesCompleted: pick(/"activitiesCompleted":(\d+)/),
+              activitiesTotal: pick(/"activitiesTotal":(\d+)/),
+              isCurrentDayCompleted: /"isCurrentDayCompleted":true/.test(raw)
+            };
+          }
+        }
+      }
+      pos = (end !== -1) ? end : (idx + marker.length);
+    }
+  };
+  texts.forEach(parseOne);
+  return result;
+}
+
+/**
+ * 提取官网真实的「1,000 奖励」12 个印章进度
+ * 对标图 2：赚取 12 个印章，赢取丰厚奖励积分 (aria-valuenow="10", aria-valuemax="12")
+ */
+export function extractOfficialStamps(...texts) {
+  for (const text of texts) {
+    if (!text) continue;
+    const match = text.match(/"aria-label":"收集的印章"[^}]*?"aria-valuemax":(\d+)[^}]*?"aria-valuenow":(\d+)/)
+      || text.match(/aria-label="收集的印章"[^>]*?aria-valuemax="(\d+)"[^>]*?aria-valuenow="(\d+)"/)
+      || text.match(/赚取\s*(\d+)\s*个印章/);
+    if (match) {
+      const max = parseInt(match[1], 10) || 12;
+      const progress = parseInt(match[2], 10) || 0;
+      return { progress, max };
+    }
+  }
+  return null;
+}

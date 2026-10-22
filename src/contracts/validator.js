@@ -99,7 +99,7 @@ export function extractOfficialClaimablePoints(flightText = '', html = '') {
   const liveClaimable = live.match(/\u53ef\u9886\u53d6\s*([0-9,]+)\s*\u9886\u53d6/);
   if (liveClaimable && liveClaimable[1]) return parseNumberWithCommas(liveClaimable[1]);
 
-  if (live.includes('\u5f53\u524d\u6ca1\u6709\u8981\u9886\u53d6\u7684\u79ef\u5206')) return 0;
+  if (live.includes('\u5f53\u524d\u6ca1\u6709\u8981\u9886\u53d6\u7684\u79ef\u5206') || (!live.includes('\u53ef\u9886\u53d6') && live.length > 500)) return 0;
 
   const livePatterns = [
     /\u53ef\u9886\u53d6[\s\S]{0,100}?>([0-9,]+)<[\s\S]{0,100}?>\s*\u9886\u53d6/i,

@@ -558,8 +558,9 @@ export async function harvestClaimablePointsWithVirtualPointer(page, options = {
     let points = null;
     if (await card.count()) {
       const cardText = (await card.innerText().catch(() => '')).replace(/\s+/g, ' ');
-      const match = cardText.match(new RegExp(claimLabel + '\\s*([0-9,]+)')) || cardText.match(/([0-9,]+)/);
-      if (match) points = Number(match[1].replace(/,/g, ''));
+      // 严格对齐 wangheqiang530 规范：必须匹配紧跟在"可领取"后面的明确数字，杜绝随意匹配页面其他数字
+      const match = cardText.match(/可领取[\s\S]*?(\d+)/);
+      points = match ? Number(match[1].replace(/,/g, '')) : 0;
     }
     const balanceMatch = body.match(new RegExp(balanceLabel + '\\s*[\\r\\n]+\\s*([0-9,]+)'));
     const balance = balanceMatch ? Number(balanceMatch[1].replace(/,/g, '')) : null;

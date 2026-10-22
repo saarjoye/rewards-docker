@@ -886,7 +886,15 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById('drawer-acc-name').textContent = displayName;
     document.getElementById('drawer-acc-email').textContent = acc.user || (acc.name || '未绑定邮箱');
     document.getElementById('drawer-today-badge').textContent = '+' + todayPts + ' 分 今日 (可用 ' + balance + ' 分)';
-    document.getElementById('drawer-streak-summary').textContent = '已连续签到 ' + streakDays + ' 天 · 印章达成';
+        const liveStamps = t.stamps || acc.stamps || null;
+    if (liveStamps && liveStamps.max) {
+      const sCur = liveStamps.progress || 0;
+      const sMax = liveStamps.max || 12;
+      const sDiff = Math.max(0, sMax - sCur);
+      document.getElementById('drawer-streak-summary').innerHTML = '已连签 <b>' + streakDays + '</b> 天 · 印章 <b>' + sCur + '/' + sMax + '</b> (差 ' + sDiff + ' 个集满 1,000 分大奖)';
+    } else {
+      document.getElementById('drawer-streak-summary').textContent = '已连续签到 ' + streakDays + ' 天 · 连签印章达成';
+    }
     document.getElementById('drawer-sync-time').textContent = (acc.lastSyncAt && isTodaySync)
       ? ('同步于 ' + new Date(Number(acc.lastSyncAt)).toLocaleTimeString('zh-CN', { hour12: false }))
       : '今日尚未同步官网权威数据';
@@ -939,10 +947,14 @@ document.addEventListener("DOMContentLoaded", () => {
     const dailyDoneToday = (t.dailySet && t.dailySet.current >= (t.dailySet.max || 3)) || todayPts >= 90;
     const appDoneToday = (t.appCheckIn && t.appCheckIn.current >= (t.appCheckIn.max || 1)) || todayPts >= 100;
 
-    // 对齐 wangheqiang530 官方 7 天连签渲染：传递官网对象 + 全局连签兜底
-    renderTrackCircles('streak-circles-search', t.searchStreak, streakDays, searchDoneToday, 'track-search-tag', '必应搜索');
-    renderTrackCircles('streak-circles-daily', t.dailySet, streakDays, dailyDoneToday, 'track-daily-tag', '每日活动集');
-    renderTrackCircles('streak-circles-app', t.appCheckIn, streakDays, appDoneToday, 'track-app-tag', '移动端签到');
+    // 优先读取微软官网 RSC 契约对象中的真实 partner 连续打卡天数 (bing: 3, dailyset: 4, bingapp: 4)
+    const bingStreak = (t.streaks && t.streaks.bing) || (acc.streaks && acc.streaks.bing) || t.searchStreak;
+    const dsStreak = (t.streaks && t.streaks.dailyset) || (acc.streaks && acc.streaks.dailyset) || t.dailySet;
+    const appStreak = (t.streaks && t.streaks.bingapp) || (acc.streaks && acc.streaks.bingapp) || t.appCheckIn;
+
+    renderTrackCircles('streak-circles-search', bingStreak, streakDays, searchDoneToday, 'track-search-tag', '必应搜索');
+    renderTrackCircles('streak-circles-daily', dsStreak, streakDays, dailyDoneToday, 'track-daily-tag', '每日活动集');
+    renderTrackCircles('streak-circles-app', appStreak, streakDays, appDoneToday, 'track-app-tag', '移动端签到');
 
     // 2. 渲染今日核心自动化任务卡片网格 (对标竞品图 1 中部 6 大卡片)
     const taskGrid = document.getElementById('drawer-task-grid');
