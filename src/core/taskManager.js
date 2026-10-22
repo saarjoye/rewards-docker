@@ -689,7 +689,7 @@ export class TaskManager {
 
             try {
               // remaining 只消费当前账号刚刚读取的官网快照；unknown 绝不当成待做。
-              const taskPlan = buildTaskPlan(taskScope, officialTasks);
+              const taskPlan = buildTaskPlan(taskScope, officialTasks, account);
               if (taskScope === 'remaining') {
                 if (!officialTasks) {
                   log('⚠️ [剩余任务] 未取得当前账号官网快照，安全跳过全部任务，不执行全量兜底。');
@@ -972,6 +972,24 @@ export class TaskManager {
                 taskHarvestedPoints = settledToday - initialToday;
               } else if (settledBalance !== null && initialBalance !== null && settledBalance >= initialBalance) {
                 taskHarvestedPoints = settledBalance - initialBalance;
+              }
+
+              
+              // 自动收割闭环：若完成今日任务后达成了连续签到或印章里程碑送了额外积分，直接顺手收割清零
+              if (finalData.sources?.claimablePoints === 'live' && Number(finalData.claimablePoints) > 0) {
+                log(`🎁 检测到账号达成里程碑送了待领额外奖励 (${finalData.claimablePoints} 分)，启动自动收割收尾...`);
+                try {
+                  const harvestPage = await context.newPage();
+                  const harvestRes = await harvestClaimablePointsWithVirtualPointer(harvestPage, { accountPrefix: account.name });
+                  if (harvestPage && !harvestPage.isClosed()) await harvestPage.close().catch(() => {});
+                  if (harvestRes && (harvestRes.harvested || harvestRes.status === 'claimed')) {
+                    log(`🎉 [自动收割入账] 额外奖励 ${harvestRes.points || finalData.claimablePoints} 分已成功领奖并入账！`);
+                    reconciledAccount.claimablePoints = 0;
+                    if (harvestRes.after?.balance) reconciledAccount.balance = harvestRes.after.balance;
+                  }
+                } catch (hErr) {
+                  log(`⚠️ 自动收割尝试异常: ${hErr.message}，已保留待下次收割`);
+                }
               }
 
               log(`🎉 账号 [${account.name}] 任务对账完成：今日积分 ${settledToday === null ? '未确认' : settledToday + ' 分'}，可用余额 ${settledBalance === null ? '未确认' : settledBalance + ' 分'}，连签 ${finalData.streakDays || 0} 天`);
