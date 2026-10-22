@@ -114,12 +114,7 @@ export function buildOfficialTaskSnapshot({ text = '', sections = [], searchPoin
     return !isDoneToday;
   });
 
-  const todayEarnedNum = Number(account?.todayEarned || 0);
   let needSearch = searchPoints ? !searchPoints.isMaxed : null;
-  // 智能权威判定：若今日官方已增积分已达 60 分以上（甚至像 177 分满额），权威表明搜索配额必已满额，绝不误判为未知项
-  if (needSearch === null && todayEarnedNum >= 60) {
-    needSearch = false;
-  }
   const needDailySet = dailySet ? dailySet.current < dailySet.max : null;
   const needAppSign = appCheckIn ? appCheckIn.current < appCheckIn.max : null;
   const needDailyActivities = dailySection ? dailyPending.length > 0 : null;
@@ -1097,6 +1092,23 @@ export class TaskManager {
       const rawAll = (snapshot.text || '') + '\n' + pageHtml;
       const liveStreaks = extractStreakModels(rawAll);
       const liveStamps = extractOfficialStamps(rawAll);
+
+      // 对齐 wangheqiang530 官方规范：从 RSC Flight 和 HTML 中直接提取搜索真实配额 (如 3/60)，杜绝抽屉弹窗偶发失败导致未知
+      if (!searchPoints) {
+        const searchRscMatch = rawAll.match(/"combinedSearch":\{[^}]*"progress":(\d+)[^}]*"max":(\d+)/);
+        if (searchRscMatch) {
+          const cur = Number(searchRscMatch[1]);
+          const max = Number(searchRscMatch[2]);
+          searchPoints = { current: cur, max, isMaxed: cur >= max, source: 'rsc-flight' };
+        } else {
+          const searchHtmlMatch = rawAll.match(/必应搜索[\s\S]{0,400}?(\d+)\s*\/\s*(\d+)/);
+          if (searchHtmlMatch) {
+            const cur = Number(searchHtmlMatch[1]);
+            const max = Number(searchHtmlMatch[2]);
+            searchPoints = { current: cur, max, isMaxed: cur >= max, source: 'html-match' };
+          }
+        }
+      }
 
       const snapshotResult = buildOfficialTaskSnapshot({
         text: snapshot.text,

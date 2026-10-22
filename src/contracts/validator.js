@@ -17,17 +17,32 @@ export function parseNumberWithCommas(str) {
 export function extractOfficialTodayPoints(flightText = '', html = '') {
   const combined = `${flightText}\n${html}`;
 
+  // 1. 优先提取以「今日积分」为前置锚点的真实大卡片数值 (对齐 wangheqiang530 官方实现，彻底杜绝被页面其他卡片的 145 误伤)
+  const todayPointValues = [];
+  const todayPointPatterns = [
+    /"children":"(?:今日积分|Points earned today|Today(?:'|&#39;)s points)"[\s\S]{0,1600}?"className":"text-pageHeader","children":"([\d,]+)"/gi,
+    /(?:今日积分|Points earned today|Today(?:'|&#39;)s points)<\/p>[\s\S]{0,1200}?class="text-pageHeader">([\d,]+)</gi,
+    /(?:今日积分|Points earned today|Today(?:'|&#39;)s points)[\s\S]{0,1200}?text-pageHeader[^>]*>([\d,]+)</gi
+  ];
+  for (const pattern of todayPointPatterns) {
+    for (const match of combined.matchAll(pattern)) {
+      const n = parseNumberWithCommas(match[1]);
+      if (Number.isFinite(n) && n >= 0) todayPointValues.push(n);
+    }
+  }
+  if (todayPointValues.length > 0) {
+    return Math.max(...todayPointValues);
+  }
+
+  // 2. 备选通用正则 (兼顾历史单测与轻量片段)
   const patterns = [
-    // English patterns
     /Today's points\s*[:\n\r]+\s*([0-9,]+)/i,
     /Daily points\s*[:\n\r]+\s*([0-9,]+)/i,
-    // 文本行模式：今日积分 \n 70
     /今日积分\s*[:\n\r]+\s*([0-9,]+)/i,
     /今日积分[^0-9]{1,120}?([0-9,]+)/i,
-    // Flight Chunks 模式
-    /["']text-pageHeader["'][^}]*?children\s*:\s*["']?([0-9,]+)["']?/i,
     /今日积分[^0-9]{1,100}?class=["'][^"']*?text-pageHeader[^"']*?["'][^>]*?>([0-9,]+)</i,
-    /"todayPoints"\s*:\s*([0-9]+)/i
+    /"todayPoints"\s*:\s*([0-9]+)/i,
+    /["']text-pageHeader["'][^}]*?children\s*:\s*["']?([0-9,]+)["']?/i
   ];
 
   for (const regex of patterns) {
