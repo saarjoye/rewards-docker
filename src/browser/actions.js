@@ -431,93 +431,88 @@ export async function penetratePunchCardQuest(page, questUrl, options = {}) {
   const context = (page && typeof page.context === 'function') ? page.context() : null;
   let activePage = page;
 
-  try {
-    for (let navAttempt = 1; navAttempt <= 2; navAttempt++) {
-      try {
-        if (!activePage || activePage.isClosed()) {
-          if (context) activePage = await context.newPage();
-        }
+  // 严防死锁：单个打孔卡整体执行上限 35 秒，超时自动熔断跳过，绝不允许卡死后续账号
+  const executeCore = async () => {
+    try {
+      if (!activePage || activePage.isClosed()) {
+        if (context) activePage = await context.newPage();
+      }
+      await activePage.goto(fullUrl, { waitUntil: 'commit', timeout: 20000 }).catch(() => {});
+      await new Promise((r) => setTimeout(r, 2000));
+
+      // 扫描子步骤卡片
+      let stepCards = await activePage.$$('a[href*="redirect?"], a[href*="bing.com"][class*="rounded-cornerCtrlRest"], a[class*="bgCtrlBrandRest"], div[data-bi-area="PunchCardStep"] a, a[href*="/quest/"], a.c-call-to-action');
+      if (!stepCards || stepCards.length === 0) {
+        stepCards = await activePage.$$('a[class*="rounded-cornerCtrlRest"], a[class*="Button"], button[class*="bg-bgCtrlBrandRest"], a:has-text("立即激活"), a:has-text("开始"), a:has-text("加入")');
+      }
+      logger.log('🎯', `打孔卡内部发现 ${stepCards.length} 个子步骤`, '', accountPrefix);
+
+      for (let j = 0; j < Math.min(6, stepCards.length); j++) {
+        let stepPopup = null;
+        const step = stepCards[j];
         try {
-          await activePage.goto(fullUrl, { waitUntil: 'commit', timeout: 35000 });
-        } catch (gotoErr) {
-          if (gotoErr.message && (gotoErr.message.includes('crashed') || gotoErr.message.includes('Target') || gotoErr.message.includes('closed'))) {
-            throw gotoErr;
+          const text = await step.innerText().catch(() => '');
+          if (/明天再来|天解锁|已完成|Complete/i.test(text)) {
+            logger.log('⏳', `打孔卡第 ${j + 1} 步已完成或受时间锁保护，跳过`, '', accountPrefix);
+            continue;
           }
-        }
-        await new Promise((r) => setTimeout(r, 2500));
-        break;
-      } catch (navErr) {
-        const isCrash = navErr.message && (navErr.message.includes('crashed') || navErr.message.includes('Target') || navErr.message.includes('closed'));
-        if (isCrash && navAttempt < 2 && context) {
-          logger.log('🔄', `打孔卡视口瞬态崩溃 (${navErr.message})，立即自愈新建视口重试...`, '', accountPrefix);
-          try { if (activePage && !activePage.isClosed()) await activePage.close().catch(() => {}); } catch {}
-          activePage = await context.newPage();
-        } else {
-          throw navErr;
+
+          const href = await step.getAttribute('href').catch(() => null);
+          if (href && (href.startsWith('ms-') || href.startsWith('intent:') || href.startsWith('market:') || href.startsWith('app:'))) {
+            logger.log('ℹ️', `打孔卡第 ${j + 1} 步为客户端应用协议，安全跳过`, '', accountPrefix);
+            continue;
+          }
+
+          if (href && href.startsWith('http')) {
+            if (context) {
+              stepPopup = await context.newPage();
+              await stepPopup.goto(href, { waitUntil: 'commit', timeout: 15000 }).catch(() => {});
+            }
+          } else if (await step.isVisible().catch(() => false)) {
+            const [p] = await Promise.all([
+              activePage.context().waitForEvent('page', { timeout: 6000 }).catch(() => null),
+              step.click({ force: true, timeout: 5000 }).catch(() => {})
+            ]);
+            stepPopup = p;
+          }
+
+          if (stepPopup) {
+            await stepPopup.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => {});
+            // 答题辅助最多等待 5 秒
+            await Promise.race([
+              solveQuizOrPoll(stepPopup, { accountPrefix }),
+              new Promise((r) => setTimeout(r, 5000))
+            ]);
+            await stepPopup.mouse.wheel(0, 150).catch(() => {});
+            await new Promise((r) => setTimeout(r, 2000));
+            await stepPopup.close().catch(() => {});
+            logger.log('✅', `打孔卡子步骤 ${j + 1} 穿透打卡成功`, '', accountPrefix);
+          } else {
+            await new Promise((r) => setTimeout(r, 1500));
+          }
+        } catch (eStep) {
+          logger.log('⚠️', `打孔卡子步骤 ${j + 1} 交互异常: ${eStep.message}`, '', accountPrefix);
+        } finally {
+          if (stepPopup && !stepPopup.isClosed()) await stepPopup.close().catch(() => {});
         }
       }
+      return true;
+    } catch (e) {
+      logger.log('⚠️', `打孔卡执行异常: ${e.message}`, '', accountPrefix);
+      return false;
     }
+  };
 
-    // 扫描子步骤卡片 (使用 activePage.$$ 获取所有子步骤链接/按钮)
-    let stepCards = await activePage.$$('a[href*="redirect?"], a[href*="bing.com"][class*="rounded-cornerCtrlRest"], a[class*="bgCtrlBrandRest"], div[data-bi-area="PunchCardStep"] a, a[href*="/quest/"], a.c-call-to-action');
-    if (!stepCards || stepCards.length === 0) {
-      stepCards = await activePage.$$('a[class*="rounded-cornerCtrlRest"], a[class*="Button"], button[class*="bg-bgCtrlBrandRest"], a:has-text("立即激活"), a:has-text("开始"), a:has-text("加入")');
-    }
-    logger.log('🎯', `打孔卡内部发现 ${stepCards.length} 个子步骤`, '', accountPrefix);
-
-    for (let j = 0; j < stepCards.length; j++) {
-      let stepPopup = null;
-      const step = stepCards[j];
-      try {
-        const text = await step.innerText().catch(() => '');
-        if (text.includes('明天再来') || text.includes('天解锁')) {
-          logger.log('⏳', `打孔卡第 ${j + 1} 步存在时间锁 [明天再来]，打上【明日解锁】标签安全跳过`, '', accountPrefix);
-          continue;
-        }
-
-        const href = await step.getAttribute('href').catch(() => null);
-
-        // 关键防御：过滤非 http 外部应用唤起协议 (如 ms-windows-store:, ms-rewards:, edge:)，杜绝导致 Chromium 视口崩溃
-        if (href && (href.startsWith('ms-') || href.startsWith('intent:') || href.startsWith('market:') || href.startsWith('app:'))) {
-          logger.log('ℹ️', `打孔卡第 ${j + 1} 步为客户端外部应用协议 (${href.slice(0, 35)}...)，安全跳过`, '', accountPrefix);
-          continue;
-        }
-
-        if (href && href.startsWith('http')) {
-          if (context) {
-            stepPopup = await context.newPage();
-            await stepPopup.goto(href, { waitUntil: 'commit', timeout: 35000 }).catch(() => {});
-          }
-        } else if (await step.isVisible().catch(() => false)) {
-          const [p] = await Promise.all([
-            activePage.context().waitForEvent('page', { timeout: 8000 }).catch(() => null),
-            step.click({ force: true, timeout: 6000 }).catch(() => {})
-          ]);
-          stepPopup = p;
-        }
-
-        if (stepPopup) {
-          await stepPopup.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
-          await solveQuizOrPoll(stepPopup, { accountPrefix });
-          await stepPopup.mouse.wheel(0, 200).catch(() => {});
-          await new Promise((r) => setTimeout(r, 4500));
-          await stepPopup.close().catch(() => {});
-          logger.log('✅', `打孔卡子步骤 ${j + 1} 穿透打卡成功`, '', accountPrefix);
-        } else {
-          await new Promise((r) => setTimeout(r, 2500));
-        }
-      } catch (eStep) {
-        logger.log('⚠️', `推进打孔卡子步骤 ${j + 1} 异常: ${eStep.message}`, '', accountPrefix);
-      } finally {
-        if (stepPopup && !stepPopup.isClosed()) await stepPopup.close().catch(() => {});
-      }
-    }
-    return true;
-  } catch (e) {
-    logger.log('⚠️', `穿透打孔卡异常: ${e.message}`, '', accountPrefix);
-    return false;
-  }
+  // 35 秒硬熔断守护
+  return await Promise.race([
+    executeCore(),
+    new Promise((resolve) => setTimeout(() => {
+      logger.log('⏱️', '打孔卡执行已达 35 秒安全超时阈值，主动熔断以保证后续流水线继续执行', '', accountPrefix);
+      resolve(false);
+    }, 35000))
+  ]);
 }
+
 export async function penetratePuzzleSpotlight(page, puzzleUrl, options = {}) {
   const { accountPrefix = '' } = options;
   const target = puzzleUrl || 'https://www.bing.com/spotlight/imagepuzzle';
