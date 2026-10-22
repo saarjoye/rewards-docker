@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.5.1",
-  "description": "Microsoft Rewards automation platform (v6.5.1 verified claim, authoritative reconcile, version-safe deployment)",
+  "version": "6.6.0",
+  "description": "Microsoft Rewards 自动化平台 (v6.6.0 引入次日官网数据缺口自动清洗、调度队列倒计时胶囊与账号专属任务全景抽屉)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {

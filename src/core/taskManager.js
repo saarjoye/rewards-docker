@@ -133,6 +133,32 @@ export function buildOfficialTaskSnapshot({ text = '', sections = [], searchPoin
   const questsTodayCount = questCards.filter((card) => !card.done && !card.disabled).length;
   const questsTodayDone = questsTodayCount > 0 && questPending.length === 0;
 
+  // 结构化整理全量打孔卡与日常任务，供前端抽屉与详细列表渲染
+  const formatCard = (c) => {
+    const rawTitle = c.title || '';
+    const progressMatch = rawTitle.match(/(\d+)\s*\/\s*(\d+)\s*个任务/);
+    const cur = progressMatch ? Number(progressMatch[1]) : (c.done ? 1 : 0);
+    const total = progressMatch ? Number(progressMatch[2]) : 1;
+    const ptsMatch = rawTitle.match(/\+(\d+)/);
+    const rewardPts = ptsMatch ? Number(ptsMatch[1]) : 0;
+    const isCooling = /等待冷却|冷却|稍后再试|明日解锁/.test(rawTitle);
+    return {
+      title: rawTitle,
+      href: c.href || '',
+      done: !!c.done || (cur >= total && total > 0),
+      current: cur,
+      total: total,
+      percent: Math.min(100, Math.round((cur / Math.max(1, total)) * 100)),
+      rewardPts,
+      isCooling,
+      executable: c.executable !== false,
+      feasibilityTag: c.feasibilityTag || ''
+    };
+  };
+
+  const allQuestCards = questCards.map(formatCard);
+  const allDailyCards = dailyCards.map(formatCard);
+
   return {
     searchStreak,
     dailySet,
@@ -140,6 +166,8 @@ export function buildOfficialTaskSnapshot({ text = '', sections = [], searchPoin
     searchPoints,
     dailyPending,
     questPending,
+    allQuestCards,
+    allDailyCards,
     questsTodayDone,
     needSearch,
     needDailySet,
@@ -154,6 +182,8 @@ export function buildOfficialTaskSnapshot({ text = '', sections = [], searchPoin
       appCheckIn,
       dailyPending: dailyPending.map((card) => card.title),
       questPending: questPending.map((card) => card.title),
+      allQuestCards,
+      allDailyCards,
       questsTodayDone,
       searchPoints: searchPoints || { unknown: true },
       state,

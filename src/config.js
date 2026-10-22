@@ -148,6 +148,13 @@ class ConfigManager {
         a.todayDate = todayStr;
         a.remainingRetryCount = 0;
         a.remainingRetriesDate = todayStr;
+        // 关键修复：跨天后昨日官网任务缺口与昨日同步时间彻底重置，避免次日残留昨日全部完成假象
+        a.officialTasks = null;
+        a.lastSyncAt = null;
+        a.dataState = 'unknown';
+        if (a.dailyQuestsDone) {
+          a.dailyQuestsDone = { date: todayStr, hrefs: [] };
+        }
         changed = true;
       }
     }
@@ -191,6 +198,7 @@ class ConfigManager {
       status: accountData.status || (existing?.status || 'ready'),
       balance: accountData.balance !== undefined ? accountData.balance : (existing?.balance || 0),
       todayEarned: accountData.todayEarned !== undefined ? Math.max(Number(accountData.todayEarned) || 0, existing?.todayEarned || 0) : (existing?.todayEarned || 0),
+      todayDate: accountData.todayDate !== undefined ? accountData.todayDate : (existing?.todayDate || getTodayDateString()),
       slot: accountData.slot || existing?.slot || 'auto',
       streakDays: accountData.streakDays !== undefined ? accountData.streakDays : (existing?.streakDays || 0),
       claimablePoints: accountData.claimablePoints !== undefined ? accountData.claimablePoints : (existing?.claimablePoints || 0),
@@ -353,9 +361,11 @@ class ConfigManager {
   }
 
   getPublicConfig() {
+    // 关键：先调用 this.getAccounts() 确保跨自然天的数据清洗逻辑已触发生效
+    const cleanAccounts = this.getAccounts();
     const cfg = JSON.parse(JSON.stringify(this.config));
-    if (Array.isArray(cfg.accounts)) {
-      cfg.accounts = cfg.accounts.map((a) => ({
+    if (Array.isArray(cleanAccounts)) {
+      cfg.accounts = cleanAccounts.map((a) => ({
         ...a,
         pass: a.pass ? SECRET_PLACEHOLDER : ''
       }));

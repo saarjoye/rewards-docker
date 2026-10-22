@@ -311,9 +311,13 @@ export function createServer() {
     const cfg = configManager.getPublicConfig();
     const accounts = cfg.accounts || [];
     const browserState = browserManager.getState();
+    const nextScheduledTask = typeof scheduler.getNextScheduledTask === 'function'
+      ? scheduler.getNextScheduledTask()
+      : null;
     res.json({
       success: true,
       schedulerRunning: scheduler.running,
+      nextScheduledTask,
       isBusy: !!taskManager.runningAccountId || !!taskManager.isQueueRunning,
       runningAccountId: taskManager.runningAccountId,
       runningAccountName: taskManager.runningAccountName || '',

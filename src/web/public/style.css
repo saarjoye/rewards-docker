@@ -4594,3 +4594,562 @@ input:focus, select:focus, textarea:focus {
   color: #94a3b8 !important;
   margin-left: auto !important;
 }
+
+
+/* ==========================================================================
+   图 2 红框位置：最近待执行任务的剩余倒计时胶囊 (Queue Countdown Capsule)
+   ========================================================================== */
+.queue-countdown-capsule {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #f1f5f9;
+  border: 1px solid #cbd5e1;
+  border-radius: 9999px;
+  padding: 3px 10px;
+  font-size: 11.5px;
+  color: #334155;
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.queue-countdown-capsule:hover {
+  background: #e2e8f0;
+  border-color: #94a3b8;
+  color: #0f172a;
+  transform: translateY(-1px);
+}
+
+.queue-countdown-capsule .countdown-icon {
+  font-size: 12px;
+  display: inline-block;
+}
+
+.queue-countdown-capsule .countdown-text {
+  font-weight: 700;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  letter-spacing: 0.2px;
+}
+
+.queue-countdown-capsule.active-running {
+  background: #f0fdf4;
+  border-color: #86efac;
+  color: #166534;
+  animation: pulse-soft 2s infinite ease-in-out;
+}
+
+@keyframes pulse-soft {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.75; }
+}
+
+/* ==========================================================================
+   全景任务抽屉 (Task Inspector Drawer - 100% 对标竞品图 1)
+   ========================================================================== */
+.task-drawer-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  z-index: 9999;
+  display: flex;
+  justify-content: flex-end;
+  opacity: 1;
+  transition: opacity 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.task-drawer-overlay.hidden {
+  display: none !important;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.task-drawer-panel {
+  width: 540px;
+  max-width: 92vw;
+  height: 100%;
+  background: #ffffff;
+  box-shadow: -8px 0 35px rgba(0, 0, 0, 0.16);
+  display: flex;
+  flex-direction: column;
+  animation: drawerSlideIn 0.28s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes drawerSlideIn {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+.task-drawer-header {
+  padding: 16px 20px;
+  border-bottom: 1px solid #e2e8f0;
+  background: linear-gradient(180deg, #f8fafc 0%, #ffffff 100%);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+
+.drawer-user-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.drawer-avatar {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: #e0f2fe;
+  color: #0369a1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  font-weight: 700;
+  border: 1px solid #bae6fd;
+}
+
+.drawer-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.drawer-name {
+  font-size: 16px;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.drawer-badge-today {
+  background: #fef3c7;
+  color: #b45309;
+  font-weight: 800;
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 6px;
+}
+
+.drawer-email {
+  font-size: 12px;
+  color: #64748b;
+  margin-top: 2px;
+}
+
+.btn-drawer-close {
+  background: transparent;
+  border: none;
+  font-size: 18px;
+  color: #64748b;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.btn-drawer-close:hover {
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+.task-drawer-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.drawer-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.drawer-section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  font-weight: 800;
+  color: #1e293b;
+}
+
+.drawer-streak-summary,
+.drawer-sync-badge,
+.drawer-quests-count {
+  font-size: 11px;
+  color: #64748b;
+  font-weight: 600;
+}
+
+/* 连续签到里程碑卡片 (对标竞品图 1) */
+.drawer-streaks-card {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  padding: 14px;
+}
+
+.streaks-tracks-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 6px;
+}
+
+.streak-track-item {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.track-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.track-label {
+  font-weight: 700;
+  color: #334155;
+}
+
+.track-tag {
+  font-size: 11px;
+  color: #0284c7;
+  font-weight: 700;
+}
+
+/* 7天连续圆圈轨道 (100% 对标竞品打卡小圆圈) */
+.streak-circles-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.streak-circle {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1.5px solid #cbd5e1;
+  background: #f8fafc;
+  color: #94a3b8;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 800;
+  transition: all 0.2s ease;
+}
+
+.streak-circle.done {
+  background: #0284c7;
+  border-color: #0284c7;
+  color: #ffffff;
+}
+
+.streak-circle.reward-pill {
+  width: auto;
+  padding: 0 8px;
+  border-radius: 14px;
+  font-size: 10.5px;
+  background: #fef3c7;
+  border-color: #f59e0b;
+  color: #b45309;
+}
+
+.streak-circle.reward-pill.done {
+  background: #10b981;
+  border-color: #10b981;
+  color: #ffffff;
+}
+
+/* 任务卡片网格 (对标竞品图 1) */
+.drawer-task-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+
+.drawer-task-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: all 0.15s ease;
+}
+
+.drawer-task-card:hover {
+  border-color: #cbd5e1;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.04);
+}
+
+.dt-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.dt-card-title {
+  font-size: 12.5px;
+  font-weight: 800;
+  color: #1e293b;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.dt-card-pts {
+  font-size: 11px;
+  font-weight: 800;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.dt-card-pts.done {
+  background: #ecfdf5;
+  color: #059669;
+}
+
+.dt-card-progress-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: #64748b;
+  font-weight: 600;
+}
+
+.dt-progress-bar {
+  width: 100%;
+  height: 6px;
+  background: #f1f5f9;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.dt-progress-fill {
+  height: 100%;
+  background: #0284c7;
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+.dt-progress-fill.done {
+  background: #10b981;
+}
+
+/* 打孔卡列表 (Quests - 对标竞品具体任务如万圣节、Duolingo) */
+.drawer-quests-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.drawer-quest-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dq-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.dq-title {
+  font-size: 13px;
+  font-weight: 800;
+  color: #1e293b;
+  line-height: 1.3;
+}
+
+.dq-tag {
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+
+.dq-tag.tag-done {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.dq-tag.tag-cooling {
+  background: #fef9c3;
+  color: #854d0e;
+}
+
+.dq-tag.tag-pending {
+  background: #e0f2fe;
+  color: #0369a1;
+}
+
+.dq-meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: #64748b;
+}
+
+.task-drawer-footer {
+  padding: 14px 20px;
+  border-top: 1px solid #e2e8f0;
+  background: #f8fafc;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.btn-drawer-sync {
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  color: #334155;
+  font-weight: 700;
+  font-size: 12px;
+  padding: 7px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-drawer-sync:hover {
+  background: #f1f5f9;
+  border-color: #94a3b8;
+}
+
+.btn-drawer-run {
+  background: #0284c7;
+  border: 1px solid #0284c7;
+  color: #ffffff;
+  font-weight: 700;
+  font-size: 12px;
+  padding: 7px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-drawer-run:hover {
+  background: #0369a1;
+  border-color: #0369a1;
+}
+
+/* 原位单账号明细视图 (方案 1) */
+.gap-single-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.gap-single-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.gap-single-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 700;
+  color: #1e293b;
+}
+
+.gap-single-bar {
+  width: 100%;
+  height: 5px;
+  background: #f1f5f9;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.gap-single-bar-fill {
+  height: 100%;
+  background: #0284c7;
+  border-radius: 3px;
+}
+
+.gap-single-bar-fill.done {
+  background: #10b981;
+}
+
+
+/* 优化调度队列头部：保证倒计时胶囊与状态胶囊完美并存 */
+.box-scheduler-queue .box-header {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 6px !important;
+}
+
+.box-scheduler-queue .box-header > div:first-child {
+  min-width: 0 !important;
+  flex: 1 1 auto !important;
+}
+
+.box-scheduler-queue .box-header-ctrls {
+  flex-shrink: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 5px !important;
+}
+
+.queue-countdown-capsule {
+  padding: 2px 7px !important;
+  font-size: 11px !important;
+  gap: 4px !important;
+  max-width: 155px !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+.gap-single-grid {
+  overflow-y: auto !important;
+  max-height: 200px !important;
+  padding-right: 4px !important;
+}
+
+.gap-single-card {
+  padding: 7px 10px !important;
+}

@@ -159,6 +159,81 @@ class Scheduler {
     this.running = true;
   }
 
+
+  /**
+   * 计算距离下一次定时调度任务的最近执行时段与精确倒计时
+   * 聚合全天 6 大定时时间窗口 (01:00 收割, 09:15 早间, 13:20 午间, 17:15 晚间, 20:00 补做, 21:10 夜间)
+   */
+  getNextScheduledTask() {
+    const cfg = configManager.get()?.scheduler || {};
+    if (!cfg.enabled) {
+      return { enabled: false, text: '调度已暂停', next: null, targetTimestamp: null, allSlots: [] };
+    }
+
+    const retryTime = (cfg.remainingRetryTime && typeof cfg.remainingRetryTime === 'string') ? cfg.remainingRetryTime.trim() : '20:00';
+    let retryHour = 20;
+    let retryMin = 0;
+    if (/^\d{1,2}:\d{1,2}$/.test(retryTime)) {
+      const parts = retryTime.split(':').map(Number);
+      if (parts[0] >= 0 && parts[0] <= 23 && parts[1] >= 0 && parts[1] <= 59) {
+        retryHour = parts[0];
+        retryMin = parts[1];
+      }
+    }
+
+    const allSlots = [
+      { id: 'harvest', name: '额外积分收割', time: '01:00', hour: 1, minute: 0, tag: '🌙 抽屉收割' },
+      { id: 'slot-1', name: '早间错峰时段', time: '09:15', hour: 9, minute: 15, tag: '🌅 早间错峰' },
+      { id: 'slot-2', name: '午间错峰时段', time: '13:20', hour: 13, minute: 20, tag: '☀️ 午间错峰' },
+      { id: 'slot-3', name: '晚间错峰时段', time: '17:15', hour: 17, minute: 15, tag: '🌆 晚间错峰' },
+      { id: 'retry', name: '剩余补做巡检', time: `${String(retryHour).padStart(2, '0')}:${String(retryMin).padStart(2, '0')}`, hour: retryHour, minute: retryMin, tag: '🎯 剩余补做' },
+      { id: 'slot-4', name: '夜间错峰时段', time: '21:10', hour: 21, minute: 10, tag: '🌃 夜间错峰' }
+    ];
+
+    allSlots.sort((a, b) => (a.hour * 60 + a.minute) - (b.hour * 60 + b.minute));
+
+    const now = new Date();
+    const shanghaiStr = now.toLocaleString('en-US', { timeZone: 'Asia/Shanghai' });
+    const localNow = new Date(shanghaiStr);
+    const curYear = localNow.getFullYear();
+    const curMonth = localNow.getMonth();
+    const curDate = localNow.getDate();
+    const curTotalSec = localNow.getHours() * 3600 + localNow.getMinutes() * 60 + localNow.getSeconds();
+
+    let nextSlot = null;
+    let targetTime = null;
+    let isTomorrow = false;
+
+    for (const slot of allSlots) {
+      const slotTotalSec = slot.hour * 3600 + slot.minute * 60;
+      if (slotTotalSec > curTotalSec) {
+        nextSlot = slot;
+        targetTime = new Date(curYear, curMonth, curDate, slot.hour, slot.minute, 0);
+        break;
+      }
+    }
+
+    if (!nextSlot) {
+      nextSlot = allSlots[0];
+      targetTime = new Date(curYear, curMonth, curDate + 1, nextSlot.hour, nextSlot.minute, 0);
+      isTomorrow = true;
+    }
+
+    const diffSec = Math.max(0, Math.round((targetTime.getTime() - localNow.getTime()) / 1000));
+    const targetTimestamp = now.getTime() + diffSec * 1000;
+
+    return {
+      enabled: true,
+      name: nextSlot.name,
+      tag: nextSlot.tag,
+      time: nextSlot.time,
+      isTomorrow,
+      targetTimestamp,
+      diffSec,
+      allSlots: allSlots.map((s) => ({ name: s.name, time: s.time, tag: s.tag }))
+    };
+  }
+
   stop() {
     for (const j of this.jobs) {
       try { j.stop(); } catch {}

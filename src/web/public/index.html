@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Rewards 自动任务系统 (v6.5.1)</title>
+  <title>Rewards 自动任务系统 (v6.6.0)</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -13,7 +13,7 @@
       <div class="sidebar-top">
         <div class="brand">
           <div class="brand-logo-sq">🎁</div>
-          <span class="brand-name">Rewards<span class="brand-dot">.v6.5.1</span></span>
+          <span class="brand-name">Rewards<span class="brand-dot">.v6.6.0</span></span>
         </div>
 
         <div class="store-selector-wrap">
@@ -70,7 +70,7 @@
         </button>
         <div class="mobile-nav-brand">
           <span style="font-size: 18px;">🎁</span>
-          <span class="mobile-nav-title">Rewards<span class="brand-dot">.v6.5.1</span></span>
+          <span class="mobile-nav-title">Rewards<span class="brand-dot">.v6.6.0</span></span>
         </div>
         <button type="button" class="mobile-quick-btn" id="btn-mobile-quick-run">🚀 执行</button>
       </div>
@@ -219,14 +219,15 @@
           </div>
         </section>
 
-        <!-- 第 3 行列 1：官网任务缺口矩阵（官网实时状态，不做积分推算） -->
+        <!-- 第 3 行列 1：官网任务缺口矩阵（支持原位单账号任务深度列表与全盘视图两态切换） -->
         <section class="bento-box box-task-gaps" style="grid-column: 1; grid-row: 3;">
           <div class="box-header">
             <div>
-              <h2 class="box-title">官网任务缺口</h2>
-              <span class="box-sub">按账号显示官网实时完成状态</span>
+              <h2 class="box-title" id="task-gaps-title">官网任务缺口</h2>
+              <span class="box-sub" id="task-gaps-sub">按账号显示官网实时完成状态</span>
             </div>
-            <div class="box-header-ctrls">
+            <div class="box-header-ctrls" style="display: flex; align-items: center; gap: 6px;">
+              <button type="button" class="btn-cancel-sm hidden" id="btn-back-all-gaps" style="padding: 2px 8px; font-size: 11px; border-radius: 6px; cursor: pointer; background: #fff; border: 1px solid #cbd5e1;" title="返回查看全部账号概览">↩ 全盘</button>
               <span class="chip-sm chip-neutral" id="task-gaps-sync-time">未同步</span>
               <button type="button" class="btn-icon-compact" id="btn-refresh-task-gaps" title="刷新官网任务状态">↻</button>
             </div>
@@ -236,15 +237,20 @@
           </div>
         </section>
 
-        <!-- 第 3 行列 2：调度队列与账号执行锁 -->
+        <!-- 第 3 行列 2：调度队列与账号执行锁 (图 2 红框位置增加下一次任务倒计时胶囊) -->
         <section class="bento-box box-scheduler-queue" style="grid-column: 2; grid-row: 3;">
           <div class="box-header">
             <div>
               <h2 class="box-title">调度队列与账号锁</h2>
               <span class="box-sub">错峰时段、运行状态与互斥占用</span>
             </div>
-            <div class="box-header-ctrls">
-              <span class="chip-sm chip-neutral" id="queue-summary">待命</span>
+            <div class="box-header-ctrls" style="display: flex; align-items: center; gap: 8px;">
+              <!-- 用户图 2 红框位置：最近待执行任务的剩余倒计时 -->
+              <div class="queue-countdown-capsule" id="queue-countdown-capsule" title="点击查看全天调度时间表">
+                <span class="countdown-icon">⏱️</span>
+                <span class="countdown-text" id="queue-countdown-text">计算调度中...</span>
+              </div>
+              <span class="chip-sm chip-neutral" id="queue-summary">队列空闲</span>
             </div>
           </div>
           <div class="queue-list" id="queue-list">
@@ -956,6 +962,94 @@
       <div class="modal-foot" style="flex-shrink: 0; padding-top: 12px; border-top: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center;">
         <span style="font-size: 11px; color: #94a3b8;">💡 悬停日期可查看各账号当日官网新增积分与最近同步时间</span>
         <button type="button" class="btn-cancel" id="btn-close-month-modal">关闭窗口</button>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- 抽屉组件：账号专属今日任务完成度全景透视 (100% 对标竞品图 1) -->
+  <div class="task-drawer-overlay hidden" id="task-drawer-overlay">
+    <div class="task-drawer-panel" id="task-drawer-panel">
+      <div class="task-drawer-header">
+        <div class="drawer-user-meta">
+          <div class="drawer-avatar" id="drawer-acc-avatar">👤</div>
+          <div>
+            <div class="drawer-title-row">
+              <span class="drawer-name" id="drawer-acc-name">账号名称</span>
+              <span class="drawer-badge-today" id="drawer-today-badge">+0 分 今日</span>
+            </div>
+            <div class="drawer-email" id="drawer-acc-email">user@outlook.com</div>
+          </div>
+        </div>
+        <div class="drawer-header-actions">
+          <button type="button" class="btn-drawer-close" id="btn-close-task-drawer" title="关闭任务抽屉">✕</button>
+        </div>
+      </div>
+
+      <!-- 抽屉滚动内容区 -->
+      <div class="task-drawer-scroll">
+        <!-- 模块 1：连续打卡印章与大奖进度条 (对标竞品图 1 顶部 139 天连续签到) -->
+        <div class="drawer-section drawer-streaks-card">
+          <div class="drawer-section-title">
+            <span>🔥 连续签到与打卡里程碑</span>
+            <span class="drawer-streak-summary" id="drawer-streak-summary">连签 0 天</span>
+          </div>
+          <!-- 三大打卡连续轨道 -->
+          <div class="streaks-tracks-stack">
+            <!-- 必应 PC 搜索连续打卡 -->
+            <div class="streak-track-item">
+              <div class="track-head">
+                <span class="track-label">🔍 必应搜索连续打卡</span>
+                <span class="track-tag" id="track-search-tag">已连签 0/7 天</span>
+              </div>
+              <div class="streak-circles-row" id="streak-circles-search"></div>
+            </div>
+            <!-- 每日活动集 Daily Set 连续打卡 -->
+            <div class="streak-track-item">
+              <div class="track-head">
+                <span class="track-label">📅 每日活动集 (Daily Set)</span>
+                <span class="track-tag" id="track-daily-tag">已连签 0/7 天</span>
+              </div>
+              <div class="streak-circles-row" id="streak-circles-daily"></div>
+            </div>
+            <!-- 移动端 App 签到连续打卡 -->
+            <div class="streak-track-item">
+              <div class="track-head">
+                <span class="track-label">📱 移动端 App 签到打卡</span>
+                <span class="track-tag" id="track-app-tag">已连签 0/7 天</span>
+              </div>
+              <div class="streak-circles-row" id="streak-circles-app"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 模块 2：今日自动化核心任务进度清单 (对标竞品图 1 核心卡片网格) -->
+        <div class="drawer-section">
+          <div class="drawer-section-title">
+            <span>📋 今日自动化任务进度清单</span>
+            <span class="drawer-sync-badge" id="drawer-sync-time">官网实时对标</span>
+          </div>
+          <div class="drawer-task-grid" id="drawer-task-grid">
+            <!-- 动态渲染各任务卡片 -->
+          </div>
+        </div>
+
+        <!-- 模块 3：官方多步打孔卡与限时活动 (Quests 详细列表) -->
+        <div class="drawer-section">
+          <div class="drawer-section-title">
+            <span>🎯 官方多步打孔卡 (Punch Cards / Quests)</span>
+            <span class="drawer-quests-count" id="drawer-quests-count">0 张进行中</span>
+          </div>
+          <div class="drawer-quests-list" id="drawer-quests-list">
+            <!-- 动态渲染每一张具体打孔卡：万圣节礼遇、Duolingo、专属任务等 -->
+          </div>
+        </div>
+      </div>
+
+      <!-- 抽屉底部操作条 -->
+      <div class="task-drawer-footer">
+        <button type="button" class="btn-drawer-sync" id="btn-drawer-sync-now">🔄 仅同步此账号官网</button>
+        <button type="button" class="btn-drawer-run" id="btn-drawer-run-now">🚀 仅执行此账号剩余任务</button>
       </div>
     </div>
   </div>

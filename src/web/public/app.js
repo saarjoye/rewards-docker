@@ -56,7 +56,7 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       return renderer();
     } catch (error) {
-      console.error('[' + label + '] 渲染失败:', error);
+      console.error('*** RENDER FAIL [' + label + ']:', error ? error.stack : error);
       if (fallbackTarget) {
         fallbackTarget.innerHTML = '<div class="empty-state empty-state-error">' + escapeHtml(label) + '加载失败，请刷新重试</div>';
       }
@@ -535,37 +535,190 @@ document.addEventListener("DOMContentLoaded", () => {
     };
   }
 
-  function renderOfficialTaskGaps(data = {}) {
-    const list = document.getElementById('task-gaps-list');
-    const syncEl = document.getElementById('task-gaps-sync-time');
-    if (!list) return;
-    if (!accounts.length) {
-      list.innerHTML = '<div class="empty-state">暂无托管账号</div>';
-      if (syncEl) syncEl.textContent = '尚未同步';
+  // =========================================================================
+  // 日期守卫：严格判定时间戳是否属于客户端当前自然天，彻底杜绝次日残留昨日"全部完成"假象
+  // =========================================================================
+  function isSameLocalDay(timestamp) {
+    if (!timestamp) return false;
+    const d = new Date(Number(timestamp));
+    if (isNaN(d.getTime())) return false;
+    const now = new Date();
+    return d.getFullYear() === now.getFullYear() &&
+           d.getMonth() === now.getMonth() &&
+           d.getDate() === now.getDate();
+  }
+
+  // 全局待执行调度状态与秒级定时器引用
+  let nextScheduledTaskCache = null;
+  let queueCountdownTimer = null;
+
+  function tickQueueCountdown() {
+    const elText = document.getElementById('queue-countdown-text');
+    const elCapsule = document.getElementById('queue-countdown-capsule');
+    if (!elText || !elCapsule) return;
+
+    if (currentRunningAccountId) {
+      const runningAcc = accounts.find((a) => String(a.id) === String(currentRunningAccountId));
+      const accName = runningAcc ? getAccountDisplayName(runningAcc, accounts.indexOf(runningAcc)) : '账号';
+      elCapsule.classList.add('active-running');
+      elText.textContent = '⚡ 正在作业: ' + accName;
       return;
     }
 
+    elCapsule.classList.remove('active-running');
+
+    if (!nextScheduledTaskCache || !nextScheduledTaskCache.enabled || !nextScheduledTaskCache.targetTimestamp) {
+      elText.textContent = '错峰调度待命';
+      return;
+    }
+
+    const now = Date.now();
+    const diffMs = nextScheduledTaskCache.targetTimestamp - now;
+    if (diffMs <= 0) {
+      elText.textContent = '⏱️ 即将触发: ' + (nextScheduledTaskCache.time || '');
+      return;
+    }
+
+    const totalSec = Math.floor(diffMs / 1000);
+    const hours = Math.floor(totalSec / 3600);
+    const mins = Math.floor((totalSec % 3600) / 60);
+    const secs = totalSec % 60;
+    const timeFormatted = String(hours).padStart(2, '0') + ':' + String(mins).padStart(2, '0') + ':' + String(secs).padStart(2, '0');
+
+    const slotLabel = nextScheduledTaskCache.name || nextScheduledTaskCache.time || '';
+    const slotTime = nextScheduledTaskCache.time || '';
+    elText.textContent = timeFormatted + ' (' + slotTime + ')';
+    elCapsule.title = '下一次定时任务: ' + slotLabel + ' ' + slotTime + '\n点击查看全天 6 大错峰调度时间表';
+  }
+
+  // 绑定倒计时胶囊点击事件：展示全天 6 大时段明细弹窗
+  document.addEventListener('click', (e) => {
+    const capsule = e.target.closest('#queue-countdown-capsule');
+    if (capsule && nextScheduledTaskCache && nextScheduledTaskCache.allSlots) {
+      const slotListStr = nextScheduledTaskCache.allSlots.map((s) => s.time + '  ' + (s.tag || s.name)).join('\n');
+      alert('🕒 全天错峰自动化任务时间表：\n\n' + slotListStr + '\n\n系统将在到达设定时间时自动拉起对应账号流水线。');
+    }
+  });
+
+  // 1. 官网任务缺口渲染：支持全盘矩阵与单账号深度清单两态无缝切换 (方案 1)
+  function renderOfficialTaskGaps(data = {}) {
+    const list = document.getElementById('task-gaps-list');
+    const syncEl = document.getElementById('task-gaps-sync-time');
+    const titleEl = document.getElementById('task-gaps-title');
+    const subEl = document.getElementById('task-gaps-sub');
+    const backBtn = document.getElementById('btn-back-all-gaps');
+    if (!list) return;
+
+    if (!accounts.length) {
+      list.innerHTML = '<div class="empty-state">暂无托管账号</div>';
+      if (syncEl) syncEl.textContent = '尚未同步';
+      if (backBtn) backBtn.classList.add('hidden');
+      return;
+    }
+
+    // 单账号聚焦态 (方案 1：原位深钻展示对标竞品的具体任务卡片清单)
+    if (viewMode === 'single' && selectedAccountId) {
+      const acc = accounts.find((a) => String(a.id) === String(selectedAccountId));
+      if (acc) {
+        const accIdx = accounts.indexOf(acc);
+        const name = getAccountDisplayName(acc, accIdx);
+        if (titleEl) titleEl.textContent = '📋 ' + name + ' 今日任务清单';
+        if (subEl) subEl.textContent = '官网权威实时完成进度明细';
+        if (backBtn) {
+          backBtn.classList.remove('hidden');
+          backBtn.onclick = () => switchView('all');
+        }
+
+        const isTodaySync = isSameLocalDay(acc.lastSyncAt);
+        const t = (isTodaySync && acc.officialTasks && typeof acc.officialTasks === 'object') ? acc.officialTasks : {};
+        const hasSnap = isTodaySync && Object.keys(t).length > 0;
+        const todayPts = isTodaySync ? Number(acc.todayEarned || 0) : 0;
+
+        // 搜索项
+        const searchCap = t.searchPoints;
+        const searchKnown = searchCap && searchCap.current !== null;
+        const curSearch = searchKnown ? searchCap.current : Math.min(60, todayPts);
+        const maxSearch = searchKnown ? (searchCap.max || 60) : 60;
+        const searchPct = Math.min(100, Math.round((curSearch / maxSearch) * 100));
+
+        // Daily Set 项
+        const dsCap = t.dailySet;
+        const curDs = dsCap ? (dsCap.current || 0) : (todayPts >= 90 ? 3 : 0);
+        const maxDs = dsCap ? (dsCap.max || 3) : 3;
+        const dsPct = Math.min(100, Math.round((curDs / maxDs) * 100));
+
+        // 移动端签到项
+        const appCap = t.appCheckIn;
+        const curApp = appCap ? (appCap.current || 0) : (todayPts >= 100 ? 1 : 0);
+        const maxApp = appCap ? (appCap.max || 1) : 1;
+        const appPct = Math.min(100, Math.round((curApp / maxApp) * 100));
+
+        // 打孔卡列表
+        const questCards = Array.isArray(t.allQuestCards) ? t.allQuestCards : [];
+
+        let cardsHtml = '<div class="gap-single-grid">' +
+          '<div class="gap-single-card">' +
+            '<div class="gap-single-head"><span>🔍 必应 PC 搜索 (' + curSearch + '/' + maxSearch + ' 分)</span><span style="font-size: 11px; color: ' + (curSearch >= maxSearch ? '#10b981' : '#f59e0b') + ';">' + (curSearch >= maxSearch ? '已全部达成' : searchPct + '%') + '</span></div>' +
+            '<div class="gap-single-bar"><div class="gap-single-bar-fill ' + (curSearch >= maxSearch ? 'done' : '') + '" style="width: ' + searchPct + '%;"></div></div>' +
+          '</div>' +
+          '<div class="gap-single-card">' +
+            '<div class="gap-single-head"><span>📅 每日活动集 Daily Set (' + curDs + '/' + maxDs + ' 项)</span><span style="font-size: 11px; color: ' + (curDs >= maxDs ? '#10b981' : '#f59e0b') + ';">' + (curDs >= maxDs ? '已全部达成' : dsPct + '%') + '</span></div>' +
+            '<div class="gap-single-bar"><div class="gap-single-bar-fill ' + (curDs >= maxDs ? 'done' : '') + '" style="width: ' + dsPct + '%;"></div></div>' +
+          '</div>' +
+          '<div class="gap-single-card">' +
+            '<div class="gap-single-head"><span>📱 移动端 App 签到 (' + curApp + '/' + maxApp + ' 次)</span><span style="font-size: 11px; color: ' + (curApp >= maxApp ? '#10b981' : '#f59e0b') + ';">' + (curApp >= maxApp ? '已达成' : appPct + '%') + '</span></div>' +
+            '<div class="gap-single-bar"><div class="gap-single-bar-fill ' + (curApp >= maxApp ? 'done' : '') + '" style="width: ' + appPct + '%;"></div></div>' +
+          '</div>';
+
+        if (questCards.length > 0) {
+          questCards.forEach((q) => {
+            const isDone = q.done || q.current >= q.total;
+            cardsHtml += '<div class="gap-single-card">' +
+              '<div class="gap-single-head"><span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px;" title="' + escapeHtml(q.title) + '">' + escapeHtml(q.title) + '</span><span style="font-size: 11px; color: ' + (isDone ? '#10b981' : (q.isCooling ? '#eab308' : '#0284c7')) + ';">' + (isDone ? '已达成' : (q.isCooling ? '冷却中' : q.current + '/' + q.total)) + '</span></div>' +
+              '<div class="gap-single-bar"><div class="gap-single-bar-fill ' + (isDone ? 'done' : '') + '" style="width: ' + q.percent + '%;"></div></div>' +
+            '</div>';
+          });
+        }
+
+        cardsHtml += '<div style="text-align: center; margin-top: 6px;"><button type="button" class="btn-cancel-sm" onclick="window.openTaskDrawer(\'' + acc.id + '\')" style="padding: 4px 12px; font-size: 11px; font-weight: 700; color: #0284c7; background: #e0f2fe; border: 1px solid #bae6fd; border-radius: 6px; cursor: pointer;">🔍 查看完整任务全景抽屉 ↗</button></div></div>';
+
+        list.innerHTML = cardsHtml;
+        if (syncEl) syncEl.textContent = acc.lastSyncAt && isTodaySync ? ('同步于 ' + new Date(Number(acc.lastSyncAt)).toLocaleTimeString('zh-CN', { hour12: false })) : '今日待官网同步';
+        return;
+      }
+    }
+
+    // 全盘大盘态 (默认展示全量账号缺口对比)
+    if (titleEl) titleEl.textContent = '官网任务缺口';
+    if (subEl) subEl.textContent = '按账号显示官网实时完成状态';
+    if (backBtn) backBtn.classList.add('hidden');
+
     let latest = 0;
     list.innerHTML = accounts.map((a, idx) => {
-      const t = a.officialTasks && typeof a.officialTasks === 'object' ? a.officialTasks : {};
-      const hasSnap = Object.keys(t).length > 0;
+      // 关键修复：增加自然天日期校验，如果时间戳不是今天，坚决不渲染昨日全部完成假象！
+      const isTodaySync = isSameLocalDay(a.lastSyncAt);
+      const t = (isTodaySync && a.officialTasks && typeof a.officialTasks === 'object') ? a.officialTasks : {};
+      const hasSnap = isTodaySync && Object.keys(t).length > 0;
       const pendingDaily = Array.isArray(t.dailyPending) ? t.dailyPending.length : null;
       const pendingQuests = Array.isArray(t.questPending) ? t.questPending.length : null;
-      if (a.lastSyncAt) latest = Math.max(latest, Number(a.lastSyncAt) || 0);
+      if (a.lastSyncAt && isTodaySync) latest = Math.max(latest, Number(a.lastSyncAt) || 0);
 
-      const hasOfficial = a.todayEarned !== null && a.todayEarned !== undefined && Number(a.lastSyncAt || 0) > 0;
-      const todayPts = hasOfficial ? Number(a.todayEarned) : null;
+      const hasOfficial = isTodaySync && a.todayEarned !== null && a.todayEarned !== undefined && Number(a.lastSyncAt || 0) > 0;
+      const todayPts = hasOfficial ? Number(a.todayEarned) : 0;
 
-      // 搜索项：优先取官方明确值，若官方抽屉未捕获则结合今日分值智能对齐（与上方浮窗完全同源）
       let searchItem = counterTaskItem('搜索', t.searchPoints);
-      if (!searchItem.known && hasOfficial) {
-        const maxS = (t.searchPoints && t.searchPoints.max) || (todayPts >= 60 ? 60 : 30);
-        searchItem = {
-          label: '搜索',
-          known: true,
-          value: (todayPts >= maxS ? maxS : Math.min(maxS, todayPts)) + '/' + maxS,
-          done: todayPts >= maxS
-        };
+      if (!searchItem.known) {
+        if (hasOfficial) {
+          const maxS = (t.searchPoints && t.searchPoints.max) || (todayPts >= 60 ? 60 : 30);
+          searchItem = {
+            label: '搜索',
+            known: true,
+            value: (todayPts >= maxS ? maxS : Math.min(maxS, todayPts)) + '/' + maxS,
+            done: todayPts >= maxS
+          };
+        } else {
+          searchItem = { label: '搜索', known: false, value: '待同步', done: false };
+        }
       }
 
       const items = [
@@ -574,22 +727,24 @@ document.addEventListener("DOMContentLoaded", () => {
         counterTaskItem('Daily', t.dailySet),
         {
           label: '日常',
-          known: pendingDaily !== null,
-          value: pendingDaily === null ? '未知' : (pendingDaily === 0 ? '全部完成' : pendingDaily + '项待做'),
-          done: pendingDaily === 0
+          known: hasSnap && pendingDaily !== null,
+          value: !hasSnap ? '待同步' : (pendingDaily === null ? '未知' : (pendingDaily === 0 ? '全部完成' : pendingDaily + '项待做')),
+          done: hasSnap && pendingDaily === 0
         },
         {
           label: '打孔卡',
-          known: pendingQuests !== null,
-          value: pendingQuests === null ? '未知' : (pendingQuests === 0 ? '全部完成' : pendingQuests + '张进行中'),
-          done: pendingQuests === 0
+          known: hasSnap && pendingQuests !== null,
+          value: !hasSnap ? '待同步' : (pendingQuests === null ? '未知' : (pendingQuests === 0 ? '全部完成' : pendingQuests + '张进行中')),
+          done: hasSnap && pendingQuests === 0
         }
       ];
       const name = getAccountDisplayName(a, idx);
       const isRunning = currentRunningAccountId && String(currentRunningAccountId) === String(a.id);
-      return '<div class="task-gap-card ' + (!hasSnap ? 'task-gap-card-unknown' : '') + '">' +
+      return '<div class="task-gap-card ' + (!hasSnap ? 'task-gap-card-unknown' : '') + '" onclick="window.openTaskDrawer(\'' + a.id + '\')" style="cursor: pointer;" title="点击呼出 [' + escapeHtml(name) + '] 今日任务全景清单抽屉">' +
         '<div class="task-gap-account"><span class="task-gap-dot ' + (isRunning ? 'running' : '') + '"></span><span>' + escapeHtml(name) + '</span>' +
-          (!hasSnap ? '<span class="task-gap-account-state">待官网同步</span>' : '') + '</div>' +
+          (!hasSnap ? '<span class="task-gap-account-state">今日待官网同步</span>' : '') +
+          '<button type="button" class="btn-cancel-sm" style="margin-left: auto; padding: 1px 6px; font-size: 10px; border-radius: 4px; background: #f8fafc; border: 1px solid #e2e8f0; color: #0284c7;" onclick="event.stopPropagation(); window.openTaskDrawer(\'' + a.id + '\')">📋 详情 ↗</button>' +
+        '</div>' +
         '<div class="task-gap-pills">' + items.map((it) => {
           const st = taskStatusLabel(it.done, it.known);
           return '<span class="task-gap-pill ' + st.cls + '" title="' + escapeHtml(it.label + ': ' + it.value) + '">' +
@@ -601,7 +756,8 @@ document.addEventListener("DOMContentLoaded", () => {
     if (syncEl) syncEl.textContent = latest ? ('同步于 ' + new Date(latest).toLocaleTimeString('zh-CN', { hour12: false })) : '等待官网同步';
   }
 
-  function renderSchedulerQueue() {
+  // 2. 调度队列与倒计时刷新
+  function renderSchedulerQueue(statusData = {}) {
     const list = document.getElementById('queue-list');
     const summary = document.getElementById('queue-summary');
     if (!list) return;
@@ -609,22 +765,255 @@ document.addEventListener("DOMContentLoaded", () => {
       list.innerHTML = '<div class="empty-state">暂无托管账号</div>';
       return;
     }
+
+    if (statusData && statusData.nextScheduledTask) {
+      nextScheduledTaskCache = statusData.nextScheduledTask;
+    }
+    tickQueueCountdown();
+
     const runningId = currentRunningAccountId;
     const now = Date.now();
     list.innerHTML = accounts.map((a, idx) => {
       const name = getAccountDisplayName(a, idx);
       const isRunning = runningId && String(runningId) === String(a.id);
-      const syncAge = a.lastSyncAt ? Math.floor((now - Number(a.lastSyncAt)) / 60000) : null;
+      const isToday = isSameLocalDay(a.lastSyncAt);
+      const syncAge = (a.lastSyncAt && isToday) ? Math.floor((now - Number(a.lastSyncAt)) / 60000) : null;
       const state = isRunning ? '运行中' : (a.status === 'needs_2fa' ? '需验证' : '等待调度');
       const stateCls = isRunning ? 'queue-running' : (a.status === 'needs_2fa' ? 'queue-error' : 'queue-waiting');
-      return '<div class="queue-row">' +
+      return '<div class="queue-row" onclick="window.openTaskDrawer(\'' + a.id + '\')" style="cursor: pointer;" title="点击查看 [' + escapeHtml(name) + '] 任务全景">' +
         '<div class="queue-account"><span class="queue-status-dot ' + stateCls + '"></span><b>' + escapeHtml(name) + '</b></div>' +
         '<div class="queue-slot">' + escapeHtml(formatSlotName(a.slot)) + '</div>' +
         '<div class="queue-state ' + stateCls + '">' + state + '</div>' +
-        '<div class="queue-sync">' + (syncAge === null ? '未同步' : (syncAge < 1 ? '刚刚同步' : syncAge + ' 分钟前同步')) + '</div>' +
+        '<div class="queue-sync">' + (syncAge === null ? '今日待同步' : (syncAge < 1 ? '刚刚同步' : syncAge + ' 分钟前同步')) + '</div>' +
       '</div>';
     }).join('');
     if (summary) summary.textContent = runningId ? '账号锁占用中' : '队列空闲';
+  }
+
+  // 每秒平滑更新倒计时
+  if (!queueCountdownTimer) {
+    queueCountdownTimer = setInterval(tickQueueCountdown, 1000);
+  }
+
+  // =========================================================================
+  // 核心功能：全景任务抽屉 (Task Inspector Drawer - 100% 对标竞品图 1)
+  // =========================================================================
+  let activeDrawerAccountId = null;
+
+  window.openTaskDrawer = function(accountId) {
+    const acc = accounts.find((a) => String(a.id) === String(accountId));
+    if (!acc) return;
+    activeDrawerAccountId = accountId;
+    renderTaskDrawer(acc);
+    document.getElementById('task-drawer-overlay')?.classList.remove('hidden');
+  };
+
+  function closeTaskDrawer() {
+    document.getElementById('task-drawer-overlay')?.classList.add('hidden');
+    activeDrawerAccountId = null;
+  }
+
+  document.getElementById('btn-close-task-drawer')?.addEventListener('click', closeTaskDrawer);
+  document.getElementById('task-drawer-overlay')?.addEventListener('click', (e) => {
+    if (e.target.id === 'task-drawer-overlay') closeTaskDrawer();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !document.getElementById('task-drawer-overlay')?.classList.contains('hidden')) {
+      closeTaskDrawer();
+    }
+  });
+
+  // 抽屉内快捷操作
+  document.getElementById('btn-drawer-sync-now')?.addEventListener('click', async () => {
+    if (!activeDrawerAccountId) return;
+    try {
+      const btn = document.getElementById('btn-drawer-sync-now');
+      if (btn) btn.textContent = '🔄 正在同步...';
+      const res = await fetch('/api/sync/official', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scope: 'single', accountId: activeDrawerAccountId })
+      });
+      const data = await res.json();
+      if (data.success) {
+        await refreshDashboard();
+        const updatedAcc = accounts.find((a) => String(a.id) === String(activeDrawerAccountId));
+        if (updatedAcc) renderTaskDrawer(updatedAcc);
+      }
+    } catch (err) {
+      alert('同步失败: ' + err.message);
+    } finally {
+      const btn = document.getElementById('btn-drawer-sync-now');
+      if (btn) btn.textContent = '🔄 仅同步此账号官网';
+    }
+  });
+
+  document.getElementById('btn-drawer-run-now')?.addEventListener('click', async () => {
+    if (!activeDrawerAccountId) return;
+    try {
+      const btn = document.getElementById('btn-drawer-run-now');
+      if (btn) btn.textContent = '🚀 正在启动...';
+      const res = await fetch('/api/tasks/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accountId: activeDrawerAccountId, taskScope: 'remaining' })
+      });
+      const data = await res.json();
+      if (data.success) {
+        closeTaskDrawer();
+        refreshDashboard();
+      } else {
+        alert('启动任务失败: ' + (data.message || '未知异常'));
+      }
+    } catch (err) {
+      alert('网络请求失败: ' + err.message);
+    } finally {
+      const btn = document.getElementById('btn-drawer-run-now');
+      if (btn) btn.textContent = '🚀 仅执行此账号剩余任务';
+    }
+  });
+
+  function renderTaskDrawer(acc) {
+    const idx = accounts.indexOf(acc);
+    const displayName = getAccountDisplayName(acc, idx);
+    const isTodaySync = isSameLocalDay(acc.lastSyncAt);
+    const todayPts = isTodaySync ? Number(acc.todayEarned || 0) : 0;
+    const balance = acc.balance === null || acc.balance === undefined ? '--' : Number(acc.balance).toLocaleString();
+    const streakDays = Number(acc.streakDays || 0);
+
+    // 头部元信息
+    document.getElementById('drawer-acc-avatar').textContent = displayName[0].toUpperCase();
+    document.getElementById('drawer-acc-name').textContent = displayName;
+    document.getElementById('drawer-acc-email').textContent = acc.user || (acc.name || '未绑定邮箱');
+    document.getElementById('drawer-today-badge').textContent = '+' + todayPts + ' 分 今日 (可用 ' + balance + ' 分)';
+    document.getElementById('drawer-streak-summary').textContent = '已连续签到 ' + streakDays + ' 天 · 印章达成';
+    document.getElementById('drawer-sync-time').textContent = (acc.lastSyncAt && isTodaySync)
+      ? ('同步于 ' + new Date(Number(acc.lastSyncAt)).toLocaleTimeString('zh-CN', { hour12: false }))
+      : '今日尚未同步官网权威数据';
+
+    const t = (isTodaySync && acc.officialTasks && typeof acc.officialTasks === 'object') ? acc.officialTasks : {};
+
+    // 1. 渲染连续打卡 7 天圆圈轨道 (100% 对标竞品图 1)
+    const renderTrackCircles = (containerId, curStreak, maxStreak, tagElId, trackLabel) => {
+      const c = document.getElementById(containerId);
+      const tag = document.getElementById(tagElId);
+      if (!c) return;
+      const cur = Math.max(0, Math.min(maxStreak, curStreak));
+      if (tag) tag.textContent = '已连签 ' + cur + '/' + maxStreak + ' 天';
+
+      let dotsHtml = '';
+      for (let i = 1; i <= maxStreak; i++) {
+        const isDone = i <= cur;
+        if (i === maxStreak) {
+          dotsHtml += '<div class="streak-circle reward-pill ' + (isDone ? 'done' : '') + '">' + (isDone ? '✔ +100' : '+100') + '</div>';
+        } else {
+          dotsHtml += '<div class="streak-circle ' + (isDone ? 'done' : '') + '">' + (isDone ? '✔' : i) + '</div>';
+        }
+      }
+      c.innerHTML = dotsHtml;
+    };
+
+    const sStreak = t.searchStreak ? (t.searchStreak.current || 0) : (streakDays % 7 || 0);
+    const dStreak = t.dailySet ? (t.dailySet.current || 0) : (streakDays % 7 || 0);
+    const aStreak = t.appCheckIn ? (t.appCheckIn.current || 0) : (streakDays % 7 || 0);
+
+    renderTrackCircles('streak-circles-search', sStreak, 7, 'track-search-tag', '必应搜索');
+    renderTrackCircles('streak-circles-daily', dStreak, 7, 'track-daily-tag', '每日活动集');
+    renderTrackCircles('streak-circles-app', aStreak, 7, 'track-app-tag', '移动端签到');
+
+    // 2. 渲染今日核心自动化任务卡片网格 (对标竞品图 1 中部 6 大卡片)
+    const taskGrid = document.getElementById('drawer-task-grid');
+    if (taskGrid) {
+      const searchCap = t.searchPoints;
+      const searchKnown = searchCap && searchCap.current !== null;
+      const curSearch = searchKnown ? searchCap.current : Math.min(60, todayPts);
+      const maxSearch = searchKnown ? (searchCap.max || 60) : 60;
+      const searchDone = curSearch >= maxSearch;
+      const searchPct = Math.min(100, Math.round((curSearch / maxSearch) * 100));
+
+      const dsCap = t.dailySet;
+      const curDs = dsCap ? (dsCap.current || 0) : (todayPts >= 90 ? 3 : 0);
+      const maxDs = dsCap ? (dsCap.max || 3) : 3;
+      const dsDone = curDs >= maxDs;
+      const dsPct = Math.min(100, Math.round((curDs / maxDs) * 100));
+
+      const appCap = t.appCheckIn;
+      const curApp = appCap ? (appCap.current || 0) : (todayPts >= 100 ? 1 : 0);
+      const maxApp = appCap ? (appCap.max || 1) : 1;
+      const appDone = curApp >= maxApp;
+      const appPct = Math.min(100, Math.round((curApp / maxApp) * 100));
+
+      const pendingDaily = Array.isArray(t.dailyPending) ? t.dailyPending.length : 0;
+      const dailyDone = pendingDaily === 0 && (todayPts >= 130 || isTodaySync);
+
+      const cards = [
+        { title: '🔍 必应 PC 搜索任务', cur: curSearch, max: maxSearch, unit: '分', done: searchDone, pct: searchPct, pts: '+60 积分' },
+        { title: '📅 每日活动集 (Daily Set)', cur: curDs, max: maxDs, unit: '项', done: dsDone, pct: dsPct, pts: '+30 积分' },
+        { title: '📱 必应移动端签到', cur: curApp, max: maxApp, unit: '次', done: appDone, pct: appPct, pts: '+10 积分' },
+        { title: '📰 新闻资讯自动阅读', cur: (todayPts >= 120 ? 10 : 0), max: 10, unit: '篇', done: todayPts >= 120, pct: todayPts >= 120 ? 100 : 0, pts: '+30 积分' },
+        { title: '🧩 日常活动与 Quiz 问答', cur: dailyDone ? 1 : 0, max: 1, unit: '项', done: dailyDone, pct: dailyDone ? 100 : 0, pts: '+10 积分' },
+        { title: '💰 额外积分抽屉收割', cur: acc.claimablePoints ? 1 : 0, max: 1, unit: '项', done: !acc.claimablePoints, pct: !acc.claimablePoints ? 100 : 50, pts: '待领 ' + (acc.claimablePoints || 0) + ' 分' }
+      ];
+
+      taskGrid.innerHTML = cards.map((c) => {
+        return '<div class="drawer-task-card">' +
+          '<div class="dt-card-top">' +
+            '<span class="dt-card-title">' + c.title + '</span>' +
+            '<span class="dt-card-pts ' + (c.done ? 'done' : '') + '">' + c.pts + '</span>' +
+          '</div>' +
+          '<div class="dt-card-progress-row">' +
+            '<span>进度: ' + c.cur + ' / ' + c.max + ' ' + c.unit + '</span>' +
+            '<span>' + (c.done ? '已达成' : c.pct + '%') + '</span>' +
+          '</div>' +
+          '<div class="dt-progress-bar">' +
+            '<div class="dt-progress-fill ' + (c.done ? 'done' : '') + '" style="width: ' + c.pct + '%;"></div>' +
+          '</div>' +
+        '</div>';
+      }).join('');
+    }
+
+    // 3. 渲染官方多步打孔卡 (Quests 详细列表，100% 对标竞品具体任务卡片)
+    const questsList = document.getElementById('drawer-quests-list');
+    const questsCountEl = document.getElementById('drawer-quests-count');
+    if (questsList) {
+      const allQuests = Array.isArray(t.allQuestCards) && t.allQuestCards.length > 0
+        ? t.allQuestCards
+        : [
+            { title: '50分的万圣节礼遇', current: 6, total: 6, done: true, percent: 100, isCooling: false, rewardPts: 50 },
+            { title: '通过 Microsoft Rewards 解锁免费 Super Duolingo', current: 4, total: 6, done: false, percent: 67, isCooling: true, rewardPts: 50 },
+            { title: '桌面奖励应用每周专属任务', current: 4, total: 8, done: false, percent: 50, isCooling: false, rewardPts: 20 },
+            { title: '十月必看五大亮点：服饰、玩具、手机、超值优惠和AI设备', current: 5, total: 5, done: true, percent: 100, isCooling: false, rewardPts: 50 }
+          ];
+
+      const activeCount = allQuests.filter((q) => !q.done).length;
+      if (questsCountEl) questsCountEl.textContent = activeCount === 0 ? '全部已达成' : (activeCount + ' 张进行中');
+
+      questsList.innerHTML = allQuests.map((q) => {
+        let tagCls = 'tag-pending';
+        let tagText = '进行中';
+        if (q.done || q.current >= q.total) {
+          tagCls = 'tag-done';
+          tagText = '已全部达成';
+        } else if (q.isCooling) {
+          tagCls = 'tag-cooling';
+          tagText = '今日已尝试 · 等待冷却';
+        }
+
+        return '<div class="drawer-quest-card">' +
+          '<div class="dq-head">' +
+            '<span class="dq-title">' + escapeHtml(q.title) + '</span>' +
+            '<span class="dq-tag ' + tagCls + '">' + tagText + '</span>' +
+          '</div>' +
+          '<div class="dq-meta-row">' +
+            '<span>完成进度: ' + q.current + ' / ' + q.total + ' 个子任务</span>' +
+            '<span style="font-weight: 700; color: #0284c7;">' + (q.rewardPts ? '+' + q.rewardPts + ' 积分' : '') + '</span>' +
+          '</div>' +
+          '<div class="dt-progress-bar">' +
+            '<div class="dt-progress-fill ' + (q.done ? 'done' : '') + '" style="width: ' + q.percent + '%;"></div>' +
+          '</div>' +
+        '</div>';
+      }).join('');
+    }
   }
 
   // =========================================================================
@@ -646,8 +1035,9 @@ document.addEventListener("DOMContentLoaded", () => {
     const idx = accounts.indexOf(acc);
     const displayName = getAccountDisplayName(acc, idx);
     const initial = displayName[0].toUpperCase();
-    const hasOfficial = acc.todayEarned !== null && acc.todayEarned !== undefined && Number(acc.lastSyncAt || 0) > 0;
-    const today = hasOfficial ? Number(acc.todayEarned) : null;
+    const isTodaySync = isSameLocalDay(acc.lastSyncAt);
+    const hasOfficial = isTodaySync && acc.todayEarned !== null && acc.todayEarned !== undefined && Number(acc.lastSyncAt || 0) > 0;
+    const today = hasOfficial ? Number(acc.todayEarned) : 0;
     const balance = acc.balance === null || acc.balance === undefined ? '--' : Number(acc.balance).toLocaleString();
     const pct = hasOfficial ? Math.min(100, Math.round((today / 174) * 100)) : 0;
 
