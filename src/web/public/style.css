@@ -5153,3 +5153,45 @@ input:focus, select:focus, textarea:focus {
 .gap-single-card {
   padding: 7px 10px !important;
 }
+
+
+/* 彻底解决账号名过长导致详情按钮被截断的 flex 挤压问题 */
+.task-gap-account {
+  max-width: 175px !important;
+  overflow: visible !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 5px !important;
+  flex-shrink: 0 !important;
+}
+
+.task-gap-account .acc-name-txt {
+  max-width: 78px !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  display: inline-block !important;
+  font-weight: 750 !important;
+  color: #1e293b !important;
+}
+
+.btn-task-detail {
+  flex-shrink: 0 !important;
+  white-space: nowrap !important;
+  padding: 2px 7px !important;
+  font-size: 10.5px !important;
+  font-weight: 700 !important;
+  border-radius: 5px !important;
+  background: #f0fdf4 !important;
+  border: 1px solid #bbf7d0 !important;
+  color: #15803d !important;
+  cursor: pointer !important;
+  line-height: 1.2 !important;
+  transition: all 0.15s ease !important;
+}
+
+.btn-task-detail:hover {
+  background: #dcfce7 !important;
+  border-color: #86efac !important;
+  transform: translateY(-1px) !important;
+}

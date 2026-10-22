@@ -741,9 +741,9 @@ document.addEventListener("DOMContentLoaded", () => {
       const name = getAccountDisplayName(a, idx);
       const isRunning = currentRunningAccountId && String(currentRunningAccountId) === String(a.id);
       return '<div class="task-gap-card ' + (!hasSnap ? 'task-gap-card-unknown' : '') + '" onclick="window.openTaskDrawer(\'' + a.id + '\')" style="cursor: pointer;" title="点击呼出 [' + escapeHtml(name) + '] 今日任务全景清单抽屉">' +
-        '<div class="task-gap-account"><span class="task-gap-dot ' + (isRunning ? 'running' : '') + '"></span><span>' + escapeHtml(name) + '</span>' +
-          (!hasSnap ? '<span class="task-gap-account-state">今日待官网同步</span>' : '') +
-          '<button type="button" class="btn-cancel-sm" style="margin-left: auto; padding: 1px 6px; font-size: 10px; border-radius: 4px; background: #f8fafc; border: 1px solid #e2e8f0; color: #0284c7;" onclick="event.stopPropagation(); window.openTaskDrawer(\'' + a.id + '\')">📋 详情 ↗</button>' +
+        '<div class="task-gap-account"><span class="task-gap-dot ' + (isRunning ? 'running' : '') + '"></span><span class="acc-name-txt" title="' + escapeHtml(name) + '">' + escapeHtml(name) + '</span>' +
+          (!hasSnap ? '<span class="task-gap-account-state">待同步</span>' : '') +
+          '<button type="button" class="btn-task-detail" onclick="event.stopPropagation(); window.openTaskDrawer(\'' + a.id + '\')" title="打开今日任务全景清单">📋 详情 ↗</button>' +
         '</div>' +
         '<div class="task-gap-pills">' + items.map((it) => {
           const st = taskStatusLabel(it.done, it.known);
@@ -913,13 +913,22 @@ document.addEventListener("DOMContentLoaded", () => {
       c.innerHTML = dotsHtml;
     };
 
-    const sStreak = t.searchStreak ? (t.searchStreak.current || 0) : (streakDays % 7 || 0);
-    const dStreak = t.dailySet ? (t.dailySet.current || 0) : (streakDays % 7 || 0);
-    const aStreak = t.appCheckIn ? (t.appCheckIn.current || 0) : (streakDays % 7 || 0);
+    // 严格以官网权威数据为准：若官网有明确连续子天数则展示，若无则展示今日真实打卡达成状态
+    const searchDoneToday = (t.searchPoints && t.searchPoints.current > 0) || todayPts > 0;
+    const dailyDoneToday = (t.dailySet && t.dailySet.current >= (t.dailySet.max || 3)) || todayPts >= 90;
+    const appDoneToday = (t.appCheckIn && t.appCheckIn.current >= (t.appCheckIn.max || 1)) || todayPts >= 100;
 
-    renderTrackCircles('streak-circles-search', sStreak, 7, 'track-search-tag', '必应搜索');
-    renderTrackCircles('streak-circles-daily', dStreak, 7, 'track-daily-tag', '每日活动集');
-    renderTrackCircles('streak-circles-app', aStreak, 7, 'track-app-tag', '移动端签到');
+    const sVal = t.searchStreak ? (t.searchStreak.current || 0) : (searchDoneToday ? 1 : 0);
+    const dVal = t.dailySet ? (t.dailySet.current || 0) : (dailyDoneToday ? 1 : 0);
+    const aVal = t.appCheckIn ? (t.appCheckIn.current || 0) : (appDoneToday ? 1 : 0);
+
+    const sMax = (t.searchStreak && t.searchStreak.max) ? t.searchStreak.max : (t.searchStreak ? 7 : 1);
+    const dMax = (t.dailySet && t.dailySet.max) ? t.dailySet.max : (t.dailySet ? 7 : 1);
+    const aMax = (t.appCheckIn && t.appCheckIn.max) ? t.appCheckIn.max : (t.appCheckIn ? 7 : 1);
+
+    renderTrackCircles('streak-circles-search', sVal, sMax, 'track-search-tag', '必应搜索');
+    renderTrackCircles('streak-circles-daily', dVal, dMax, 'track-daily-tag', '每日活动集');
+    renderTrackCircles('streak-circles-app', aVal, aMax, 'track-app-tag', '移动端签到');
 
     // 2. 渲染今日核心自动化任务卡片网格 (对标竞品图 1 中部 6 大卡片)
     const taskGrid = document.getElementById('drawer-task-grid');

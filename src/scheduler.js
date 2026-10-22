@@ -113,15 +113,23 @@ class Scheduler {
           const todayStr = getTodayDateString();
 
           // 筛选本时段匹配的账号：
-          // 1) 明确指定当前时段的账号 (acc.slot === slotDef.id)
-          // 2) 设为「智能错峰 (auto)」并按账号序列哈希轮转到本时段、或今日尚未跑满的账号
+          // 1) 明确指定当前时段的账号：严格在指定时段触发
+          // 2) 设为「智能错峰 (auto)」：在 4 大时段均自动轮巡未完成账号，已跑满则智能跳过，未跑满(如搜索中途冷冻未拿满)自动接力补满
           const targetAccounts = allAccounts.filter((acc, idx) => {
-            if (acc.slot && acc.slot === slotDef.id) return true;
-            if (!acc.slot || acc.slot === 'auto') {
-              // 自动模式：将账号均匀分配至 4 个时段，避免全部挤在同一时间
-              return (idx % 4) === slotDef.index;
+            if (acc.slot && acc.slot !== 'auto') {
+              return acc.slot === slotDef.id;
             }
-            return false;
+            // 智能错峰自动模式：
+            const isToday = acc.todayDate === todayStr;
+            const todayPts = isToday ? Number(acc.todayEarned || 0) : 0;
+            const tasks = (isToday && acc.officialTasks && typeof acc.officialTasks === 'object') ? acc.officialTasks : null;
+            // 若今日积分已达到 160 分以上且官网任务快照明确无待做项，则智能跳过，杜绝重复无效执行
+            const isFullySatisfied = todayPts >= 160 && tasks && tasks.hasWork === false;
+            if (isFullySatisfied) {
+              logger.log('ℹ️', `[${acc.name || acc.user}] 今日官网积分与任务已全部达成 (+${todayPts} 分)，[${slotDef.label}] 智能跳过`);
+              return false;
+            }
+            return true;
           });
 
           if (targetAccounts.length === 0) {
