@@ -75,6 +75,25 @@ async function main() {
   try {
     await page.goto(`http://127.0.0.1:${testPort}/`, { waitUntil: 'networkidle' });
     await page.waitForTimeout(1500);
+  const manualRes = await page.evaluate(() => {
+    try {
+      if (typeof window.openTaskDrawer !== 'function') {
+        return { error: 'window.openTaskDrawer is not a function: ' + typeof window.openTaskDrawer };
+      }
+      const acc = accounts && accounts[0];
+      if (!acc) return { error: 'accounts is empty' };
+      window.openTaskDrawer(acc.id);
+      const overlay = document.getElementById('task-drawer-overlay');
+      return {
+        success: true,
+        className: overlay ? overlay.className : 'null',
+        overlayVisible: overlay ? !overlay.classList.contains('hidden') : false
+      };
+    } catch(e) {
+      return { error: e.stack };
+    }
+  });
+  console.log('MANUAL OPEN RESULT:', manualRes);
   const evalErr = await page.evaluate(() => {
     try {
       renderSchedulerQueue();

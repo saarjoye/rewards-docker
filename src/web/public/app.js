@@ -801,11 +801,21 @@ document.addEventListener("DOMContentLoaded", () => {
   let activeDrawerAccountId = null;
 
   window.openTaskDrawer = function(accountId) {
-    const acc = accounts.find((a) => String(a.id) === String(accountId));
-    if (!acc) return;
-    activeDrawerAccountId = accountId;
-    renderTaskDrawer(acc);
-    document.getElementById('task-drawer-overlay')?.classList.remove('hidden');
+    try {
+      const acc = accounts.find((a) => String(a.id) === String(accountId));
+      if (!acc) {
+        console.warn('openTaskDrawer: 未找到账号', accountId);
+        return;
+      }
+      activeDrawerAccountId = accountId;
+      const overlay = document.getElementById('task-drawer-overlay');
+      if (overlay) {
+        overlay.classList.remove('hidden');
+      }
+      renderTaskDrawer(acc);
+    } catch (err) {
+      console.error('打开抽屉异常:', err);
+    }
   };
 
   function closeTaskDrawer() {
@@ -874,183 +884,197 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   function renderTaskDrawer(acc) {
-    const idx = accounts.indexOf(acc);
-    const displayName = getAccountDisplayName(acc, idx);
-    const isTodaySync = isSameLocalDay(acc.lastSyncAt);
-    const todayPts = isTodaySync ? Number(acc.todayEarned || 0) : 0;
-    const balance = acc.balance === null || acc.balance === undefined ? '--' : Number(acc.balance).toLocaleString();
-    const streakDays = Number(acc.streakDays || 0);
+    try {
+      const idx = accounts.indexOf(acc);
+      const displayName = getAccountDisplayName(acc, idx);
+      const isTodaySync = isSameLocalDay(acc.lastSyncAt);
+      const todayPts = isTodaySync ? Number(acc.todayEarned || 0) : 0;
+      const balance = acc.balance === null || acc.balance === undefined ? '--' : Number(acc.balance).toLocaleString();
+      const streakDays = Number(acc.streakDays || 0);
 
-    // 头部元信息
-    document.getElementById('drawer-acc-avatar').textContent = displayName[0].toUpperCase();
-    document.getElementById('drawer-acc-name').textContent = displayName;
-    document.getElementById('drawer-acc-email').textContent = acc.user || (acc.name || '未绑定邮箱');
-    document.getElementById('drawer-today-badge').textContent = '+' + todayPts + ' 分 今日 (可用 ' + balance + ' 分)';
+      // 变量声明必须置顶，严防暂时性死区 (TDZ)
+      const t = (isTodaySync && acc.officialTasks && typeof acc.officialTasks === 'object') ? acc.officialTasks : {};
+
+      // 头部元信息
+      const elAvatar = document.getElementById('drawer-acc-avatar');
+      if (elAvatar) elAvatar.textContent = displayName[0].toUpperCase();
+      const elName = document.getElementById('drawer-acc-name');
+      if (elName) elName.textContent = displayName;
+      const elEmail = document.getElementById('drawer-acc-email');
+      if (elEmail) elEmail.textContent = acc.user || (acc.name || '未绑定邮箱');
+      const elBadge = document.getElementById('drawer-today-badge');
+      if (elBadge) elBadge.textContent = '+' + todayPts + ' 分 今日 (可用 ' + balance + ' 分)';
+
+      // 连续签到与印章 (严格对齐图 2 官网真实印章 10/12)
+      const elStreakSummary = document.getElementById('drawer-streak-summary');
+      if (elStreakSummary) {
         const liveStamps = t.stamps || acc.stamps || null;
-    if (liveStamps && liveStamps.max) {
-      const sCur = liveStamps.progress || 0;
-      const sMax = liveStamps.max || 12;
-      const sDiff = Math.max(0, sMax - sCur);
-      document.getElementById('drawer-streak-summary').innerHTML = '已连签 <b>' + streakDays + '</b> 天 · 印章 <b>' + sCur + '/' + sMax + '</b> (差 ' + sDiff + ' 个集满 1,000 分大奖)';
-    } else {
-      document.getElementById('drawer-streak-summary').textContent = '已连续签到 ' + streakDays + ' 天 · 连签印章达成';
-    }
-    document.getElementById('drawer-sync-time').textContent = (acc.lastSyncAt && isTodaySync)
-      ? ('同步于 ' + new Date(Number(acc.lastSyncAt)).toLocaleTimeString('zh-CN', { hour12: false }))
-      : '今日尚未同步官网权威数据';
-
-    const t = (isTodaySync && acc.officialTasks && typeof acc.officialTasks === 'object') ? acc.officialTasks : {};
-
-    // 1. 渲染连续打卡 7 天圆圈轨道 (100% 对标竞品图 1)
-    // 100% 对齐参考项目 wangheqiang530/microsoft-rewards-docker 官方 7 天轨道规范
-    const renderTrackCircles = (containerId, streakObj, fallbackDays, fallbackDone, tagElId, trackTitle) => {
-      const c = document.getElementById(containerId);
-      const tag = document.getElementById(tagElId);
-      if (!c) return;
-
-      let completedDays = 0;
-      if (streakObj && typeof streakObj.completedDays === 'number') {
-        completedDays = Number(streakObj.completedDays || 0);
-      } else if (streakObj && typeof streakObj.current === 'number') {
-        completedDays = Number(streakObj.current || 0);
-      } else if (fallbackDays) {
-        completedDays = (fallbackDays % 7) || (fallbackDone ? 7 : 0);
-      } else if (fallbackDone) {
-        completedDays = 1;
-      }
-      completedDays = Math.min(7, Math.max(0, completedDays));
-
-      if (tag) tag.textContent = '已连签 ' + completedDays + ' / 7 天';
-
-      let nodesHtml = '';
-      for (let d = 1; d <= 6; d++) {
-        if (d < completedDays) {
-          nodesHtml += '<div class="streak-step-node done-circle" title="第 ' + d + ' 天：已打卡"><span class="step-check">✓</span></div>';
-        } else if (d === completedDays && completedDays > 0) {
-          nodesHtml += '<div class="streak-step-node active-pill" title="第 ' + d + ' 天：已打卡达成"><span class="step-check">✓</span><span class="step-num">' + d + '</span></div>';
+        if (liveStamps && liveStamps.max) {
+          const sCur = liveStamps.progress || 0;
+          const sMax = liveStamps.max || 12;
+          const sDiff = Math.max(0, sMax - sCur);
+          elStreakSummary.innerHTML = '已连签 <b>' + streakDays + '</b> 天 · 印章 <b>' + sCur + '/' + sMax + '</b> (差 ' + sDiff + ' 个集满 1,000 分大奖)';
         } else {
-          nodesHtml += '<div class="streak-step-node pending-circle" title="第 ' + d + ' 天：待打卡"><span class="step-num">' + d + '</span></div>';
+          elStreakSummary.textContent = '已连续签到 ' + streakDays + ' 天 · 连签印章达成';
         }
       }
 
-      if (completedDays >= 7) {
-        nodesHtml += '<div class="streak-step-node goal-pill done" title="第 7 天：连续达成 100 积分大奖！"><span class="step-star">✦</span><span class="step-pts">+100</span></div>';
-      } else {
-        nodesHtml += '<div class="streak-step-node goal-pill pending" title="第 7 天：达成额外奖励 100 积分"><span class="step-star">✦</span><span class="step-pts">+100</span></div>';
+      const elSyncTime = document.getElementById('drawer-sync-time');
+      if (elSyncTime) {
+        elSyncTime.textContent = (acc.lastSyncAt && isTodaySync)
+          ? ('同步于 ' + new Date(Number(acc.lastSyncAt)).toLocaleTimeString('zh-CN', { hour12: false }))
+          : '今日尚未同步官网权威数据';
       }
 
-      c.innerHTML = nodesHtml;
-    };
+      // 1. 渲染连续打卡 7 天圆圈轨道 (100% 对齐参考项目 wangheqiang530/microsoft-rewards-docker)
+      const searchDoneToday = (t.searchPoints && t.searchPoints.current > 0) || todayPts > 0;
+      const dailyDoneToday = (t.dailySet && t.dailySet.current >= (t.dailySet.max || 3)) || todayPts >= 90;
+      const appDoneToday = (t.appCheckIn && t.appCheckIn.current >= (t.appCheckIn.max || 1)) || todayPts >= 100;
 
-    // 严格以官网权威数据为准：若官网有明确连续子天数则展示，若无则展示今日真实打卡达成状态
-    const searchDoneToday = (t.searchPoints && t.searchPoints.current > 0) || todayPts > 0;
-    const dailyDoneToday = (t.dailySet && t.dailySet.current >= (t.dailySet.max || 3)) || todayPts >= 90;
-    const appDoneToday = (t.appCheckIn && t.appCheckIn.current >= (t.appCheckIn.max || 1)) || todayPts >= 100;
+      const renderTrackCircles = (containerId, streakObj, fallbackDays, fallbackDone, tagElId, trackTitle) => {
+        const c = document.getElementById(containerId);
+        const tag = document.getElementById(tagElId);
+        if (!c) return;
 
-    // 优先读取微软官网 RSC 契约对象中的真实 partner 连续打卡天数 (bing: 3, dailyset: 4, bingapp: 4)
-    const bingStreak = (t.streaks && t.streaks.bing) || (acc.streaks && acc.streaks.bing) || t.searchStreak;
-    const dsStreak = (t.streaks && t.streaks.dailyset) || (acc.streaks && acc.streaks.dailyset) || t.dailySet;
-    const appStreak = (t.streaks && t.streaks.bingapp) || (acc.streaks && acc.streaks.bingapp) || t.appCheckIn;
+        let completedDays = 0;
+        if (streakObj && typeof streakObj.completedDays === 'number' && streakObj.completedDays > 0) {
+          completedDays = Number(streakObj.completedDays || 0);
+        } else if (streakObj && typeof streakObj.current === 'number' && streakObj.current > 0) {
+          completedDays = Number(streakObj.current || 0);
+        } else if (fallbackDays) {
+          completedDays = (fallbackDays % 7) || (fallbackDone ? 7 : 0);
+        } else if (fallbackDone) {
+          completedDays = 1;
+        }
+        completedDays = Math.min(7, Math.max(0, completedDays));
 
-    renderTrackCircles('streak-circles-search', bingStreak, streakDays, searchDoneToday, 'track-search-tag', '必应搜索');
-    renderTrackCircles('streak-circles-daily', dsStreak, streakDays, dailyDoneToday, 'track-daily-tag', '每日活动集');
-    renderTrackCircles('streak-circles-app', appStreak, streakDays, appDoneToday, 'track-app-tag', '移动端签到');
+        if (tag) tag.textContent = '已连签 ' + completedDays + ' / 7 天';
 
-    // 2. 渲染今日核心自动化任务卡片网格 (对标竞品图 1 中部 6 大卡片)
-    const taskGrid = document.getElementById('drawer-task-grid');
-    if (taskGrid) {
-      const searchCap = t.searchPoints;
-      const searchKnown = searchCap && searchCap.current !== null;
-      const curSearch = searchKnown ? searchCap.current : Math.min(60, todayPts);
-      const maxSearch = searchKnown ? (searchCap.max || 60) : 60;
-      const searchDone = curSearch >= maxSearch;
-      const searchPct = Math.min(100, Math.round((curSearch / maxSearch) * 100));
-
-      const dsCap = t.dailySet;
-      const curDs = dsCap ? (dsCap.current || 0) : (todayPts >= 90 ? 3 : 0);
-      const maxDs = dsCap ? (dsCap.max || 3) : 3;
-      const dsDone = curDs >= maxDs;
-      const dsPct = Math.min(100, Math.round((curDs / maxDs) * 100));
-
-      const appCap = t.appCheckIn;
-      const curApp = appCap ? (appCap.current || 0) : (todayPts >= 100 ? 1 : 0);
-      const maxApp = appCap ? (appCap.max || 1) : 1;
-      const appDone = curApp >= maxApp;
-      const appPct = Math.min(100, Math.round((curApp / maxApp) * 100));
-
-      const pendingDaily = Array.isArray(t.dailyPending) ? t.dailyPending.length : 0;
-      const dailyDone = pendingDaily === 0 && (todayPts >= 130 || isTodaySync);
-
-      const cards = [
-        { title: '🔍 必应 PC 搜索任务', cur: curSearch, max: maxSearch, unit: '分', done: searchDone, pct: searchPct, pts: '+60 积分' },
-        { title: '📅 每日活动集 (Daily Set)', cur: curDs, max: maxDs, unit: '项', done: dsDone, pct: dsPct, pts: '+30 积分' },
-        { title: '📱 必应移动端签到', cur: curApp, max: maxApp, unit: '次', done: appDone, pct: appPct, pts: '+10 积分' },
-        { title: '📰 新闻资讯自动阅读', cur: (todayPts >= 120 ? 10 : 0), max: 10, unit: '篇', done: todayPts >= 120, pct: todayPts >= 120 ? 100 : 0, pts: '+30 积分' },
-        { title: '🧩 日常活动与 Quiz 问答', cur: dailyDone ? 1 : 0, max: 1, unit: '项', done: dailyDone, pct: dailyDone ? 100 : 0, pts: '+10 积分' },
-        { title: '💰 额外积分抽屉收割', cur: acc.claimablePoints ? 1 : 0, max: 1, unit: '项', done: !acc.claimablePoints, pct: !acc.claimablePoints ? 100 : 50, pts: '待领 ' + (acc.claimablePoints || 0) + ' 分' }
-      ];
-
-      taskGrid.innerHTML = cards.map((c) => {
-        return '<div class="drawer-task-card">' +
-          '<div class="dt-card-top">' +
-            '<span class="dt-card-title">' + c.title + '</span>' +
-            '<span class="dt-card-pts ' + (c.done ? 'done' : '') + '">' + c.pts + '</span>' +
-          '</div>' +
-          '<div class="dt-card-progress-row">' +
-            '<span>进度: ' + c.cur + ' / ' + c.max + ' ' + c.unit + '</span>' +
-            '<span>' + (c.done ? '已达成' : c.pct + '%') + '</span>' +
-          '</div>' +
-          '<div class="dt-progress-bar">' +
-            '<div class="dt-progress-fill ' + (c.done ? 'done' : '') + '" style="width: ' + c.pct + '%;"></div>' +
-          '</div>' +
-        '</div>';
-      }).join('');
-    }
-
-    // 3. 渲染官方多步打孔卡 (Quests 详细列表，100% 对标竞品具体任务卡片)
-    const questsList = document.getElementById('drawer-quests-list');
-    const questsCountEl = document.getElementById('drawer-quests-count');
-    if (questsList) {
-      const allQuests = Array.isArray(t.allQuestCards) && t.allQuestCards.length > 0
-        ? t.allQuestCards
-        : [
-            { title: '50分的万圣节礼遇', current: 6, total: 6, done: true, percent: 100, isCooling: false, rewardPts: 50 },
-            { title: '通过 Microsoft Rewards 解锁免费 Super Duolingo', current: 4, total: 6, done: false, percent: 67, isCooling: true, rewardPts: 50 },
-            { title: '桌面奖励应用每周专属任务', current: 4, total: 8, done: false, percent: 50, isCooling: false, rewardPts: 20 },
-            { title: '十月必看五大亮点：服饰、玩具、手机、超值优惠和AI设备', current: 5, total: 5, done: true, percent: 100, isCooling: false, rewardPts: 50 }
-          ];
-
-      const activeCount = allQuests.filter((q) => !q.done).length;
-      if (questsCountEl) questsCountEl.textContent = activeCount === 0 ? '全部已达成' : (activeCount + ' 张进行中');
-
-      questsList.innerHTML = allQuests.map((q) => {
-        let tagCls = 'tag-pending';
-        let tagText = '进行中';
-        if (q.done || q.current >= q.total) {
-          tagCls = 'tag-done';
-          tagText = '已全部达成';
-        } else if (q.isCooling) {
-          tagCls = 'tag-cooling';
-          tagText = '今日已尝试 · 等待冷却';
+        let nodesHtml = '';
+        for (let d = 1; d <= 6; d++) {
+          if (d < completedDays) {
+            nodesHtml += '<div class="streak-step-node done-circle" title="第 ' + d + ' 天：已打卡"><span class="step-check">✓</span></div>';
+          } else if (d === completedDays && completedDays > 0) {
+            nodesHtml += '<div class="streak-step-node active-pill" title="第 ' + d + ' 天：已打卡达成"><span class="step-check">✓</span><span class="step-num">' + d + '</span></div>';
+          } else {
+            nodesHtml += '<div class="streak-step-node pending-circle" title="第 ' + d + ' 天：待打卡"><span class="step-num">' + d + '</span></div>';
+          }
         }
 
-        return '<div class="drawer-quest-card">' +
-          '<div class="dq-head">' +
-            '<span class="dq-title">' + escapeHtml(q.title) + '</span>' +
-            '<span class="dq-tag ' + tagCls + '">' + tagText + '</span>' +
-          '</div>' +
-          '<div class="dq-meta-row">' +
-            '<span>完成进度: ' + q.current + ' / ' + q.total + ' 个子任务</span>' +
-            '<span style="font-weight: 700; color: #0284c7;">' + (q.rewardPts ? '+' + q.rewardPts + ' 积分' : '') + '</span>' +
-          '</div>' +
-          '<div class="dt-progress-bar">' +
-            '<div class="dt-progress-fill ' + (q.done ? 'done' : '') + '" style="width: ' + q.percent + '%;"></div>' +
-          '</div>' +
-        '</div>';
-      }).join('');
+        if (completedDays >= 7) {
+          nodesHtml += '<div class="streak-step-node goal-pill done" title="第 7 天：连续达成 100 积分大奖！"><span class="step-star">✦</span><span class="step-pts">+100</span></div>';
+        } else {
+          nodesHtml += '<div class="streak-step-node goal-pill pending" title="第 7 天：达成额外奖励 100 积分"><span class="step-star">✦</span><span class="step-pts">+100</span></div>';
+        }
+
+        c.innerHTML = nodesHtml;
+      };
+
+      const bingStreak = (t.streaks && t.streaks.bing) || (acc.streaks && acc.streaks.bing) || t.searchStreak;
+      const dsStreak = (t.streaks && t.streaks.dailyset) || (acc.streaks && acc.streaks.dailyset) || t.dailySet;
+      const appStreak = (t.streaks && t.streaks.bingapp) || (acc.streaks && acc.streaks.bingapp) || t.appCheckIn;
+
+      renderTrackCircles('streak-circles-search', bingStreak, streakDays, searchDoneToday, 'track-search-tag', '必应搜索');
+      renderTrackCircles('streak-circles-daily', dsStreak, streakDays, dailyDoneToday, 'track-daily-tag', '每日活动集');
+      renderTrackCircles('streak-circles-app', appStreak, streakDays, appDoneToday, 'track-app-tag', '移动端签到');
+
+      // 2. 渲染今日核心自动化任务卡片网格 (对标竞品图 1 中部 6 大卡片)
+      const taskGrid = document.getElementById('drawer-task-grid');
+      if (taskGrid) {
+        const searchCap = t.searchPoints;
+        const searchKnown = searchCap && searchCap.current !== null;
+        const curSearch = searchKnown ? searchCap.current : Math.min(60, todayPts);
+        const maxSearch = searchKnown ? (searchCap.max || 60) : 60;
+        const searchDone = curSearch >= maxSearch;
+        const searchPct = Math.min(100, Math.round((curSearch / maxSearch) * 100));
+
+        const dsCap = t.dailySet;
+        const curDs = dsCap ? (dsCap.current || 0) : (todayPts >= 90 ? 3 : 0);
+        const maxDs = dsCap ? (dsCap.max || 3) : 3;
+        const dsDone = curDs >= maxDs;
+        const dsPct = Math.min(100, Math.round((curDs / maxDs) * 100));
+
+        const appCap = t.appCheckIn;
+        const curApp = appCap ? (appCap.current || 0) : (todayPts >= 100 ? 1 : 0);
+        const maxApp = appCap ? (appCap.max || 1) : 1;
+        const appDone = curApp >= maxApp;
+        const appPct = Math.min(100, Math.round((curApp / maxApp) * 100));
+
+        const pendingDaily = Array.isArray(t.dailyPending) ? t.dailyPending.length : 0;
+        const dailyDone = pendingDaily === 0 && (todayPts >= 130 || isTodaySync);
+
+        const cards = [
+          { title: '🔍 必应 PC 搜索任务', cur: curSearch, max: maxSearch, unit: '分', done: searchDone, pct: searchPct, pts: '+60 积分' },
+          { title: '📅 每日活动集 (Daily Set)', cur: curDs, max: maxDs, unit: '项', done: dsDone, pct: dsPct, pts: '+30 积分' },
+          { title: '📱 必应移动端签到', cur: curApp, max: maxApp, unit: '次', done: appDone, pct: appPct, pts: '+10 积分' },
+          { title: '📰 新闻资讯自动阅读', cur: (todayPts >= 120 ? 10 : 0), max: 10, unit: '篇', done: todayPts >= 120, pct: todayPts >= 120 ? 100 : 0, pts: '+30 积分' },
+          { title: '🧩 日常活动与 Quiz 问答', cur: dailyDone ? 1 : 0, max: 1, unit: '项', done: dailyDone, pct: dailyDone ? 100 : 0, pts: '+10 积分' },
+          { title: '💰 额外积分抽屉收割', cur: acc.claimablePoints ? 1 : 0, max: 1, unit: '项', done: !acc.claimablePoints, pct: !acc.claimablePoints ? 100 : 50, pts: '待领 ' + (acc.claimablePoints || 0) + ' 分' }
+        ];
+
+        taskGrid.innerHTML = cards.map((c) => {
+          return '<div class="drawer-task-card">' +
+            '<div class="dt-card-top">' +
+              '<span class="dt-card-title">' + c.title + '</span>' +
+              '<span class="dt-card-pts ' + (c.done ? 'done' : '') + '">' + c.pts + '</span>' +
+            '</div>' +
+            '<div class="dt-card-progress-row">' +
+              '<span>进度: ' + c.cur + ' / ' + c.max + ' ' + c.unit + '</span>' +
+              '<span>' + (c.done ? '已达成' : c.pct + '%') + '</span>' +
+            '</div>' +
+            '<div class="dt-progress-bar">' +
+              '<div class="dt-progress-fill ' + (c.done ? 'done' : '') + '" style="width: ' + c.pct + '%;"></div>' +
+            '</div>' +
+          '</div>';
+        }).join('');
+      }
+
+      // 3. 渲染官方多步打孔卡 (Quests 详细列表，100% 对标竞品具体任务卡片)
+      const questsList = document.getElementById('drawer-quests-list');
+      const questsCountEl = document.getElementById('drawer-quests-count');
+      if (questsList) {
+        const allQuests = Array.isArray(t.allQuestCards) && t.allQuestCards.length > 0
+          ? t.allQuestCards
+          : [
+              { title: '50分的万圣节礼遇', current: 6, total: 6, done: true, percent: 100, isCooling: false, rewardPts: 50 },
+              { title: '通过 Microsoft Rewards 解锁免费 Super Duolingo', current: 4, total: 6, done: false, percent: 67, isCooling: true, rewardPts: 50 },
+              { title: '桌面奖励应用每周专属任务', current: 4, total: 8, done: false, percent: 50, isCooling: false, rewardPts: 20 },
+              { title: '十月必看五大亮点：服饰、玩具、手机、超值优惠和AI设备', current: 5, total: 5, done: true, percent: 100, isCooling: false, rewardPts: 50 }
+            ];
+
+        const activeCount = allQuests.filter((q) => !q.done).length;
+        if (questsCountEl) questsCountEl.textContent = activeCount === 0 ? '全部已达成' : (activeCount + ' 张进行中');
+
+        questsList.innerHTML = allQuests.map((q) => {
+          let tagCls = 'tag-pending';
+          let tagText = '进行中';
+          if (q.done || q.current >= q.total) {
+            tagCls = 'tag-done';
+            tagText = '已全部达成';
+          } else if (q.isCooling) {
+            tagCls = 'tag-cooling';
+            tagText = '今日已尝试 · 等待冷却';
+          }
+
+          return '<div class="drawer-quest-card">' +
+            '<div class="dq-head">' +
+              '<span class="dq-title">' + escapeHtml(q.title) + '</span>' +
+              '<span class="dq-tag ' + tagCls + '">' + tagText + '</span>' +
+            '</div>' +
+            '<div class="dq-meta-row">' +
+              '<span>完成进度: ' + q.current + ' / ' + q.total + ' 个子任务</span>' +
+              '<span style="font-weight: 700; color: #0284c7;">' + (q.rewardPts ? '+' + q.rewardPts + ' 积分' : '') + '</span>' +
+            '</div>' +
+            '<div class="dt-progress-bar">' +
+              '<div class="dt-progress-fill ' + (q.done ? 'done' : '') + '" style="width: ' + q.percent + '%;"></div>' +
+            '</div>' +
+          '</div>';
+        }).join('');
+      }
+    } catch (err) {
+      console.error('renderTaskDrawer 内部渲染异常:', err);
     }
   }
-
   // =========================================================================
   // 顶部账号卡片悬浮任务进度浮窗 (Tooltip)
   // =========================================================================
