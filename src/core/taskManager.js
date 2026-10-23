@@ -96,6 +96,7 @@ export function buildOfficialTaskSnapshot({ text = '', sections = [], searchPoin
   const todayDoneQuests = (account?.dailyQuestsDone?.date === todayStr)
     ? (account.dailyQuestsDone.hrefs || [])
     : [];
+  const questsAttemptedToday = account?.dailyQuestsAttempted?.date === todayStr;
 
   const searchStreak = counter(/^搜索\s*:\s*([0-9]+)\s*\/\s*([0-9]+)$/);
   const dailySet = counter(/^活动\s*:\s*([0-9]+)\s*\/\s*([0-9]+)$/);
@@ -108,6 +109,7 @@ export function buildOfficialTaskSnapshot({ text = '', sections = [], searchPoin
 
   // 关键：若打孔卡今天已推进（打卡过或检测到明日解锁），从待做列表中剔除，防止死循环重跑
   const questPending = questCards.filter((card) => {
+    if (questsAttemptedToday) return false;
     if (card.done || card.disabled) return false;
     const cardHref = card.href || '';
     const isDoneToday = todayDoneQuests.some((doneHref) => doneHref && (cardHref.includes(doneHref) || doneHref.includes(cardHref)));
@@ -169,6 +171,7 @@ export function buildOfficialTaskSnapshot({ text = '', sections = [], searchPoin
     allQuestCards,
     allDailyCards,
     questsTodayDone,
+    questsAttemptedToday,
     needSearch,
     needDailySet,
     needAppSign,

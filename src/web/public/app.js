@@ -813,12 +813,28 @@ function initApp() {
           value: !hasSnap ? '待同步' : (pendingDaily === null ? '未知' : (pendingDaily === 0 ? '全部完成' : pendingDaily + '项待做')),
           done: hasSnap && pendingDaily === 0
         },
-        {
-          label: '打孔卡',
-          known: hasSnap && pendingQuests !== null,
-          value: !hasSnap ? '待同步' : (pendingQuests === null ? '未知' : (pendingQuests === 0 ? '全部完成' : pendingQuests + '张进行中')),
-          done: hasSnap && pendingQuests === 0
-        }
+        (() => {
+          const allQuests = Array.isArray(t.allQuestCards) ? t.allQuestCards : [];
+          const isQuestsDoneToday = hasSnap && (
+            pendingQuests === 0 ||
+            t.needQuests === false ||
+            t.questsAttemptedToday === true ||
+            (a.dailyQuestsAttempted && isSameLocalDay(a.dailyQuestsAttempted.date || a.dailyQuestsAttempted.attemptedAt)) ||
+            (todayPts >= 130 && pendingQuests !== null)
+          );
+          let qVal = '待同步';
+          if (!hasSnap) qVal = '待同步';
+          else if (allQuests.length === 0 || pendingQuests === 0) qVal = '全部完成';
+          else if (isQuestsDoneToday) qVal = '今日已推进';
+          else qVal = pendingQuests + '张进行中';
+
+          return {
+            label: '打孔卡',
+            known: hasSnap && pendingQuests !== null,
+            value: qVal,
+            done: hasSnap && isQuestsDoneToday
+          };
+        })()
       ];
       const name = getAccountDisplayName(a, idx);
       const isRunning = currentRunningAccountId && String(currentRunningAccountId) === String(a.id);
@@ -863,7 +879,18 @@ function initApp() {
       const isToday = isSameLocalDay(a.lastSyncAt);
       const syncAge = (a.lastSyncAt && isToday) ? Math.floor((now - Number(a.lastSyncAt)) / 60000) : null;
       const todayPts = isToday ? Number(a.todayEarned || 0) : 0;
-      const isFullyDone = todayPts >= 160;
+      const t = (isToday && a.officialTasks && typeof a.officialTasks === 'object') ? a.officialTasks : {};
+      const pendingQuests = Array.isArray(t.questPending) ? t.questPending.length : null;
+      const isQuestsDoneToday = (
+        pendingQuests === 0 ||
+        t.needQuests === false ||
+        t.questsAttemptedToday === true ||
+        (a.dailyQuestsAttempted && isSameLocalDay(a.dailyQuestsAttempted.date || a.dailyQuestsAttempted.attemptedAt)) ||
+        (todayPts >= 130 && pendingQuests !== null)
+      );
+      const searchDone = t.needSearch === false || (t.searchPoints && t.searchPoints.isMaxed) || todayPts >= 60;
+      const dailyDone = t.needDailyActivities === false || (Array.isArray(t.dailyPending) && t.dailyPending.length === 0);
+      const isFullyDone = (todayPts >= 130 && isQuestsDoneToday && searchDone && dailyDone) || todayPts >= 160 || (t.hasWork === false && isQuestsDoneToday);
 
       let stateText = '等待调度';
       let stateCls = 'queue-waiting';

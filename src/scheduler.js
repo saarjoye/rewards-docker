@@ -172,7 +172,21 @@ class Scheduler {
       const isToday = acc.todayDate === todayStr;
       const todayPts = isToday ? Number(acc.todayEarned || 0) : 0;
       const tasks = (isToday && acc.officialTasks && typeof acc.officialTasks === 'object') ? acc.officialTasks : null;
-      return !(todayPts >= 160 && tasks && tasks.hasWork === false);
+
+      // 核心判定：打孔卡多日任务今日已推进过，即视为今日打孔卡达标
+      const questsSettled = tasks ? (tasks.needQuests === false || acc.dailyQuestsAttempted?.date === todayStr) : false;
+      const dailySettled = tasks ? (tasks.needDailySet === false && tasks.needDailyActivities === false && tasks.needAppSign === false) : false;
+      const searchSettled = tasks ? (tasks.needSearch === false || (tasks.searchPoints && tasks.searchPoints.isMaxed)) : (todayPts >= 130);
+
+      // 只要满足今日积分达标 (>=130)、日常全完且打孔卡今日已推进，坚决判定为今日已达成，智能跳过！
+      const isFullySatisfied = (todayPts >= 130 && dailySettled && searchSettled && questsSettled) ||
+                               (tasks && tasks.hasWork === false && (questsSettled || todayPts >= 130));
+
+      if (isFullySatisfied) {
+        logger.log('ℹ️', `[${acc.name || acc.user}] 今日常规任务与积分已全部达成 (+ ${todayPts} 分，打孔卡今日已推进)，[${slotDef.label}] 智能跳过`);
+        return false;
+      }
+      return true;
     });
 
     if (targetAccounts.length === 0) {
