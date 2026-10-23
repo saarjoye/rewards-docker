@@ -1,4 +1,4 @@
-﻿import cron from 'node-cron';
+import cron from 'node-cron';
 import configManager, { getTodayDateString } from './config.js';
 import logger from './logger.js';
 import taskManager from './core/taskManager.js';
@@ -45,7 +45,7 @@ class Scheduler {
     );
     this.jobs.push(harvestJob);
 
-    // 2. 规定的 4 大错峰时间窗口 (09:00, 13:00, 17:00, 21:00 准点启动，绝不在时段开头盲目等待)
+    // 2. 规定的 4 大错峰时间窗口 (09:00, 13:00, 17:00, 21:00 准点启动)
     const slotDefinitions = [
       { id: '09:00-13:00', label: '早间时段 (09:00 - 13:00)', cron: '0 9 * * *', time: '09:00', hour: 9, minute: 0, tag: '🌅 早间错峰' },
       { id: '13:00-17:00', label: '午间时段 (13:00 - 17:00)', cron: '0 13 * * *', time: '13:00', hour: 13, minute: 0, tag: '☀️ 午间错峰' },
@@ -112,96 +112,127 @@ class Scheduler {
         async () => {
           const currentCfg = configManager.get().scheduler;
           if (!currentCfg || !currentCfg.enabled) return;
-
-          const allAccounts = configManager.getAccounts().filter((a) => a.enabled);
-          const todayStr = getTodayDateString();
-
-          // 筛选本时段目标账号：
-          // 1) 明确指定本时段的账号；
-          // 2) 智能错峰 (auto)：全天 4 大时段轮巡，未拿满的账号按序推进
-          const targetAccounts = allAccounts.filter((acc) => {
-            if (acc.slot && acc.slot !== 'auto') {
-              return acc.slot === slotDef.id;
-            }
-            const isToday = acc.todayDate === todayStr;
-            const todayPts = isToday ? Number(acc.todayEarned || 0) : 0;
-            const tasks = (isToday && acc.officialTasks && typeof acc.officialTasks === 'object') ? acc.officialTasks : null;
-            // 今日积分达到 160 以上且官网快照明确无待做项，则跳过
-            const isFullySatisfied = todayPts >= 160 && tasks && tasks.hasWork === false;
-            if (isFullySatisfied) {
-              logger.log('ℹ️', `[${acc.name || acc.user}] 今日官网积分与任务已全部达成 (+${todayPts} 分)，[${slotDef.label}] 智能跳过`);
-              return false;
-            }
-            return true;
-          });
-
-          if (targetAccounts.length === 0) {
-            logger.log('ℹ️', `[${slotDef.label}] 准点触发，当前时段无待执行账号（所有账号今日已拿满或未启用）`);
-            return;
-          }
-
-          logger.log('🚀', `>>> [${slotDef.label}] 准点启动！共 ${targetAccounts.length} 个账号进入错峰流水线 <<<`);
-
-          taskManager.beginRun(`错峰时段 [${slotDef.time}]`);
-          taskManager.isQueueRunning = true;
-          try {
-            for (let i = 0; i < targetAccounts.length; i++) {
-              if (taskManager.shouldStop) break;
-              const acc = targetAccounts[i];
-
-              // 清理错峰等待状态
-              this.staggerState.isWaiting = false;
-              this.staggerState.accountId = null;
-
-              try {
-                logger.log('🚀', `[${slotDef.label}] [${i + 1}/${targetAccounts.length}] 启动账号 [${acc.name}] 自动化作业`);
-                await taskManager.runAccountTasks(acc.id, { preserveStopState: true });
-              } catch (err) {
-                if (err.message !== '任务已被用户主动中断') {
-                  logger.log('🔴', `调度任务异常 [${acc.name}]: ${err.message}`);
-                }
-              }
-
-              // 核心机制：账号间拟人化错开！(仅在还有下一个账号时进行平缓错开)
-              if (i < targetAccounts.length - 1 && !taskManager.shouldStop) {
-                const nextAcc = targetAccounts[i + 1];
-                // 账号间错开 3 ~ 6 分钟随机浮动 (180 ~ 360 秒)，彻底模拟多人在不同时刻真实上网作息
-                const staggerSec = 180 + Math.floor(Math.random() * 180);
-                const targetTimestamp = Date.now() + staggerSec * 1000;
-                const estDate = new Date(targetTimestamp);
-                const estTimeStr = `${String(estDate.getHours()).padStart(2, '0')}:${String(estDate.getMinutes()).padStart(2, '0')}`;
-
-                this.staggerState = {
-                  isWaiting: true,
-                  accountId: nextAcc.id,
-                  accountName: nextAcc.name,
-                  targetTimestamp,
-                  slotLabel: slotDef.label
-                };
-
-                logger.log('☕', `账号 [${acc.name}] 完成作业，账号间拟人化错开 ${Math.round(staggerSec / 60)} 分钟；下一个账号 [${nextAcc.name}] 预计在 ${estTimeStr} 启动接力...`);
-
-                const waited = await taskManager.waitUnlessStopped(staggerSec * 1000);
-                this.staggerState.isWaiting = false;
-                if (!waited) break;
-              }
-            }
-          } finally {
-            this.staggerState.isWaiting = false;
-            taskManager.isQueueRunning = false;
-          }
+          await this.triggerSlotBatch(slotDef);
         },
         { timezone: 'Asia/Shanghai' }
       );
       this.jobs.push(job);
     }
 
+    // 5. 核心增强：时段窗口启动感知与接力 (Window Recovery)
+    // 若服务启动/重启时当前正处于 4 大时段窗口内，且今日尚有账号待跑，立即在 6 秒后唤醒本时段接力流水线！
+    setTimeout(async () => {
+      const currentCfg = configManager.get().scheduler;
+      if (!currentCfg || !currentCfg.enabled) return;
+
+      const shanghaiNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Shanghai' }));
+      const curHour = shanghaiNow.getHours();
+      const todayStr = getTodayDateString();
+
+      let activeSlot = null;
+      if (curHour >= 9 && curHour < 13) activeSlot = slotDefinitions[0];
+      else if (curHour >= 13 && curHour < 17) activeSlot = slotDefinitions[1];
+      else if (curHour >= 17 && curHour < 21) activeSlot = slotDefinitions[2];
+      else if (curHour >= 21 || curHour < 1) activeSlot = slotDefinitions[3];
+
+      if (!activeSlot) return;
+
+      const allAccounts = configManager.getAccounts().filter((a) => a.enabled);
+      const pendingAccounts = allAccounts.filter((acc) => {
+        const isToday = acc.todayDate === todayStr;
+        const todayPts = isToday ? Number(acc.todayEarned || 0) : 0;
+        return todayPts < 160;
+      });
+
+      if (pendingAccounts.length > 0 && !taskManager.isQueueRunning && !taskManager.runningAccountId) {
+        logger.log('🚀', `>>> [时段窗口感知] 当前处于【${activeSlot.label}】且今日尚有 ${pendingAccounts.length} 户未完成，立即启动本时段接力流水线！<<<`);
+        await this.triggerSlotBatch(activeSlot, pendingAccounts);
+      }
+    }, 6000);
+
     this.running = true;
   }
 
   /**
+   * 触发执行某个错峰时段批次：账号间平缓错开
+   */
+  async triggerSlotBatch(slotDef, accountsToRun = null) {
+    if (taskManager.isQueueRunning || taskManager.runningAccountId) {
+      logger.log('ℹ️', `[${slotDef.label}] 当前有其他任务正在执行，跳过本次触发`);
+      return;
+    }
+
+    const allAccounts = configManager.getAccounts().filter((a) => a.enabled);
+    const todayStr = getTodayDateString();
+
+    const targetAccounts = accountsToRun || allAccounts.filter((acc) => {
+      if (acc.slot && acc.slot !== 'auto') {
+        return acc.slot === slotDef.id;
+      }
+      const isToday = acc.todayDate === todayStr;
+      const todayPts = isToday ? Number(acc.todayEarned || 0) : 0;
+      const tasks = (isToday && acc.officialTasks && typeof acc.officialTasks === 'object') ? acc.officialTasks : null;
+      return !(todayPts >= 160 && tasks && tasks.hasWork === false);
+    });
+
+    if (targetAccounts.length === 0) {
+      logger.log('ℹ️', `[${slotDef.label}] 当前时段无待执行账号（所有账号今日已拿满或未启用）`);
+      return;
+    }
+
+    logger.log('🚀', `>>> [${slotDef.label}] 准点启动！共 ${targetAccounts.length} 个账号进入错峰流水线 <<<`);
+
+    taskManager.beginRun(`错峰时段 [${slotDef.time}]`);
+    taskManager.isQueueRunning = true;
+    try {
+      for (let i = 0; i < targetAccounts.length; i++) {
+        if (taskManager.shouldStop) break;
+        const acc = targetAccounts[i];
+
+        this.staggerState.isWaiting = false;
+        this.staggerState.accountId = null;
+
+        try {
+          logger.log('🚀', `[${slotDef.label}] [${i + 1}/${targetAccounts.length}] 启动账号 [${acc.name}] 自动化作业`);
+          await taskManager.runAccountTasks(acc.id, { preserveStopState: true });
+        } catch (err) {
+          if (err.message !== '任务已被用户主动中断') {
+            logger.log('🔴', `调度任务异常 [${acc.name}]: ${err.message}`);
+          }
+        }
+
+        // 核心机制：账号间拟人化错开！(仅在还有下一个账号时进行平缓错开)
+        if (i < targetAccounts.length - 1 && !taskManager.shouldStop) {
+          const nextAcc = targetAccounts[i + 1];
+          // 账号间错开 2 ~ 5 分钟随机浮动 (120 ~ 300 秒)，彻底模拟真人多人在不同时刻真实上网作息
+          const staggerSec = 120 + Math.floor(Math.random() * 180);
+          const targetTimestamp = Date.now() + staggerSec * 1000;
+          const estDate = new Date(targetTimestamp);
+          const estTimeStr = `${String(estDate.getHours()).padStart(2, '0')}:${String(estDate.getMinutes()).padStart(2, '0')}`;
+
+          this.staggerState = {
+            isWaiting: true,
+            accountId: nextAcc.id,
+            accountName: nextAcc.name,
+            targetTimestamp,
+            slotLabel: slotDef.label
+          };
+
+          logger.log('☕', `账号 [${acc.name}] 完成作业，账号间拟人化错开 ${Math.round(staggerSec / 60)} 分钟；下一个账号 [${nextAcc.name}] 预计在 ${estTimeStr} 启动接力...`);
+
+          const waited = await taskManager.waitUnlessStopped(staggerSec * 1000);
+          this.staggerState.isWaiting = false;
+          if (!waited) break;
+        }
+      }
+    } finally {
+      this.staggerState.isWaiting = false;
+      taskManager.isQueueRunning = false;
+    }
+  }
+
+  /**
    * 计算距离下一次定时调度任务的最近执行时段与精确倒计时
-   * 严密保证：当处于批次内账号间错开等待时，直接展示下一个接力账号与接力倒计时，绝不盲目跳到数小时后的下一个大时段！
    */
   getNextScheduledTask() {
     const cfg = configManager.get()?.scheduler || {};
@@ -217,8 +248,7 @@ class Scheduler {
     const curDate = localNow.getDate();
     const curTotalSec = localNow.getHours() * 3600 + localNow.getMinutes() * 60 + localNow.getSeconds();
 
-    // 1. 如果当前流水线正在执行，或正在账号间拟人化错开等待中：
-    // 优先返回当前错开批次中的下一个接力账号与接力时刻！
+    // 1. 如果当前流水线正在执行，或正在账号间拟人化错开等待中：优先返回当前错开批次中的下一个接力账号与接力时刻！
     if (this.staggerState.isWaiting && this.staggerState.targetTimestamp > Date.now()) {
       const diffSec = Math.max(0, Math.round((this.staggerState.targetTimestamp - Date.now()) / 1000));
       const estDate = new Date(this.staggerState.targetTimestamp);
