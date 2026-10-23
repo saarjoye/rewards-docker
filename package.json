@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.6.9",
-  "description": "Microsoft Rewards 自动化平台 (v6.6.9 终结打孔卡多日未达100%引发的死循环重试缺陷、今日已推进打孔卡智能判定达标、绿色已推进胶囊视觉呈现)",
+  "version": "6.7.0",
+  "description": "Microsoft Rewards 自动化平台 (v6.7.0 全新移动端专属视口重构、解锁自然丝滑手势滚动、全景自适应Bento卡片与模态抽屉)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {

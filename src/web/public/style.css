@@ -5292,3 +5292,634 @@ input:focus, select:focus, textarea:focus {
 .queue-status-dot.queue-pending {
   background: #f59e0b !important;
 }
+
+
+/* ==============================================================
+   📱 v6.7 移动端全景专属响应式终极覆盖系统 (完全解锁滚动与全屏自适应)
+   ============================================================== */
+@media (max-width: 992px) {
+  /* 1. 根视口与全局手势链彻底解锁 (html 作为主滚动，body 保持 visible) */
+  html {
+    height: auto !important;
+    min-height: 100% !important;
+    width: 100% !important;
+    max-width: 100vw !important;
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+    overscroll-behavior-y: contain !important;
+  }
+
+  body {
+    height: auto !important;
+    min-height: 100% !important;
+    width: 100% !important;
+    max-width: 100vw !important;
+    overflow: visible !important;
+    position: relative !important;
+  }
+
+  /* 2. 整体外壳：释放为自然高度，预留底部安全区 */
+  .dashboard-shell {
+    display: flex !important;
+    flex-direction: column !important;
+    width: 100% !important;
+    max-width: 100vw !important;
+    height: auto !important;
+    min-height: 100% !important;
+    overflow: visible !important;
+    padding: 8px 10px calc(24px + env(safe-area-inset-bottom, 0px)) 10px !important;
+    gap: 10px !important;
+    box-sizing: border-box !important;
+  }
+
+  /* 3. 主视口：解除裁切限制 */
+  .main-viewport {
+    display: flex !important;
+    flex-direction: column !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    height: auto !important;
+    min-height: auto !important;
+    overflow: visible !important;
+    padding: 0 !important;
+    gap: 10px !important;
+  }
+
+  /* 4. Bento 网格：单列全屏流动 */
+  .bento-grid {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 12px !important;
+    width: 100% !important;
+    height: auto !important;
+    overflow: visible !important;
+    grid-template-columns: none !important;
+    grid-template-rows: none !important;
+  }
+
+  .bento-box {
+    grid-column: auto !important;
+    grid-row: auto !important;
+    width: 100% !important;
+    height: auto !important;
+    min-height: auto !important;
+    padding: 12px 14px !important;
+    border-radius: 16px !important;
+    box-sizing: border-box !important;
+    overflow: visible !important;
+  }
+
+  /* 5. 顶部移动端粘性吸顶条 */
+  .mobile-top-nav {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    background: rgba(255, 255, 255, 0.95) !important;
+    backdrop-filter: blur(10px) !important;
+    -webkit-backdrop-filter: blur(10px) !important;
+    padding: 8px 14px !important;
+    border-radius: 14px !important;
+    border: 1px solid rgba(226, 232, 240, 0.8) !important;
+    box-shadow: 0 4px 16px rgba(15, 23, 42, 0.08) !important;
+    position: sticky !important;
+    top: 6px !important;
+    z-index: 1000 !important;
+    width: 100% !important;
+    box-sizing: border-box !important;
+  }
+
+  .mobile-hamburger-btn {
+    width: 36px !important;
+    height: 36px !important;
+    border-radius: 8px !important;
+    font-size: 18px !important;
+  }
+
+  .mobile-nav-title {
+    font-size: 15px !important;
+    font-weight: 800 !important;
+  }
+
+  .mobile-quick-btn {
+    padding: 6px 14px !important;
+    font-size: 12px !important;
+  }
+
+  /* 6. 侧边栏滑出抽屉与遮罩层修复 */
+  .sidebar {
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    bottom: 0 !important;
+    width: 280px !important;
+    max-width: 82vw !important;
+    background: #ffffff !important;
+    z-index: 10005 !important;
+    transform: translateX(-100%);
+    transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1) !important;
+    box-shadow: 6px 0 28px rgba(15, 23, 42, 0.25) !important;
+    display: flex !important;
+    flex-direction: column !important;
+    overflow-y: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+    padding-top: calc(16px + env(safe-area-inset-top, 0px)) !important;
+    padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px)) !important;
+  }
+
+  .sidebar.mobile-sidebar-open {
+    transform: translateX(0) !important;
+  }
+
+  .mobile-sidebar-mask {
+    display: block !important;
+    position: fixed !important;
+    inset: 0 !important;
+    background: rgba(15, 23, 42, 0.55) !important;
+    backdrop-filter: blur(4px) !important;
+    z-index: 10000 !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+    transition: opacity 0.28s ease !important;
+  }
+
+  .mobile-sidebar-mask.active {
+    opacity: 1 !important;
+    pointer-events: auto !important;
+  }
+
+  /* 7. 顶部桌面 Header 降维：紧凑卡片化 */
+  .topbar {
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 8px !important;
+    padding: 10px 12px !important;
+    border-radius: 16px !important;
+    background: #ffffff !important;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.03) !important;
+    min-height: auto !important;
+    box-sizing: border-box !important;
+  }
+
+  .view-mode-capsule {
+    width: 100% !important;
+    display: flex !important;
+    background: #f1f5f9 !important;
+    padding: 3px !important;
+    border-radius: 10px !important;
+    box-sizing: border-box !important;
+  }
+
+  .view-mode-capsule .mode-pill {
+    flex: 1 !important;
+    text-align: center !important;
+    justify-content: center !important;
+    padding: 7px 8px !important;
+    font-size: 12px !important;
+    border-radius: 8px !important;
+    border: none !important;
+  }
+
+  .topbar-marquee-wrap {
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    overflow: hidden !important;
+    box-sizing: border-box !important;
+  }
+
+  .marquee-inner {
+    display: flex !important;
+    align-items: center !important;
+    gap: 6px !important;
+    width: 100% !important;
+    box-sizing: border-box !important;
+  }
+
+  .marquee-content {
+    flex: 1 1 auto !important;
+    min-width: 0 !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+    font-size: 11px !important;
+  }
+
+  .topbar-actions {
+    display: flex !important;
+    flex-wrap: wrap !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    gap: 6px !important;
+    width: 100% !important;
+  }
+
+  .topbar-actions .pill-btn {
+    padding: 4px 10px !important;
+    font-size: 11px !important;
+    flex-shrink: 0 !important;
+  }
+
+  .btn-run-tasks-emerald {
+    display: none !important; /* 移动端顶栏已有快捷执行按钮，隐藏桌面端重复的巨大按钮 */
+  }
+
+  .user-chip {
+    padding: 3px 8px !important;
+    gap: 6px !important;
+    margin-left: auto !important;
+  }
+
+  .user-avatar-sm {
+    width: 24px !important;
+    height: 24px !important;
+    font-size: 11px !important;
+  }
+
+  .user-meta-sm {
+    display: none !important;
+  }
+
+  .btn-logout-pill {
+    padding: 3px 8px !important;
+    font-size: 11px !important;
+  }
+
+  /* 8. 托管账号横滑池：顺滑手势吸附，支持纵横双向操作 */
+  .accounts-cards-row {
+    display: flex !important;
+    flex-direction: row !important;
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+    scroll-snap-type: x mandatory !important;
+    -webkit-overflow-scrolling: touch !important;
+    touch-action: pan-x pan-y !important;
+    gap: 10px !important;
+    padding: 2px 2px 8px 2px !important;
+    width: 100% !important;
+    height: auto !important;
+    min-height: 94px !important;
+    max-height: 102px !important;
+    grid-column: auto !important;
+    box-sizing: border-box !important;
+  }
+
+  .accounts-cards-row::-webkit-scrollbar {
+    height: 3px;
+  }
+  .accounts-cards-row::-webkit-scrollbar-thumb {
+    background: #cbd5e1;
+    border-radius: 9999px;
+  }
+
+  .accounts-cards-row .metric-card {
+    min-width: 250px !important;
+    max-width: 270px !important;
+    width: 260px !important;
+    height: 90px !important;
+    padding: 10px 14px !important;
+    flex-shrink: 0 !important;
+    scroll-snap-align: start !important;
+    box-sizing: border-box !important;
+  }
+
+  .accounts-cards-row .add-account-dashed-card {
+    min-width: 170px !important;
+    width: 170px !important;
+    height: 90px !important;
+    flex-shrink: 0 !important;
+    scroll-snap-align: start !important;
+    box-sizing: border-box !important;
+    padding: 8px 10px !important;
+  }
+
+  /* 9. 积分日历：物理定高解决柱子塌陷，立体饱满展现 */
+  .box-revenue {
+    height: auto !important;
+    min-height: 250px !important;
+    overflow: visible !important;
+  }
+
+  .box-revenue .chart-container {
+    height: 185px !important;
+    min-height: 185px !important;
+    width: 100% !important;
+    display: flex !important;
+    align-items: flex-end !important;
+    padding-bottom: 8px !important;
+    position: relative !important;
+    box-sizing: border-box !important;
+    overflow: visible !important;
+  }
+
+  .box-revenue .chart-bars-wrap {
+    width: 100% !important;
+    height: 100% !important;
+    display: flex !important;
+    align-items: flex-end !important;
+    justify-content: space-around !important;
+    gap: 4px !important;
+    position: relative !important;
+    box-sizing: border-box !important;
+    overflow: visible !important;
+  }
+
+  .box-revenue .bar-col {
+    flex: 1 !important;
+    height: 100% !important;
+    display: flex !important;
+    flex-direction: column !important;
+    justify-content: flex-end !important;
+    align-items: center !important;
+    gap: 4px !important;
+    position: relative !important;
+  }
+
+  .box-revenue .bar-pillar {
+    width: 20px !important;
+    min-height: 8px !important;
+    border-radius: 10px !important;
+    position: relative !important;
+    display: flex !important;
+    justify-content: center !important;
+  }
+
+  .box-revenue .bar-top-val {
+    position: absolute !important;
+    top: -18px !important;
+    font-size: 10px !important;
+    font-weight: 750 !important;
+    white-space: nowrap !important;
+  }
+
+  .box-revenue .bar-date-label {
+    font-size: 10.5px !important;
+    color: #64748b !important;
+    margin-top: 4px !important;
+  }
+
+  /* 10. 积分详情看板：双列微卡 + 一键领取大通栏 */
+  .points-board-body {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 10px !important;
+  }
+
+  .board-left-stack {
+    display: grid !important;
+    grid-template-columns: 1fr 1fr !important;
+    gap: 8px !important;
+    width: 100% !important;
+  }
+
+  .board-metric-card {
+    padding: 10px 12px !important;
+    min-height: 80px !important;
+    border-radius: 12px !important;
+  }
+
+  .board-metric-card .b-card-val {
+    font-size: 20px !important;
+  }
+
+  .board-claim-card {
+    width: 100% !important;
+    min-height: auto !important;
+    padding: 10px 14px !important;
+    display: flex !important;
+    flex-direction: row !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    box-sizing: border-box !important;
+  }
+
+  .board-claim-card .btn-one-click-claim {
+    width: auto !important;
+    min-height: 38px !important;
+    padding: 8px 18px !important;
+    margin-top: 0 !important;
+  }
+
+  /* 11. 官网任务缺口：消除右侧截断，自适应折行卡片 */
+  .box-task-gaps .task-gaps-list {
+    max-height: 320px !important;
+    overflow-y: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+  }
+
+  .task-gap-card {
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 8px !important;
+    padding: 10px 12px !important;
+    border-radius: 12px !important;
+    box-sizing: border-box !important;
+  }
+
+  .task-gap-account {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    width: 100% !important;
+    max-width: none !important;
+  }
+
+  .task-gap-account .acc-name-txt {
+    max-width: 140px !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+    font-size: 12px !important;
+  }
+
+  .task-gap-pills {
+    display: flex !important;
+    flex-direction: row !important;
+    flex-wrap: wrap !important;
+    align-items: center !important;
+    gap: 6px !important;
+    width: 100% !important;
+    overflow-x: visible !important;
+  }
+
+  .task-gap-pill {
+    font-size: 11px !important;
+    padding: 3px 7px !important;
+    border-radius: 6px !important;
+    white-space: nowrap !important;
+  }
+
+  /* 12. 调度队列与账号锁：防重叠自适应头部 */
+  .box-scheduler-queue .box-header {
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 6px !important;
+  }
+
+  .box-scheduler-queue .box-header-ctrls {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    width: 100% !important;
+  }
+
+  .queue-countdown-capsule {
+    max-width: none !important;
+    font-size: 11px !important;
+    padding: 3px 8px !important;
+  }
+
+  .box-scheduler-queue .queue-list {
+    max-height: 320px !important;
+    overflow-y: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+  }
+
+  .queue-row {
+    display: grid !important;
+    grid-template-columns: 1fr 1fr !important;
+    gap: 6px 8px !important;
+    padding: 9px 11px !important;
+    font-size: 11px !important;
+  }
+
+  /* 13. 实时流水与无头监控：小视窗滚动，状态自然换行 */
+  .box-live-stream .stream-terminal-white,
+  .box-live-stream .stream-terminal-dark {
+    min-height: 110px !important;
+    max-height: 160px !important;
+    height: 130px !important;
+    overflow-y: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+  }
+
+  .browser-monitor-grid {
+    grid-template-columns: 1fr 1fr !important;
+    gap: 8px !important;
+  }
+
+  .browser-monitor-grid .b-mon-cell:last-child {
+    grid-column: 1 / -1 !important;
+  }
+
+  .browser-status-callout {
+    white-space: normal !important;
+    align-items: flex-start !important;
+    padding: 8px 10px !important;
+  }
+
+  #mon-callout-text {
+    white-space: normal !important;
+    overflow: visible !important;
+    text-overflow: unset !important;
+    line-height: 1.45 !important;
+    font-size: 11.5px !important;
+  }
+
+  /* 14. 任务全景抽屉：手机端全屏沉浸与大触控关闭 */
+  .task-drawer-panel {
+    width: 100% !important;
+    max-width: 100vw !important;
+    border-radius: 0 !important;
+  }
+
+  .task-drawer-scroll {
+    overflow-y: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+    padding: 12px 14px calc(24px + env(safe-area-inset-bottom, 0px)) 14px !important;
+  }
+
+  .drawer-task-grid {
+    grid-template-columns: 1fr !important;
+    gap: 10px !important;
+  }
+
+  /* 15. 模态弹窗系统：满宽沉浸、内嵌滚动与底部安全区 */
+  .modal-backdrop {
+    padding: 8px !important;
+    box-sizing: border-box !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+  }
+
+  .modal-card {
+    width: 100% !important;
+    max-width: 100% !important;
+    max-height: 88vh !important;
+    max-height: 88dvh !important;
+    padding: 14px 12px !important;
+    border-radius: 16px !important;
+    overflow-y: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+    margin: auto !important;
+    box-sizing: border-box !important;
+  }
+
+  .modal-card-xl, .modal-card-lg, .modal-card-md {
+    width: 100% !important;
+    max-width: 100% !important;
+  }
+
+  .modal-foot {
+    flex-wrap: wrap !important;
+    gap: 8px !important;
+    justify-content: flex-end !important;
+  }
+
+  .month-calendar-toolbar {
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 8px !important;
+  }
+
+  .month-nav-group {
+    justify-content: space-between !important;
+    width: 100% !important;
+  }
+
+  .month-kpi-summary {
+    grid-template-columns: 1fr !important;
+    gap: 8px !important;
+  }
+
+  .calendar-days-grid {
+    gap: 4px !important;
+  }
+
+  .cal-day-cell {
+    min-height: 48px !important;
+    padding: 4px 2px !important;
+  }
+
+  .cfg-tabs-row {
+    overflow-x: auto !important;
+    flex-wrap: nowrap !important;
+    -webkit-overflow-scrolling: touch !important;
+    gap: 6px !important;
+  }
+
+  .cfg-tab {
+    flex-shrink: 0 !important;
+    padding: 6px 12px !important;
+    font-size: 12px !important;
+  }
+
+  .cron-slots-grid {
+    grid-template-columns: 1fr !important;
+    gap: 8px !important;
+  }
+
+  .health-card-quota-row {
+    grid-template-columns: 1fr !important;
+    gap: 8px !important;
+  }
+
+  .health-all-grid {
+    grid-template-columns: 1fr !important;
+    gap: 6px !important;
+  }
+}

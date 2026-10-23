@@ -156,6 +156,7 @@ export class BrowserManager {
     const contextOptions = {
       userAgent: isMobile ? USER_AGENTS.app : USER_AGENTS.pc,
       viewport: isMobile ? { width: 390, height: 844 } : { width: 1440, height: 900 },
+      hasTouch: Boolean(isMobile),
       locale: 'zh-CN',
       timezoneId: 'Asia/Shanghai'
     };
@@ -215,4 +216,5 @@ export class BrowserManager {
 
 export const browserManager = new BrowserManager();
 export default browserManager;
+
 

@@ -53,12 +53,7 @@ async function main() {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
 
   await context.addCookies([
-    {
-      name: getAdminSessionCookieName(),
-      value: token,
-      domain: '127.0.0.1',
-      path: '/'
-    }
+    { name: getAdminSessionCookieName(), value: token, url: 'http://127.0.0.1:5399/' }
   ]);
 
   const page = await context.newPage();
