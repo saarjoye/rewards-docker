@@ -409,21 +409,32 @@ function initApp() {
       } else {
         const nextTask = data.nextScheduledTask;
         if (nextTask && nextTask.enabled) {
-          const pendingAcc = accounts.find((a) => {
-            const isToday = isSameLocalDay(a.lastSyncAt);
-            const pts = isToday ? Number(a.todayEarned || 0) : 0;
-            return pts < 160;
-          });
-          const targetName = pendingAcc ? getAccountDisplayName(pendingAcc) : (accounts[0] ? getAccountDisplayName(accounts[0]) : "各托管账号");
-          const pendingCount = accounts.filter((a) => (isSameLocalDay(a.lastSyncAt) ? Number(a.todayEarned || 0) : 0) < 160).length;
+          if (nextTask.isStaggerWaiting) {
+            if (marqueeBadge) {
+              marqueeBadge.textContent = "☕ 账号错峰";
+              marqueeBadge.className = "marquee-badge";
+            }
+            if (marqueeText) {
+              marqueeText.textContent = "下一个账号: [" + (nextTask.targetAccountName || '托管账号') + "] · 预计 " + nextTask.time + " 启动接力";
+              marqueeText.title = marqueeText.textContent;
+            }
+          } else {
+            const pendingAcc = accounts.find((a) => {
+              const isToday = isSameLocalDay(a.lastSyncAt);
+              const pts = isToday ? Number(a.todayEarned || 0) : 0;
+              return pts < 160;
+            });
+            const targetName = pendingAcc ? getAccountDisplayName(pendingAcc) : (accounts[0] ? getAccountDisplayName(accounts[0]) : "各托管账号");
+            const pendingCount = accounts.filter((a) => (isSameLocalDay(a.lastSyncAt) ? Number(a.todayEarned || 0) : 0) < 160).length;
 
-          if (marqueeBadge) {
-            marqueeBadge.textContent = "⏰ 定时 " + (nextTask.time || "17:15");
-            marqueeBadge.className = "marquee-badge";
-          }
-          if (marqueeText) {
-            marqueeText.textContent = "待执行: [" + targetName + "] · " + pendingCount + " 户待巡检";
-            marqueeText.title = marqueeText.textContent;
+            if (marqueeBadge) {
+              marqueeBadge.textContent = "⏰ 定时 " + (nextTask.time || "09:00");
+              marqueeBadge.className = "marquee-badge";
+            }
+            if (marqueeText) {
+              marqueeText.textContent = "待执行: [" + targetName + "] (" + (nextTask.name || "错峰时段") + ") · 剩余 " + pendingCount + " 户待巡检";
+              marqueeText.title = marqueeText.textContent;
+            }
           }
           topbarCountdownTarget = nextTask.targetTimestamp || (Date.now() + (nextTask.diffSec || 0) * 1000);
           tickTopbarMarqueeTimer();
