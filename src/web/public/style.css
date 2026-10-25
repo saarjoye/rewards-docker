@@ -4114,6 +4114,40 @@ input:focus, select:focus, textarea:focus {
   transform: translateY(-2px) !important;
 }
 
+/* 首个引导接入卡片高亮特化样式 (当账号数为 0 时的第一张卡片) */
+.add-account-dashed-card.add-account-first-card {
+  border: 2px dashed #ff5722 !important;
+  background: linear-gradient(135deg, rgba(255, 87, 34, 0.08) 0%, rgba(255, 255, 255, 0.95) 100%) !important;
+  box-shadow: 0 4px 14px rgba(255, 87, 34, 0.16) !important;
+  color: #ea580c !important;
+}
+.add-account-dashed-card.add-account-first-card .dashed-icon {
+  font-size: 22px !important;
+  color: #ff5722 !important;
+  transform: scale(1.15) !important;
+  transition: transform 0.2s ease !important;
+}
+.add-account-dashed-card.add-account-first-card .dashed-title {
+  color: #ea580c !important;
+  font-size: 13.5px !important;
+  font-weight: 800 !important;
+  letter-spacing: 0.2px !important;
+}
+.add-account-dashed-card.add-account-first-card .dashed-sub {
+  color: #c2410c !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+}
+.add-account-dashed-card.add-account-first-card:hover {
+  border-color: #ea580c !important;
+  background: #ffffff !important;
+  box-shadow: 0 6px 20px rgba(255, 87, 34, 0.28) !important;
+  transform: translateY(-2px) !important;
+}
+.add-account-dashed-card.add-account-first-card:hover .dashed-icon {
+  transform: scale(1.3) !important;
+}
+
 /* 弹窗内的错峰时段设定药丸按钮组 */
 .slot-select-pills {
   display: flex !important;
@@ -5592,6 +5626,14 @@ input:focus, select:focus, textarea:focus {
     scroll-snap-align: start !important;
     box-sizing: border-box !important;
     padding: 8px 10px !important;
+  }
+
+  .accounts-cards-row .add-account-dashed-card.add-account-first-card {
+    min-width: 190px !important;
+    width: 190px !important;
+  }
+  .accounts-cards-row .add-account-dashed-card.add-account-first-card .dashed-title {
+    font-size: 12.5px !important;
   }
 
   /* 9. 积分日历：物理定高解决柱子塌陷，立体饱满展现 */

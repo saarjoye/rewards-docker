@@ -224,11 +224,11 @@ function initApp() {
 
         if (btnModeAll) btnModeAll.classList.add("active");
         if (btnModeSingle) btnModeSingle.classList.remove("active");
-        if (welcomeSubDesc) welcomeSubDesc.textContent = "全部 " + (accounts.length || 1) + " 户托管账号资产合并统计 · 官方实时数据驱动";
+        if (welcomeSubDesc) welcomeSubDesc.textContent = accounts.length > 0 ? ("全部 " + accounts.length + " 户托管账号资产合并统计 · 官方实时数据驱动") : "暂无托管账号 · 请先添加账号以开启自动化调度";
 
         if (currentViewAvatar) currentViewAvatar.textContent = "🌐";
         if (currentViewName) currentViewName.textContent = "全部账号合计";
-        if (currentViewBadge) currentViewBadge.textContent = "共 " + (accounts.length || 1) + " 户接入";
+        if (currentViewBadge) currentViewBadge.textContent = "共 " + accounts.length + " 户接入";
         if (currentUserDisplayName) currentUserDisplayName.textContent = "全账号合计";
         const boardSubScope = document.getElementById("board-sub-scope");
         if (boardSubScope) boardSubScope.textContent = "全部账号合计 · 官方多维度透视";
@@ -547,7 +547,7 @@ function initApp() {
   function renderAccountsList() {
     if (!accountsScrollList) return;
     if (accounts.length === 0) {
-      accountsScrollList.innerHTML = '<div style="text-align: center; color: #94a3b8; font-size: 11px; padding: 20px;">暂无托管账号</div>';
+      accountsScrollList.innerHTML = '<div style="text-align: center; color: #94a3b8; font-size: 11px; padding: 20px 10px; display: flex; flex-direction: column; align-items: center; gap: 8px;"><span>暂无托管账号</span><button type="button" class="btn-top-add-acc" onclick="window.openAddAccountModal()" style="font-size: 11px; padding: 4px 10px; cursor: pointer;">＋ 接入账号</button></div>';
       return;
     }
     const isAllSelected = viewMode === 'all';
@@ -1369,7 +1369,23 @@ function initApp() {
     const container = document.getElementById("top-accounts-cards");
     if (!container) return;
     if (accounts.length === 0) {
-      container.innerHTML = '<div style="background: #fff; border-radius: 18px; padding: 20px; text-align: center; color: #94a3b8; width: 100%;">暂无托管账号，点击右侧「+ 添加」接入账号</div>';
+      const dashedCards = [
+        '<div class="add-account-dashed-card add-account-first-card" onclick="window.openAddAccountModal()" onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();window.openAddAccountModal();}" title="点击添加首个微软托管账号" role="button" tabindex="0">' +
+          '<span class="dashed-icon">➕</span>' +
+          '<span class="dashed-title">➕ 添加首个托管账号</span>' +
+          '<span class="dashed-sub">点击立即接入微软账号</span>' +
+        '</div>'
+      ];
+      for (let s = 2; s <= 6; s++) {
+        dashedCards.push(
+          '<div class="add-account-dashed-card" onclick="window.openAddAccountModal()" onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();window.openAddAccountModal();}" title="点击添加新微软托管账号" role="button" tabindex="0">' +
+            '<span class="dashed-icon">➕</span>' +
+            '<span class="dashed-title">添加托管账号</span>' +
+            '<span class="dashed-sub">点击接入新账号槽位</span>' +
+          '</div>'
+        );
+      }
+      container.innerHTML = dashedCards.join('');
       return;
     }
 
@@ -1457,7 +1473,7 @@ function initApp() {
 
   function renderDropdownMenu() {
     if (!accountDropdownMenu) return;
-    const totalTodayPts = accounts.reduce((s, a) => s + (a.todayEarned || 0), 0) || 93;
+    const totalTodayPts = accounts.reduce((s, a) => s + (a.todayEarned || 0), 0);
     const items = [
       "<div class=\"dropdown-acc-item " + (viewMode === "all" ? "active" : "") + "\" onclick=\"switchView('all')\">" +
         "<div class=\"dropdown-item-meta\">" +
@@ -1555,31 +1571,31 @@ function initApp() {
     let topTasks = [];
 
     if (viewMode === 'all') {
-      const accCount = Math.max(1, accounts.length);
-      if (subEl) subEl.textContent = '全部账号累计达成进度 (共 ' + accCount + ' 户托管合并)';
+      const accCount = accounts.length;
+      if (subEl) subEl.textContent = accCount > 0 ? ('全部账号累计达成进度 (共 ' + accCount + ' 户托管合并)') : '暂无托管账号 (接入账号后即可查看合并进度)';
       if (scopeTag) scopeTag.textContent = '全部合计 ▾';
 
-      const pcMax = 60 * accCount;
+      const pcMax = 60 * (accCount || 1);
       const pcDone = accounts.reduce((sum, a) => sum + Math.min(60, Number(a.todayEarned || 0)), 0);
-      const pcPct = Math.min(100, Math.round((pcDone / pcMax) * 100));
+      const pcPct = accCount === 0 ? 0 : Math.min(100, Math.round((pcDone / pcMax) * 100));
 
-      const dsMax = 30 * accCount;
+      const dsMax = 30 * (accCount || 1);
       const dsDone = accounts.reduce((sum, a) => sum + (Number(a.todayEarned || 0) >= 90 ? 30 : Math.max(0, Math.min(30, Number(a.todayEarned || 0) - 60))), 0);
-      const dsPct = Math.min(100, Math.round((dsDone / dsMax) * 100));
+      const dsPct = accCount === 0 ? 0 : Math.min(100, Math.round((dsDone / dsMax) * 100));
 
-      const appMax = 10 * accCount;
+      const appMax = 10 * (accCount || 1);
       const appDone = accounts.reduce((sum, a) => sum + (Number(a.todayEarned || 0) >= 100 ? 10 : Math.max(0, Math.min(10, Number(a.todayEarned || 0) - 90))), 0);
-      const appPct = Math.min(100, Math.round((appDone / appMax) * 100));
+      const appPct = accCount === 0 ? 0 : Math.min(100, Math.round((appDone / appMax) * 100));
 
-      const questMax = 50 * accCount;
+      const questMax = 50 * (accCount || 1);
       const questDone = accounts.reduce((sum, a) => sum + (Number(a.todayEarned || 0) >= 103 ? 50 : Math.max(0, Math.min(50, Number(a.todayEarned || 0) - 100))), 0);
-      const questPct = Math.min(100, Math.round((questDone / questMax) * 100));
+      const questPct = accCount === 0 ? 0 : Math.min(100, Math.round((questDone / questMax) * 100));
 
       topTasks = [
-        { icon: '🔍', title: '必应拟人搜索连续收割 (全户累计)', pts: pcDone + '/' + pcMax, pct: pcPct },
-        { icon: '📅', title: '每日活动集 (Daily Set 全户累计)', pts: dsDone + '/' + dsMax, pct: dsPct },
-        { icon: '📱', title: '必应移动端应用签入 (全户累计)', pts: appDone + '/' + appMax, pct: appPct },
-        { icon: '🎯', title: '50分的万圣节礼遇 (全户累计)', pts: questDone + '/' + questMax, pct: questPct }
+        { icon: '🔍', title: '必应拟人搜索连续收割 (全户累计)', pts: (accCount === 0 ? '0/0' : (pcDone + '/' + pcMax)), pct: pcPct },
+        { icon: '📅', title: '每日活动集 (Daily Set 全户累计)', pts: (accCount === 0 ? '0/0' : (dsDone + '/' + dsMax)), pct: dsPct },
+        { icon: '📱', title: '必应移动端应用签入 (全户累计)', pts: (accCount === 0 ? '0/0' : (appDone + '/' + appMax)), pct: appPct },
+        { icon: '🎯', title: '50分的万圣节礼遇 (全户累计)', pts: (accCount === 0 ? '0/0' : (questDone + '/' + questMax)), pct: questPct }
       ];
     } else {
       const curAcc = accounts.find((a) => String(a.id) === String(selectedAccountId)) || accounts[0] || {};
@@ -1698,6 +1714,10 @@ function initApp() {
   const modalHealthCheck = document.getElementById("modal-health-check");
   const modalGlobalConfig = document.getElementById("modal-global-config");
 
+  document.getElementById("menu-add-account")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    window.openAddAccountModal();
+  });
   document.getElementById("menu-sync-official")?.addEventListener("click", (e) => {
     e.preventDefault();
     openSyncOfficialModal();
@@ -2123,9 +2143,9 @@ function initApp() {
 
     const cfgSelAcc = document.getElementById("cfg-select-acc");
     if (cfgSelAcc) {
-      cfgSelAcc.innerHTML = accounts
-        .map((a) => `<option value="${a.id}">${escapeHtml(a.name || a.user)} (${escapeHtml(a.user)})</option>`)
-        .join("");
+      cfgSelAcc.innerHTML = accounts.length > 0
+        ? accounts.map((a) => `<option value="${a.id}">${escapeHtml(a.name || a.user)} (${escapeHtml(a.user)})</option>`).join("")
+        : '<option value="">暂无账号（点击右侧「新增账号」添加）</option>';
     }
 
     try {
@@ -2235,12 +2255,17 @@ function initApp() {
     });
   });
 
-  // 编辑当前选中账号按钮绑定
+  // 编辑与新增当前选中账号按钮绑定
   document.getElementById("cfg-btn-edit-selected-acc")?.addEventListener("click", () => {
     const selAccId = document.getElementById("cfg-select-acc")?.value;
     if (selAccId) {
       window.openEditAccountModal(selAccId);
+    } else {
+      alert("当前未选择任何账号，请先添加账号");
     }
+  });
+  document.getElementById("cfg-btn-add-acc")?.addEventListener("click", () => {
+    window.openAddAccountModal();
   });
 
   document.getElementById("btn-test-network-egress")?.addEventListener("click", async () => {
@@ -2350,9 +2375,7 @@ function initApp() {
   const modalLogs = document.getElementById("modal-logs");
 
   document.getElementById("btn-add-account")?.addEventListener("click", () => {
-    document.getElementById("form-account")?.reset();
-    document.getElementById("acc-id").value = "";
-    modalAccount?.classList.remove("hidden");
+    window.openAddAccountModal();
   });
   document.getElementById("close-account-modal")?.addEventListener("click", () => modalAccount?.classList.add("hidden"));
   
@@ -2447,6 +2470,8 @@ function initApp() {
           fetch("/api/accounts/" + data.account.id + "/login", { method: "POST" });
         }
         refreshDashboard();
+      } else {
+        alert("保存账号失败: " + (data.message || "未知原因"));
       }
     } catch (err) {
       alert("保存失败: " + err.message);

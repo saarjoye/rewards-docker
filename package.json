@@ -1,13 +1,13 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.7.0",
-  "description": "Microsoft Rewards 自动化平台 (v6.7.0 全新移动端专属视口重构、解锁自然丝滑手势滚动、全景自适应Bento卡片与模态抽屉)",
+  "version": "6.7.1",
+  "description": "Microsoft Rewards 自动化平台 (v6.7.1 修复初始空账号时缺少添加入口缺陷，直接渲染添加首个托管账号高亮卡片与顶栏快捷接入)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "test": "node --test"
+    "test": "node --test test/*.test.js"
   },
   "keywords": [
     "microsoft-rewards",

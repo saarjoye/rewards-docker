@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <title>Rewards 自动任务系统 (v6.7.0)</title>
+  <title>Rewards 自动任务系统 (v6.7.1)</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -13,7 +13,7 @@
       <div class="sidebar-top">
         <div class="brand">
           <div class="brand-logo-sq">🎁</div>
-          <span class="brand-name">Rewards<span class="brand-dot">.v6.7.0</span></span>
+          <span class="brand-name">Rewards<span class="brand-dot">.v6.7.1</span></span>
         </div>
 
         <div class="store-selector-wrap">
@@ -31,6 +31,10 @@
         </div>
                 <nav class="sidebar-menu">
           <div class="menu-label">平台核心中枢</div>
+          <a href="#" class="menu-item" id="menu-add-account">
+            <span class="menu-icon">➕</span>
+            <span>添加托管账号</span>
+          </a>
           <a href="#" class="menu-item" id="menu-sync-official">
             <span class="menu-icon">⏳</span>
             <span>官网数据同步</span>
@@ -70,7 +74,7 @@
         </button>
         <div class="mobile-nav-brand">
           <span style="font-size: 18px;">🎁</span>
-          <span class="mobile-nav-title">Rewards<span class="brand-dot">.v6.7.0</span></span>
+          <span class="mobile-nav-title">Rewards<span class="brand-dot">.v6.7.1</span></span>
         </div>
         <button type="button" class="mobile-quick-btn" id="btn-mobile-quick-run">🚀 执行</button>
       </div>
@@ -96,6 +100,7 @@
         </div>
 
         <div class="topbar-actions">
+          <button class="btn-top-add-acc" id="btn-add-account" type="button">＋ 添加账号</button>
           <div class="pill-btn status-pill"><span class="pulse-dot"></span> 错峰调度: 运行中</div>
           <div class="pill-btn mem-pill" id="topbar-mem-pill">⚡ 内存: <span id="topbar-mem-text">142 MB / 512 MB</span></div>
           <button class="pill-btn" id="btn-open-terminal">实时日志</button>
@@ -619,6 +624,7 @@
             <!-- 动态填充 -->
           </select>
           <button type="button" class="btn-sm-ghost" id="cfg-btn-edit-selected-acc">编辑此账号资料</button>
+          <button type="button" class="btn-sm-ghost" id="cfg-btn-add-acc" style="color: #ff5722; font-weight: 600;">＋ 新增账号</button>
         </div>
 
         <!-- 嵌入图 6「拟人化错峰时段设定」 -->
