@@ -144,6 +144,51 @@ export function createServer() {
 
 
   // 13. 账号健康体检接口 (对标图 8 四维诊断)
+  // 13.1 账号健康/登录凭据快速探测 GET 接口 (供模态框快速检测与单账号状态感知)
+  app.get('/api/health', async (req, res) => {
+    try {
+      const { accountId } = req.query || {};
+      const targetId = accountId || (configManager.getAccounts()[0] && configManager.getAccounts()[0].id);
+      if (!targetId) {
+        return res.status(404).json({ success: false, message: '未找到待体检账号，请先添加账号' });
+      }
+
+      const account = configManager.getAccount(targetId);
+      if (!account) {
+        return res.status(404).json({ success: false, message: '未找到指定账号: ' + targetId });
+      }
+
+      const report = await healthCheckService.checkAccountHealth(targetId);
+      const isOk = Boolean(report.allSatisfied || report.cookieHealth?.healthy);
+      const status = report.allSatisfied ? 'ready' : (report.cookieHealth?.hasU ? 'warning' : 'needs_login');
+      configManager.upsertAccount({
+        id: report.accountId,
+        status,
+        allSatisfied: report.allSatisfied
+      });
+
+      const detail = report.cookieHealth?.detail || (isOk ? '登录凭据正常且有效' : '登录凭据待补齐或异常');
+      const itemResult = {
+        accountId: targetId,
+        accountName: report.accountName,
+        status: isOk ? 'ok' : status,
+        rawStatus: status,
+        allSatisfied: report.allSatisfied,
+        detail,
+        report
+      };
+
+      return res.json({
+        success: true,
+        report,
+        results: [itemResult]
+      });
+    } catch (e) {
+      res.status(500).json({ success: false, message: e.message });
+    }
+  });
+
+  // 13.2 账号健康体检接口 (对标图 8 四维诊断)
   app.post('/api/health/check', async (req, res) => {
     try {
       const { accountId, scope = 'single' } = req.body || {};
@@ -159,7 +204,24 @@ export function createServer() {
           });
           results.push(report);
         }
-        return res.json({ success: true, scope: 'all', reports: results });
+        return res.json({
+          success: true,
+          scope: 'all',
+          reports: results,
+          results: results.map((r) => {
+            const isOk = Boolean(r.allSatisfied || r.cookieHealth?.healthy);
+            const status = r.allSatisfied ? 'ready' : (r.cookieHealth?.hasU ? 'warning' : 'needs_login');
+            return {
+              accountId: r.accountId,
+              accountName: r.accountName,
+              status: isOk ? 'ok' : status,
+              rawStatus: status,
+              allSatisfied: r.allSatisfied,
+              detail: r.cookieHealth?.detail || (isOk ? '登录凭据正常且有效' : '登录凭据待补齐'),
+              report: r
+            };
+          })
+        });
       } else {
         const targetId = accountId || (configManager.getAccounts()[0] && configManager.getAccounts()[0].id);
         if (!targetId) return res.status(404).json({ success: false, message: '未找到待体检账号' });
@@ -169,7 +231,22 @@ export function createServer() {
           status: report.allSatisfied ? 'ready' : (report.cookieHealth.hasU ? 'warning' : 'needs_login'),
           allSatisfied: report.allSatisfied
         });
-        return res.json({ success: true, scope: 'single', report });
+        const isOk = Boolean(report.allSatisfied || report.cookieHealth?.healthy);
+        const status = report.allSatisfied ? 'ready' : (report.cookieHealth?.hasU ? 'warning' : 'needs_login');
+        return res.json({
+          success: true,
+          scope: 'single',
+          report,
+          results: [{
+            accountId: targetId,
+            accountName: report.accountName,
+            status: isOk ? 'ok' : status,
+            rawStatus: status,
+            allSatisfied: report.allSatisfied,
+            detail: report.cookieHealth?.detail || (isOk ? '登录凭据正常且有效' : '登录凭据待补齐'),
+            report
+          }]
+        });
       }
     } catch (e) {
       res.status(500).json({ success: false, message: e.message });
@@ -643,6 +720,29 @@ export function createServer() {
       clearInterval(heartbeat);
       unsubscribe();
     });
+  });
+
+  // API 404 兜底保护，杜绝任何未匹配 /api/* 请求返回 HTML 导致前端 JSON 解析崩溃
+  app.all('/api/*', (req, res) => {
+    res.status(404).json({
+      success: false,
+      message: '未找到 API 路由: ' + req.method + ' ' + req.path
+    });
+  });
+
+  // 全局 API 错误捕获中间件，确保 API 报错始终返回规范 JSON
+  app.use((err, req, res, next) => {
+    logger.error('[WebAPI] 未捕获异常: ' + err.message, { stack: err.stack, path: req.path });
+    if (res.headersSent) {
+      return next(err);
+    }
+    if (req.path && req.path.startsWith('/api/')) {
+      return res.status(err.status || 500).json({
+        success: false,
+        message: err.message || '内部服务异常'
+      });
+    }
+    next(err);
   });
 
   return app;

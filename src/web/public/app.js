@@ -2826,19 +2826,35 @@ function initApp() {
       return;
     }
     const btn = document.getElementById("btn-test-account-login");
-    btn.disabled = true;
-    btn.textContent = "⏳ 正在探测登录凭据...";
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "⏳ 正在探测登录凭据...";
+    }
     try {
-      const res = await fetch('/api/health?accountId=' + accId);
+      const res = await fetch('/api/health?accountId=' + encodeURIComponent(accId));
+      const contentType = res.headers.get("content-type") || "";
+      if (!contentType.includes("application/json")) {
+        const text = await res.text();
+        throw new Error("服务响应非预期格式 (" + res.status + "): " + text.slice(0, 100));
+      }
       const data = await res.json();
-      btn.disabled = false;
-      btn.textContent = "🔍 开始检测登录状态";
-      const r = (data.results && data.results[0]) || {};
-      alert("账号检测结果: " + (r.status === 'ok' ? "✅ 登录凭据正常且有效！" : ("⚠️ 状态: " + (r.detail || r.status))));
+      if (!res.ok || data.success === false) {
+        throw new Error(data.message || ("请求失败 (" + res.status + ")"));
+      }
+      const r = (data.results && data.results[0]) || (data.report ? {
+        status: (data.report.allSatisfied || data.report.cookieHealth?.healthy) ? 'ok' : 'needs_login',
+        detail: data.report.cookieHealth?.detail,
+        allSatisfied: data.report.allSatisfied
+      } : {});
+      const isHealthy = r.status === 'ok' || r.status === 'ready' || Boolean(r.allSatisfied);
+      alert("账号检测结果: " + (isHealthy ? "✅ 登录凭据正常且有效！" : ("⚠️ 状态: " + (r.detail || r.status || '待补齐'))));
     } catch (e) {
-      btn.disabled = false;
-      btn.textContent = "🔍 开始检测登录状态";
       alert("检测异常: " + e.message);
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "🔍 开始检测登录状态";
+      }
     }
   });
 
