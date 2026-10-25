@@ -341,7 +341,7 @@ export function createServer() {
   // 2. 账号管理：保存 / 更新账号
   app.post('/api/accounts', (req, res) => {
     try {
-      const { id, name, user, pass, proxy, enabled } = req.body;
+      const { id, name, user, pass, proxy, enabled, slot } = req.body;
       if (!user) {
         return res.status(400).json({ success: false, message: '账号不能为空' });
       }
@@ -353,7 +353,8 @@ export function createServer() {
         user,
         pass,
         proxy,
-        enabled: enabled !== false
+        enabled: enabled !== false,
+        slot: slot || 'auto'
       });
 
       res.json({ success: true, account: saved });
