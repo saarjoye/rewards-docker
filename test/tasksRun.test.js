@@ -76,6 +76,14 @@ test('积分明细只从当前账号搜索行读取搜索上限', () => {
   });
   assert.equal(parseOfficialSearchPointsDetail('搜索: 1/1\n今日积分 250\n优惠 220'), null);
   assert.equal(parseOfficialSearchPointsDetail('必应搜索\n31/30'), null);
+  assert.equal(parseOfficialSearchPointsDetail('必应搜索\n1/1'), null, 'max < 30 的连签计数必须过滤');
+  assert.equal(parseOfficialSearchPointsDetail('必应搜索: 1/1'), null, 'max < 30 的打卡计数必须过滤');
+  assert.deepEqual(parseOfficialSearchPointsDetail('必应搜索\n9/60\n其他\n10'), {
+    current: 9,
+    max: 60,
+    isMaxed: false,
+    source: 'points-detail'
+  });
 });
 
 test('剩余任务快照严格区分未知、完成和待做', () => {
