@@ -14,7 +14,8 @@ import {
   penetratePunchCardQuest,
   penetratePuzzleSpotlight,
   harvestClaimablePointsWithVirtualPointer,
-  getRandomSearchWord
+  getRandomSearchWord,
+  claimBrowserExtensionActivity
 } from '../browser/actions.js';
 import { SearchStagnationGuard } from './searchStagnation.js';
 import {
@@ -770,7 +771,16 @@ export class TaskManager {
                         const tempP = await context.newPage();
                         try {
                           await tempP.goto('https://rewards.bing.com/earn', { waitUntil: 'commit', timeout: 25000 });
-                          return await tempP.evaluate(() => [...new Set([...document.querySelectorAll('a[href*="/quest/"]')].map((a) => a.getAttribute('href')).filter(Boolean))]);
+                          return await tempP.evaluate(() => {
+                            const hrefs = [...new Set([...document.querySelectorAll('a[href*="/quest/"]')].map((a) => a.getAttribute('href')).filter(Boolean))];
+                            const html = document.body.innerHTML || '';
+                            const match = html.match(/href="(\/earn\/quest\/(WW_pcparent_RewardsApp_weekly_Exclusive[^"]+))"/i)
+                              || html.match(/"(\/earn\/quest\/(WW_pcparent_RewardsApp_weekly_Exclusive[^"]+))"/i);
+                            if (match && match[1] && !hrefs.includes(match[1])) {
+                              hrefs.push(match[1]);
+                            }
+                            return hrefs;
+                          });
                         } catch { return []; } finally { await tempP.close().catch(() => {}); }
                       })());
 
@@ -790,17 +800,20 @@ export class TaskManager {
                     }
                   }
                 }
+                const attemptedRecord = { date: todayStr, attemptedAt: Date.now() };
+                account.dailyQuestsAttempted = attemptedRecord;
                 if (completedTodayHrefs.length > 0) {
                   const currentQuestsDone = (account.dailyQuestsDone?.date === todayStr)
                     ? (account.dailyQuestsDone.hrefs || [])
                     : [];
                   const updatedQuestsDone = [...new Set([...currentQuestsDone, ...completedTodayHrefs])];
                   account.dailyQuestsDone = { date: todayStr, hrefs: updatedQuestsDone };
-                  configManager.upsertAccount({
-                    id: accountId,
-                    dailyQuestsDone: account.dailyQuestsDone
-                  });
                 }
+                configManager.upsertAccount({
+                  id: accountId,
+                  dailyQuestsAttempted: attemptedRecord,
+                  ...(account.dailyQuestsDone ? { dailyQuestsDone: account.dailyQuestsDone } : {})
+                });
               }
               if (this.shouldStop) throw new Error(TASK_STOP_MESSAGE);
 
@@ -816,6 +829,16 @@ export class TaskManager {
                   } finally {
                     if (actPage && !actPage.isClosed()) await actPage.close().catch(() => {});
                   }
+                }
+
+                // 核心穿透：特殊扩展任务（浏览器中的奖励 +30分，对标参考项目 v1.8.10）
+                const extPage = await context.newPage();
+                try {
+                  await claimBrowserExtensionActivity(extPage, { accountPrefix: account.name });
+                } catch (eExt) {
+                  log(`特殊扩展活动执行跳过: ${eExt.message}`);
+                } finally {
+                  if (extPage && !extPage.isClosed()) await extPage.close().catch(() => {});
                 }
               }
               if (this.shouldStop) throw new Error(TASK_STOP_MESSAGE);

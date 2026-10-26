@@ -1,4 +1,4 @@
-
+﻿
 export function getTodayDateString() {
   try {
     return new Intl.DateTimeFormat('zh-CN', {
@@ -155,6 +155,12 @@ class ConfigManager {
         if (a.dailyQuestsDone) {
           a.dailyQuestsDone = { date: todayStr, hrefs: [] };
         }
+        if (a.dailyQuestsAttempted) {
+          a.dailyQuestsAttempted = null;
+        }
+        if (a.lastScheduledDate) {
+          a.lastScheduledDate = null;
+        }
         changed = true;
       }
     }
@@ -207,7 +213,10 @@ class ConfigManager {
       dataState: accountData.dataState || existing?.dataState || 'unknown',
       officialTasks: accountData.officialTasks !== undefined ? accountData.officialTasks : (existing?.officialTasks || null),
       remainingRetryCount: accountData.remainingRetryCount !== undefined ? accountData.remainingRetryCount : (existing?.remainingRetryCount || 0),
-      remainingRetriesDate: accountData.remainingRetriesDate || (existing?.remainingRetriesDate || null)
+      remainingRetriesDate: accountData.remainingRetriesDate || (existing?.remainingRetriesDate || null),
+      dailyQuestsAttempted: accountData.dailyQuestsAttempted !== undefined ? accountData.dailyQuestsAttempted : (existing?.dailyQuestsAttempted || null),
+      dailyQuestsDone: accountData.dailyQuestsDone !== undefined ? accountData.dailyQuestsDone : (existing?.dailyQuestsDone || null),
+      lastScheduledDate: accountData.lastScheduledDate !== undefined ? accountData.lastScheduledDate : (existing?.lastScheduledDate || null)
     };
 
     if (idx >= 0) {
@@ -385,3 +394,5 @@ class ConfigManager {
 
 export const configManager = new ConfigManager();
 export default configManager;
+
+

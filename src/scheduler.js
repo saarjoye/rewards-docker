@@ -139,9 +139,10 @@ class Scheduler {
 
       const allAccounts = configManager.getAccounts().filter((a) => a.enabled);
       const pendingAccounts = allAccounts.filter((acc) => {
-        const isToday = acc.todayDate === todayStr;
-        const todayPts = isToday ? Number(acc.todayEarned || 0) : 0;
-        return todayPts < 160;
+        if (acc.slot && acc.slot !== 'auto' && acc.slot !== activeSlot.id) return false;
+        if (this.isAccountSatisfied(acc, todayStr)) return false;
+        if (acc.lastScheduledDate === todayStr && (acc.todayEarned || 0) >= 60) return false;
+        return true;
       });
 
       if (pendingAccounts.length > 0 && !taskManager.isQueueRunning && !taskManager.runningAccountId) {
@@ -165,27 +166,28 @@ class Scheduler {
     const allAccounts = configManager.getAccounts().filter((a) => a.enabled);
     const todayStr = getTodayDateString();
 
-    const targetAccounts = accountsToRun || allAccounts.filter((acc) => {
-      if (acc.slot && acc.slot !== 'auto') {
-        return acc.slot === slotDef.id;
+    const candidateAccounts = accountsToRun || allAccounts;
+
+    const targetAccounts = candidateAccounts.filter((acc) => {
+      // 1. 如果配置了专属时段且非 auto，时段不匹配则不在此批次运行
+      if (acc.slot && acc.slot !== 'auto' && acc.slot !== slotDef.id) {
+        return false;
       }
-      const isToday = acc.todayDate === todayStr;
-      const todayPts = isToday ? Number(acc.todayEarned || 0) : 0;
-      const tasks = (isToday && acc.officialTasks && typeof acc.officialTasks === 'object') ? acc.officialTasks : null;
 
-      // 核心判定：打孔卡多日任务今日已推进过，即视为今日打孔卡达标
-      const questsSettled = tasks ? (tasks.needQuests === false || acc.dailyQuestsAttempted?.date === todayStr) : false;
-      const dailySettled = tasks ? (tasks.needDailySet === false && tasks.needDailyActivities === false && tasks.needAppSign === false) : false;
-      const searchSettled = tasks ? (tasks.needSearch === false || (tasks.searchPoints && tasks.searchPoints.isMaxed)) : (todayPts >= 130);
-
-      // 只要满足今日积分达标 (>=130)、日常全完且打孔卡今日已推进，坚决判定为今日已达成，智能跳过！
-      const isFullySatisfied = (todayPts >= 130 && dailySettled && searchSettled && questsSettled) ||
-                               (tasks && tasks.hasWork === false && (questsSettled || todayPts >= 130));
-
-      if (isFullySatisfied) {
+      // 2. 核心判定：今日常规任务与积分已全部达成，智能跳过
+      const isSatisfied = this.isAccountSatisfied(acc, todayStr);
+      if (isSatisfied) {
+        const todayPts = acc.todayDate === todayStr ? Number(acc.todayEarned || 0) : 0;
         logger.log('ℹ️', `[${acc.name || acc.user}] 今日常规任务与积分已全部达成 (+ ${todayPts} 分，打孔卡今日已推进)，[${slotDef.label}] 智能跳过`);
         return false;
       }
+
+      // 3. 定时任务每账号每天只排一次原则：若今日已由定时调度执行过且已有产出，避免重复轮巡
+      if (acc.lastScheduledDate === todayStr && (acc.todayEarned || 0) >= 60) {
+        logger.log('ℹ️', `[${acc.name || acc.user}] 今日已在定时调度流水线执行完毕 (+ ${acc.todayEarned || 0} 分)，[${slotDef.label}] 智能跳过`);
+        return false;
+      }
+
       return true;
     });
 
@@ -209,6 +211,10 @@ class Scheduler {
         try {
           logger.log('🚀', `[${slotDef.label}] [${i + 1}/${targetAccounts.length}] 启动账号 [${acc.name}] 自动化作业`);
           await taskManager.runAccountTasks(acc.id, { preserveStopState: true });
+          configManager.upsertAccount({
+            id: acc.id,
+            lastScheduledDate: todayStr
+          });
         } catch (err) {
           if (err.message !== '任务已被用户主动中断') {
             logger.log('🔴', `调度任务异常 [${acc.name}]: ${err.message}`);
@@ -343,6 +349,47 @@ class Scheduler {
     this.jobs = [];
     this.running = false;
     this.staggerState.isWaiting = false;
+  }
+
+/**
+   * 判定某个账号今日任务是否已全部结算达成（对标前端 5 项任务缺口：搜索、签到、DailySet、日常、打孔卡）
+   */
+  isAccountSatisfied(acc, todayStr = getTodayDateString()) {
+    if (!acc || !acc.enabled) return true;
+    const isToday = acc.todayDate === todayStr;
+    const todayPts = isToday ? Number(acc.todayEarned || 0) : 0;
+    const tasks = (isToday && acc.officialTasks && typeof acc.officialTasks === 'object') ? acc.officialTasks : null;
+
+    if (!tasks) {
+      if (todayPts >= 130) return true;
+      if (acc.lastScheduledDate === todayStr && todayPts >= 60) return true;
+      return false;
+    }
+
+    // 1. 打孔卡多日任务判定：已完成、或今日已推进打卡过
+    const questsSettled = (
+      tasks.needQuests === false ||
+      (Array.isArray(tasks.questPending) && tasks.questPending.length === 0) ||
+      tasks.questsAttemptedToday === true ||
+      acc.dailyQuestsAttempted?.date === todayStr ||
+      (acc.dailyQuestsDone?.date === todayStr && Array.isArray(acc.dailyQuestsDone.hrefs) && acc.dailyQuestsDone.hrefs.length > 0)
+    );
+
+    // 2. 日常三大板块判定（每日活动集 + App签到 + 日常任务）
+    const dailySetDone = tasks.needDailySet === false || (tasks.dailySet && tasks.dailySet.current >= tasks.dailySet.max);
+    const appSignDone = tasks.needAppSign === false || (tasks.appCheckIn && tasks.appCheckIn.current >= tasks.appCheckIn.max);
+    const dailyActsDone = tasks.needDailyActivities === false || (Array.isArray(tasks.dailyPending) && tasks.dailyPending.length === 0);
+    const dailySettled = dailySetDone && appSignDone && dailyActsDone;
+
+    // 3. 搜索板块判定
+    const searchSettled = tasks.needSearch === false || (tasks.searchPoints && tasks.searchPoints.isMaxed) || todayPts >= 60;
+
+    // 综合达成判定：
+    if (dailySettled && searchSettled && questsSettled) return true;
+    if (tasks.hasWork === false && questsSettled) return true;
+    if (todayPts >= 130 && (questsSettled || tasks.hasWork === false)) return true;
+
+    return false;
   }
 }
 
