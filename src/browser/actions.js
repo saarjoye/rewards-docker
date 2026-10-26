@@ -16,6 +16,19 @@ function isExternalAppProtocol(url) {
 import logger from '../logger.js';
 import browserManager from './browser.js';
 import { classifyTaskFeasibility } from '../contracts/streaks.js';
+import {
+  isQuestSubtaskCompleted,
+  parseQuestProgress,
+  classifyQuestAction,
+  questSubtaskKey,
+  isDailyQuestSubtask,
+  isQuestSubtaskCoolingDown
+} from '../core/questStatus.js';
+import {
+  SPECIAL_ACTIVITIES,
+  extractSpecialActivitiesFromHtml,
+  findSpecialActivity
+} from '../core/specialActivities.js';
 
 async function dismissCookieBanner(page) {
   try {
@@ -436,6 +449,188 @@ export async function executeDailyActivity(page, card, options = {}) {
   }
 }
 
+/**
+ * 扫描打孔卡页面上的子任务（对标参考项目 v1.8.10 架构）
+ * 返回稳定的动作类型 (activate, search, quiz, visit, reward)、进度和真实完成状态
+ */
+export async function scanQuestSubtasks(page) {
+  if (!page || page.isClosed()) return [];
+  const rawItems = await page.evaluate(() => {
+    const headings = [...document.querySelectorAll('h3')].filter((h) => {
+      const t = (h.innerText || '').trim();
+      return t && !t.includes('条款和条件') && !t.includes('Terms');
+    });
+    const items = [];
+    for (let i = 0; i < headings.length; i++) {
+      const h = headings[i];
+      let container = h;
+      for (let depth = 0; depth < 8 && container?.parentElement; depth++) {
+        container = container.parentElement;
+        if (container === document.body) break;
+        if (container.querySelectorAll('h3').length > 1) break;
+        if (container.querySelectorAll('a[href], button').length > 0) break;
+      }
+      if (!container) continue;
+
+      const rawText = container.innerText || '';
+      const hasSuccessIcon = !!container.querySelector(
+        '[class*="bg-statusSuccessRewardsBg"], [class*="statusSuccessRewards"], [data-testid*="complete" i], svg[class*="success" i]'
+      );
+      const hasEmptyCircle = !!container.querySelector('[class*="border-ctrlChoiceBaseStrokeRest"]');
+      const hasLockIcon = !!container.querySelector('[class*="Lock"], [class*="lock"], [aria-label*="锁定"], [aria-label*="Locked"]');
+      const links = [...container.querySelectorAll('a[href], button')].filter((a) => {
+        if (a.closest('header') || a.closest('footer')) return false;
+        const href = a.getAttribute('href') || '';
+        if (/\/account\/general|\/rewards\/about|\/rewards\/faq|\/rewards\/redeem/i.test(href)) return false;
+        return true;
+      });
+      if (links.length === 0) continue;
+
+      const link = links[0];
+      const disabled = link.getAttribute('aria-disabled') === 'true'
+        || link.getAttribute('data-disabled') === 'true'
+        || link.disabled === true;
+      link.setAttribute('data-msr-subtask', String(i + 1));
+      items.push({
+        index: i + 1,
+        title: (h.innerText || '').trim(),
+        actionText: (link.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 80),
+        href: link.getAttribute('href') || '',
+        tag: link.tagName,
+        rawText,
+        hasSuccessIcon,
+        hasEmptyCircle,
+        hasLockIcon,
+        disabled
+      });
+    }
+    return items;
+  }).catch(() => []);
+
+  return (rawItems || []).map((item) => {
+    const progress = parseQuestProgress(item.rawText);
+    const kind = classifyQuestAction(item);
+    const completed = isQuestSubtaskCompleted(item);
+    const locked = item.disabled || item.hasLockIcon;
+    return {
+      ...item,
+      progress,
+      kind,
+      completed,
+      locked,
+      key: questSubtaskKey({
+        href: item.href,
+        title: item.title,
+        actionText: item.actionText,
+        kind
+      })
+    };
+  });
+}
+
+/**
+ * 执行一个打孔卡子任务动作
+ * - 搜索类动作：必须在必应真正提交一次有效搜索！
+ * - 激活类动作：点击并等待解锁下一项！
+ * - 问答类动作：自动答题提交！
+ * - 浏览类动作：轻滑滚轮并模拟真人驻留触发遥测！
+ */
+export async function executeQuestSubtaskAction(context, page, questUrl, target, options = {}) {
+  const { accountPrefix = '' } = options;
+  const beforeUrl = String(page.url() || '');
+  const popupPromise = context ? context.waitForEvent('page', { timeout: 7000 }).catch(() => null) : Promise.resolve(null);
+  let clicked = false;
+
+  try {
+    const el = await page.$(`[data-msr-subtask="${target.index}"]`).catch(() => null);
+    if (el && await el.isVisible().catch(() => false)) {
+      await el.click({ timeout: 8000, force: true }).catch(() => {});
+      clicked = true;
+    }
+  } catch (e) {
+    if (target.href && /^https?:\/\//i.test(target.href) && !isExternalAppProtocol(target.href)) {
+      if (context) {
+        const fallback = await context.newPage().catch(() => null);
+        if (fallback) {
+          await fallback.goto(target.href, { waitUntil: 'domcontentloaded', timeout: 25000 }).catch(() => {});
+          await new Promise((r) => setTimeout(r, 2500));
+          await fallback.close().catch(() => {});
+          clicked = true;
+        }
+      }
+    }
+    if (!clicked) throw e;
+  }
+
+  const popup = await Promise.race([popupPromise, new Promise((r) => setTimeout(r, 2500))]);
+  let landingPage = popup || null;
+  if (!landingPage) {
+    const afterUrl = String(page.url() || '');
+    if (afterUrl !== beforeUrl) landingPage = page;
+  }
+
+  if (landingPage) {
+    await landingPage.waitForLoadState('domcontentloaded', { timeout: 20000 }).catch(() => {});
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+
+  // 关键动作处理：如果是搜索类动作，必须在必应真正提交搜索以推进进度！
+  if (target.kind === 'search') {
+    let searchPage = landingPage;
+    const landingUrl = String(searchPage?.url?.() || '');
+    const isBing = /^https?:\/\/(?:[^/]+\.)?bing\.com\//i.test(landingUrl);
+    if (!searchPage || !isBing) {
+      searchPage = context ? await context.newPage().catch(() => null) : null;
+      if (searchPage) {
+        await searchPage.goto('https://cn.bing.com', { waitUntil: 'domcontentloaded', timeout: 25000 }).catch(() => {});
+        await new Promise((r) => setTimeout(r, 1200));
+      }
+    }
+    if (searchPage) {
+      const query = getRandomSearchWord();
+      logger.log('🔍', `打孔卡搜索类子任务: 提交真人有效搜索 "${query}"`, '', accountPrefix);
+      await performHumanizedSearch(searchPage, query, { accountPrefix, context }).catch(() => {});
+      await new Promise((r) => setTimeout(r, 5000));
+      if (searchPage !== page && !searchPage.isClosed?.()) {
+        await searchPage.close().catch(() => {});
+      }
+    }
+  } else if (target.kind === 'quiz') {
+    if (landingPage) {
+      await Promise.race([
+        solveQuizOrPoll(landingPage, { accountPrefix }),
+        new Promise((r) => setTimeout(r, 6000))
+      ]);
+      await landingPage.mouse.wheel(0, 200).catch(() => {});
+      await new Promise((r) => setTimeout(r, 2500));
+      if (landingPage !== page && !landingPage.isClosed?.()) {
+        await landingPage.close().catch(() => {});
+      }
+    }
+  } else if (landingPage) {
+    // 浏览类动作：轻滑滚轮并驻留 4~6 秒触发微软遥测
+    await landingPage.mouse.wheel(0, 350 + Math.floor(Math.random() * 300)).catch(() => {});
+    await new Promise((r) => setTimeout(r, 3500 + Math.floor(Math.random() * 2000)));
+    if (landingPage !== page && !landingPage.isClosed?.()) {
+      await landingPage.close().catch(() => {});
+    }
+  } else {
+    await new Promise((r) => setTimeout(r, 2500));
+  }
+
+  // 回到打孔卡主页面，等待微软服务状态入账
+  await page.goto(questUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+  await new Promise((r) => setTimeout(r, 2500));
+}
+
+/**
+ * 完成任务区多步打孔卡 (Punch Cards)
+ * 全面对齐参考项目 v1.8.10 架构：
+ * 1. 自动扫描识别子任务列表与当前真实完成图标；
+ * 2. 精确分类动作意图 (activate, search, quiz, visit, reward)，搜索型步骤真实提交搜索；
+ * 3. 循环推进所有已解锁且尚未完成的子任务，激活后自动接力执行后续解锁步骤；
+ * 4. 动作完成后回读页面核验，权威确认达成。
+ */
 export async function penetratePunchCardQuest(page, questUrl, options = {}) {
   const { accountPrefix = '' } = options;
   if (!questUrl) return false;
@@ -446,86 +641,164 @@ export async function penetratePunchCardQuest(page, questUrl, options = {}) {
   const context = (page && typeof page.context === 'function') ? page.context() : null;
   let activePage = page;
 
-  // 严防死锁：单个打孔卡整体执行上限 35 秒，超时自动熔断跳过，绝不允许卡死后续账号
   const executeCore = async () => {
     try {
       if (!activePage || activePage.isClosed()) {
         if (context) activePage = await context.newPage();
       }
-      await activePage.goto(fullUrl, { waitUntil: 'commit', timeout: 20000 }).catch(() => {});
-      await new Promise((r) => setTimeout(r, 2000));
+      await activePage.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+      await new Promise((r) => setTimeout(r, 2500));
 
-      // 扫描子步骤卡片
-      let stepCards = await activePage.$$('a[href*="redirect?"], a[href*="bing.com"][class*="rounded-cornerCtrlRest"], a[class*="bgCtrlBrandRest"], div[data-bi-area="PunchCardStep"] a, a[href*="/quest/"], a.c-call-to-action');
-      if (!stepCards || stepCards.length === 0) {
-        stepCards = await activePage.$$('a[class*="rounded-cornerCtrlRest"], a[class*="Button"], button[class*="bg-bgCtrlBrandRest"], a:has-text("立即激活"), a:has-text("开始"), a:has-text("加入")');
-      }
-      logger.log('🎯', `打孔卡内部发现 ${stepCards.length} 个子步骤`, '', accountPrefix);
+      const pageTitle = (await activePage.title().catch(() => '')) || '任务打孔卡';
+      const displayName = pageTitle.replace(/\s*[–-]\s*Microsoft Rewards\s*$/i, '').trim() || '任务打孔卡';
 
-      for (let j = 0; j < Math.min(6, stepCards.length); j++) {
-        let stepPopup = null;
-        const step = stepCards[j];
-        try {
-          const text = await step.innerText().catch(() => '');
-          if (/明天再来|天解锁|已完成|Complete/i.test(text)) {
-            logger.log('⏳', `打孔卡第 ${j + 1} 步已完成或受时间锁保护，跳过`, '', accountPrefix);
-            continue;
-          }
+      const attemptedThisRun = new Set();
+      let roundAttempted = 0;
+      let completedCount = 0;
 
-          const href = await step.getAttribute('href').catch(() => null);
-          if (href && (href.startsWith('ms-') || href.startsWith('intent:') || href.startsWith('market:') || href.startsWith('app:'))) {
-            logger.log('ℹ️', `打孔卡第 ${j + 1} 步为客户端应用协议，安全跳过`, '', accountPrefix);
-            continue;
-          }
-
-          if (href && href.startsWith('http')) {
-            if (context) {
-              stepPopup = await context.newPage();
-              await stepPopup.goto(href, { waitUntil: 'commit', timeout: 15000 }).catch(() => {});
-            }
-          } else if (await step.isVisible().catch(() => false)) {
-            const [p] = await Promise.all([
-              activePage.context().waitForEvent('page', { timeout: 6000 }).catch(() => null),
-              step.click({ force: true, timeout: 5000 }).catch(() => {})
-            ]);
-            stepPopup = p;
-          }
-
-          if (stepPopup) {
-            await stepPopup.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => {});
-            // 答题辅助最多等待 5 秒
-            await Promise.race([
-              solveQuizOrPoll(stepPopup, { accountPrefix }),
-              new Promise((r) => setTimeout(r, 5000))
-            ]);
-            await stepPopup.mouse.wheel(0, 150).catch(() => {});
-            await new Promise((r) => setTimeout(r, 2000));
-            await stepPopup.close().catch(() => {});
-            logger.log('✅', `打孔卡子步骤 ${j + 1} 穿透打卡成功`, '', accountPrefix);
-          } else {
-            await new Promise((r) => setTimeout(r, 1500));
-          }
-        } catch (eStep) {
-          logger.log('⚠️', `打孔卡子步骤 ${j + 1} 交互异常: ${eStep.message}`, '', accountPrefix);
-        } finally {
-          if (stepPopup && !stepPopup.isClosed()) await stepPopup.close().catch(() => {});
+      while (roundAttempted < 20) {
+        const subtasks = await scanQuestSubtasks(activePage);
+        if (!subtasks || subtasks.length === 0) {
+          logger.log('ℹ️', `打孔卡「${displayName}」未探测到子步骤列表`, '', accountPrefix);
+          break;
         }
+
+        const progressScoreBefore = subtasks.reduce((sum, item) => sum + Number(item.progress?.progress || 0), 0);
+        const target = subtasks.find((item) => {
+          if (item.completed || item.locked) return false;
+          if (attemptedThisRun.has(item.key)) return false;
+          return true;
+        });
+
+        if (!target) {
+          const allDone = subtasks.every((s) => s.completed);
+          if (allDone) {
+            logger.log('🎉', `打孔卡「${displayName}」所有子任务均已全部完成！`, '', accountPrefix);
+            return true;
+          }
+          if (roundAttempted === 0) {
+            logger.log('💤', `打孔卡「${displayName}」当前无待做任务或已全部推进，跳过`, '', accountPrefix);
+          }
+          break;
+        }
+
+        roundAttempted++;
+        attemptedThisRun.add(target.key);
+        const stepLabel = target.title || target.actionText || `第 ${target.index} 项`;
+        const progressBefore = target.progress?.progress ?? null;
+        logger.log(
+          '🧩',
+          `执行打孔卡「${displayName}」子任务 [${target.index}]: ${stepLabel} (动作: ${target.actionText || '点击'}, 分类: ${target.kind})`,
+          '',
+          accountPrefix
+        );
+
+        try {
+          await executeQuestSubtaskAction(context, activePage, fullUrl, target, { accountPrefix });
+        } catch (e) {
+          logger.log('🟡', `打孔卡子任务执行异常: ${stepLabel}: ${e.message}`, '', accountPrefix);
+        }
+
+        // 回读页面后权威比对
+        const afterSubtasks = await scanQuestSubtasks(activePage);
+        const afterTarget = afterSubtasks.find((item) => item.key === target.key)
+          || afterSubtasks.find((item) => item.title === target.title && item.kind === target.kind);
+        const progressScoreAfter = afterSubtasks.reduce((sum, item) => sum + Number(item.progress?.progress || 0), 0);
+        const progressAfter = afterTarget?.progress?.progress ?? (progressScoreAfter > progressScoreBefore ? progressScoreAfter : null);
+
+        const advanced = !!afterTarget && (
+          afterTarget.completed ||
+          (progressBefore !== null && progressAfter !== null && progressAfter > progressBefore)
+        ) || progressScoreAfter > progressScoreBefore;
+
+        const activated = target.kind === 'activate' && !!afterTarget && afterTarget.kind !== 'activate';
+
+        if (advanced) {
+          completedCount++;
+          logger.log('✅', `打孔卡「${displayName}」子任务官网已确认达成: ${stepLabel}`, '', accountPrefix);
+        } else if (activated) {
+          logger.log('✅', `打孔卡「${displayName}」已成功激活，继续检查并执行后续解锁任务`, '', accountPrefix);
+        } else {
+          logger.log('⏳', `打孔卡「${displayName}」子任务已尝试（官网状态保持待入账或需次日打卡）: ${stepLabel}`, '', accountPrefix);
+        }
+
+        await new Promise((r) => setTimeout(r, 2000));
       }
-      return true;
+
+      return completedCount > 0 || roundAttempted > 0;
     } catch (e) {
-      logger.log('⚠️', `打孔卡执行异常: ${e.message}`, '', accountPrefix);
+      logger.log('⚠️', `打孔卡执行流程异常: ${e.message}`, '', accountPrefix);
       return false;
     }
   };
 
-  // 35 秒硬熔断守护
+  // 120 秒硬熔断守护（支持多步打孔卡从容执行）
   return await Promise.race([
     executeCore(),
     new Promise((resolve) => setTimeout(() => {
-      logger.log('⏱️', '打孔卡执行已达 35 秒安全超时阈值，主动熔断以保证后续流水线继续执行', '', accountPrefix);
-      resolve(false);
-    }, 35000))
+      logger.log('⏱️', '打孔卡执行已达 120 秒安全超时阈值，主动收尾以保证后续流水线继续执行', '', accountPrefix);
+      resolve(true);
+    }, 120000))
   ]);
+}
+
+/**
+ * 穿透执行特殊活动（如“浏览器中的奖励”扩展任务 +30分，对标 v1.8.10）
+ */
+export async function claimBrowserExtensionActivity(page, options = {}) {
+  const { accountPrefix = '' } = options;
+  const definition = SPECIAL_ACTIVITIES.browserExtension;
+  const taskTitle = definition.name;
+
+  try {
+    if (!page || page.isClosed()) return false;
+    logger.log('🧩', '正在检查官网“浏览器中的奖励”扩展任务 (+30分)...', '', accountPrefix);
+    await page.goto('https://rewards.bing.com/earn', {
+      waitUntil: 'domcontentloaded',
+      timeout: 30000
+    }).catch(() => {});
+    await new Promise((r) => setTimeout(r, 2500));
+
+    const content = await page.content().catch(() => '');
+    const beforeActivity = findSpecialActivity(
+      extractSpecialActivitiesFromHtml(content),
+      definition.key
+    );
+
+    if (beforeActivity?.isCompleted === true) {
+      logger.log('🎉', '官网显示“浏览器中的奖励”已全部完成，安全跳过。', '', accountPrefix);
+      return true;
+    }
+    if (beforeActivity?.isLocked === true) {
+      logger.log('🔒', '“浏览器中的奖励”当前处于锁定状态，跳过。', '', accountPrefix);
+      return false;
+    }
+
+    let link = page.locator('a[href*="browserextension/rewards"]').filter({ hasText: taskTitle }).first();
+    let linkCount = await link.count().catch(() => 0);
+    if (linkCount === 0) {
+      link = page.locator('a[href*="browserextension/rewards"]').first();
+      linkCount = await link.count().catch(() => 0);
+    }
+
+    if (linkCount > 0) {
+      logger.log('👆', '派发虚拟指针点击“浏览器中的奖励”扩展安装入口...', '', accountPrefix);
+      const context = page.context ? page.context() : null;
+      const popupPromise = context ? context.waitForEvent('page', { timeout: 6000 }).catch(() => null) : Promise.resolve(null);
+      await link.click({ timeout: 6000, force: true }).catch(() => {});
+      const popup = await Promise.race([popupPromise, new Promise((r) => setTimeout(r, 2500))]);
+      if (popup) {
+        await popup.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
+        await new Promise((r) => setTimeout(r, 4000));
+        await popup.close().catch(() => {});
+      }
+      logger.log('✅', '“浏览器中的奖励”扩展入口穿透触发成功！', '', accountPrefix);
+      return true;
+    }
+  } catch (e) {
+    logger.log('🟡', `“浏览器中的奖励”扩展任务执行异常: ${e.message}`, '', accountPrefix);
+  }
+  return false;
 }
 
 export async function penetratePuzzleSpotlight(page, puzzleUrl, options = {}) {

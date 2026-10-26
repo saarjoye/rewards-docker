@@ -889,8 +889,10 @@ function initApp() {
         (todayPts >= 130 && pendingQuests !== null)
       );
       const searchDone = t.needSearch === false || (t.searchPoints && t.searchPoints.isMaxed) || todayPts >= 60;
-      const dailyDone = t.needDailyActivities === false || (Array.isArray(t.dailyPending) && t.dailyPending.length === 0);
-      const isFullyDone = (todayPts >= 130 && isQuestsDoneToday && searchDone && dailyDone) || todayPts >= 160 || (t.hasWork === false && isQuestsDoneToday);
+      const dailyDone = (t.needDailySet === false || (t.dailySet && t.dailySet.current >= t.dailySet.max))
+        && (t.needAppSign === false || (t.appCheckIn && t.appCheckIn.current >= t.appCheckIn.max))
+        && (t.needDailyActivities === false || (Array.isArray(t.dailyPending) && t.dailyPending.length === 0));
+      const isFullyDone = (isQuestsDoneToday && searchDone && dailyDone) || todayPts >= 130 || (t.hasWork === false && isQuestsDoneToday);
 
       let stateText = '等待调度';
       let stateCls = 'queue-waiting';

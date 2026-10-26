@@ -1,4 +1,4 @@
-﻿import test from 'node:test';
+import test from 'node:test';
 import assert from 'node:assert/strict';
 import configManager, { getTodayDateString } from '../src/config.js';
 
@@ -55,4 +55,53 @@ test('scheduler.getNextScheduledTask 正确计算距离最近的待执行定时�
   assert.ok(nextTask.targetTimestamp > Date.now() - 1000, '目标时间戳应为未来时间');
   assert.ok(Array.isArray(nextTask.allSlots), '应包含全天时段安排列表');
   assert.equal(nextTask.allSlots.length, 6, '应包含 6 大标准定时时间窗口');
+});
+
+test('scheduler.isAccountSatisfied: 官网任务达成智能判定准确跳过，彻底避免重复执行', async () => {
+  const { scheduler } = await import('../src/scheduler.js');
+  const todayStr = getTodayDateString();
+
+  // 场景：对标用户真实截图（搜索 60/60, 签到 1/1, Daily 3/3, 日常全部完成, 打孔卡今日已推进, 积分 95 分未到 130 分）
+  const satisfiedAcc = {
+    id: 'test_satisfied_acc',
+    name: '完成测试账号',
+    enabled: true,
+    todayDate: todayStr,
+    todayEarned: 95,
+    dailyQuestsAttempted: { date: todayStr, attemptedAt: Date.now() },
+    officialTasks: {
+      searchPoints: { current: 60, max: 60, isMaxed: true },
+      dailySet: { current: 3, max: 3 },
+      appCheckIn: { current: 1, max: 1 },
+      dailyPending: [],
+      questPending: [{ title: '万圣节多步打孔卡', href: '/quest/halloween' }],
+      needSearch: false,
+      needDailySet: false,
+      needAppSign: false,
+      needDailyActivities: false,
+      needQuests: true
+    }
+  };
+
+  // 1. 打孔卡今日已推进且常规各项全满：必须判定为已达成 (true)
+  assert.equal(scheduler.isAccountSatisfied(satisfiedAcc, todayStr), true, '所有板块已达标时必须判定为 satisfied，触发跳过');
+
+  // 2. 若打孔卡尚未推进且需做，应判定为待执行 (false)
+  const unattemptedAcc = {
+    ...satisfiedAcc,
+    dailyQuestsAttempted: null,
+    dailyQuestsDone: null
+  };
+  assert.equal(scheduler.isAccountSatisfied(unattemptedAcc, todayStr), false, '打孔卡尚未推进时应允许执行');
+
+  // 3. 定时调度一天仅排一次保护：今日调度过且已有产出的账号应智能跳过
+  const scheduledAcc = {
+    id: 'test_sched_done',
+    name: '已调度账号',
+    enabled: true,
+    todayDate: todayStr,
+    todayEarned: 90,
+    lastScheduledDate: todayStr
+  };
+  assert.equal(scheduler.isAccountSatisfied(scheduledAcc, todayStr), true, '今日已调度且有产出的账号应跳过重复轮巡');
 });
