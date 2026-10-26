@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.8.0",
-  "description": "Microsoft Rewards 自动化平台 (v6.8.0 彻底解决全部完成后重复在跑缺陷，引入打孔卡多步动作状态机、桌面专享打卡与特殊活动穿透)",
+  "version": "6.8.1",
+  "description": "Microsoft Rewards 自动化平台 (v6.8.1 修复必应搜索被连续打卡1/1误识别导致满分跳过缺陷，强化今日积分抽屉点击触发与配额下限校验)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {

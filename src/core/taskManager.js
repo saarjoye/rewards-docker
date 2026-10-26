@@ -62,7 +62,8 @@ export function parseOfficialSearchPointsDetail(detailText = '') {
     }
 
     if (!Number.isInteger(current) || !Number.isInteger(max)) continue;
-    if (max <= 0 || current < 0 || current > max) continue;
+    // 关键拦截：PC/必应搜索积分上限至少为 30 分，彻底排除“连续打卡 1/1”等非积分配额卡片
+    if (max < 30 || current < 0 || current > max) continue;
     return {
       current,
       max,
@@ -1098,11 +1099,10 @@ export class TaskManager {
       });
 
       let searchPoints = null;
-      const pointsCard = page.locator('button[aria-expanded]').filter({ hasText: '今日积分' }).first();
+      const pointsCard = page.locator('button[aria-expanded], div[role="button"][aria-expanded], [aria-expanded]').filter({ hasText: /今日积分|积分明细|Points breakdown/i }).first();
       if (await pointsCard.count()) {
         try {
-          await pointsCard.focus();
-          await page.keyboard.press('Enter');
+          await pointsCard.click({ timeout: 8000, force: true }).catch(() => pointsCard.press('Enter'));
           let detailText = '';
           for (let i = 0; i < 30; i++) {
             await new Promise((resolve) => setTimeout(resolve, 500));
@@ -1137,19 +1137,26 @@ export class TaskManager {
       const liveStreaks = extractStreakModels(rawAll);
       const liveStamps = extractOfficialStamps(rawAll);
 
-      // 对齐 wangheqiang530 官方规范：从 RSC Flight 和 HTML 中直接提取搜索真实配额 (如 3/60)，杜绝抽屉弹窗偶发失败导致未知
+      // 严格校验搜索真实配额 (如 9/60)，杜绝将 1/1 连续打卡误判为满额导致跳过搜索
       if (!searchPoints) {
         const searchRscMatch = rawAll.match(/"combinedSearch":\{[^}]*"progress":(\d+)[^}]*"max":(\d+)/);
         if (searchRscMatch) {
           const cur = Number(searchRscMatch[1]);
           const max = Number(searchRscMatch[2]);
-          searchPoints = { current: cur, max, isMaxed: cur >= max, source: 'rsc-flight' };
-        } else {
-          const searchHtmlMatch = rawAll.match(/必应搜索[\s\S]{0,400}?(\d+)\s*\/\s*(\d+)/);
+          // 严格校验 max >= 30，杜绝将 1/1 打卡识别为搜索配额
+          if (Number.isInteger(cur) && Number.isInteger(max) && max >= 30 && cur >= 0 && cur <= max) {
+            searchPoints = { current: cur, max, isMaxed: cur >= max, source: 'rsc-flight' };
+          }
+        }
+        if (!searchPoints) {
+          // 兜底正则优化：严格限定配额上限 max >= 30，防止误匹配“必应搜索连续打卡 搜索: 1/1”
+          const searchHtmlMatch = rawAll.match(/(?:必应搜索|PC\s*搜索|Bing\s*Search)[\s\S]{0,200}?(\d+)\s*\/\s*(\d+)\s*(?:分|points)?/i);
           if (searchHtmlMatch) {
             const cur = Number(searchHtmlMatch[1]);
             const max = Number(searchHtmlMatch[2]);
-            searchPoints = { current: cur, max, isMaxed: cur >= max, source: 'html-match' };
+            if (Number.isInteger(cur) && Number.isInteger(max) && max >= 30 && cur >= 0 && cur <= max) {
+              searchPoints = { current: cur, max, isMaxed: cur >= max, source: 'html-match' };
+            }
           }
         }
       }
