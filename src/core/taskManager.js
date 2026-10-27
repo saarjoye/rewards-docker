@@ -18,6 +18,7 @@ import {
   claimBrowserExtensionActivity
 } from '../browser/actions.js';
 import { SearchStagnationGuard } from './searchStagnation.js';
+import { executeDesktopAppQuest } from './desktopQuest.js';
 import {
   extractOfficialTodayPoints,
   extractOfficialBalance,
@@ -789,6 +790,10 @@ export class TaskManager {
                 const completedTodayHrefs = [];
                 for (const qUrl of questHrefs) {
                   if (this.shouldStop) throw new Error(TASK_STOP_MESSAGE);
+                  // 桌面客户端专属任务由专属 Server Action 驱动，普通网页视口无法完成，此处跳过
+                  if (qUrl && qUrl.includes('WW_pcparent_RewardsApp_weekly_Exclusive')) {
+                    continue;
+                  }
                   if (qUrl) {
                     const questPage = await context.newPage();
                     try {
@@ -799,6 +804,23 @@ export class TaskManager {
                     } finally {
                       if (questPage && !questPage.isClosed()) await questPage.close().catch(() => {});
                     }
+                  }
+                }
+
+                // 核心突破：执行“桌面奖励应用每周专属任务”（对标参考项目 v1.8.10，解决 0/8 无法执行缺陷）
+                if (!this.shouldStop) {
+                  try {
+                    const desktopRes = await executeDesktopAppQuest(page, {
+                      accountPrefix: account.name,
+                      cookies,
+                      proxy: account.proxy,
+                      context
+                    });
+                    if (desktopRes && desktopRes.count > 0) {
+                      completedTodayHrefs.push('WW_pcparent_RewardsApp_weekly_Exclusive');
+                    }
+                  } catch (eDesk) {
+                    log(`桌面应用专享打孔卡执行跳过: ${eDesk.message}`);
                   }
                 }
                 const attemptedRecord = { date: todayStr, attemptedAt: Date.now() };
