@@ -70,6 +70,30 @@ export function formatSettlementReportContent(account, stats = {}) {
   ].join('\n');
 }
 
+/**
+ * 汇总当前配置下真正可用的战报推送渠道。
+ * 开关关闭或未填写的渠道自动跳过，任一渠道都可单独启停。
+ */
+export function resolveSettlementChannels(notify = {}) {
+  const channels = [];
+  const app = notify?.weworkApp || {};
+  if (app.enabled && app.corpId && app.secret) {
+    channels.push({ type: 'weworkApp', target: app });
+  }
+
+  const weworkRobot = String(notify?.weworkRobot || '').trim();
+  if (notify?.weworkRobotEnabled !== false && weworkRobot) {
+    channels.push({ type: 'weworkRobot', target: weworkRobot });
+  }
+
+  const dingdingRobot = String(notify?.dingdingRobot || '').trim();
+  if (notify?.dingdingRobotEnabled !== false && dingdingRobot) {
+    channels.push({ type: 'dingtalkRobot', target: dingdingRobot });
+  }
+
+  return channels;
+}
+
 export class Notifier {
   constructor() {
     this.tokenCache = new Map();
@@ -178,33 +202,38 @@ export class Notifier {
    * 推送每日任务结算与 01:00 对账战报
    */
   async sendSettlementReport(account, stats = {}) {
-    const cfg = configManager.get().notify?.weworkApp;
-    if (!cfg || !cfg.enabled || !cfg.corpId || !cfg.secret) {
-      return false;
-    }
+    const notify = configManager.get().notify || {};
+    const channels = resolveSettlementChannels(notify);
+    if (channels.length === 0) return false;
 
-    const metric = (value, unit = ' 分') => {
-      if (value === null || value === undefined || !Number.isFinite(Number(value))) return '官网未确认';
-      return Number(value).toLocaleString() + unit;
-    };
     const title = `Rewards 每日对账战报 - ${account.name || account.user}`;
-    const cleanStatus = String(stats.taskStatusText || '官网对账完成').replace(/[#*`>]/g, '').trim();
-    const content = [
-      `托管账号: ${account.name || account.user}`,
-      `今日已增: ${metric(stats.todayEarned)}`,
-      `账户总额: ${metric(stats.balance)}`,
-      `连续打卡: ${metric(stats.streakDays, ' 天')}`,
-      `待领额外: ${metric(stats.claimablePoints)}`,
-      `执行状态: ${cleanStatus}`
-    ].join('\n');
+    const content = formatSettlementReportContent(account, stats);
 
-    try {
-      await this.sendWeWorkApp(cfg, title, content);
-      return true;
-    } catch (e) {
-      logger.log('🔴', `企业微信战报推送失败: ${e.message}`, '', account.name);
-      return false;
-    }
+    const senders = {
+      weworkApp: (target) => this.sendWeWorkApp(target, title, content),
+      weworkRobot: (target) => this.sendWeWorkBot(target, title, content),
+      dingtalkRobot: (target) => this.sendDingTalkBot(target, title, content)
+    };
+    const channelNames = {
+      weworkApp: '企业微信应用',
+      weworkRobot: '企业微信群机器人',
+      dingtalkRobot: '钉钉群机器人'
+    };
+
+    // 各渠道完全独立：任一渠道失败或超时都不影响其他渠道投递
+    const results = await Promise.all(
+      channels.map(async (channel) => {
+        try {
+          await senders[channel.type](channel.target);
+          return true;
+        } catch (e) {
+          logger.log('🔴', `${channelNames[channel.type]}战报推送失败: ${e.message}`, '', account.name);
+          return false;
+        }
+      })
+    );
+
+    return results.some(Boolean);
   }
 
   /**

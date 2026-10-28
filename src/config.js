@@ -78,6 +78,10 @@ const DEFAULT_CONFIG = {
     sessionSecret: ''
   },
   notify: {
+    weworkRobot: '', // 企业微信群机器人 Webhook Key/URL（留空即不推送战报）
+    weworkRobotEnabled: true, // 企业微信群机器人推送总开关
+    dingdingRobot: '', // 钉钉群机器人 Access Token/URL（留空即不推送战报）
+    dingdingRobotEnabled: true, // 钉钉群机器人推送总开关
     weworkApp: {
       enabled: false,
       baseUrl: 'https://qyapi.weixin.qq.com', // 支持自定义反代域名
@@ -268,7 +272,13 @@ class ConfigManager {
         ...currentNotify,
         ...settings.notify,
         weworkRobot: settings.notify.weworkRobot !== undefined ? settings.notify.weworkRobot : (currentNotify.weworkRobot || ''),
+        weworkRobotEnabled: settings.notify.weworkRobotEnabled !== undefined
+          ? !!settings.notify.weworkRobotEnabled
+          : currentNotify.weworkRobotEnabled !== false,
         dingdingRobot: settings.notify.dingdingRobot !== undefined ? settings.notify.dingdingRobot : (currentNotify.dingdingRobot || ''),
+        dingdingRobotEnabled: settings.notify.dingdingRobotEnabled !== undefined
+          ? !!settings.notify.dingdingRobotEnabled
+          : currentNotify.dingdingRobotEnabled !== false,
         weworkApp: {
           ...currentWw,
           ...incomingWw,
