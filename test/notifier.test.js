@@ -4,7 +4,8 @@ import {
   buildWeWorkAppBaseUrl,
   buildWeWorkAppTokenUrl,
   buildWeWorkAppSendUrl,
-  formatSettlementReportContent
+  formatSettlementReportContent,
+  resolveSettlementChannels
 } from '../src/core/notifier.js';
 
 test('buildWeWorkAppBaseUrl 默认地址与反代地址规整化', () => {
@@ -87,6 +88,56 @@ test('formatSettlementReportContent 战报格式化：包含本次收割与真�
   assert.ok(contentNull.includes('本次收割: 官网未确认'));
   assert.ok(contentNull.includes('今日已增: 官网未确认'));
   assert.ok(contentNull.includes('账户总额: 官网未确认'));
+});
+
+test('resolveSettlementChannels: 钉钉群机器人配置后才会收到任务结束战报', () => {
+  // 1. 只配了钉钉机器人：必须产出钉钉渠道（此前该渠道只在「测试发送」生效，战报被静默丢弃）
+  const dingOnly = resolveSettlementChannels({ dingdingRobot: 'abc123token' });
+  assert.deepEqual(dingOnly.map((c) => c.type), ['dingtalkRobot']);
+  assert.equal(dingOnly[0].target, 'abc123token');
+
+  // 2. 空值/纯空格视为未启用
+  assert.deepEqual(resolveSettlementChannels({ dingdingRobot: '   ', weworkRobot: '' }), []);
+  assert.deepEqual(resolveSettlementChannels({}), []);
+  assert.deepEqual(resolveSettlementChannels(), []);
+
+  // 3. 三渠道并存时全部投递，顺序稳定
+  const all = resolveSettlementChannels({
+    weworkApp: { enabled: true, corpId: 'ww1', secret: 's1' },
+    weworkRobot: 'ww-key',
+    dingdingRobot: 'dd-token'
+  });
+  assert.deepEqual(all.map((c) => c.type), ['weworkApp', 'weworkRobot', 'dingtalkRobot']);
+
+  // 4. 企业微信应用未启用或缺字段时不投递
+  assert.deepEqual(
+    resolveSettlementChannels({ weworkApp: { enabled: false, corpId: 'ww1', secret: 's1' }, dingdingRobot: 'dd' }).map((c) => c.type),
+    ['dingtalkRobot']
+  );
+  assert.deepEqual(resolveSettlementChannels({ weworkApp: { enabled: true, corpId: 'ww1' } }), []);
+});
+
+test('resolveSettlementChannels: 钉钉/企业微信机器人各自的总开关可独立启停', () => {
+  // 1. 开关显式关闭：即使填了 token 也不投递
+  assert.deepEqual(resolveSettlementChannels({ dingdingRobot: 'dd-token', dingdingRobotEnabled: false }), []);
+  assert.deepEqual(resolveSettlementChannels({ weworkRobot: 'ww-key', weworkRobotEnabled: false }), []);
+
+  // 2. 关闭钉钉开关不影响企业微信应用渠道
+  const appOnly = resolveSettlementChannels({
+    weworkApp: { enabled: true, corpId: 'ww1', secret: 's1' },
+    dingdingRobot: 'dd-token',
+    dingdingRobotEnabled: false
+  });
+  assert.deepEqual(appOnly.map((c) => c.type), ['weworkApp']);
+
+  // 3. 历史配置没有开关字段时按启用处理，避免升级后静默停推
+  assert.deepEqual(
+    resolveSettlementChannels({ dingdingRobot: 'dd-token' }).map((c) => c.type),
+    ['dingtalkRobot']
+  );
+
+  // 4. 开关打开但未填 token：仍然不投递
+  assert.deepEqual(resolveSettlementChannels({ dingdingRobot: '', dingdingRobotEnabled: true }), []);
 });
 
 test('configManager.updateGlobalSettings: 防止反代地址与 secret 被空值冲掉', () => {

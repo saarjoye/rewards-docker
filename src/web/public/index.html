@@ -790,12 +790,21 @@
 
       <!-- Tab 5 内容：消息推送 (对标图 5) -->
       <div class="cfg-pane hidden" id="pane-cfg-notify">
-        <div class="f-group">
-          <div style="display: flex; justify-content: space-between; align-items: center;">
-            <label>企业微信机器人 Webhook Key 或完整链接</label>
-            <button type="button" class="btn-test-action" id="btn-test-wework-bot">🚀 测试发送</button>
+        <!-- 企业微信群机器人 Webhook -->
+        <div class="cfg-card-box">
+          <div class="f-checkbox" style="font-weight: 700;">
+            <input type="checkbox" id="cfg-wework-robot-enabled" checked>
+            <label for="cfg-wework-robot-enabled">🤖 企业微信群机器人 Webhook</label>
           </div>
-          <input type="text" id="cfg-wework-robot" placeholder="例如：xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx">
+          <div class="cfg-tip-txt" style="margin-bottom: 10px;">在群设置中添加「群机器人」后复制 Webhook 地址或 Key。启用且填写后，任务结束与 01:00 对账战报会自动推送到该群。</div>
+          <div class="f-group">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <label>Webhook Key 或完整链接</label>
+              <button type="button" class="btn-test-action" id="btn-test-wework-bot">🚀 测试发送</button>
+            </div>
+            <input type="text" id="cfg-wework-robot" placeholder="例如：xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx">
+            <span class="f-hint">留空则该渠道不推送。</span>
+          </div>
         </div>
 
         <!-- 企业微信应用消息 (对标图 5) -->
@@ -844,12 +853,21 @@
           </div>
         </div>
 
-        <div class="f-group" style="margin-top: 12px;">
-          <div style="display: flex; justify-content: space-between; align-items: center;">
-            <label>钉钉机器人 Access Token 或完整链接</label>
-            <button type="button" class="btn-test-action" id="btn-test-dingtalk-bot">🚀 测试发送</button>
+        <!-- 钉钉群机器人 (Webhook) -->
+        <div class="cfg-card-box" style="margin-top: 12px; border-top: 1px solid #e2e8f0; padding-top: 14px;">
+          <div class="f-checkbox" style="font-weight: 700;">
+            <input type="checkbox" id="cfg-dingding-robot-enabled" checked>
+            <label for="cfg-dingding-robot-enabled">🔔 钉钉群机器人 (Webhook 推送)</label>
           </div>
-          <input type="text" id="cfg-dingding-robot" placeholder="access_token (需设置关键词包含 #)">
+          <div class="cfg-tip-txt" style="margin-bottom: 10px;">群设置 → 智能群助手 → 添加自定义机器人，复制 Webhook 地址或 access_token。安全设置建议选「自定义关键词」并包含 #（本平台消息正文含 Markdown 标题，天然带 #）。</div>
+          <div class="f-group">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <label>Access Token 或完整链接</label>
+              <button type="button" class="btn-test-action" id="btn-test-dingtalk-bot">🚀 测试发送</button>
+            </div>
+            <input type="text" id="cfg-dingding-robot" placeholder="access_token 或 https://oapi.dingtalk.com/robot/send?access_token=...">
+            <span class="f-hint">留空则该渠道不推送；若机器人开启了「加签」，请改用关键词或 IP 白名单。</span>
+          </div>
         </div>
       </div>
 

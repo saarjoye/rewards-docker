@@ -2186,6 +2186,8 @@ function initApp() {
 
       if (document.getElementById("cfg-wework-robot")) document.getElementById("cfg-wework-robot").value = notify.weworkRobot || "";
       if (document.getElementById("cfg-dingding-robot")) document.getElementById("cfg-dingding-robot").value = notify.dingdingRobot || "";
+      if (document.getElementById("cfg-wework-robot-enabled")) document.getElementById("cfg-wework-robot-enabled").checked = notify.weworkRobotEnabled !== false;
+      if (document.getElementById("cfg-dingding-robot-enabled")) document.getElementById("cfg-dingding-robot-enabled").checked = notify.dingdingRobotEnabled !== false;
       if (document.getElementById("cfg-ww-app-enabled")) document.getElementById("cfg-ww-app-enabled").checked = ww.enabled !== false;
       if (document.getElementById("cfg-ww-baseurl")) document.getElementById("cfg-ww-baseurl").value = ww.baseUrl || "https://qyapi.weixin.qq.com";
       if (document.getElementById("cfg-ww-corpid")) document.getElementById("cfg-ww-corpid").value = ww.corpId || "";
@@ -2319,7 +2321,9 @@ function initApp() {
       },
       notify: {
         weworkRobot: document.getElementById("cfg-wework-robot")?.value.trim(),
+        weworkRobotEnabled: !!document.getElementById("cfg-wework-robot-enabled")?.checked,
         dingdingRobot: document.getElementById("cfg-dingding-robot")?.value.trim(),
+        dingdingRobotEnabled: !!document.getElementById("cfg-dingding-robot-enabled")?.checked,
         weworkApp: {
           enabled: document.getElementById("cfg-ww-app-enabled")?.checked,
           baseUrl: document.getElementById("cfg-ww-baseurl")?.value.trim(),
