@@ -1,6 +1,6 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.8.2",
+  "version": "6.8.3",
   "description": "Microsoft Rewards 自动化平台 (v6.8.2 支持“桌面奖励应用每周专属任务”专属Server Action与子任务穿透驱动)",
   "main": "src/index.js",
   "type": "module",
