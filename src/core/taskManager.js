@@ -172,14 +172,23 @@ export function buildOfficialTaskSnapshot({ text = '', sections = [], searchPoin
     lastResult: String(referState?.result || '')
   };
 
-  // 所有「不可执行」项集中暴露给前端：能看到、但绝不进入待做循环
-  const skippedFromOfficial = [...dailyCards, ...questCards]
-    .filter((card) => card.executable === false)
+  // 「仅展示」清单：只列「官网尚未完成 + 平台不自动执行」的项。
+  // 已完成卡片、以及由打孔卡任务链负责的 Quests 一律不进这个清单（否则会误导成"不可执行"）。
+  const parseCardProgress = (title) => {
+    const m = String(title || '').match(/(\d+)\s*\/\s*(\d+)/);
+    return m
+      ? { progress: Number(m[1]), max: Number(m[2]), unit: '项' }
+      : { progress: null, max: null, unit: '' };
+  };
+  const skippedFromOfficial = dailyCards
+    .filter((card) => card.executable === false && !card.done && !card.disabled)
+    .filter((card) => !/推荐转化为奖励|referandearn|refer and earn/i.test(`${card.title || ''} ${card.href || ''}`))
     .map((card) => ({
       title: String(card.title || '').split('\n')[0].slice(0, 60),
-      tag: card.feasibilityTag || '【不可执行】',
-      reason: card.feasibilityReason || '',
-      done: Boolean(card.done),
+      tag: card.feasibilityTag || '【平台不自动执行】',
+      reason: card.feasibilityReason || '平台不自动执行该类任务，需手动处理',
+      ...parseCardProgress(card.title || ''),
+      done: false,
       source: 'official'
     }));
   const skippedTasks = [

@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.8.5",
-  "description": "Microsoft Rewards 自动化平台 (v6.8.5 连签天数改为直读官网「连续打卡任务」区块，修复连签进度显示为假数据)",
+  "version": "6.8.6",
+  "description": "Microsoft Rewards 自动化平台 (v6.8.6 仅展示清单只列未完成且不可自动化的项，连签天数直读官网「连续打卡任务」区块)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {

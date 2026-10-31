@@ -1251,7 +1251,7 @@ function initApp() {
           const pct = hasProgress ? Math.min(100, Math.round((curVal / maxVal) * 100)) : 0;
           const progressText = hasProgress
             ? ('进度: ' + curVal + ' / ' + maxVal + ' ' + (s.unit || ''))
-            : '官网未捕获';
+            : '平台不自动执行';
           return '<div class="drawer-quest-card" style="opacity: .92;">' +
             '<div class="dq-head">' +
               '<span class="dq-title">' + escapeHtml(s.title || '未命名任务') + '</span>' +
