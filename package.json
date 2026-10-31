@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.8.3",
-  "description": "Microsoft Rewards 自动化平台 (v6.8.3 任务结束战报支持钉钉与企业微信群机器人多渠道推送，新增各渠道独立启用开关)",
+  "version": "6.8.4",
+  "description": "Microsoft Rewards 自动化平台 (v6.8.4 新增「仅展示·不可自动化任务」清单，可见 Edge 浏览 30 分钟与推荐邀请卡真实状态)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {

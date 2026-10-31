@@ -220,6 +220,7 @@ class ConfigManager {
       remainingRetriesDate: accountData.remainingRetriesDate || (existing?.remainingRetriesDate || null),
       dailyQuestsAttempted: accountData.dailyQuestsAttempted !== undefined ? accountData.dailyQuestsAttempted : (existing?.dailyQuestsAttempted || null),
       dailyQuestsDone: accountData.dailyQuestsDone !== undefined ? accountData.dailyQuestsDone : (existing?.dailyQuestsDone || null),
+      referShare: accountData.referShare !== undefined ? accountData.referShare : (existing?.referShare || null),
       lastScheduledDate: accountData.lastScheduledDate !== undefined ? accountData.lastScheduledDate : (existing?.lastScheduledDate || null)
     };
 
