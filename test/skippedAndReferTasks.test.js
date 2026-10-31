@@ -82,6 +82,50 @@ test('「将推荐转化为奖励」只展示状态，不进入待做循环', ()
   assert.equal(snapshot.referShare.attemptedAt, 0);
 });
 
+test('仅展示清单：已完成卡片与打孔卡不得出现在"不可执行"列表里', () => {
+  const doneCard = {
+    title: '你是否知道答案？ 通过这些小问题挑战自己 5 已完成',
+    href: 'https://www.bing.com/search?q=Bing%20Homepage%20quiz',
+    done: true,
+    disabled: false,
+    executable: false,
+    feasibilityTag: '【无积分/仅营销 (跳过)】',
+    feasibilityReason: '未发现可验证的积分奖励标记'
+  };
+  const questCard = {
+    title: '通过 Microsoft Rewards 解锁免费 Super Duolingo 5/6 个任务',
+    href: '/earn/quest/WW_pcparent_FY27_Duolingo3M_punchcard',
+    done: false,
+    disabled: false,
+    executable: false,
+    feasibilityTag: '【打孔卡/任务链 (跳过)】'
+  };
+  const pendingSkipCard = {
+    title: '每天一张新壁纸 一次一张照片，探索世界。立即安装必应壁纸。',
+    href: 'https://www.bing.com/apps/wallpaper?pc=W317',
+    done: false,
+    disabled: false,
+    executable: false,
+    feasibilityTag: '【客户端/安装引导 (跳过)】',
+    feasibilityReason: '依赖客户端或扩展安装，无法通过网页交互完成'
+  };
+
+  const snapshot = buildOfficialTaskSnapshot({
+    text: '搜索: 1/1\n活动: 3/3\n签到: 1/1',
+    sections: [
+      { title: '日常任务', cards: [doneCard, pendingSkipCard] },
+      { title: '任务', cards: [questCard] }
+    ]
+  });
+
+  const titles = snapshot.skippedTasks.map((item) => item.title);
+  assert.ok(!titles.some((t) => t.includes('你是否知道答案')), '已完成的卡片不能出现在仅展示清单');
+  assert.ok(!titles.some((t) => t.includes('Super Duolingo')), '打孔卡由任务链负责，不进仅展示清单');
+  assert.ok(titles.some((t) => t.includes('壁纸')), '未完成且不可执行的真实跳过项必须可见');
+  // 打孔卡仍然进入 questPending 由任务链推进
+  assert.equal(snapshot.questPending.length, 1);
+});
+
 test('当日已尝试过邀请分享时，状态里保留尝试结果', () => {
   const referCard = {
     title: '将推荐转化为奖励',
