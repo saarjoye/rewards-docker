@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.8.4",
-  "description": "Microsoft Rewards 自动化平台 (v6.8.4 新增「仅展示·不可自动化任务」清单，可见 Edge 浏览 30 分钟与推荐邀请卡真实状态)",
+  "version": "6.8.5",
+  "description": "Microsoft Rewards 自动化平台 (v6.8.5 连签天数改为直读官网「连续打卡任务」区块，修复连签进度显示为假数据)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {

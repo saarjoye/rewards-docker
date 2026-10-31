@@ -28,6 +28,7 @@ import {
 } from '../contracts/validator.js';
 import { concatFlightChunks, extractOfferObjects } from '../contracts/flightParse.js';
 import { buildUnifiedTaskBoard, classifyTaskFeasibility, extractStreakModels, extractOfficialStamps } from '../contracts/streaks.js';
+import { parseStreakSectionText } from '../contracts/streakSection.js';
 import historyManager from './history.js';
 import notifier from './notifier.js';
 
@@ -1244,7 +1245,17 @@ export class TaskManager {
           }
           sections.push({ title, cards });
         }
-        return { text, sections };
+        // 「连续打卡任务」区块的可见文本：官网现行 DOM 只有这里能拿到各渠道真实连签天数
+        let streakSectionText = '';
+        const streakHead = [...document.querySelectorAll('h2')]
+          .find((h) => (h.innerText || '').includes('连续打卡任务'));
+        if (streakHead) {
+          const streakRoot = streakHead.closest('div[class*="Disclosure"]')
+            || streakHead.parentElement?.parentElement
+            || streakHead.parentElement;
+          if (streakRoot) streakSectionText = (streakRoot.innerText || '').replace(/\r/g, '');
+        }
+        return { text, sections, streakSectionText };
       });
 
       let searchPoints = null;
@@ -1283,7 +1294,18 @@ export class TaskManager {
 
       const pageHtml = await page.content().catch(() => '');
       const rawAll = (snapshot.text || '') + '\n' + pageHtml;
-      const liveStreaks = extractStreakModels(rawAll);
+      const rscStreaks = extractStreakModels(rawAll);
+      const domStreaks = parseStreakSectionText(snapshot.streakSectionText || '');
+      // DOM 区块文本是官网当前真实渲染值，优先级高于 RSC 兜底解析结果
+      const liveStreaks = { ...rscStreaks };
+      for (const [key, value] of Object.entries(domStreaks)) {
+        liveStreaks[key] = { ...(rscStreaks[key] || {}), ...value };
+      }
+      if (Object.keys(liveStreaks).length === 0) {
+        log('⚠️ 未从官网解析到任何连签模型（DOM 区块与 RSC 均为空），连签轨道将显示"官网未返回连签数据"');
+      } else {
+        log(`连签解析结果: ${Object.entries(liveStreaks).map(([k, v]) => `${k}=${v.completedDays}/${v.currentDay}${v.isCurrentDayCompleted ? '(今日已完成)' : '(今日待做)'}`).join(', ')}`);
+      }
       const liveStamps = extractOfficialStamps(rawAll);
 
       // 严格校验搜索真实配额 (如 9/60)，杜绝将 1/1 连续打卡误判为满额导致跳过搜索
