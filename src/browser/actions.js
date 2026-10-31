@@ -801,6 +801,56 @@ export async function claimBrowserExtensionActivity(page, options = {}) {
   return false;
 }
 
+/**
+ * 尝试官方「将推荐转化为奖励」(Refer & Earn) 邀请分享卡片。
+ * 说明：该卡片的积分只有在被邀请的真实好友使用必应后才产生，脚本无法代跑；
+ * 这里只做一次「打开邀请页 + 点击复制/分享入口」的尝试，用于抓取页面反馈，
+ * 由调用方按天记录结果，之后一律走"仅展示"分支，避免反复点击与风控。
+ */
+export async function attemptReferShare(page, options = {}) {
+  const { accountPrefix = '' } = options;
+  const target = 'https://rewards.bing.com/referandearn';
+  if (!page || page.isClosed()) return { status: 'error', feedback: 'page-unavailable' };
+
+  logger.log('🔗', '尝试「将推荐转化为奖励」邀请分享 (每日仅 1 次)...', '', accountPrefix);
+  try {
+    await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  } catch {
+    await page.goto(target, { waitUntil: 'commit', timeout: 30000 }).catch(() => {});
+  }
+  await new Promise((r) => setTimeout(r, 3500));
+
+  const bodyText = await page.innerText('body').catch(() => '');
+  if (/已完成|Completed/i.test(bodyText.slice(0, 1500))) {
+    logger.log('🎉', '官网显示「将推荐转化为奖励」已完成，跳过本次尝试。', '', accountPrefix);
+    return { status: 'already-completed', feedback: '' };
+  }
+
+  const candidates = [
+    page.getByRole('button', { name: /复制|分享|邀请|Copy|Share|Invite/i }).first(),
+    page.locator('button:has-text("复制"), button:has-text("分享"), button:has-text("邀请"), a:has-text("分享"), a:has-text("邀请")').first(),
+    page.locator('[aria-label*="复制"], [aria-label*="分享"], [aria-label*="Copy"], [aria-label*="Share"], [aria-label*="Invite"]').first()
+  ];
+
+  for (const locator of candidates) {
+    try {
+      if (!locator || !(await locator.count())) continue;
+      await locator.scrollIntoViewIfNeeded().catch(() => {});
+      await locator.click({ timeout: 8000, force: true });
+      await new Promise((r) => setTimeout(r, 2500));
+      const afterText = await page.innerText('body').catch(() => '');
+      const feedback = (afterText.match(/已复制|复制成功|链接已复制|分享成功|Copied|Copied to clipboard/i) || [])[0] || '';
+      logger.log('✅', `已点击邀请分享入口${feedback ? ` (${feedback})` : ''}；积分仍需好友实际使用才会产生，等待官网确认...`, '', accountPrefix);
+      return { status: 'clicked', feedback };
+    } catch {
+      // 尝试下一个候选选择器
+    }
+  }
+
+  logger.log('⚠️', '未找到「复制/分享邀请」入口，本次记为已尝试并转为仅展示。', '', accountPrefix);
+  return { status: 'not-found', feedback: '' };
+}
+
 export async function penetratePuzzleSpotlight(page, puzzleUrl, options = {}) {
   const { accountPrefix = '' } = options;
   const target = puzzleUrl || 'https://www.bing.com/spotlight/imagepuzzle';

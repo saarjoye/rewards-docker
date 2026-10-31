@@ -27,6 +27,16 @@ export function classifyTaskFeasibility(taskName = '', attributes = {}) {
   if (combined.includes('edge 浏览连续打卡') || combined.includes('浏览 30 分钟') || combined.includes('默认浏览器')) {
     return notExecutable('【客户端硬件遥测限制 (跳过)】', '依赖 Windows 宿主机 Edge 操作系统级守护进程上报，无头浏览器无法伪造');
   }
+  // 推荐/邀请类：只有被邀请的真实好友使用必应搜索后才计分，脚本无法代跑。
+  // 参考项目 wangheqiang v1.8.10 的 SKIP_PATTERNS 同样把 referral / refer and earn 列入跳过。
+  if (combined.includes('将推荐转化为奖励')
+    || combined.includes('推荐转化为')
+    || combined.includes('refer and earn')
+    || combined.includes('referral')
+    || combined.includes('邀请好友')
+    || destination.includes('referandearn')) {
+    return notExecutable('【推荐/邀请类 (跳过)】', '仅当被邀请的真实好友通过邀请链接使用必应后才计分，脚本无法代跑，仅展示状态');
+  }
   if (combined.includes('默认搜索引擎') || combined.includes('设置为必应')) {
     return notExecutable('【客户端环境配置项 (跳过)】', '依赖客户端检测物理机默认搜索引擎设置，属于静态配置而非交互动作');
   }
@@ -247,9 +257,25 @@ export function buildUnifiedTaskBoard(flightData = {}, rawCards = []) {
 /**
  * 通过括号平衡解析微软官方 RSC Flight 中独立的 streak JSON 模型
  * 100% 对齐参考项目 wangheqiang530/microsoft-rewards-docker
+ *
+ * 两级解析（缺一不可，否则官网改版后 streaks 会全部解析成空）：
+ * 1) 主解析：定位 `"model":{"streak":{` 后做括号平衡，取真实 streak 模型；
+ * 2) 兜底解析：marker 不再出现时，扫描每个 partner 的出现位置，**只接受带 completedDays 的窗口**
+ *    （partner 在埋点 data 与真实模型里各出现一次，只有真实模型带 completedDays）。
  */
 export function extractStreakModels(...texts) {
   const result = {};
+  const readStreakWindow = (window) => {
+    const pick = (re) => { const m = window.match(re); return m ? Number(m[1]) : 0; };
+    return {
+      completedDays: pick(/"completedDays":(\d+)/),
+      currentDay: pick(/"currentDay":(\d+)/),
+      activitiesCompleted: pick(/"activitiesCompleted":(\d+)/),
+      activitiesTotal: pick(/"activitiesTotal":(\d+)/),
+      isCurrentDayCompleted: /"isCurrentDayCompleted":true/.test(window)
+    };
+  };
+
   const parseOne = (text) => {
     if (!text) return;
     const marker = '"model":{"streak":{';
@@ -296,6 +322,39 @@ export function extractStreakModels(...texts) {
         }
       }
       pos = (end !== -1) ? end : (idx + marker.length);
+    }
+
+    // 兜底：对仍未解析出来的 partner，逐个出现位置寻找"带 completedDays 的窗口"
+    for (const partner of ['bing', 'dailyset', 'bingapp', 'edge']) {
+      if (result[partner]) continue;
+      const pKey = `"partner":"${partner}"`;
+      let cursor = -1;
+      let window = null;
+      while ((cursor = text.indexOf(pKey, cursor + 1)) !== -1) {
+        const forward = text.slice(cursor, cursor + 600);
+        const backward = text.slice(Math.max(0, cursor - 400), cursor + 200);
+        if (forward.includes('"completedDays"')) { window = forward; break; }
+        if (backward.includes('"completedDays"')) { window = backward; break; }
+      }
+      if (window) result[partner] = readStreakWindow(window);
+    }
+
+    // 移动端签到文本兜底（部分场景只渲染文本、不带 streak 模型）
+    if (!result.bingapp) {
+      const mApp = text.match(/必应应用连续打卡[\s\S]{0,500}?签到:\s*(\d+)\s*\/\s*(\d+)/i)
+        || text.match(/移动应用[\s\S]{0,500}?签到:\s*(\d+)\s*\/\s*(\d+)/i);
+      if (mApp) {
+        const done = parseInt(mApp[1], 10) || 0;
+        const total = parseInt(mApp[2], 10) || 1;
+        const mDays = text.match(/已完成连续打卡\s*(\d+)\s*天/);
+        result.bingapp = {
+          completedDays: mDays ? parseInt(mDays[1], 10) : (done >= total ? 1 : 0),
+          currentDay: done,
+          activitiesCompleted: done,
+          activitiesTotal: total,
+          isCurrentDayCompleted: done >= total
+        };
+      }
     }
   };
   texts.forEach(parseOne);

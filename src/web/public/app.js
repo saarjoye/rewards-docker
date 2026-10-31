@@ -1079,18 +1079,18 @@ function initApp() {
         const tag = document.getElementById(tagElId);
         if (!c) return;
 
-        let completedDays = 0;
-        // 严格以微软官方真实返回为准：若官方未返回该子项连签天数，老老实实显示实际打卡完成度，绝不本地模7瞎猜
-        if (streakObj && typeof streakObj.completedDays === 'number') {
-          completedDays = Number(streakObj.completedDays || 0);
-        } else if (streakObj && typeof streakObj.current === 'number') {
-          completedDays = Number(streakObj.current || 0);
-        } else if (fallbackDone) {
-          completedDays = 1;
-        }
-        completedDays = Math.min(7, Math.max(0, completedDays));
+        // 只认官网 streak 模型的真实值：绝不再拿"当日完成度"(搜索 1/1、活动 2/3)冒充连签天数，
+        // 否则每天都会从 1/7 重新开始（历史缺陷）。拿不到就明确显示"官网未返回连签数据"。
+        const hasOfficial = !!(streakObj
+          && (Number.isFinite(Number(streakObj.completedDays)) || Number.isFinite(Number(streakObj.currentDay))));
+        const completedDays = hasOfficial ? Math.min(7, Math.max(0, Number(streakObj.completedDays ?? 0))) : 0;
+        const currentDay = hasOfficial ? Math.min(7, Math.max(0, Number(streakObj.currentDay ?? 0))) : 0;
+        const todayDone = hasOfficial ? !!streakObj.isCurrentDayCompleted : false;
 
-        if (tag) tag.textContent = '已连签 ' + completedDays + ' / 7 天';
+        if (tag) {
+          tag.textContent = hasOfficial ? ('已连签 ' + completedDays + ' / 7 天') : '官网未返回连签数据';
+          tag.style.color = hasOfficial ? '' : '#94a3b8';
+        }
 
         let nodesHtml = '';
         for (let d = 1; d <= 6; d++) {
@@ -1098,6 +1098,8 @@ function initApp() {
             nodesHtml += '<div class="streak-step-node done-circle" title="第 ' + d + ' 天：已打卡"><span class="step-check">✓</span></div>';
           } else if (d === completedDays && completedDays > 0) {
             nodesHtml += '<div class="streak-step-node active-pill" title="第 ' + d + ' 天：已打卡达成"><span class="step-check">✓</span><span class="step-num">' + d + '</span></div>';
+          } else if (hasOfficial && d === currentDay && !todayDone) {
+            nodesHtml += '<div class="streak-step-node pending-circle" style="border-color: #f59e0b;" title="第 ' + d + ' 天：今日待打卡"><span class="step-num">' + d + '</span></div>';
           } else {
             nodesHtml += '<div class="streak-step-node pending-circle" title="第 ' + d + ' 天：待打卡"><span class="step-num">' + d + '</span></div>';
           }
@@ -1112,9 +1114,10 @@ function initApp() {
         c.innerHTML = nodesHtml;
       };
 
-      const bingStreak = (t.streaks && t.streaks.bing) || (acc.streaks && acc.streaks.bing) || t.searchStreak;
-      const dsStreak = (t.streaks && t.streaks.dailyset) || (acc.streaks && acc.streaks.dailyset) || t.dailySet;
-      const appStreak = (t.streaks && t.streaks.bingapp) || (acc.streaks && acc.streaks.bingapp) || t.appCheckIn;
+      // 连签数据只取官网 streak 模型：bing / dailyset / bingapp（拿不到就显示"未返回"，不再用当日计数器顶替）
+      const bingStreak = (t.streaks && t.streaks.bing) || (acc.streaks && acc.streaks.bing) || null;
+      const dsStreak = (t.streaks && t.streaks.dailyset) || (acc.streaks && acc.streaks.dailyset) || null;
+      const appStreak = (t.streaks && t.streaks.bingapp) || (acc.streaks && acc.streaks.bingapp) || null;
 
       renderTrackCircles('streak-circles-search', bingStreak, streakDays, searchDoneToday, 'track-search-tag', '必应搜索');
       renderTrackCircles('streak-circles-daily', dsStreak, streakDays, dailyDoneToday, 'track-daily-tag', '每日活动集');
@@ -1212,6 +1215,58 @@ function initApp() {
           '</div>';
         }).join('');
         }
+      }
+
+      // 4. 渲染「仅展示 · 不可自动化任务」(Edge 浏览 30 分钟、将推荐转化为奖励、客户端/营销类)
+      const skippedList = document.getElementById('drawer-skipped-list');
+      const skippedCountEl = document.getElementById('drawer-skipped-count');
+      if (skippedList) {
+        // 兼容旧快照：没有 skippedTasks 时用内置兜底清单，保证「Edge 30 分钟 / 推荐邀请」始终可见
+        const FallbackSkipped = [
+          {
+            title: 'Edge 浏览连续打卡',
+            progress: (t.edgeBrowse && Number.isFinite(Number(t.edgeBrowse.current))) ? Number(t.edgeBrowse.current) : null,
+            max: (t.edgeBrowse && Number(t.edgeBrowse.max)) || 30,
+            unit: '分钟',
+            tag: '【客户端硬件遥测限制 (跳过)】',
+            reason: '依赖 Windows 宿主机 Edge 客户端上报浏览时长，容器内无头浏览器无法伪造；需在家用电脑真实打开 Edge 浏览 30 分钟',
+            done: false
+          },
+          {
+            title: '将推荐转化为奖励',
+            progress: 0,
+            max: 1,
+            unit: '项',
+            tag: '【推荐/邀请类 (跳过)】',
+            reason: '仅当被邀请的真实好友通过邀请链接使用必应后才计分，脚本无法代跑',
+            done: false
+          }
+        ];
+        const skippedItems = (Array.isArray(t.skippedTasks) && t.skippedTasks.length > 0) ? t.skippedTasks : FallbackSkipped;
+        if (skippedCountEl) skippedCountEl.textContent = skippedItems.length + ' 项';
+        skippedList.innerHTML = skippedItems.map((s) => {
+          const hasProgress = s.progress !== null && s.progress !== undefined;
+          const maxVal = Number(s.max || 1) || 1;
+          const curVal = hasProgress ? Number(s.progress) : 0;
+          const pct = hasProgress ? Math.min(100, Math.round((curVal / maxVal) * 100)) : 0;
+          const progressText = hasProgress
+            ? ('进度: ' + curVal + ' / ' + maxVal + ' ' + (s.unit || ''))
+            : '官网未捕获';
+          return '<div class="drawer-quest-card" style="opacity: .92;">' +
+            '<div class="dq-head">' +
+              '<span class="dq-title">' + escapeHtml(s.title || '未命名任务') + '</span>' +
+              '<span class="dq-tag tag-cooling">' + escapeHtml(String(s.tag || '跳过').replace(/[【】]/g, '')) + '</span>' +
+            '</div>' +
+            '<div class="dq-meta-row">' +
+              '<span>' + escapeHtml(progressText) + '</span>' +
+              '<span style="font-weight: 700; color: #94a3b8;">' + (s.done ? '官网已完成' : '平台不执行') + '</span>' +
+            '</div>' +
+            '<div class="dt-progress-bar">' +
+              '<div class="dt-progress-fill ' + (s.done ? 'done' : '') + '" style="width: ' + pct + '%;"></div>' +
+            '</div>' +
+            (s.reason ? '<div style="margin-top: 6px; font-size: 11px; color: #94a3b8; line-height: 1.5;">' + escapeHtml(s.reason) + '</div>' : '') +
+          '</div>';
+        }).join('');
       }
     } catch (err) {
       console.error('renderTaskDrawer 内部渲染异常:', err);

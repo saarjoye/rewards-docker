@@ -15,7 +15,8 @@ import {
   penetratePuzzleSpotlight,
   harvestClaimablePointsWithVirtualPointer,
   getRandomSearchWord,
-  claimBrowserExtensionActivity
+  claimBrowserExtensionActivity,
+  attemptReferShare
 } from '../browser/actions.js';
 import { SearchStagnationGuard } from './searchStagnation.js';
 import { executeDesktopAppQuest } from './desktopQuest.js';
@@ -104,11 +105,109 @@ export function buildOfficialTaskSnapshot({ text = '', sections = [], searchPoin
   const searchStreak = counter(/^搜索\s*:\s*([0-9]+)\s*\/\s*([0-9]+)$/);
   const dailySet = counter(/^活动\s*:\s*([0-9]+)\s*\/\s*([0-9]+)$/);
   const appCheckIn = counter(/^签到\s*:\s*([0-9]+)\s*\/\s*([0-9]+)$/);
+  // Edge 浏览连续打卡（分钟: x/30）：官方靠 Windows 宿主 Edge 客户端上报浏览时长，无法自动化，但必须能显示真实进度
+  const edgeBrowse = counter(/^分钟\s*:\s*([0-9]+)\s*\/\s*([0-9]+)$/);
+
+  // Daily Set / App 签到判定优先使用 streak 模型里的官网真实完成度，文本计数器（活动: x/3）仅作兜底，
+  // 避免"文本 2/3 但官网其实已满 3/3"导致反复重跑（参考项目 v1.8.10 同样以 streak 模型为准）
+  const dsModel = streaks?.dailyset;
+  let dailySetCap = dailySet;
+  if (dsModel && Number(dsModel.activitiesTotal) > 0) {
+    const total = Number(dsModel.activitiesTotal);
+    const done = Math.min(Math.max(0, Number(dsModel.activitiesCompleted) || 0), total);
+    dailySetCap = {
+      current: done,
+      max: total,
+      source: 'streak-model',
+      isCurrentDayCompleted: Boolean(dsModel.isCurrentDayCompleted)
+    };
+  }
+  const appModel = streaks?.bingapp;
+  let appCheckInCap = appCheckIn;
+  if (appModel && typeof appModel.isCurrentDayCompleted === 'boolean') {
+    appCheckInCap = {
+      current: appModel.isCurrentDayCompleted ? 1 : 0,
+      max: 1,
+      source: 'streak-model'
+    };
+  }
   const dailySection = sections.find((section) => section.title === '日常任务') || null;
   const questSection = sections.find((section) => section.title === '任务') || null;
   const dailyCards = dailySection?.cards || [];
   const questCards = questSection?.cards || [];
   const dailyPending = dailyCards.filter((card) => !card.done && !card.disabled && card.executable !== false);
+
+  // 连续打卡任务四张卡的统一视图：可执行的显示进度，不可执行的（Edge 30 分钟）也把真实进度带出来
+  const buildStreakCard = (id, title, cap, fallbackMax, tag, executable, note) => ({
+    id,
+    title,
+    progress: cap ? cap.current : null,
+    max: cap ? cap.max : fallbackMax,
+    done: cap ? cap.current >= cap.max : false,
+    executable,
+    tag,
+    note
+  });
+  const streakCards = [
+    buildStreakCard('streak_bing_search', '必应搜索连续打卡', searchStreak, 1, '【PC搜索】', true, '由拟人化 PC 搜索自动点亮'),
+    buildStreakCard('streak_dailyset', '每日连续打卡活动', dailySetCap, 3, '【DailySet】', true, '由 Daily Set 抽屉穿透点亮'),
+    buildStreakCard('streak_edge_browse', 'Edge 浏览连续打卡', edgeBrowse, 30, '【客户端硬件遥测限制 (跳过)】', false, '依赖 Windows 宿主 Edge 客户端上报浏览时长，容器内无头浏览器无法伪造'),
+    buildStreakCard('streak_bing_app', '必应应用连续打卡', appCheckInCap, 1, '【App签到】', true, '由 DAPI 网关直连签到点亮')
+  ];
+
+  // 「将推荐转化为奖励」：官方每日卡片，需真实好友使用邀请链接才计分，脚本不执行但展示状态
+  const referCard = dailyCards.find((card) => /推荐转化为奖励|referandearn|refer and earn|邀请好友/i.test(`${card.title || ''} ${card.href || ''}`)) || null;
+  const referState = account?.referShare?.date === todayStr ? account.referShare : null;
+  const referShare = {
+    found: Boolean(referCard),
+    done: Boolean(referCard?.done),
+    title: (referCard?.title || '将推荐转化为奖励').split('\n')[0].slice(0, 60),
+    href: referCard?.href || 'https://rewards.bing.com/referandearn',
+    points: 10,
+    executable: false,
+    tag: '【推荐/邀请类 (跳过)】',
+    note: '仅当被邀请的真实好友使用必应后才计分，脚本无法代跑',
+    attemptedAt: Number(referState?.attemptedAt || 0),
+    lastResult: String(referState?.result || '')
+  };
+
+  // 所有「不可执行」项集中暴露给前端：能看到、但绝不进入待做循环
+  const skippedFromOfficial = [...dailyCards, ...questCards]
+    .filter((card) => card.executable === false)
+    .map((card) => ({
+      title: String(card.title || '').split('\n')[0].slice(0, 60),
+      tag: card.feasibilityTag || '【不可执行】',
+      reason: card.feasibilityReason || '',
+      done: Boolean(card.done),
+      source: 'official'
+    }));
+  const skippedTasks = [
+    ...streakCards
+      .filter((card) => !card.executable)
+      .map((card) => ({
+        title: card.title,
+        progress: card.progress,
+        max: card.max,
+        unit: '分钟',
+        tag: card.tag,
+        reason: card.note,
+        done: card.done,
+        source: 'streak'
+      })),
+    ...(referShare.found || referShare.attemptedAt
+      ? [{
+          title: referShare.title,
+          progress: referShare.done ? 1 : 0,
+          max: 1,
+          unit: '项',
+          tag: referShare.tag,
+          reason: referShare.note + (referShare.attemptedAt ? `；今日已尝试(${referShare.lastResult || 'unknown'})` : ''),
+          done: referShare.done,
+          source: 'refer'
+        }]
+      : []),
+    ...skippedFromOfficial
+  ];
 
   // 关键：若打孔卡今天已推进（打卡过或检测到明日解锁），从待做列表中剔除，防止死循环重跑
   const questPending = questCards.filter((card) => {
@@ -120,8 +219,8 @@ export function buildOfficialTaskSnapshot({ text = '', sections = [], searchPoin
   });
 
   let needSearch = searchPoints ? !searchPoints.isMaxed : null;
-  const needDailySet = dailySet ? dailySet.current < dailySet.max : null;
-  const needAppSign = appCheckIn ? appCheckIn.current < appCheckIn.max : null;
+  const needDailySet = dailySetCap ? dailySetCap.current < dailySetCap.max : null;
+  const needAppSign = appCheckInCap ? appCheckInCap.current < appCheckInCap.max : null;
   const needDailyActivities = dailySection ? dailyPending.length > 0 : null;
   const needQuests = questSection ? questPending.length > 0 : null;
   const state = {
@@ -166,8 +265,12 @@ export function buildOfficialTaskSnapshot({ text = '', sections = [], searchPoin
 
   return {
     searchStreak,
-    dailySet,
-    appCheckIn,
+    dailySet: dailySetCap,
+    appCheckIn: appCheckInCap,
+    edgeBrowse,
+    streakCards,
+    referShare,
+    skippedTasks,
     searchPoints,
     dailyPending,
     questPending,
@@ -186,8 +289,12 @@ export function buildOfficialTaskSnapshot({ text = '', sections = [], searchPoin
     stamps,
     details: {
       searchStreak,
-      dailySet,
-      appCheckIn,
+      dailySet: dailySetCap,
+      appCheckIn: appCheckInCap,
+      edgeBrowse,
+      streakCards,
+      referShare,
+      skippedTasks,
       streaks,
       stamps,
       dailyPending: dailyPending.map((card) => card.title),
@@ -862,6 +969,26 @@ export class TaskManager {
                   log(`特殊扩展活动执行跳过: ${eExt.message}`);
                 } finally {
                   if (extPage && !extPage.isClosed()) await extPage.close().catch(() => {});
+                }
+
+                // 「将推荐转化为奖励」：官方每日卡片，需真实好友使用邀请链接才计分。
+                // 仅在「官网确认该卡存在且未完成」时尝试，每天最多 1 次，之后一律走"仅展示"分支。
+                const referCardPending = officialTasks?.referShare?.found === true && officialTasks?.referShare?.done === false;
+                const referTriedToday = account.referShare?.date === todayStr;
+                if (!this.shouldStop && referCardPending && !referTriedToday) {
+                  const referPage = await context.newPage();
+                  let referOutcome = { status: 'error', feedback: '' };
+                  try {
+                    referOutcome = await attemptReferShare(referPage, { accountPrefix: account.name });
+                  } catch (eRefer) {
+                    log(`推荐分享任务执行跳过: ${eRefer.message}`);
+                  } finally {
+                    if (referPage && !referPage.isClosed()) await referPage.close().catch(() => {});
+                  }
+                  account.referShare = { date: todayStr, attemptedAt: Date.now(), result: referOutcome.status };
+                  configManager.upsertAccount({ id: accountId, referShare: account.referShare });
+                } else if (referTriedToday) {
+                  log(`🔗 推荐分享任务今日已尝试过 (${account.referShare?.result || 'unknown'})，跳过一次性点击，仅展示状态。`);
                 }
               }
               if (this.shouldStop) throw new Error(TASK_STOP_MESSAGE);
