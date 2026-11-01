@@ -16,7 +16,7 @@ function isExternalAppProtocol(url) {
 import logger from '../logger.js';
 import browserManager from './browser.js';
 import { classifyTaskFeasibility } from '../contracts/streaks.js';
-import { isQuestSubtaskCooling, describeQuestCooling } from '../contracts/questCooling.js';
+import { isQuestSubtaskCooling, describeQuestCooling, hasDayLockHint, applyDayLock } from '../contracts/questCooling.js';
 import {
   isQuestSubtaskCompleted,
   parseQuestProgress,
@@ -508,13 +508,19 @@ export async function scanQuestSubtasks(page) {
     return items;
   }).catch(() => []);
 
-  return (rawItems || []).map((item) => {
+  const pageText = await page.evaluate(() => (document.body?.innerText || '').slice(0, 30000)).catch(() => '');
+  // 页面级时间锁：官方文案「要获取第二个活动，请在完成第 1 天后等待 24 小时…」
+  // 说明同一张卡每天只能推进 1 步，因此"第一个待做项之后的待做项"一律视为明日解锁
+  const pageHasDayLock = hasDayLockHint(pageText);
+
+  const mapped = (rawItems || []).map((item) => {
     const progress = parseQuestProgress(item.rawText);
     const kind = classifyQuestAction(item);
     const completed = isQuestSubtaskCompleted(item);
     const locked = item.disabled || item.hasLockIcon;
-    // 时间锁 / 客户端专属：点了也不会推进，统一标记为 cooling 由调用方跳过
-    const coolingText = [item.title, item.actionText, item.rawText, item.href].filter(Boolean).join(' ');
+    // 只按"自身被锁/客户端专属"的信号判定冷却；
+    // 描述里出现的"要获取第 N 个活动请等待 24 小时"说的是**下一项**的时间锁，不能用来跳过自己
+    const coolingText = [item.title, item.actionText, item.href].filter(Boolean).join(' ');
     const cooling = !completed && isQuestSubtaskCooling(coolingText);
     return {
       ...item,
@@ -524,6 +530,7 @@ export async function scanQuestSubtasks(page) {
       locked,
       cooling,
       coolingReason: cooling ? describeQuestCooling(coolingText) : '',
+      dayLocked: false,
       key: questSubtaskKey({
         href: item.href,
         title: item.title,
@@ -532,6 +539,8 @@ export async function scanQuestSubtasks(page) {
       })
     };
   });
+
+  return applyDayLock(mapped, pageHasDayLock);
 }
 
 /**
@@ -670,8 +679,10 @@ export async function penetratePunchCardQuest(page, questUrl, options = {}) {
         }
 
         const progressScoreBefore = subtasks.reduce((sum, item) => sum + Number(item.progress?.progress || 0), 0);
+        // 每日一步的时间锁卡：本次运行只推进第一个待做项，推进后不再继续点后面的项
+        const dayGated = subtasks.some((item) => item.dayLocked);
         const target = subtasks.find((item) => {
-          if (item.completed || item.locked || item.cooling) return false;
+          if (item.completed || item.locked || item.cooling || item.dayLocked) return false;
           if (attemptedThisRun.has(item.key)) return false;
           return true;
         });
@@ -682,16 +693,26 @@ export async function penetratePunchCardQuest(page, questUrl, options = {}) {
             logger.log('🎉', `打孔卡「${displayName}」所有子任务均已全部完成！`, '', accountPrefix);
             return true;
           }
-          const coolingItems = subtasks.filter((s) => !s.completed && s.cooling);
+          const dayLockedItems = subtasks.filter((s) => !s.completed && s.dayLocked);
+          const coolingItems = subtasks.filter((s) => !s.completed && (s.cooling || s.locked));
+          if (dayLockedItems.length > 0) {
+            logger.log(
+              '⏳',
+              `打孔卡「${displayName}」今日已推进过，剩余 ${dayLockedItems.length} 项需等待 24 小时逐日解锁，明日再继续`,
+              '',
+              accountPrefix
+            );
+            return roundAttempted > 0;
+          }
           if (coolingItems.length > 0) {
             const reasons = [...new Set(coolingItems.map((s) => s.coolingReason).filter(Boolean))];
             logger.log(
               '💤',
-              `打孔卡「${displayName}」剩余 ${coolingItems.length} 项处于时间锁/客户端专属状态（${reasons.join('、') || '等待解锁'}），今日不再重复尝试`,
+              `打孔卡「${displayName}」剩余 ${coolingItems.length} 项处于锁定/客户端专属状态（${reasons.join('、') || '等待解锁'}），本次不再尝试`,
               '',
               accountPrefix
             );
-            return false;
+            return roundAttempted > 0;
           }
           if (roundAttempted === 0) {
             logger.log('💤', `打孔卡「${displayName}」当前无待做任务或已全部推进，跳过`, '', accountPrefix);
@@ -740,6 +761,11 @@ export async function penetratePunchCardQuest(page, questUrl, options = {}) {
         }
 
         await new Promise((r) => setTimeout(r, 2000));
+
+        if (dayGated) {
+          logger.log('⏳', `打孔卡「${displayName}」存在 24 小时时间锁：本卡每天只能推进 1 步，本次到此为止（明日继续下一项）`, '', accountPrefix);
+          return completedCount > 0 || roundAttempted > 0;
+        }
       }
 
       return completedCount > 0 || roundAttempted > 0;

@@ -49,15 +49,14 @@ test('所有卡都试过时正常判为无待做打孔卡', () => {
   assert.equal(snapshot.needQuests, false);
 });
 
-test('打孔卡子任务冷却识别：24 小时时间锁 / 桌面应用专属 / 普通购物任务', () => {
-  assert.equal(isQuestSubtaskCooling('要获取第二个活动，请在完成第1天后等待24小时或更长时间。'), true);
+test('子任务冷却识别只看自身锁定信号（时间锁由页面级 applyDayLock 处理）', () => {
   assert.equal(isQuestSubtaskCooling('奖励应用专属'), true);
   assert.equal(isQuestSubtaskCooling('明天再来'), true);
-  assert.equal(isQuestSubtaskCooling('稍后再试'), true);
   assert.equal(isQuestSubtaskCooling('十一月购物优惠 优惠购物'), false);
+  // 时间锁文案属于"下一项"，不能把当前项判成冷却（v6.8.8 因此把 11 月卡 5 项全跳过）
+  assert.equal(isQuestSubtaskCooling('要获取第二个活动，请在完成第1天后等待24小时或更长时间。'), false);
   assert.equal(isQuestSubtaskCooling(''), false);
 
   assert.match(describeQuestCooling('奖励应用专属'), /桌面奖励应用/);
-  assert.match(describeQuestCooling('请在完成第2天后等待24小时'), /24 小时/);
   assert.equal(describeQuestCooling('正常任务'), '');
 });

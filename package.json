@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.8.8",
-  "description": "Microsoft Rewards 自动化平台 (v6.8.8 打孔卡改为按 href 记录当日已尝试进度，当天新上线的卡可直接执行；子任务时间锁/桌面专属自动识别为冷却)",
+  "version": "6.8.9",
+  "description": "Microsoft Rewards 自动化平台 (v6.8.9 修复打孔卡时间锁误判：每日一步的卡先推进第 1 项，其余标记明日解锁；自身锁定/桌面专属仍跳过)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {
