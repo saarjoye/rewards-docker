@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.8.7",
-  "description": "Microsoft Rewards 自动化平台 (v6.8.7 修复战报「本次收割」恒为 0 分：收割分数按余额差/卡片读数核验，不再把无待领取写成已到账)",
+  "version": "6.8.8",
+  "description": "Microsoft Rewards 自动化平台 (v6.8.8 打孔卡改为按 href 记录当日已尝试进度，当天新上线的卡可直接执行；子任务时间锁/桌面专属自动识别为冷却)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {

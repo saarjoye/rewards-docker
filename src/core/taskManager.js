@@ -220,12 +220,18 @@ export function buildOfficialTaskSnapshot({ text = '', sections = [], searchPoin
     ...skippedFromOfficial
   ];
 
-  // 关键：若打孔卡今天已推进（打卡过或检测到明日解锁），从待做列表中剔除，防止死循环重跑
+  // 关键：按 href 剔除"今天已经推进过的打孔卡"（不再用"今天推进过任何卡"的日级开关），
+  // 否则当天新上线的卡（如每月 1 号的月度卡）会被完全屏蔽，只能等第二天
+  const hrefOverlaps = (a, b) => Boolean(a && b && (String(a).includes(String(b)) || String(b).includes(String(a))));
+  const questAttemptState = account?.dailyQuestsAttempted?.date === todayStr ? account.dailyQuestsAttempted : null;
+  const attemptedQuestHrefsToday = Array.isArray(questAttemptState?.hrefs)
+    ? questAttemptState.hrefs.filter(Boolean)
+    : [];
   const questPending = questCards.filter((card) => {
-    if (questsAttemptedToday) return false;
     if (card.done || card.disabled) return false;
     const cardHref = card.href || '';
-    const isDoneToday = todayDoneQuests.some((doneHref) => doneHref && (cardHref.includes(doneHref) || doneHref.includes(cardHref)));
+    if (attemptedQuestHrefsToday.some((href) => hrefOverlaps(href, cardHref))) return false;
+    const isDoneToday = todayDoneQuests.some((doneHref) => hrefOverlaps(doneHref, cardHref));
     return !isDoneToday;
   });
 
@@ -906,13 +912,18 @@ export class TaskManager {
 
                 log(`检索到 ${questHrefs.length} 个待推进打孔卡任务`);
                 const completedTodayHrefs = [];
+                // 按 href 记录"今天已经尝试过的打孔卡"，替代原来的日级开关：
+                // 这样当天新上线的卡（例如每月 1 号的月度卡）不会被昨天/今早的尝试记录屏蔽
+                const attemptedQuestHrefs = [];
                 for (const qUrl of questHrefs) {
                   if (this.shouldStop) throw new Error(TASK_STOP_MESSAGE);
                   // 桌面客户端专属任务由专属 Server Action 驱动，普通网页视口无法完成，此处跳过
                   if (qUrl && qUrl.includes('WW_pcparent_RewardsApp_weekly_Exclusive')) {
+                    attemptedQuestHrefs.push(qUrl);
                     continue;
                   }
                   if (qUrl) {
+                    attemptedQuestHrefs.push(qUrl);
                     const questPage = await context.newPage();
                     try {
                       const questRes = await penetratePunchCardQuest(questPage, qUrl, { accountPrefix: account.name });
@@ -941,7 +952,14 @@ export class TaskManager {
                     log(`桌面应用专享打孔卡执行跳过: ${eDesk.message}`);
                   }
                 }
-                const attemptedRecord = { date: todayStr, attemptedAt: Date.now() };
+                const prevAttemptedHrefs = (account.dailyQuestsAttempted?.date === todayStr)
+                  ? (account.dailyQuestsAttempted.hrefs || [])
+                  : [];
+                const attemptedRecord = {
+                  date: todayStr,
+                  attemptedAt: Date.now(),
+                  hrefs: [...new Set([...prevAttemptedHrefs, ...attemptedQuestHrefs].filter(Boolean))]
+                };
                 account.dailyQuestsAttempted = attemptedRecord;
                 if (completedTodayHrefs.length > 0) {
                   const currentQuestsDone = (account.dailyQuestsDone?.date === todayStr)

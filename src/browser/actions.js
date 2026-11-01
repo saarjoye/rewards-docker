@@ -16,6 +16,7 @@ function isExternalAppProtocol(url) {
 import logger from '../logger.js';
 import browserManager from './browser.js';
 import { classifyTaskFeasibility } from '../contracts/streaks.js';
+import { isQuestSubtaskCooling, describeQuestCooling } from '../contracts/questCooling.js';
 import {
   isQuestSubtaskCompleted,
   parseQuestProgress,
@@ -512,12 +513,17 @@ export async function scanQuestSubtasks(page) {
     const kind = classifyQuestAction(item);
     const completed = isQuestSubtaskCompleted(item);
     const locked = item.disabled || item.hasLockIcon;
+    // 时间锁 / 客户端专属：点了也不会推进，统一标记为 cooling 由调用方跳过
+    const coolingText = [item.title, item.actionText, item.rawText, item.href].filter(Boolean).join(' ');
+    const cooling = !completed && isQuestSubtaskCooling(coolingText);
     return {
       ...item,
       progress,
       kind,
       completed,
       locked,
+      cooling,
+      coolingReason: cooling ? describeQuestCooling(coolingText) : '',
       key: questSubtaskKey({
         href: item.href,
         title: item.title,
@@ -665,7 +671,7 @@ export async function penetratePunchCardQuest(page, questUrl, options = {}) {
 
         const progressScoreBefore = subtasks.reduce((sum, item) => sum + Number(item.progress?.progress || 0), 0);
         const target = subtasks.find((item) => {
-          if (item.completed || item.locked) return false;
+          if (item.completed || item.locked || item.cooling) return false;
           if (attemptedThisRun.has(item.key)) return false;
           return true;
         });
@@ -675,6 +681,17 @@ export async function penetratePunchCardQuest(page, questUrl, options = {}) {
           if (allDone) {
             logger.log('🎉', `打孔卡「${displayName}」所有子任务均已全部完成！`, '', accountPrefix);
             return true;
+          }
+          const coolingItems = subtasks.filter((s) => !s.completed && s.cooling);
+          if (coolingItems.length > 0) {
+            const reasons = [...new Set(coolingItems.map((s) => s.coolingReason).filter(Boolean))];
+            logger.log(
+              '💤',
+              `打孔卡「${displayName}」剩余 ${coolingItems.length} 项处于时间锁/客户端专属状态（${reasons.join('、') || '等待解锁'}），今日不再重复尝试`,
+              '',
+              accountPrefix
+            );
+            return false;
           }
           if (roundAttempted === 0) {
             logger.log('💤', `打孔卡「${displayName}」当前无待做任务或已全部推进，跳过`, '', accountPrefix);
