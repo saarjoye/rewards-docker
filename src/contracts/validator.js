@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 绝不造假校验器 (Data Integrity & Ground Truth Validator)
  * 严格对标 REWARDS_NEW_ARCHITECTURE_DESIGN.md 第 4 节：
  * 今日已增积分 (earned) 必须且只能由官方页面的 todayPoints 赋值，绝对严禁使用本地卡片积分相加。
@@ -14,6 +14,36 @@ export function parseNumberWithCommas(str) {
 /**
  * 从 /earn 页面 Flight 数据或 HTML/Text 提取官方今日积分 (图 5 对标)
  */
+/**
+ * 精确提取 /earn 页面「今日积分」卡片上的数值。
+ *
+ * 官网卡片结构（实测 2026-11-01）：
+ *   <p class="text-labelControl">今日积分</p>
+ *   …<img alt="今日积分" …>
+ *   <p class="text-pageHeader">1,300</p>
+ *   <p class="text-metadata">积分明细</p>
+ *
+ * 注意：/dashboard 只提供「可用积分（全部积分）」与「可领取」，**没有**今日积分；
+ * 因此今日积分必须从 /earn 取，且必须锚定「今日积分」标签后同一张卡片里的 text-pageHeader。
+ */
+export function extractEarnTodayPoints(html = '') {
+  const source = String(html || '');
+  if (!source) return null;
+  const anchored = [
+    /今日积分[\s\S]{0,600}?text-pageHeader[^>]*>\s*([0-9][0-9,]*)\s*</,
+    /Points earned today[\s\S]{0,600}?text-pageHeader[^>]*>\s*([0-9][0-9,]*)\s*</i
+  ];
+  for (const re of anchored) {
+    const m = source.match(re);
+    if (m) {
+      const value = parseNumberWithCommas(m[1]);
+      if (Number.isFinite(value)) return value;
+    }
+  }
+  return null;
+}
+
+
 export function extractOfficialTodayPoints(flightText = '', html = '') {
   const combined = `${flightText}\n${html}`;
 

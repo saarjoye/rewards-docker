@@ -22,6 +22,7 @@ import { SearchStagnationGuard } from './searchStagnation.js';
 import { executeDesktopAppQuest } from './desktopQuest.js';
 import {
   extractOfficialTodayPoints,
+  extractEarnTodayPoints,
   extractOfficialBalance,
   extractOfficialStreakDays,
   extractOfficialClaimablePoints
@@ -418,6 +419,8 @@ export class TaskManager {
     const log = (msg) => logger.log('📊', `[官网同步] ${msg}`, '', account.name);
 
     let todayPoints = null;
+    let earnTodayPoints = null;
+    let dashTodayPoints = null;
     let balance = null;
     let streakDays = 0;
     let claimablePoints = null;
@@ -482,14 +485,14 @@ export class TaskManager {
               flightChunks = concatFlightChunks(earnHtml);
               const tp = extractOfficialTodayPoints(flightChunks, `${earnHtml}\n${earnText}`);
               if (tp !== null) {
-                todayPoints = tp;
+                earnTodayPoints = tp;
                 break;
               }
             } catch {}
             await new Promise((res) => setTimeout(res, 800));
           }
-          if (todayPoints === null && earnHtml && earnText) {
-            todayPoints = extractOfficialTodayPoints(flightChunks, `${earnHtml}\n${earnText}`);
+          if (earnTodayPoints === null && earnHtml && earnText) {
+            earnTodayPoints = extractOfficialTodayPoints(flightChunks, `${earnHtml}\n${earnText}`);
           }
           if (earnHtml && earnText) {
             streakDays = extractOfficialStreakDays(flightChunks, `${earnHtml}\n${earnText}`);
@@ -519,7 +522,7 @@ export class TaskManager {
               const dashFlight = concatFlightChunks(dashHtml);
               const combinedDash = `${dashFlight}\n${dashHtml}\n${dashText}`;
               if (balance === null) balance = extractOfficialBalance(dashFlight, combinedDash);
-              if (todayPoints === null) todayPoints = extractOfficialTodayPoints(dashFlight, combinedDash);
+              if (dashTodayPoints === null) dashTodayPoints = extractOfficialTodayPoints(dashFlight, combinedDash);
               if (!streakDays) streakDays = extractOfficialStreakDays(dashFlight, combinedDash);
               claimablePoints = extractOfficialClaimablePoints(dashFlight, `${dashHtml}\n${dashText}`);
               if (balance !== null && claimablePoints !== null) break;
@@ -534,6 +537,16 @@ export class TaskManager {
         }
       } catch (e) {
         log(`访问 /dashboard 异常: ${e.message}`);
+      }
+
+      // 今日积分只认 /earn 的「今日积分」卡片（/dashboard 只有可用积分与可领取，没有今日积分）
+      const earnCardToday = extractEarnTodayPoints(earnHtml);
+      const resolvedTodayPoints = earnCardToday !== null
+        ? earnCardToday
+        : (earnTodayPoints !== null ? earnTodayPoints : dashTodayPoints);
+      todayPoints = resolvedTodayPoints;
+      if (todayPoints !== null) {
+        log(`今日积分口径: ${earnCardToday !== null ? '/earn 今日积分卡片' : (earnTodayPoints !== null ? '/earn 通用提取' : '/dashboard 兜底')} = ${todayPoints} 分`);
       }
 
       sources.balance = balance !== null ? 'live' : 'unknown';

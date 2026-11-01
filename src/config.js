@@ -1,4 +1,4 @@
-﻿
+
 export function getTodayDateString() {
   try {
     return new Intl.DateTimeFormat('zh-CN', {
@@ -207,7 +207,10 @@ class ConfigManager {
       enabled: accountData.enabled !== undefined ? accountData.enabled : (existing?.enabled !== false),
       status: accountData.status || (existing?.status || 'ready'),
       balance: accountData.balance !== undefined ? accountData.balance : (existing?.balance || 0),
-      todayEarned: accountData.todayEarned !== undefined ? Math.max(Number(accountData.todayEarned) || 0, existing?.todayEarned || 0) : (existing?.todayEarned || 0),
+      // 今日积分以最新一次官网读取为准（不再用 Math.max 单调递增，否则一次误读会把整天的数字钉死）
+      todayEarned: accountData.todayEarned !== undefined
+        ? Math.max(0, Number(accountData.todayEarned) || 0)
+        : (existing?.todayEarned || 0),
       todayDate: accountData.todayDate !== undefined ? accountData.todayDate : (existing?.todayDate || getTodayDateString()),
       slot: accountData.slot || existing?.slot || 'auto',
       streakDays: accountData.streakDays !== undefined ? accountData.streakDays : (existing?.streakDays || 0),
