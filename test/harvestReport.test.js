@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveHarvestReport } from '../src/contracts/harvestReport.js';
+import { resolveHarvestReport, resolveClaimOutcome } from '../src/contracts/harvestReport.js';
 
 test('真实领到额外积分时，本次收割必须是真实分数（余额差优先）', () => {
   const report = resolveHarvestReport({
@@ -62,4 +62,28 @@ test('未确认到账时不虚报分数', () => {
   assert.equal(report.claimAmount, 0);
   assert.equal(report.harvestedPoints, 0);
   assert.match(report.statusText, /未确认到账/);
+});
+
+test('resolveClaimOutcome：只点击了按钮但官网可领取没清零 → 不算成功（v6.8.8 误报 +420 的根因）', () => {
+  const notClaimed = resolveClaimOutcome({
+    claimableBefore: 420,
+    claimableAfter: 420,
+    balanceBefore: 6598,
+    balanceAfter: 6598,
+    clicked: true
+  });
+  assert.equal(notClaimed.success, false);
+  assert.equal(notClaimed.reason, 'claimable-still-present');
+
+  const cleared = resolveClaimOutcome({ claimableBefore: 420, claimableAfter: 0, balanceBefore: 6598, balanceAfter: 7018, clicked: true });
+  assert.equal(cleared.success, true);
+  assert.equal(cleared.cleared, true);
+
+  const grewOnly = resolveClaimOutcome({ claimableBefore: 420, claimableAfter: null, balanceBefore: 6598, balanceAfter: 7018, clicked: true });
+  assert.equal(grewOnly.success, true);
+  assert.equal(grewOnly.grew, true);
+
+  const neverClicked = resolveClaimOutcome({ claimableBefore: 420, claimableAfter: 420, balanceBefore: 6598, balanceAfter: 6598, clicked: false });
+  assert.equal(neverClicked.success, false);
+  assert.equal(neverClicked.reason, 'button-not-clicked');
 });

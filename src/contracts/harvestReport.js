@@ -1,3 +1,26 @@
+export function resolveClaimOutcome({
+  claimableBefore = null,
+  claimableAfter = null,
+  balanceBefore = null,
+  balanceAfter = null,
+  clicked = false
+} = {}) {
+  const before = Number(claimableBefore);
+  const cleared = Number(claimableAfter) === 0;
+  const hasBalances = Number.isFinite(Number(balanceBefore)) && Number.isFinite(Number(balanceAfter));
+  const grew = hasBalances
+    && Number(balanceAfter) >= Number(balanceBefore) + Math.max(0, Number.isFinite(before) ? before : 0);
+  const success = cleared || grew;
+  return {
+    success,
+    cleared,
+    grew,
+    reason: success
+      ? (cleared ? 'claimable-cleared' : 'balance-increased')
+      : (clicked ? 'claimable-still-present' : 'button-not-clicked')
+  };
+}
+
 /**
  * 「本次收割」分数与推送文案的统一计算。
  *
