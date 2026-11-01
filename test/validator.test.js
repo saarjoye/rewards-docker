@@ -1,8 +1,9 @@
-﻿import test from 'node:test';
+import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   parseNumberWithCommas,
   extractOfficialTodayPoints,
+  extractEarnTodayPoints,
   extractOfficialBalance,
   extractOfficialStreakDays,
   extractOfficialClaimablePoints,
@@ -71,4 +72,19 @@ test('validateStrictMetrics 绝不造假原则：今日积分仅由官网值决�
   assert.equal(res.valid, true);
   assert.equal(res.earned, 174);
   assert.equal(res.delta, 54);
+});
+
+test('extractEarnTodayPoints：锚定 /earn「今日积分」卡片取值', () => {
+  // 实测 2026-11-01 /earn 的真实结构
+  const html = '<div><p class="text-labelControl">今日积分</p></div>'
+    + '<div><img alt="今日积分" width="32"><div class="flex"><p class="text-pageHeader">1,300</p></div></div>'
+    + '<p class="text-metadata">积分明细</p>';
+  assert.equal(extractEarnTodayPoints(html), 1300);
+
+  assert.equal(extractEarnTodayPoints('<p class="text-labelControl">今日积分</p><p class="text-pageHeader">610</p>'), 610);
+  // 英文站点
+  assert.equal(extractEarnTodayPoints('<p>Points earned today</p><p class="text-pageHeader">245</p>'), 245);
+  // 没有今日积分卡片时返回 null（避免抓到其他卡片的数字）
+  assert.equal(extractEarnTodayPoints('<p class="text-pageHeader">7,708</p>'), null);
+  assert.equal(extractEarnTodayPoints(''), null);
 });

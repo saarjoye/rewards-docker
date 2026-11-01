@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.8.12",
-  "description": "Microsoft Rewards 自动化平台 (v6.8.12 打孔卡只按今日真正完成的 href 屏蔽，修掉「打开过但没做成」被锁死一整天的问题)",
+  "version": "6.8.14",
+  "description": "Microsoft Rewards 自动化平台 (v6.8.14 今日积分精确锚定 /earn「今日积分」卡片，/dashboard 仅取可用积分与可领取；todayEarned 取消 Math.max 钉死)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {
