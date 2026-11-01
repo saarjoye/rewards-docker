@@ -220,17 +220,13 @@ export function buildOfficialTaskSnapshot({ text = '', sections = [], searchPoin
     ...skippedFromOfficial
   ];
 
-  // 关键：按 href 剔除"今天已经推进过的打孔卡"（不再用"今天推进过任何卡"的日级开关），
-  // 否则当天新上线的卡（如每月 1 号的月度卡）会被完全屏蔽，只能等第二天
+  // 只按"今天真的推进过"的 href 屏蔽（dailyQuestsDone.hrefs）；
+  // dailyQuestsAttempted 仅作审计用途：v6.8.8 曾把"打开看了一眼但一步都没做成"的卡也记进 attempted，
+  // 结果当天新上线的卡（11 月月度卡）被永久挡住，必须等第二天
   const hrefOverlaps = (a, b) => Boolean(a && b && (String(a).includes(String(b)) || String(b).includes(String(a))));
-  const questAttemptState = account?.dailyQuestsAttempted?.date === todayStr ? account.dailyQuestsAttempted : null;
-  const attemptedQuestHrefsToday = Array.isArray(questAttemptState?.hrefs)
-    ? questAttemptState.hrefs.filter(Boolean)
-    : [];
   const questPending = questCards.filter((card) => {
     if (card.done || card.disabled) return false;
     const cardHref = card.href || '';
-    if (attemptedQuestHrefsToday.some((href) => hrefOverlaps(href, cardHref))) return false;
     const isDoneToday = todayDoneQuests.some((doneHref) => hrefOverlaps(doneHref, cardHref));
     return !isDoneToday;
   });
@@ -919,16 +915,16 @@ export class TaskManager {
                   if (this.shouldStop) throw new Error(TASK_STOP_MESSAGE);
                   // 桌面客户端专属任务由专属 Server Action 驱动，普通网页视口无法完成，此处跳过
                   if (qUrl && qUrl.includes('WW_pcparent_RewardsApp_weekly_Exclusive')) {
-                    attemptedQuestHrefs.push(qUrl);
                     continue;
                   }
                   if (qUrl) {
-                    attemptedQuestHrefs.push(qUrl);
                     const questPage = await context.newPage();
                     try {
                       const questRes = await penetratePunchCardQuest(questPage, qUrl, { accountPrefix: account.name });
                       if (questRes !== false) {
+                        // 只有"真的推进/完成过"才记为已推进，避免把没做成的卡锁死一整天
                         completedTodayHrefs.push(qUrl);
+                        attemptedQuestHrefs.push(qUrl);
                       }
                     } finally {
                       if (questPage && !questPage.isClosed()) await questPage.close().catch(() => {});
