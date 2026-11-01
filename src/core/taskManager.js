@@ -1160,17 +1160,11 @@ export class TaskManager {
               if (finalData.sources?.streakDays === 'live') reconciledAccount.streakDays = finalData.streakDays;
               if (finalData.sources?.claimablePoints === 'live') reconciledAccount.claimablePoints = finalData.claimablePoints;
               configManager.upsertAccount(reconciledAccount);
-              historyManager.recordDaily(accountId, {
-                todayEarned: finalData.sources?.todayPoints === 'live' ? finalData.todayPoints : null,
-                balance: finalData.sources?.balance === 'live' ? finalData.balance : null,
-                streakDays: finalData.sources?.streakDays === 'live' ? finalData.streakDays : null,
-                claimablePoints: finalData.sources?.claimablePoints === 'live' ? finalData.claimablePoints : null,
-                officialTasks: verifiedOfficialTasks,
-                source: 'task-settlement'
-              });
 
               const settledToday = finalData.sources?.todayPoints === 'live' ? finalData.todayPoints : null;
               const settledBalance = finalData.sources?.balance === 'live' ? finalData.balance : null;
+              let postClaimable = finalData.sources?.claimablePoints === 'live' ? finalData.claimablePoints : null;
+              let postBalance = settledBalance;
 
               // 自动收割闭环：若完成今日任务后达成了连续签到或印章里程碑送了额外积分，直接顺手收割清零
               let claimStatus = 'already-empty';
@@ -1185,14 +1179,43 @@ export class TaskManager {
                   claimPoints = Number(harvestRes?.points) || Number(harvestRes?.before?.points) || 0;
                   if (claimStatus === 'claimed') {
                     log(`🎉 [自动收割入账] 额外奖励 ${claimPoints || finalData.claimablePoints} 分已成功领奖并入账！`);
-                    reconciledAccount.claimablePoints = 0;
-                    if (harvestRes.after?.balance) reconciledAccount.balance = harvestRes.after.balance;
                   }
                 } catch (hErr) {
                   claimStatus = 'unverified';
                   log(`⚠️ 自动收割尝试异常: ${hErr.message}，已保留待下次收割`);
                 }
               }
+
+              // 收割后必须回读官网并把结果落库，否则本地会一直保留"可领取 420"的旧值（UI 与战报都会显示未领取）
+              if (claimStatus === 'claimed') {
+                try {
+                  const afterClaim = await this.fetchOfficialDashboard(context, account, { allowCachedFallback: false });
+                  if (afterClaim.sources?.claimablePoints === 'live') postClaimable = afterClaim.claimablePoints;
+                  if (afterClaim.sources?.balance === 'live') postBalance = afterClaim.balance;
+                } catch {}
+                if (postClaimable !== null && Number(postClaimable) > 0) {
+                  claimStatus = 'unverified';
+                  log(`⚠️ [自动收割未确认] 已提交领取但官网「可领取」仍为 ${postClaimable} 分，判为未到账`);
+                } else {
+                  postClaimable = 0;
+                }
+              }
+              reconciledAccount.claimablePoints = postClaimable;
+              if (postBalance !== null) reconciledAccount.balance = postBalance;
+              configManager.upsertAccount({
+                id: accountId,
+                ...(postClaimable !== null ? { claimablePoints: postClaimable } : {}),
+                ...(postBalance !== null ? { balance: postBalance } : {}),
+                lastSyncAt: Date.now()
+              });
+              historyManager.recordDaily(accountId, {
+                todayEarned: settledToday,
+                balance: postBalance,
+                streakDays: finalData.sources?.streakDays === 'live' ? finalData.streakDays : null,
+                claimablePoints: postClaimable,
+                officialTasks: verifiedOfficialTasks,
+                source: 'task-settlement'
+              });
 
               // 任务积分增量必须放在自动收割之后再计算，并把收割到账分数一并计入"本次收割"
               let taskHarvestedPoints = null;
@@ -1210,14 +1233,14 @@ export class TaskManager {
                 ? `${remainingText} · 收割 +${harvestReport.claimAmount} 分`
                 : remainingText;
 
-              log(`🎉 账号 [${account.name}] 任务对账完成：今日积分 ${settledToday === null ? '未确认' : settledToday + ' 分'}，可用余额 ${settledBalance === null ? '未确认' : settledBalance + ' 分'}，连签 ${finalData.streakDays || 0} 天`);
+              log(`🎉 账号 [${account.name}] 任务对账完成：今日积分 ${settledToday === null ? '未确认' : settledToday + ' 分'}，可用余额 ${postBalance === null ? '未确认' : postBalance + ' 分'}，连签 ${finalData.streakDays || 0} 天`);
               notifier.sendSettlementReport(account, {
                 ...finalData,
                 todayEarned: settledToday,
-                balance: settledBalance,
+                balance: postBalance,
                 harvestedPoints: harvestReport.harvestedPoints,
                 taskStatusText: settlementStatusText,
-                claimablePoints: finalData.sources?.claimablePoints === 'live' ? finalData.claimablePoints : null
+                claimablePoints: postClaimable
               }).catch(() => {});
             } finally {
               if (page && typeof page.close === 'function') { await page.close().catch(() => {}); }
