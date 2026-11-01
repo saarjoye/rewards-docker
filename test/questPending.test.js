@@ -18,15 +18,14 @@ function buildCards() {
   ];
 }
 
-test('按 href 记录已尝试：只屏蔽今天真的跑过的卡，当天新上线的卡仍可执行', () => {
+test('"今天打开过但一步没做成"的卡不再锁死一整天（11 月卡被挡的根因）', () => {
   const snapshot = buildOfficialTaskSnapshot({
     text: '搜索: 1/1\n活动: 3/3\n签到: 1/1',
     sections: [{ title: '任务', cards: buildCards() }],
-    account: { dailyQuestsAttempted: { date: todayStr, attemptedAt: Date.now(), hrefs: [OLD_QUEST] } }
+    account: { dailyQuestsAttempted: { date: todayStr, attemptedAt: Date.now(), hrefs: [OLD_QUEST, NEW_QUEST] } }
   });
-
-  const pendingHrefs = snapshot.questPending.map((q) => q.href);
-  assert.deepEqual(pendingHrefs, [NEW_QUEST], '只应保留今天还没跑过的新卡');
+  // attempted 只是审计记录：没有任何一张真正推进过 → 两张都仍然待做
+  assert.equal(snapshot.questPending.length, 2);
   assert.equal(snapshot.needQuests, true);
 });
 
@@ -39,14 +38,21 @@ test('旧版日级记录（无 hrefs 字段）不再一刀切屏蔽全部打孔�
   assert.equal(snapshot.questPending.length, 2);
 });
 
-test('所有卡都试过时正常判为无待做打孔卡', () => {
+test('今天真正完成过的卡才被排除', () => {
   const snapshot = buildOfficialTaskSnapshot({
     text: '搜索: 1/1\n活动: 3/3\n签到: 1/1',
     sections: [{ title: '任务', cards: buildCards() }],
-    account: { dailyQuestsAttempted: { date: todayStr, hrefs: [OLD_QUEST, NEW_QUEST] } }
+    account: { dailyQuestsDone: { date: todayStr, hrefs: [OLD_QUEST] } }
   });
-  assert.equal(snapshot.questPending.length, 0);
-  assert.equal(snapshot.needQuests, false);
+  assert.deepEqual(snapshot.questPending.map((q) => q.href), [NEW_QUEST]);
+
+  const allDone = buildOfficialTaskSnapshot({
+    text: '搜索: 1/1\n活动: 3/3\n签到: 1/1',
+    sections: [{ title: '任务', cards: buildCards() }],
+    account: { dailyQuestsDone: { date: todayStr, hrefs: [OLD_QUEST, NEW_QUEST] } }
+  });
+  assert.equal(allDone.questPending.length, 0);
+  assert.equal(allDone.needQuests, false);
 });
 
 test('子任务冷却识别只看自身锁定信号（时间锁由页面级 applyDayLock 处理）', () => {
