@@ -17,6 +17,7 @@ import logger from '../logger.js';
 import browserManager from './browser.js';
 import { classifyTaskFeasibility } from '../contracts/streaks.js';
 import { isQuestSubtaskCooling, describeQuestCooling, hasDayLockHint, applyDayLock } from '../contracts/questCooling.js';
+import { resolveClaimOutcome } from '../contracts/harvestReport.js';
 import {
   isQuestSubtaskCompleted,
   parseQuestProgress,
@@ -1024,62 +1025,110 @@ export async function harvestClaimablePointsWithVirtualPointer(page, options = {
     let confirmClicked = false;
     // 多轮点击循环 (针对 9 分等多按钮大额形态)
     for (let round = 1; round <= 3; round++) {
-      if (confirmPoint) {
+      // 优先用元素级点击（React Aria 按钮对坐标点击偶发不生效），失败再退回坐标点击
+      let clickedThisRound = false;
+      try {
+        const claimBtn = page.locator('button, [role="button"]')
+          .filter({ hasText: /^(一键领取|领取积分|领取|全部领取)$/ })
+          .first();
+        if ((await claimBtn.count()) > 0 && await claimBtn.isVisible().catch(() => false)) {
+          await claimBtn.click({ timeout: 6000, force: true });
+          clickedThisRound = true;
+        }
+      } catch {}
+
+      if (!clickedThisRound && confirmPoint) {
         try {
           await page.mouse.move(confirmPoint.x, confirmPoint.y);
           await page.mouse.down();
           await new Promise((r) => setTimeout(r, 150));
           await page.mouse.up();
-          confirmClicked = true;
-          logger.log('👆', `[第 ${round} 轮] 已真实物理点击「领取积分」按钮，向微软服务端提交领奖请求...`, '', accountPrefix);
-          await page.waitForTimeout(2500);
+          clickedThisRound = true;
         } catch (e) {
           logger.log('🟡', '点击「领取积分」按钮失败: ' + e.message, '', accountPrefix);
         }
       }
-      // 检查是否还有下一项可领
+
+      if (clickedThisRound) {
+        confirmClicked = true;
+        logger.log('👆', `[第 ${round} 轮] 已点击「一键领取」按钮，向微软服务端提交领奖请求...`, '', accountPrefix);
+        await page.waitForTimeout(2500);
+      }
+
+      // 每轮都核验一次：可领取归零或余额增加才算成功
+      const midClaimable = await readLabeledNumber('可领取');
+      const midBalance = await readLabeledNumber('可用积分');
+      const midOutcome = resolveClaimOutcome({
+        claimableBefore: pts,
+        claimableAfter: midClaimable,
+        balanceBefore,
+        balanceAfter: midBalance,
+        clicked: clickedThisRound
+      });
+      if (midOutcome.success) break;
+
       confirmPoint = await findConfirmPoint();
-      if (!confirmPoint) break;
+      if (!confirmPoint && !clickedThisRound) break;
     }
 
     if (!confirmClicked) {
       logger.log('🟡', '未定位到激活的「领取积分」面板按钮（可能已领取或页面延迟未渲染）', '', accountPrefix);
     }
 
-    // 核验到账：只要点击了领奖按钮，或者页面可领取归零/余额增加，均认定领取成功
+    // 核验到账：必须以「可领取归零」或「余额按待领金额增加」为准，
+    // 光点击了按钮不算成功（v6.8.8 就因此误报 +420 分已到账，实际官网可领取仍是 420）
     let remaining = await readLabeledNumber('可领取');
-    for (let attempt = 0; attempt < 5; attempt++) {
-      if (remaining === 0) break;
-      await page.waitForTimeout(2000);
+    let balanceAfter = await readLabeledNumber('可用积分');
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const outcome = resolveClaimOutcome({
+        claimableBefore: pts,
+        claimableAfter: remaining,
+        balanceBefore,
+        balanceAfter,
+        clicked: confirmClicked
+      });
+      if (outcome.success || remaining === 0) break;
+      await page.waitForTimeout(2500);
       remaining = await readLabeledNumber('可领取');
-      const balanceAfter = await readLabeledNumber('可用积分');
-      if (balanceBefore !== null && balanceAfter !== null && balanceAfter >= balanceBefore + pts) {
-        remaining = 0;
-        break;
-      }
+      balanceAfter = await readLabeledNumber('可用积分');
     }
 
-    const isSuccess = confirmClicked || remaining === 0;
-    if (isSuccess) {
-      const finalBalance = (balanceBefore !== null) ? (balanceBefore + pts) : null;
-      logger.log('🎉', `额外积分收割成功：+${pts} 分！(可领取已归零)`, '', accountPrefix);
+    const finalOutcome = resolveClaimOutcome({
+      claimableBefore: pts,
+      claimableAfter: remaining === null ? pts : remaining,
+      balanceBefore,
+      balanceAfter,
+      clicked: confirmClicked
+    });
+
+    if (finalOutcome.success) {
+      const finalBalance = Number.isFinite(Number(balanceAfter))
+        ? Number(balanceAfter)
+        : (balanceBefore !== null ? balanceBefore + pts : null);
+      logger.log('🎉', `额外积分收割成功：+${pts} 分！(${finalOutcome.cleared ? '可领取已归零' : '余额已增加'})`, '', accountPrefix);
       return {
         harvested: true,
         status: 'claimed',
         points: pts,
         before: { balance: balanceBefore, points: pts },
         after: { balance: finalBalance, points: 0 },
-        reason: 'claimed-successfully'
+        reason: finalOutcome.reason
       };
     }
 
+    logger.log(
+      '⚠️',
+      `领取未确认：已点击按钮但官网「可领取」仍为 ${remaining === null ? '未知' : remaining} 分，本次不计入收割`,
+      '',
+      accountPrefix
+    );
     return {
       harvested: false,
       status: 'unverified',
       points: pts,
       before: { balance: balanceBefore, points: pts },
-      after: { balance: balanceBefore, points: pts },
-      reason: 'button-not-clicked'
+      after: { balance: Number.isFinite(Number(balanceAfter)) ? Number(balanceAfter) : balanceBefore, points: remaining === null ? pts : remaining },
+      reason: finalOutcome.reason
     };
   } catch (err) {
     logger.log('🔴', '额外积分领取执行异常: ' + err.message, '', accountPrefix);

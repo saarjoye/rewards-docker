@@ -1455,21 +1455,25 @@ export class TaskManager {
               && Number.isFinite(beforeBalance)
               && Number.isFinite(finalBalance)
               && finalBalance > beforeBalance;
-            // 彻底对齐 wangheqiang530/microsoft-rewards-docker 官方实现：
-            // 只要真实点击了领取按钮提交领奖，即认定成功到账并同步更新本地资产，杜绝因服务端延迟导致误报
+            // 以「官网可领取归零 / 余额按待领金额增加」为准，光点击按钮不算到账
+            // （v6.8.8 曾因"点了就成功"误报 +420 分，实际官网可领取仍是 420）
             const isClaimedSuccess = harvestResult?.harvested === true || claimStatus === 'claimed';
-            const verified = isClaimedSuccess || (claimStatus === 'already-empty');
-            const status = isClaimedSuccess ? 'claimed' : (claimStatus === 'already-empty' ? 'already-empty' : 'unverified');
+            const claimConfirmed = isClaimedSuccess && (claimableCleared || balanceIncreased);
+            const alreadyEmpty = claimStatus === 'already-empty' && !isClaimedSuccess;
+            const verified = claimConfirmed || alreadyEmpty;
+            const status = claimConfirmed ? 'claimed' : (alreadyEmpty ? 'already-empty' : 'unverified');
 
             const failureReasons = [];
             if (!verified) {
-              failureReasons.push(harvestResult?.reason || 'claim-not-confirmed');
+              failureReasons.push(isClaimedSuccess && !claimConfirmed
+                ? `官网可领取未清零（剩余 ${finalClaimable === null ? '未知' : finalClaimable} 分），判为未到账`
+                : (harvestResult?.reason || 'claim-not-confirmed'));
             }
 
             let storedBalance = liveBalance ? finalBalance : account.balance;
             let storedClaimable = liveClaimable ? finalClaimable : account.claimablePoints;
 
-            if (isClaimedSuccess) {
+            if (claimConfirmed) {
               storedClaimable = 0;
               const expectedGain = harvestResult.points || 0;
               storedBalance = Math.max(Number(storedBalance || 0), (Number(beforeBalance) || Number(account.balance) || 0) + expectedGain);
