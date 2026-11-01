@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.8.10",
-  "description": "Microsoft Rewards 自动化平台 (v6.8.10 收割到账改为强校验：官网可领取未清零/余额未增加即判未到账，杜绝误报收割分数)",
+  "version": "6.8.11",
+  "description": "Microsoft Rewards 自动化平台 (v6.8.11 收割后回读官网并落库：可领取/余额不再停留在旧值，战报「待领额外」显示真实结果)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {
