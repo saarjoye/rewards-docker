@@ -16,6 +16,7 @@ function isExternalAppProtocol(url) {
 import logger from '../logger.js';
 import browserManager from './browser.js';
 import { classifyTaskFeasibility } from '../contracts/streaks.js';
+import configManager from '../config.js';
 import { isQuestSubtaskCooling, describeQuestCooling, hasDayLockHint, applyDayLock } from '../contracts/questCooling.js';
 import { resolveClaimOutcome } from '../contracts/harvestReport.js';
 import {
@@ -624,6 +625,21 @@ export async function executeQuestSubtaskAction(context, page, questUrl, target,
       }
     }
   } else if (target.kind === 'shop' || target.kind === 'visit') {
+    if (target.kind === 'shop') {
+      // 微软对「优惠购物」有每日次数限制：同 IP 多账号会互相消耗配额（实测 2026-11-02 只有 2 个账号成功）
+      const shopLimit = Number(configManager.get().taskOptions?.shopQuestDailyBudget ?? 2) || 2;
+      const budget = configManager.consumeDailyBudget('shopQuestAttempt', shopLimit);
+      if (!budget.allowed) {
+        logger.log(
+          '⏭️',
+          `今日购物类打孔卡已用完本 IP 配额 (${budget.used}/${budget.limit})，本账号跳过以免互相消耗，明日再试`,
+          '',
+          accountPrefix
+        );
+        return;
+      }
+      logger.log('🛒', `购物类打孔卡占用今日第 ${budget.used}/${budget.limit} 次 IP 配额，开始真实浏览...`, '', accountPrefix);
+    }
     // 购物 / 浏览类：必须真实打开目标页并驻留滚动，微软才会记这次"优惠购物"
     let browse = landingPage;
     if (!browse && target.href && /^https?:\/\//i.test(target.href) && !isExternalAppProtocol(target.href) && context) {

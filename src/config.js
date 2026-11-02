@@ -17,6 +17,7 @@ export function getTodayDateString() {
 import path from 'path';
 import { DATA_DIR, writeFileAtomic } from './fsUtil.js';
 import logger from './logger.js';
+import { consumeDailyBudget as consumeBudget, peekDailyBudget as peekBudget } from './contracts/dailyBudget.js';
 
 const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
 export const SECRET_PLACEHOLDER = '******';
@@ -91,6 +92,7 @@ const DEFAULT_CONFIG = {
       toUser: '@all'
     }
   },
+  dailyCounters: { date: '', values: {} },
   accounts: []
 };
 
@@ -115,6 +117,7 @@ class ConfigManager {
             ...(parsed.notify || {}),
             weworkApp: { ...DEFAULT_CONFIG.notify.weworkApp, ...(parsed.notify?.weworkApp || {}) }
           },
+          dailyCounters: (parsed.dailyCounters && typeof parsed.dailyCounters === 'object') ? parsed.dailyCounters : { date: '', values: {} },
           accounts: Array.isArray(parsed.accounts) ? parsed.accounts : []
         };
       }
@@ -293,6 +296,18 @@ class ConfigManager {
     }
     this.save();
     return this.getPublicConfig();
+  }
+
+  /** 每日配额（多账号共享出口 IP 时用于限制购物类打孔卡尝试次数） */
+  consumeDailyBudget(key = 'default', limit = 2) {
+    const result = consumeBudget(this.config.dailyCounters || {}, key, limit);
+    this.config.dailyCounters = result.state;
+    this.save();
+    return result;
+  }
+
+  peekDailyBudget(key = 'default', limit = 2) {
+    return peekBudget(this.config.dailyCounters || {}, key, limit);
   }
 
   updateNotifyConfig(weworkCfg) {

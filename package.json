@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.8.18",
-  "description": "Microsoft Rewards 自动化平台 (v6.8.18 购物类打孔卡在购物页内追加真实商品搜索，提高官方计分命中率)",
+  "version": "6.8.19",
+  "description": "Microsoft Rewards 自动化平台 (v6.8.19 购物类打孔卡增加每日每 IP 配额（默认 2 次），避免多账号互相消耗官方计分机会)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {
