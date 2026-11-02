@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.8.16",
-  "description": "Microsoft Rewards 自动化平台 (v6.8.16 打孔卡只有真正推进成功才记为完成，避免「试了但官网没记分」被写入今日已完成而不再重试)",
+  "version": "6.8.17",
+  "description": "Microsoft Rewards 自动化平台 (v6.8.17 打孔卡购物/浏览类计分有 1~3 分钟延迟，改为多轮延时回读核验并放宽熔断阈值)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {
