@@ -623,6 +623,35 @@ export async function executeQuestSubtaskAction(context, page, questUrl, target,
         await landingPage.close().catch(() => {});
       }
     }
+  } else if (target.kind === 'shop' || target.kind === 'visit') {
+    // 购物 / 浏览类：必须真实打开目标页并驻留滚动，微软才会记这次"优惠购物"
+    let browse = landingPage;
+    if (!browse && target.href && /^https?:\/\//i.test(target.href) && !isExternalAppProtocol(target.href) && context) {
+      browse = await context.newPage().catch(() => null);
+      if (browse) {
+        await browse.goto(target.href, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+      }
+    }
+    if (browse) {
+      await browse.waitForLoadState('domcontentloaded', { timeout: 20000 }).catch(() => {});
+      const dwellRounds = 4;
+      for (let i = 0; i < dwellRounds; i++) {
+        await browse.mouse.wheel(0, 400 + Math.floor(Math.random() * 300)).catch(() => {});
+        await new Promise((r) => setTimeout(r, 3000));
+      }
+      logger.log(
+        '🛒',
+        `打孔卡子任务已真实浏览目标页并驻留 ${dwellRounds * 3} 秒: ${String(browse.url()).slice(0, 80)}`,
+        '',
+        accountPrefix
+      );
+      if (browse !== page && !browse.isClosed?.()) {
+        await browse.close().catch(() => {});
+      }
+      landingPage = null;
+    } else {
+      await new Promise((r) => setTimeout(r, 2500));
+    }
   } else if (landingPage) {
     // 浏览类动作：轻滑滚轮并驻留 4~6 秒触发微软遥测
     await landingPage.mouse.wheel(0, 350 + Math.floor(Math.random() * 300)).catch(() => {});
@@ -738,17 +767,31 @@ export async function penetratePunchCardQuest(page, questUrl, options = {}) {
           logger.log('🟡', `打孔卡子任务执行异常: ${stepLabel}: ${e.message}`, '', accountPrefix);
         }
 
-        // 回读页面后权威比对
-        const afterSubtasks = await scanQuestSubtasks(activePage);
-        const afterTarget = afterSubtasks.find((item) => item.key === target.key)
+        // 回读页面后权威比对（购物/浏览类计分有延迟，多等一轮再判定）
+        let afterSubtasks = await scanQuestSubtasks(activePage);
+        let afterTarget = afterSubtasks.find((item) => item.key === target.key)
           || afterSubtasks.find((item) => item.title === target.title && item.kind === target.kind);
-        const progressScoreAfter = afterSubtasks.reduce((sum, item) => sum + Number(item.progress?.progress || 0), 0);
-        const progressAfter = afterTarget?.progress?.progress ?? (progressScoreAfter > progressScoreBefore ? progressScoreAfter : null);
-
-        const advanced = !!afterTarget && (
+        let progressScoreAfter = afterSubtasks.reduce((sum, item) => sum + Number(item.progress?.progress || 0), 0);
+        let progressAfter = afterTarget?.progress?.progress ?? (progressScoreAfter > progressScoreBefore ? progressScoreAfter : null);
+        let advanced = !!afterTarget && (
           afterTarget.completed ||
           (progressBefore !== null && progressAfter !== null && progressAfter > progressBefore)
         ) || progressScoreAfter > progressScoreBefore;
+
+        if (!advanced && (target.kind === 'shop' || target.kind === 'visit')) {
+          logger.log('⏳', `打孔卡「${displayName}」子任务计分有延迟，等待 12 秒后二次核验...`, '', accountPrefix);
+          await activePage.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+          await new Promise((r) => setTimeout(r, 12000));
+          afterSubtasks = await scanQuestSubtasks(activePage);
+          afterTarget = afterSubtasks.find((item) => item.key === target.key)
+            || afterSubtasks.find((item) => item.title === target.title && item.kind === target.kind);
+          progressScoreAfter = afterSubtasks.reduce((sum, item) => sum + Number(item.progress?.progress || 0), 0);
+          progressAfter = afterTarget?.progress?.progress ?? (progressScoreAfter > progressScoreBefore ? progressScoreAfter : null);
+          advanced = !!afterTarget && (
+            afterTarget.completed ||
+            (progressBefore !== null && progressAfter !== null && progressAfter > progressBefore)
+          ) || progressScoreAfter > progressScoreBefore;
+        }
 
         const activated = target.kind === 'activate' && !!afterTarget && afterTarget.kind !== 'activate';
 
