@@ -808,11 +808,12 @@ export async function penetratePunchCardQuest(page, questUrl, options = {}) {
 
         if (dayGated) {
           logger.log('⏳', `打孔卡「${displayName}」存在 24 小时时间锁：本卡每天只能推进 1 步，本次到此为止（明日继续下一项）`, '', accountPrefix);
-          return completedCount > 0 || roundAttempted > 0;
+          // 只有真正推进成功才算"完成"，避免把"试了但官网没记分"的卡写进今日已完成（否则当天/次日都不会再试）
+          return completedCount > 0;
         }
       }
 
-      return completedCount > 0 || roundAttempted > 0;
+      return completedCount > 0;
     } catch (e) {
       logger.log('⚠️', `打孔卡执行流程异常: ${e.message}`, '', accountPrefix);
       return false;
@@ -824,7 +825,7 @@ export async function penetratePunchCardQuest(page, questUrl, options = {}) {
     executeCore(),
     new Promise((resolve) => setTimeout(() => {
       logger.log('⏱️', '打孔卡执行已达 120 秒安全超时阈值，主动收尾以保证后续流水线继续执行', '', accountPrefix);
-      resolve(true);
+      resolve(false);
     }, 120000))
   ]);
 }

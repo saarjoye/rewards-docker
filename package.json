@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.8.15",
-  "description": "Microsoft Rewards 自动化平台 (v6.8.15 打孔卡购物类子任务改为真实打开购物页驻留 12 秒并二次核验，修复「优惠购物」点击后官方不计分)",
+  "version": "6.8.16",
+  "description": "Microsoft Rewards 自动化平台 (v6.8.16 打孔卡只有真正推进成功才记为完成，避免「试了但官网没记分」被写入今日已完成而不再重试)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {
