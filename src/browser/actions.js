@@ -636,7 +636,7 @@ export async function executeQuestSubtaskAction(context, page, questUrl, target,
           '',
           accountPrefix
         );
-        return;
+        return { status: 'quota-skipped' };
       }
       logger.log('🛒', `购物类打孔卡占用今日第 ${budget.used}/${budget.limit} 次 IP 配额，开始真实浏览...`, '', accountPrefix);
     }
@@ -790,10 +790,17 @@ export async function penetratePunchCardQuest(page, questUrl, options = {}) {
           accountPrefix
         );
 
+        let actionResult = null;
         try {
-          await executeQuestSubtaskAction(context, activePage, fullUrl, target, { accountPrefix });
+          actionResult = await executeQuestSubtaskAction(context, activePage, fullUrl, target, { accountPrefix });
         } catch (e) {
           logger.log('🟡', `打孔卡子任务执行异常: ${stepLabel}: ${e.message}`, '', accountPrefix);
+        }
+
+        // 因每日配额跳过时，直接收尾，不再走 2 分钟延时轮询
+        if (actionResult && actionResult.status === 'quota-skipped') {
+          logger.log('⏭️', `打孔卡「${displayName}」本次因 IP 配额跳过，不再轮询核验`, '', accountPrefix);
+          return completedCount > 0;
         }
 
         // 回读页面后权威比对（购物/浏览类计分有延迟，多等一轮再判定）

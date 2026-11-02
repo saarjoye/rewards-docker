@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.8.19",
-  "description": "Microsoft Rewards 自动化平台 (v6.8.19 购物类打孔卡增加每日每 IP 配额（默认 2 次），避免多账号互相消耗官方计分机会)",
+  "version": "6.8.20",
+  "description": "Microsoft Rewards 自动化平台 (v6.8.20 购物类打孔卡配额跳过时立即收尾，不再空跑 2 分钟延时轮询)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {
