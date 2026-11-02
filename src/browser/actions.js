@@ -645,6 +645,19 @@ export async function executeQuestSubtaskAction(context, page, questUrl, target,
         '',
         accountPrefix
       );
+      // 购物页内再真实搜一次商品：实测带搜索的账号能记 1/5，只停留的账号没记分
+      try {
+        const shopSearchBox = browse.locator('input[type="search"], input[name="q"], textarea[name="q"], input#sb_form_q').first();
+        if (await shopSearchBox.count()) {
+          await shopSearchBox.click({ timeout: 5000 }).catch(() => {});
+          await shopSearchBox.fill('wireless earbuds', { timeout: 5000 }).catch(() => {});
+          await browse.keyboard.press('Enter').catch(() => {});
+          await new Promise((r) => setTimeout(r, 8000));
+          logger.log('🛒', `购物页内已提交一次真实商品搜索: ${String(browse.url()).slice(0, 90)}`, '', accountPrefix);
+        } else {
+          logger.log('🛒', '购物页未找到搜索框，仅完成浏览驻留', '', accountPrefix);
+        }
+      } catch {}
       if (browse !== page && !browse.isClosed?.()) {
         await browse.close().catch(() => {});
       }
