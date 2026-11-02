@@ -35,6 +35,8 @@ export function classifyQuestAction({ title = '', actionText = '', rawText = '' 
   const all = `${titleText}\n${action}\n${rawText || ''}`;
   if (/activate|激活/i.test(`${action}\n${titleText}`)) return 'activate';
   if (/搜索|search|bing/i.test(`${action}\n${titleText}`)) return 'search';
+  // 购物类子任务（如「十一月购物优惠」的「优惠购物」按钮）：必须真实打开 Bing 购物页并驻留浏览才计分
+  if (/优惠购物|购物|商店|shop/i.test(`${action}\n${titleText}`)) return 'shop';
   if (/测验|答题|quiz|trivia|question/i.test(`${action}\n${titleText}`)) return 'quiz';
   if (/观看|了解|试用|探索|查看|打开|watch|visit|try|explore|learn/i.test(`${action}\n${titleText}`)) return 'visit';
   if (/领取|reward|redeem|claim/i.test(`${action}\n${titleText}`)) return 'reward';

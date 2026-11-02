@@ -33,6 +33,9 @@ test('questStatus: 真实图标与文本状态准确判定', () => {
   assert.equal(classifyQuestAction({ title: '万圣节主题活动', actionText: '立即激活' }), 'activate');
   assert.equal(classifyQuestAction({ title: '热点测验', actionText: '立即答题' }), 'quiz');
   assert.equal(classifyQuestAction({ title: '探索新功能', actionText: '去看看' }), 'visit');
+  // 购物类子任务必须单独分类，才能走"真实打开购物页并驻留"的分支（11 月月度卡第 1 项）
+  assert.equal(classifyQuestAction({ title: '十一月购物优惠', actionText: '优惠购物' }), 'shop');
+  assert.equal(classifyQuestAction({ title: '黑色星期五优惠，就在这里', actionText: '优惠购物' }), 'shop');
 
   // 4. 每日打卡与冷却检测
   assert.equal(isDailyQuestSubtask({ kind: 'search' }), true);
