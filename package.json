@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.8.17",
-  "description": "Microsoft Rewards 自动化平台 (v6.8.17 打孔卡购物/浏览类计分有 1~3 分钟延迟，改为多轮延时回读核验并放宽熔断阈值)",
+  "version": "6.8.18",
+  "description": "Microsoft Rewards 自动化平台 (v6.8.18 购物类打孔卡在购物页内追加真实商品搜索，提高官方计分命中率)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {
