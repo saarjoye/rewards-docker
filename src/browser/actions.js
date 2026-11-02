@@ -779,18 +779,25 @@ export async function penetratePunchCardQuest(page, questUrl, options = {}) {
         ) || progressScoreAfter > progressScoreBefore;
 
         if (!advanced && (target.kind === 'shop' || target.kind === 'visit')) {
-          logger.log('⏳', `打孔卡「${displayName}」子任务计分有延迟，等待 12 秒后二次核验...`, '', accountPrefix);
-          await activePage.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
-          await new Promise((r) => setTimeout(r, 12000));
-          afterSubtasks = await scanQuestSubtasks(activePage);
-          afterTarget = afterSubtasks.find((item) => item.key === target.key)
-            || afterSubtasks.find((item) => item.title === target.title && item.kind === target.kind);
-          progressScoreAfter = afterSubtasks.reduce((sum, item) => sum + Number(item.progress?.progress || 0), 0);
-          progressAfter = afterTarget?.progress?.progress ?? (progressScoreAfter > progressScoreBefore ? progressScoreAfter : null);
-          advanced = !!afterTarget && (
-            afterTarget.completed ||
-            (progressBefore !== null && progressAfter !== null && progressAfter > progressBefore)
-          ) || progressScoreAfter > progressScoreBefore;
+          // 实测：官方对"购物/浏览"类子任务的计分有 1~3 分钟延迟
+          // （AilaniMaeve3834 在 09:25 点击、09:28 的官网快照里才变成 1/5），
+          // 所以这里分多轮延时回读，而不是 12 秒就放弃
+          const pollWaits = [20000, 45000, 60000];
+          for (let round = 0; round < pollWaits.length && !advanced; round++) {
+            logger.log('⏳', `打孔卡「${displayName}」子任务计分有延迟，${Math.round(pollWaits[round] / 1000)} 秒后第 ${round + 1} 次回读核验...`, '', accountPrefix);
+            await new Promise((r) => setTimeout(r, pollWaits[round]));
+            await activePage.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+            await new Promise((r) => setTimeout(r, 6000));
+            afterSubtasks = await scanQuestSubtasks(activePage);
+            afterTarget = afterSubtasks.find((item) => item.key === target.key)
+              || afterSubtasks.find((item) => item.title === target.title && item.kind === target.kind);
+            progressScoreAfter = afterSubtasks.reduce((sum, item) => sum + Number(item.progress?.progress || 0), 0);
+            progressAfter = afterTarget?.progress?.progress ?? (progressScoreAfter > progressScoreBefore ? progressScoreAfter : null);
+            advanced = !!afterTarget && (
+              afterTarget.completed ||
+              (progressBefore !== null && progressAfter !== null && progressAfter > progressBefore)
+            ) || progressScoreAfter > progressScoreBefore;
+          }
         }
 
         const activated = target.kind === 'activate' && !!afterTarget && afterTarget.kind !== 'activate';
@@ -824,9 +831,9 @@ export async function penetratePunchCardQuest(page, questUrl, options = {}) {
   return await Promise.race([
     executeCore(),
     new Promise((resolve) => setTimeout(() => {
-      logger.log('⏱️', '打孔卡执行已达 120 秒安全超时阈值，主动收尾以保证后续流水线继续执行', '', accountPrefix);
+      logger.log('⏱️', '打孔卡执行已达 300 秒安全超时阈值，主动收尾以保证后续流水线继续执行', '', accountPrefix);
       resolve(false);
-    }, 120000))
+    }, 300000))
   ]);
 }
 
