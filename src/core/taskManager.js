@@ -1424,6 +1424,50 @@ export class TaskManager {
 
 
 
+  /**
+   * 静默刷新：把「今日积分 / 可用余额 / 待领」拉新，不执行任何任务。
+   * 目的：界面上的积分数字只靠"跑任务"更新会长期停留在旧值（实测用户看到 137，官网已经 260）。
+   */
+  async syncStaleAccounts(options = {}) {
+    const maxAgeMs = Number(options.maxAgeMs) || 20 * 60 * 1000;
+    if (this.isQueueRunning || this.runningAccountId) return { refreshed: 0, skipped: 'busy' };
+    const accounts = configManager.getAccounts().filter((a) => a.enabled !== false);
+    const stale = accounts.filter((a) => !a.lastSyncAt || (Date.now() - Number(a.lastSyncAt)) > maxAgeMs);
+    let refreshed = 0;
+    for (const account of stale) {
+      if (this.isQueueRunning || this.runningAccountId) break;
+      const session = readBrowserSession(account.id);
+      if (!session || !session.cookies || session.cookies.length === 0) continue;
+      try {
+        await browserManager.withBrowser(
+          { proxy: account.proxy, cookies: session.cookies, headless: true },
+          async (browser, context) => {
+            const data = await this.fetchOfficialDashboard(context, account, { allowCachedFallback: false });
+            const update = { id: account.id, lastSyncAt: Date.now() };
+            if (data.sources?.balance === 'live') update.balance = data.balance;
+            if (data.sources?.todayPoints === 'live') update.todayEarned = data.todayPoints;
+            if (data.sources?.streakDays === 'live') update.streakDays = data.streakDays;
+            if (data.sources?.claimablePoints === 'live') update.claimablePoints = data.claimablePoints;
+            if (data.sources?.todayPoints === 'live' || data.sources?.balance === 'live') {
+              configManager.upsertAccount(update);
+              refreshed++;
+              logger.log(
+                '🔄',
+                `[静默刷新] ${account.name}: 今日 ${data.sources?.todayPoints === 'live' ? data.todayPoints + ' 分' : '未取到'} / 可用 ${data.sources?.balance === 'live' ? data.balance + ' 分' : '未取到'}`,
+                '',
+                account.name
+              );
+            }
+          }
+        );
+      } catch (e) {
+        logger.log('⚠️', `[静默刷新] ${account.name} 失败: ${e.message}`);
+      }
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+    return { refreshed };
+  }
+
   async harvestMidnightClaimable(accountId, options = {}) {
     const account = configManager.getAccount(accountId);
     if (!account) {

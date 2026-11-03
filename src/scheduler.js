@@ -105,7 +105,25 @@ class Scheduler {
       this.jobs.push(retryJob);
     }
 
-    // 4. 注册 4 大错峰时段调度：准点触发，账号间平缓错开
+    // 4. 静默刷新：每 20 分钟把「今日积分/可用余额」拉新（不跑任务），
+    //    避免界面上的积分数字长期停留在上次运行时的旧值
+    const silentSyncJob = cron.schedule(
+      '*/20 * * * *',
+      async () => {
+        try {
+          const res = await taskManager.syncStaleAccounts({ maxAgeMs: 15 * 60 * 1000 });
+          if (res && res.refreshed > 0) {
+            logger.log('🔄', `[静默刷新] 已刷新 ${res.refreshed} 个账号的官网积分数据`);
+          }
+        } catch (e) {
+          logger.log('⚠️', `[静默刷新] 执行异常: ${e.message}`);
+        }
+      },
+      { timezone: 'Asia/Shanghai' }
+    );
+    this.jobs.push(silentSyncJob);
+
+    // 5. 注册 4 大错峰时段调度：准点触发，账号间平缓错开
     for (const slotDef of slotDefinitions) {
       const job = cron.schedule(
         slotDef.cron,

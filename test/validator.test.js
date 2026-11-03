@@ -87,4 +87,9 @@ test('extractEarnTodayPoints：锚定 /earn「今日积分」卡片取值', () =
   // 没有今日积分卡片时返回 null（避免抓到其他卡片的数字）
   assert.equal(extractEarnTodayPoints('<p class="text-pageHeader">7,708</p>'), null);
   assert.equal(extractEarnTodayPoints(''), null);
+
+  // 页面里同时存在隐藏模板（0）与真实值（260）时取最大值，不能被 0 覆盖
+  const withHiddenZero = '<p class="text-labelControl">今日积分</p><p class="text-pageHeader">0</p>'
+    + '<template><p class="text-labelControl">今日积分</p><p class="text-pageHeader">260</p></template>';
+  assert.equal(extractEarnTodayPoints(withHiddenZero), 260);
 });
