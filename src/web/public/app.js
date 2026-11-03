@@ -2678,9 +2678,23 @@ function initApp() {
 
   document.getElementById("btn-refresh-task-gaps")?.addEventListener("click", async () => {
     const btn = document.getElementById("btn-refresh-task-gaps");
-    if (btn) btn.style.transform = "rotate(360deg)";
+    if (btn) { btn.style.transform = "rotate(360deg)"; btn.disabled = true; }
+    // 关键：这里必须真正去官网抓一次（/api/sync/official 后台异步执行）；
+    // 之前只调 refreshDashboard() 只是重读本地缓存，数字当然不会变
+    try {
+      await fetch("/api/sync/official", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accountId: "all" })
+      });
+    } catch {}
     await refreshDashboard();
-    setTimeout(() => { if (btn) btn.style.transform = "none"; }, 500);
+    // 官网同步在后台跑，轮询几次把最新「今日积分/余额」拉回来
+    for (let i = 0; i < 8; i++) {
+      await new Promise((r) => setTimeout(r, 6000));
+      await refreshDashboard();
+    }
+    if (btn) setTimeout(() => { btn.style.transform = "none"; btn.disabled = false; }, 500);
   });
 
   document.getElementById("btn-one-click-claim")?.addEventListener("click", async () => {

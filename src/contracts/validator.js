@@ -29,18 +29,21 @@ export function parseNumberWithCommas(str) {
 export function extractEarnTodayPoints(html = '') {
   const source = String(html || '');
   if (!source) return null;
-  const anchored = [
-    /今日积分[\s\S]{0,600}?text-pageHeader[^>]*>\s*([0-9][0-9,]*)\s*</,
-    /Points earned today[\s\S]{0,600}?text-pageHeader[^>]*>\s*([0-9][0-9,]*)\s*</i
+  // 同一页面可能同时存在隐藏模板/旧 Flight 数据（首个值是 0），参考项目也是取全部匹配的最大值，
+  // 否则真实今日积分会被 0 覆盖。
+  const patterns = [
+    /今日积分[\s\S]{0,600}?text-pageHeader[^>]*>\s*([0-9][0-9,]*)\s*</g,
+    /Points earned today[\s\S]{0,600}?text-pageHeader[^>]*>\s*([0-9][0-9,]*)\s*</gi
   ];
-  for (const re of anchored) {
-    const m = source.match(re);
-    if (m) {
+  const values = [];
+  for (const re of patterns) {
+    for (const m of source.matchAll(re)) {
       const value = parseNumberWithCommas(m[1]);
-      if (Number.isFinite(value)) return value;
+      if (Number.isFinite(value)) values.push(value);
     }
   }
-  return null;
+  if (values.length === 0) return null;
+  return Math.max(...values);
 }
 
 
