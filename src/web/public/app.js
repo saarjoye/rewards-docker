@@ -2225,6 +2225,7 @@ function initApp() {
       if (document.getElementById("t-chk-quiz")) document.getElementById("t-chk-quiz").checked = t.promosQuiz !== false;
       if (document.getElementById("t-chk-weekly")) document.getElementById("t-chk-weekly").checked = t.weeklyQuest !== false;
       if (document.getElementById("t-chk-rerun")) document.getElementById("t-chk-rerun").checked = t.manualRerun !== false;
+      if (document.getElementById("t-chk-refresh-per-section")) document.getElementById("t-chk-refresh-per-section").checked = t.refreshAfterEachSection !== false;
 
       if (document.getElementById("pacing-base")) document.getElementById("pacing-base").value = t.baseIntervalSec || 18;
       if (document.getElementById("pacing-jitter")) document.getElementById("pacing-jitter").value = t.randomJitterSec || 6;
@@ -2363,6 +2364,7 @@ function initApp() {
         promosQuiz: document.getElementById("t-chk-quiz")?.checked,
         weeklyQuest: document.getElementById("t-chk-weekly")?.checked,
         manualRerun: document.getElementById("t-chk-rerun")?.checked,
+        refreshAfterEachSection: document.getElementById("t-chk-refresh-per-section")?.checked !== false,
         baseIntervalSec: Number(document.getElementById("pacing-base")?.value) || 18,
         randomJitterSec: Number(document.getElementById("pacing-jitter")?.value) || 6,
         stagnationLimit: Number(document.getElementById("pacing-stagnation")?.value) || 10,

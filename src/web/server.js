@@ -395,7 +395,7 @@ export function createServer() {
     // 打开界面时按需刷新（限流）：数据过期(默认60分钟)才拉一次，60 分钟内最多触发一次，
     // 避免像定时任务那样频繁访问官网触发风控
     try {
-      const staleMinutes = Number(cfg.taskOptions?.autoSyncStaleMinutes ?? 60);
+      const staleMinutes = Number(cfg.taskOptions?.autoSyncStaleMinutes ?? 0);
       const now = Date.now();
       if (staleMinutes > 0
         && now - lastAutoSyncAt > AUTO_SYNC_MIN_INTERVAL_MS
