@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.8.22",
-  "description": "Microsoft Rewards 自动化平台 (v6.8.22 静默刷新改为默认关闭 + 打开界面按需刷新限流 30 分钟，避免频繁访问官网触发风控)",
+  "version": "6.8.23",
+  "description": "Microsoft Rewards 自动化平台 (v6.8.23 积分刷新改为「每板块完成刷新一次 + 整轮结束刷新 + 手动刷新」，定时与按需刷新默认关闭)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {

@@ -892,6 +892,9 @@ export class TaskManager {
               }
               if (this.shouldStop) throw new Error(TASK_STOP_MESSAGE);
 
+              // 板块 1 跑完：立刻读一次官网，让「今日积分/余额」跟着更新
+              await this.refreshPointsMidRun(context, account, '板块 1 连续打卡');
+
               log('>>> 检查【板块 2: 升级活动 (Level Up)】(随日常打卡与搜索自动驱动累积)...');
 
               if (runQuests) {
@@ -985,6 +988,9 @@ export class TaskManager {
               }
               if (this.shouldStop) throw new Error(TASK_STOP_MESSAGE);
 
+              // 板块 3（打孔卡）跑完：刷新一次
+              await this.refreshPointsMidRun(context, account, '板块 3 打孔卡');
+
               if (runDailyActs) {
                 this.currentTaskSection = '板块 4: 日常任务';
                 this.currentTaskName = '日常活动与问答 (Daily Activities)';
@@ -1030,6 +1036,9 @@ export class TaskManager {
                 }
               }
               if (this.shouldStop) throw new Error(TASK_STOP_MESSAGE);
+
+              // 板块 4（日常任务）跑完：刷新一次
+              await this.refreshPointsMidRun(context, account, '板块 4 日常任务');
 
               let needsSearchSecondPass = false;
               if (runSearch) {
@@ -1424,9 +1433,49 @@ export class TaskManager {
 
 
 
+  /** 把一次官网读取结果里"真实活值"写回账号配置（只写 live 来源的字段，避免误写 0） */
+  applyLivePointUpdate(account, data, label = '') {
+    if (!account || !data) return null;
+    const update = { id: account.id, lastSyncAt: Date.now() };
+    if (data.sources?.balance === 'live') update.balance = data.balance;
+    if (data.sources?.todayPoints === 'live') update.todayEarned = data.todayPoints;
+    if (data.sources?.streakDays === 'live') update.streakDays = data.streakDays;
+    if (data.sources?.claimablePoints === 'live') update.claimablePoints = data.claimablePoints;
+    if (Object.keys(update).length <= 2) return null; // 只有 lastSyncAt，没有任何真实数据
+    configManager.upsertAccount(update);
+    if (label) {
+      logger.log(
+        '🔄',
+        `[板块刷新] ${label} → 今日 ${data.sources?.todayPoints === 'live' ? data.todayPoints + ' 分' : '未取到'} / 可用 ${data.sources?.balance === 'live' ? data.balance + ' 分' : '未取到'}`,
+        '',
+        account.name
+      );
+    }
+    return update;
+  }
+
+  /**
+   * 板块级刷新：一个板块跑完后读一次官网（今日积分 + 余额 + 待领），
+   * 让界面数字跟着任务走，而不是等到整轮结束。
+   * 请求量与"人手打开一次网页"相当；板块之间随机延迟 3~8 秒，不连发。
+   */
+  async refreshPointsMidRun(context, account, label = '') {
+    if (configManager.get().taskOptions?.refreshAfterEachSection === false) return null;
+    try {
+      if (this.shouldStop) return null;
+      await new Promise((r) => setTimeout(r, 3000 + Math.floor(Math.random() * 5000)));
+      if (this.shouldStop) return null;
+      const data = await this.fetchOfficialDashboard(context, account, { allowCachedFallback: false });
+      return this.applyLivePointUpdate(account, data, label);
+    } catch (e) {
+      logger.log('⚠️', `[板块刷新] ${label} 跳过: ${e.message}`, '', account.name);
+      return null;
+    }
+  }
+
   /**
    * 静默刷新：把「今日积分 / 可用余额 / 待领」拉新，不执行任何任务。
-   * 目的：界面上的积分数字只靠"跑任务"更新会长期停留在旧值（实测用户看到 137，官网已经 260）。
+   * 默认只在"打开面板且数据过期"时被调用一次（见 /api/status 限流），不做定时轮询。
    */
   async syncStaleAccounts(options = {}) {
     const maxAgeMs = Number(options.maxAgeMs) || 20 * 60 * 1000;

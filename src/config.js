@@ -59,7 +59,11 @@ const DEFAULT_CONFIG = {
     randomJitterSec: 6,
     stagnationLimit: 10,
     theme: 'auto',
-    engine: 'playwright'
+    engine: 'playwright',
+    // 积分刷新策略：默认只在「板块完成 / 整轮结束 / 手动刷新」时读官网，不做定时轮询
+    refreshAfterEachSection: true, // 每个板块（连续打卡/打孔卡/日常任务/搜索）完成后刷新一次积分
+    autoSyncStaleMinutes: 0,       // 打开面板时按需刷新：0 = 关闭（避免频繁访问官网触发风控）
+    silentSyncMinutes: 0           // 定时静默刷新：0 = 关闭
   },
   searchSettings: {
     maxDailySearches: 30,
