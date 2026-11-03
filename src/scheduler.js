@@ -105,13 +105,16 @@ class Scheduler {
       this.jobs.push(retryJob);
     }
 
-    // 4. 静默刷新：每 20 分钟把「今日积分/可用余额」拉新（不跑任务），
-    //    避免界面上的积分数字长期停留在上次运行时的旧值
+    // 4. 静默刷新（默认关闭，避免频繁访问官网触发风控）
+    //    只有显式把 taskOptions.silentSyncMinutes 设成 >0 才会启用；
+    //    常规情况下由"打开界面时按需刷新"（/api/status 的限流触发）保证数字新鲜。
     const silentSyncJob = cron.schedule(
-      '*/20 * * * *',
+      '*/30 * * * *',
       async () => {
+        const intervalMin = Number(configManager.get().taskOptions?.silentSyncMinutes || 0);
+        if (!intervalMin || intervalMin <= 0) return; // 默认不跑
         try {
-          const res = await taskManager.syncStaleAccounts({ maxAgeMs: 15 * 60 * 1000 });
+          const res = await taskManager.syncStaleAccounts({ maxAgeMs: intervalMin * 60 * 1000 });
           if (res && res.refreshed > 0) {
             logger.log('🔄', `[静默刷新] 已刷新 ${res.refreshed} 个账号的官网积分数据`);
           }

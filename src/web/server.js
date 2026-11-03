@@ -28,6 +28,10 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// 「打开界面时按需刷新积分」的限流时间戳（30 分钟内最多触发一次，避免频繁访问官网触发风控）
+let lastAutoSyncAt = 0;
+const AUTO_SYNC_MIN_INTERVAL_MS = 30 * 60 * 1000;
+
 export function createServer() {
   const app = express();
   app.use(express.json());
@@ -387,6 +391,22 @@ export function createServer() {
   app.get('/api/status', (req, res) => {
     const cfg = configManager.getPublicConfig();
     const accounts = cfg.accounts || [];
+
+    // 打开界面时按需刷新（限流）：数据过期才拉一次，30 分钟内最多触发一次，
+    // 避免像定时任务那样频繁访问官网触发风控
+    try {
+      const staleMinutes = Number(cfg.taskOptions?.autoSyncStaleMinutes ?? 30);
+      const now = Date.now();
+      if (staleMinutes > 0
+        && now - lastAutoSyncAt > AUTO_SYNC_MIN_INTERVAL_MS
+        && !taskManager.runningAccountId
+        && !taskManager.isQueueRunning
+        && accounts.some((a) => a.enabled !== false && (!a.lastSyncAt || now - Number(a.lastSyncAt) > staleMinutes * 60 * 1000))) {
+        lastAutoSyncAt = now;
+        taskManager.syncStaleAccounts({ maxAgeMs: staleMinutes * 60 * 1000 }).catch(() => {});
+      }
+    } catch {}
+
     const browserState = browserManager.getState();
     const nextScheduledTask = typeof scheduler.getNextScheduledTask === 'function'
       ? scheduler.getNextScheduledTask()
