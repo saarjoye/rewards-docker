@@ -893,7 +893,7 @@ export class TaskManager {
               if (this.shouldStop) throw new Error(TASK_STOP_MESSAGE);
 
               // 板块 1 跑完：立刻读一次官网，让「今日积分/余额」跟着更新
-              await this.refreshPointsMidRun(context, account, '板块 1 连续打卡');
+              if (runDailySet) await this.refreshPointsMidRun(context, account, '板块 1 连续打卡');
 
               log('>>> 检查【板块 2: 升级活动 (Level Up)】(随日常打卡与搜索自动驱动累积)...');
 
@@ -989,7 +989,7 @@ export class TaskManager {
               if (this.shouldStop) throw new Error(TASK_STOP_MESSAGE);
 
               // 板块 3（打孔卡）跑完：刷新一次
-              await this.refreshPointsMidRun(context, account, '板块 3 打孔卡');
+              if (runQuests) await this.refreshPointsMidRun(context, account, '板块 3 打孔卡');
 
               if (runDailyActs) {
                 this.currentTaskSection = '板块 4: 日常任务';
@@ -1038,7 +1038,7 @@ export class TaskManager {
               if (this.shouldStop) throw new Error(TASK_STOP_MESSAGE);
 
               // 板块 4（日常任务）跑完：刷新一次
-              await this.refreshPointsMidRun(context, account, '板块 4 日常任务');
+              if (runDailyActs) await this.refreshPointsMidRun(context, account, '板块 4 日常任务');
 
               let needsSearchSecondPass = false;
               if (runSearch) {
