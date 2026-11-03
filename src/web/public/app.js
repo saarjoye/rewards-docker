@@ -2968,6 +2968,15 @@ function initApp() {
     }
   });
 
+  // 面板数据每 30 秒自动刷新一次（只读本地 /api/status，不访问官网，无风控影响），
+  // 避免后台收割/任务写库后界面一直停在旧数字，必须手动刷新才更新
+  setInterval(() => {
+    try {
+      if (document.hidden) return;
+      if (typeof refreshDashboard === "function") refreshDashboard().catch(() => {});
+    } catch {}
+  }, 30000);
+
 }
 
 // 安全生命周期驱动：无论页面处于 loading 还是 complete，均保证 100% 初始化生效

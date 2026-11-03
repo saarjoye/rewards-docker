@@ -1,4 +1,4 @@
-﻿import configManager, { SECRET_PLACEHOLDER } from '../config.js';
+import configManager, { SECRET_PLACEHOLDER } from '../config.js';
 import networkClient from '../network.js';
 import logger from '../logger.js';
 
@@ -145,23 +145,15 @@ export class Notifier {
     const baseUrl = buildWeWorkAppBaseUrl(cfg.baseUrl);
     let token = await this.getAccessToken(cfg);
 
-    // 彻底清洗所有 Markdown 符号（**、`、>、#）与裸 HTML 样式，保证普通微信图文卡片 100% 优雅呈现
-    const plainLines = content.split('\n')
-      .map(l => l.replace(/^[>\s*#]+/, '').replace(/\*\*/g, '').replace(/`/g, '').replace(/>/g, '').trim())
-      .filter(Boolean);
-    const cardDescription = plainLines.map(l => '<div class="normal">' + l + '</div>').join('');
-
+    // 用 markdown 消息类型：不掺任何 HTML 标签，企业微信客户端/转发都能正常渲染
+    // （之前 textcard 的 <div class="highlight"> 在部分客户端/中转链路上会被当成纯文本显示出来）
     const cleanTitle = title.replace(/[#*`>]/g, '').trim();
+    const mdContent = `### 🎁 ${cleanTitle}\n${content}`;
     const payload = {
       touser: cfg.toUser || '@all',
-      msgtype: 'textcard',
+      msgtype: 'markdown',
       agentid: Number(cfg.agentId),
-      textcard: {
-        title: '🎁 ' + cleanTitle,
-        description: '<div class="gray">统计日期: ' + new Date().toLocaleDateString('zh-CN') + '</div>' + cardDescription + '<div class="highlight">🤖 Microsoft Rewards 自动化平台</div>',
-        url: 'https://rewards.bing.com',
-        btntxt: '查看详情'
-      },
+      markdown: { content: mdContent },
       enable_id_trans: 0,
       enable_duplicate_check: 0
     };
