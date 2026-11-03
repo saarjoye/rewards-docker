@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.8.23",
-  "description": "Microsoft Rewards 自动化平台 (v6.8.23 积分刷新改为「每板块完成刷新一次 + 整轮结束刷新 + 手动刷新」，定时与按需刷新默认关闭)",
+  "version": "6.8.24",
+  "description": "Microsoft Rewards 自动化平台 (v6.8.24 板块级刷新只在对应板块实际执行时才触发，避免无谓的官网访问)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {
