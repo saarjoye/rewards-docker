@@ -28,9 +28,9 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// 「打开界面时按需刷新积分」的限流时间戳（30 分钟内最多触发一次，避免频繁访问官网触发风控）
+// 「打开界面时按需刷新积分」的限流时间戳（60 分钟内最多触发一次，避免频繁访问官网触发风控）
 let lastAutoSyncAt = 0;
-const AUTO_SYNC_MIN_INTERVAL_MS = 30 * 60 * 1000;
+const AUTO_SYNC_MIN_INTERVAL_MS = 60 * 60 * 1000;
 
 export function createServer() {
   const app = express();
@@ -392,10 +392,10 @@ export function createServer() {
     const cfg = configManager.getPublicConfig();
     const accounts = cfg.accounts || [];
 
-    // 打开界面时按需刷新（限流）：数据过期才拉一次，30 分钟内最多触发一次，
+    // 打开界面时按需刷新（限流）：数据过期(默认60分钟)才拉一次，60 分钟内最多触发一次，
     // 避免像定时任务那样频繁访问官网触发风控
     try {
-      const staleMinutes = Number(cfg.taskOptions?.autoSyncStaleMinutes ?? 30);
+      const staleMinutes = Number(cfg.taskOptions?.autoSyncStaleMinutes ?? 60);
       const now = Date.now();
       if (staleMinutes > 0
         && now - lastAutoSyncAt > AUTO_SYNC_MIN_INTERVAL_MS
