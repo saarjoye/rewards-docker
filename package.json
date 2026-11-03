@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.8.24",
-  "description": "Microsoft Rewards 自动化平台 (v6.8.24 板块级刷新只在对应板块实际执行时才触发，避免无谓的官网访问)",
+  "version": "6.8.25",
+  "description": "Microsoft Rewards 自动化平台 (v6.8.25 企业微信战报改用 markdown 不再外泄 HTML 标签；面板每 30 秒自动刷新本地数据)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {
