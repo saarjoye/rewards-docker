@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.8.28",
-  "description": "Microsoft Rewards 自动化平台 (v6.8.28 移植参考项目 v1.10.10：App 签到改 type101；新增 Daily Set 日期 Child offerId 兜底领取)",
+  "version": "6.8.29",
+  "description": "Microsoft Rewards 自动化平台 (v6.8.29 Daily Set 兜底改为「必须真加分才算成功」，避免已领过的 offer 被虚报 3/3；dapiDailySet 记录落库)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {
