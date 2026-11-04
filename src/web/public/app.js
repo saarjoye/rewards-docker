@@ -2251,6 +2251,7 @@ function initApp() {
       if (document.getElementById("cfg-ww-secret")) document.getElementById("cfg-ww-secret").value = ww.secret || "";
       if (document.getElementById("cfg-ww-touser")) document.getElementById("cfg-ww-touser").value = ww.toUser || "@all";
       if (document.getElementById("cfg-ww-retries")) document.getElementById("cfg-ww-retries").value = ww.maxRetries || 5;
+      if (document.getElementById("cfg-ww-msgtype")) document.getElementById("cfg-ww-msgtype").value = ww.msgType || "text";
     } catch {}
   }
 
@@ -2391,6 +2392,7 @@ function initApp() {
             return /^\*+$/.test(v) ? "" : v;
           })(),
           toUser: document.getElementById("cfg-ww-touser")?.value.trim(),
+          msgType: document.getElementById("cfg-ww-msgtype")?.value || "text",
           maxRetries: Number(document.getElementById("cfg-ww-retries")?.value) || 5
         }
       }
