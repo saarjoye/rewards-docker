@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.8.27",
-  "description": "Microsoft Rewards 自动化平台 (v6.8.27 企业微信战报默认纯文本消息；收割后同步刷新今日积分——官方把领到的额外分也算进今日积分)",
+  "version": "6.8.28",
+  "description": "Microsoft Rewards 自动化平台 (v6.8.28 移植参考项目 v1.10.10：App 签到改 type101；新增 Daily Set 日期 Child offerId 兜底领取)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {

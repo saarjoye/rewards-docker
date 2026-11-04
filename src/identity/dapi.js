@@ -1,4 +1,4 @@
-﻿import crypto from 'crypto';
+import crypto from 'crypto';
 import networkClient from '../network.js';
 import { USER_AGENTS, refreshAccessToken } from './auth.js';
 import logger from '../logger.js';
@@ -93,9 +93,11 @@ export class DapiClient {
 
       const payload = {
         risk_context: {},
-        type: 103, // 核心：Sapphire Daily Check-In 类型代码为 103
+        // 关键修复（对齐参考项目 v1.10.10）：新版 App 的签到按普通领取活动处理。
+        // type=103 仅触发"启动上报"，接口会返回 200，但连签 progress / last_updated 不会推进。
+        type: 101,
         channel: 'SAIOS',
-        attributes: {},
+        attributes: { offerid: 'Gamification_Sapphire_DailyCheckIn' },
         id: activityId,
         amount: 1,
         country: 'CN'
