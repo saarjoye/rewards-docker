@@ -2701,6 +2701,11 @@ function initApp() {
     if (btn) setTimeout(() => { btn.style.transform = "none"; btn.disabled = false; }, 500);
   });
 
+  document.getElementById("btn-export-diagnostics")?.addEventListener("click", () => {
+    // 导出近 24 小时诊断日志（服务端已脱敏：账号/Cookie/Token/Secret/邮箱都不带出去）
+    window.open("/api/diagnostics/export?hours=24", "_blank");
+  });
+
   document.getElementById("btn-one-click-claim")?.addEventListener("click", async () => {
     const claimBtn = document.getElementById("btn-one-click-claim");
     if (claimBtn.disabled) return;
