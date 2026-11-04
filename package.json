@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.8.25",
-  "description": "Microsoft Rewards 自动化平台 (v6.8.25 企业微信战报改用 markdown 不再外泄 HTML 标签；面板每 30 秒自动刷新本地数据)",
+  "version": "6.8.26",
+  "description": "Microsoft Rewards 自动化平台 (v6.8.26 企业微信战报恢复 textcard（可切 text），移除前端任何定时自动刷新)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {

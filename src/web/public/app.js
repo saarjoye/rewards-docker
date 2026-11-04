@@ -2968,15 +2968,8 @@ function initApp() {
     }
   });
 
-  // 面板数据每 30 秒自动刷新一次（只读本地 /api/status，不访问官网，无风控影响），
-  // 避免后台收割/任务写库后界面一直停在旧数字，必须手动刷新才更新
-  setInterval(() => {
-    try {
-      if (document.hidden) return;
-      if (typeof refreshDashboard === "function") refreshDashboard().catch(() => {});
-    } catch {}
-  }, 30000);
-
+  // 注意：这里刻意不做任何"定时自动刷新"，界面数字只在
+  // ① 任务执行/收割过程 ② 用户主动点击（⟳ / 仅同步此账号）时更新，避免任何非必要访问
 }
 
 // 安全生命周期驱动：无论页面处于 loading 还是 complete，均保证 100% 初始化生效

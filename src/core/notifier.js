@@ -145,18 +145,43 @@ export class Notifier {
     const baseUrl = buildWeWorkAppBaseUrl(cfg.baseUrl);
     let token = await this.getAccessToken(cfg);
 
-    // 用 markdown 消息类型：不掺任何 HTML 标签，企业微信客户端/转发都能正常渲染
-    // （之前 textcard 的 <div class="highlight"> 在部分客户端/中转链路上会被当成纯文本显示出来）
+    // 消息类型可配置（notify.weworkApp.msgType）：
+    //   textcard（默认，图文卡片，企业微信客户端渲染最好）| text（纯文本，任何客户端/微信插件都能显示）
+    const msgType = String(cfg.msgType || 'textcard').toLowerCase();
     const cleanTitle = title.replace(/[#*`>]/g, '').trim();
-    const mdContent = `### 🎁 ${cleanTitle}\n${content}`;
-    const payload = {
-      touser: cfg.toUser || '@all',
-      msgtype: 'markdown',
-      agentid: Number(cfg.agentId),
-      markdown: { content: mdContent },
-      enable_id_trans: 0,
-      enable_duplicate_check: 0
-    };
+
+    let payload;
+    if (msgType === 'text') {
+      payload = {
+        touser: cfg.toUser || '@all',
+        msgtype: 'text',
+        agentid: Number(cfg.agentId),
+        text: { content: `🎁 ${cleanTitle}\n${content}` },
+        enable_id_trans: 0,
+        enable_duplicate_check: 0
+      };
+    } else {
+      // textcard：企业微信要求的 HTML 三段式（gray / normal / highlight）
+      const plainLines = content.split('\n')
+        .map((l) => l.replace(/^[>\s*#]+/, '').replace(/\*\*/g, '').replace(/`/g, '').replace(/>/g, '').trim())
+        .filter(Boolean);
+      const cardDescription = plainLines.map((l) => '<div class="normal">' + l + '</div>').join('');
+      payload = {
+        touser: cfg.toUser || '@all',
+        msgtype: 'textcard',
+        agentid: Number(cfg.agentId),
+        textcard: {
+          title: '🎁 ' + cleanTitle,
+          description: '<div class="gray">统计日期: ' + new Date().toLocaleDateString('zh-CN') + '</div>'
+            + cardDescription
+            + '<div class="highlight">🤖 Microsoft Rewards 自动化平台</div>',
+          url: 'https://rewards.bing.com',
+          btntxt: '查看详情'
+        },
+        enable_id_trans: 0,
+        enable_duplicate_check: 0
+      };
+    }
 
     const sendUrl = buildWeWorkAppSendUrl(baseUrl, token);
     let res = await networkClient.request({
