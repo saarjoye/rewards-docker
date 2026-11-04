@@ -147,7 +147,7 @@ export class Notifier {
 
     // 消息类型可配置（notify.weworkApp.msgType）：
     //   textcard（默认，图文卡片，企业微信客户端渲染最好）| text（纯文本，任何客户端/微信插件都能显示）
-    const msgType = String(cfg.msgType || 'textcard').toLowerCase();
+    const msgType = String(cfg.msgType || 'text').toLowerCase();
     const cleanTitle = title.replace(/[#*`>]/g, '').trim();
 
     let payload;

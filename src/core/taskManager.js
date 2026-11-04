@@ -1204,12 +1204,16 @@ export class TaskManager {
                 }
               }
 
-              // 收割后必须回读官网并把结果落库，否则本地会一直保留"可领取 420"的旧值（UI 与战报都会显示未领取）
+              // 收割后必须回读官网并把结果落库，否则本地会一直保留"可领取 x 分"的旧值（UI 与战报都会显示未领取）
+              // 注意：官方「今日积分」会把领到的额外积分也算进去（实测 237 + 1803 = 2040），
+              // 所以收割后要同步刷新 todayEarned，否则界面/战报会一直停在收割前的数字
+              let postToday = settledToday;
               if (claimStatus === 'claimed') {
                 try {
                   const afterClaim = await this.fetchOfficialDashboard(context, account, { allowCachedFallback: false });
                   if (afterClaim.sources?.claimablePoints === 'live') postClaimable = afterClaim.claimablePoints;
                   if (afterClaim.sources?.balance === 'live') postBalance = afterClaim.balance;
+                  if (afterClaim.sources?.todayPoints === 'live') postToday = afterClaim.todayPoints;
                 } catch {}
                 if (postClaimable !== null && Number(postClaimable) > 0) {
                   claimStatus = 'unverified';
@@ -1220,14 +1224,16 @@ export class TaskManager {
               }
               reconciledAccount.claimablePoints = postClaimable;
               if (postBalance !== null) reconciledAccount.balance = postBalance;
+              if (postToday !== null) reconciledAccount.todayEarned = postToday;
               configManager.upsertAccount({
                 id: accountId,
                 ...(postClaimable !== null ? { claimablePoints: postClaimable } : {}),
                 ...(postBalance !== null ? { balance: postBalance } : {}),
+                ...(postToday !== null ? { todayEarned: postToday } : {}),
                 lastSyncAt: Date.now()
               });
               historyManager.recordDaily(accountId, {
-                todayEarned: settledToday,
+                todayEarned: postToday,
                 balance: postBalance,
                 streakDays: finalData.sources?.streakDays === 'live' ? finalData.streakDays : null,
                 claimablePoints: postClaimable,
@@ -1248,13 +1254,13 @@ export class TaskManager {
                 runDelta: taskHarvestedPoints || 0
               });
               const settlementStatusText = harvestReport.claimAmount > 0
-                ? `${remainingText} · 收割 +${harvestReport.claimAmount} 分`
+                ? `${remainingText} · 收割 +${harvestReport.claimAmount} 分${harvestReport.runPoints > 0 ? `（其中任务积分 +${harvestReport.runPoints} 分）` : ''}`
                 : remainingText;
 
-              log(`🎉 账号 [${account.name}] 任务对账完成：今日积分 ${settledToday === null ? '未确认' : settledToday + ' 分'}，可用余额 ${postBalance === null ? '未确认' : postBalance + ' 分'}，连签 ${finalData.streakDays || 0} 天`);
+              log(`🎉 账号 [${account.name}] 任务对账完成：今日积分 ${postToday === null ? '未确认' : postToday + ' 分'}，可用余额 ${postBalance === null ? '未确认' : postBalance + ' 分'}，连签 ${finalData.streakDays || 0} 天`);
               notifier.sendSettlementReport(account, {
                 ...finalData,
-                todayEarned: settledToday,
+                todayEarned: postToday,
                 balance: postBalance,
                 harvestedPoints: harvestReport.harvestedPoints,
                 taskStatusText: settlementStatusText,
