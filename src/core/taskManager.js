@@ -31,6 +31,7 @@ import { concatFlightChunks, extractOfferObjects } from '../contracts/flightPars
 import { buildUnifiedTaskBoard, classifyTaskFeasibility, extractStreakModels, extractOfficialStamps } from '../contracts/streaks.js';
 import { parseStreakSectionText } from '../contracts/streakSection.js';
 import { resolveHarvestReport } from '../contracts/harvestReport.js';
+import { buildDapiDailySetCards, isDapiClaimConfirmed } from '../contracts/dapiDailySet.js';
 import historyManager from './history.js';
 import notifier from './notifier.js';
 
@@ -892,6 +893,15 @@ export class TaskManager {
               }
               if (this.shouldStop) throw new Error(TASK_STOP_MESSAGE);
 
+              // 新版 App Daily Set 兜底：网页抽屉拿不满 3/3 时，用 DAPI 日期 Child offerId 直接补
+              if (runDailySet && tokens) {
+                try {
+                  await this.claimDapiDailySetFallback(account, tokens);
+                } catch (e) {
+                  log(`[DailySet 兜底] 跳过: ${e.message}`);
+                }
+              }
+
               // 板块 1 跑完：立刻读一次官网，让「今日积分/余额」跟着更新
               if (runDailySet) await this.refreshPointsMidRun(context, account, '板块 1 连续打卡');
 
@@ -1458,6 +1468,60 @@ export class TaskManager {
       );
     }
     return update;
+  }
+
+  /**
+   * 新版 App Daily Set「日期兜底」领取。
+   *
+   * 官网改版后 /earn 与 dashboard API 可能都不再下发今日的 3 张 Daily Set，
+   * 网页抽屉会卡在 2/3 或 0/3；而 App 侧 DAPI 仍接受固定格式的 Child offerId：
+   *   Gamification_DailySet_ZHCN_YYYYMMDD_Child1..3（每张 10 分，合计 30）
+   * 这里用 type=101 的普通领取活动直接提交，并且只有拿到明确回执才计入。
+   */
+  async claimDapiDailySetFallback(account, tokens) {
+    if (!account || !tokens || !tokens.accessToken) return { skipped: 'no-token' };
+    const today = getTodayDateString();
+    const attemptedToday = account?.dapiDailySet?.date === today;
+    const officialSet = account?.officialTasks?.dailySet;
+    const alreadyComplete = officialSet
+      && Number(officialSet.max || 0) > 0
+      && Number(officialSet.current || 0) >= Number(officialSet.max || 3);
+    if (attemptedToday || alreadyComplete) {
+      return { skipped: attemptedToday ? 'already-attempted-today' : 'already-complete' };
+    }
+
+    const dapi = new DapiClient(account, tokens, (refreshed) => {
+      try {
+        const session = readBrowserSession(account.id) || {};
+        writeBrowserSession(account.id, { ...session, tokens: refreshed });
+      } catch {}
+    });
+
+    const cards = buildDapiDailySetCards();
+    let ok = 0;
+    let points = 0;
+    for (const card of cards) {
+      try {
+        const res = await dapi.submitActivity(card.offerId, 1);
+        if (isDapiClaimConfirmed(res)) {
+          ok += 1;
+          points += Number(res?.response?.activity?.p ?? res?.response?.creditedPoints ?? card.points) || 0;
+          logger.log('✅', `[DailySet 兜底] 已领取 ${card.offerId} (+${card.points} 分)`, '', account.name);
+        } else {
+          logger.log('🟡', `[DailySet 兜底] ${card.offerId} 未确认加分（可能已领取/未到账）`, '', account.name);
+        }
+      } catch (e) {
+        logger.log('⚠️', `[DailySet 兜底] ${card.offerId} 提交异常: ${e.message}`, '', account.name);
+      }
+      await new Promise((r) => setTimeout(r, 1500 + Math.floor(Math.random() * 1500)));
+    }
+
+    const record = { date: today, ok, points };
+    configManager.upsertAccount({ id: account.id, dapiDailySet: record });
+    if (ok > 0) {
+      logger.log('🎉', `[DailySet 兜底] 本次确认领取 ${ok}/3 张（+${points} 分），已按天记录避免重复提交`, '', account.name);
+    }
+    return record;
   }
 
   /**
