@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
   "version": "6.8.29",
-  "description": "Microsoft Rewards 自动化平台 (v6.8.29 Daily Set 兜底改为「必须真加分才算成功」，避免已领过的 offer 被虚报 3/3；dapiDailySet 记录落库)",
+  "description": "Microsoft Rewards 自动化平台 (v6.8.30 Cookie 注入兼容 __Host-/__Secure- 前缀（失败自动逐个自愈）；新增 24 小时脱敏诊断日志导出)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {

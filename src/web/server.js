@@ -13,6 +13,7 @@ import scheduler from '../scheduler.js';
 import notifier from '../core/notifier.js';
 import browserManager from '../browser/browser.js';
 import { DATA_DIR } from '../fsUtil.js';
+import { buildDiagnosticsReport } from '../contracts/diagnostics.js';
 import {
   validateAdminCredentials,
   hashAdminPassword,
@@ -714,6 +715,30 @@ export function createServer() {
     });
     res.setHeader('Cache-Control', 'no-store');
     res.json({ success: true, logs: list, serverTime: Date.now() });
+  });
+
+  // 12.b 诊断日志导出（近 24 小时，已脱敏，便于排查且不泄露账号隐私）
+  app.get('/api/diagnostics/export', (req, res) => {
+    try {
+      const cfg = configManager.get();
+      let version = '';
+      try {
+        version = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8')).version || '';
+      } catch {}
+      const report = buildDiagnosticsReport({
+        version,
+        accounts: cfg.accounts || [],
+        notify: cfg.notify || {},
+        hours: Math.min(Number(req.query.hours) || 24, 72)
+      });
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.setHeader('Content-Disposition', 'attachment; filename="rewards-diagnostics-' + stamp + '.txt"');
+      res.setHeader('Cache-Control', 'no-store');
+      res.send(report);
+    } catch (e) {
+      res.status(500).json({ success: false, message: e.message });
+    }
   });
 
   // 12. SSE 实时日志推流

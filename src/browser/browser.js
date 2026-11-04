@@ -1,7 +1,8 @@
-﻿import fs from 'fs';
+import fs from 'fs';
 import path from 'path';
 import { chromium } from 'patchright-core';
 import logger from '../logger.js';
+import { normalizeCookiesForInjection } from '../contracts/cookieCompat.js';
 import { USER_AGENTS } from '../identity/auth.js';
 import memorySampler from '../core/memorySampler.js';
 
@@ -164,10 +165,21 @@ export class BrowserManager {
     const context = await browser.newContext(contextOptions);
 
     if (Array.isArray(cookies) && cookies.length > 0) {
+      const normalized = normalizeCookiesForInjection(cookies);
       try {
-        await context.addCookies(cookies);
+        await context.addCookies(normalized);
+        logger.log('🍪', `已注入 ${normalized.length} 个 Cookie（含 __Host-/__Secure- 前缀兼容处理）`);
       } catch (e) {
-        logger.log('⚠️', `向浏览器注入 Cookies 出现部分跳过: ${e.message}`);
+        // 批量注入失败时逐个注入自愈：只跳过真正非法的那几个，而不是整批丢弃
+        logger.log('⚠️', `批量注入 Cookie 失败（${e.message}），改为逐个注入自愈...`);
+        let injected = 0;
+        for (const cookie of normalized) {
+          try {
+            await context.addCookies([cookie]);
+            injected += 1;
+          } catch {}
+        }
+        logger.log(injected > 0 ? '🍪' : '⚠️', `逐个注入 Cookie 完成：成功 ${injected}/${normalized.length}`);
       }
     }
 
