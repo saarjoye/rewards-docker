@@ -232,6 +232,7 @@ class ConfigManager {
       dailyQuestsAttempted: accountData.dailyQuestsAttempted !== undefined ? accountData.dailyQuestsAttempted : (existing?.dailyQuestsAttempted || null),
       dailyQuestsDone: accountData.dailyQuestsDone !== undefined ? accountData.dailyQuestsDone : (existing?.dailyQuestsDone || null),
       referShare: accountData.referShare !== undefined ? accountData.referShare : (existing?.referShare || null),
+      dapiDailySet: accountData.dapiDailySet !== undefined ? accountData.dapiDailySet : (existing?.dapiDailySet || null),
       lastScheduledDate: accountData.lastScheduledDate !== undefined ? accountData.lastScheduledDate : (existing?.lastScheduledDate || null)
     };
 

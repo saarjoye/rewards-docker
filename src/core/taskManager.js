@@ -31,7 +31,7 @@ import { concatFlightChunks, extractOfferObjects } from '../contracts/flightPars
 import { buildUnifiedTaskBoard, classifyTaskFeasibility, extractStreakModels, extractOfficialStamps } from '../contracts/streaks.js';
 import { parseStreakSectionText } from '../contracts/streakSection.js';
 import { resolveHarvestReport } from '../contracts/harvestReport.js';
-import { buildDapiDailySetCards, isDapiClaimConfirmed } from '../contracts/dapiDailySet.js';
+import { buildDapiDailySetCards, isDapiClaimConfirmed, dapiClaimedPoints } from '../contracts/dapiDailySet.js';
 import historyManager from './history.js';
 import notifier from './notifier.js';
 
@@ -1505,7 +1505,7 @@ export class TaskManager {
         const res = await dapi.submitActivity(card.offerId, 1);
         if (isDapiClaimConfirmed(res)) {
           ok += 1;
-          points += Number(res?.response?.activity?.p ?? res?.response?.creditedPoints ?? card.points) || 0;
+          points += dapiClaimedPoints(res) || card.points;
           logger.log('✅', `[DailySet 兜底] 已领取 ${card.offerId} (+${card.points} 分)`, '', account.name);
         } else {
           logger.log('🟡', `[DailySet 兜底] ${card.offerId} 未确认加分（可能已领取/未到账）`, '', account.name);

@@ -34,7 +34,11 @@ export function buildDapiDailySetCards(now = Date.now(), locale = 'ZHCN') {
   }));
 }
 
-/** 只有 DAPI 明确回执（code=0 且拿到积分/余额）才算领取成功 */
+/**
+ * 领取成功判定：必须 code=0 且 **真的加了分**（或回执里明确写了已完成）。
+ * 注意：DAPI 对「今天已经领过」的 offerId 也会返回 code=0 并附带 balance，
+ * 若把 balance 当成成功依据，就会每天虚报 3/3（实测坑）。
+ */
 export function isDapiClaimConfirmed(res = {}) {
   if (!res || typeof res !== 'object') return false;
   const code = res.code;
@@ -45,6 +49,20 @@ export function isDapiClaimConfirmed(res = {}) {
     ?? res.response?.activity?.points
     ?? 0
   );
-  const hasBalance = Number.isFinite(Number(res.response?.balance));
-  return okCode && (points > 0 || hasBalance);
+  const activity = res.response?.activity || {};
+  const explicitDone = activity.complete === true
+    || activity.isCompleted === true
+    || activity.completed === true
+    || res.response?.isCompleted === true;
+  return okCode && (points > 0 || explicitDone);
+}
+
+/** 回执里本次实际入账的积分（拿不到就是 0） */
+export function dapiClaimedPoints(res = {}) {
+  return Number(
+    res?.response?.activity?.p
+    ?? res?.response?.creditedPoints
+    ?? res?.response?.activity?.points
+    ?? 0
+  ) || 0;
 }
