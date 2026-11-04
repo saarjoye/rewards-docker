@@ -93,7 +93,8 @@ const DEFAULT_CONFIG = {
       corpId: '',
       agentId: '',
       secret: '',
-      toUser: '@all'
+      toUser: '@all',
+      msgType: 'textcard' // textcard(图文卡片) | text(纯文本，兼容微信插件)
     }
   },
   dailyCounters: { date: '', values: {} },
@@ -328,7 +329,8 @@ class ConfigManager {
       corpId: (weworkCfg.corpId || '').trim(),
       agentId: (weworkCfg.agentId || '').trim(),
       secret: (secret || '').trim(),
-      toUser: (weworkCfg.toUser || '@all').trim()
+      toUser: (weworkCfg.toUser || '@all').trim(),
+      msgType: (weworkCfg.msgType === 'text' ? 'text' : 'textcard')
     };
     this.save();
     return this.config.notify.weworkApp;
