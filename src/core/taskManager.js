@@ -32,6 +32,7 @@ import { buildUnifiedTaskBoard, classifyTaskFeasibility, extractStreakModels, ex
 import { parseStreakSectionText } from '../contracts/streakSection.js';
 import { resolveHarvestReport } from '../contracts/harvestReport.js';
 import { buildDapiDailySetCards, isDapiClaimConfirmed, dapiClaimedPoints } from '../contracts/dapiDailySet.js';
+import { getDapiCheckInStatus } from '../contracts/appCheckIn.js';
 import historyManager from './history.js';
 import notifier from './notifier.js';
 
@@ -90,7 +91,7 @@ export function describeOfficialNeed(value) {
  * Build a tri-state task snapshot from official DOM evidence.
  * null means unknown. Unknown never becomes work and never counts as complete.
  */
-export function buildOfficialTaskSnapshot({ text = '', sections = [], searchPoints = null, account = null, streaks = {}, stamps = null } = {}) {
+export function buildOfficialTaskSnapshot({ text = '', sections = [], searchPoints = null, account = null, streaks = {}, stamps = null, options = {} } = {}) {
   const lines = String(text || '').split('\n').map((line) => line.trim()).filter(Boolean);
   const counter = (re) => {
     for (const line of lines) {
@@ -135,6 +136,14 @@ export function buildOfficialTaskSnapshot({ text = '', sections = [], searchPoin
       source: 'streak-model'
     };
   }
+  // App 签到以 DAPI promotions 为准：官方网页的 bingapp 连签模型不会因 DAPI 签到而更新，
+  // 只看网页会出现"DAPI 已签、面板仍显示 0/1"的误判。
+  const dapiCheckIn = options?.dapiAppCheckIn || null;
+  let appCheckInNote = '由 DAPI 网关直连签到点亮';
+  if (dapiCheckIn && dapiCheckIn.isCurrentDayCompleted) {
+    appCheckInCap = { current: 1, max: 1, source: 'dapi' };
+    appCheckInNote = 'App 端已签到（DAPI 已记录，网页连签模型不更新属官方口径差异）';
+  }
   const dailySection = sections.find((section) => section.title === '日常任务') || null;
   const questSection = sections.find((section) => section.title === '任务') || null;
   const dailyCards = dailySection?.cards || [];
@@ -156,7 +165,7 @@ export function buildOfficialTaskSnapshot({ text = '', sections = [], searchPoin
     buildStreakCard('streak_bing_search', '必应搜索连续打卡', searchStreak, 1, '【PC搜索】', true, '由拟人化 PC 搜索自动点亮'),
     buildStreakCard('streak_dailyset', '每日连续打卡活动', dailySetCap, 3, '【DailySet】', true, '由 Daily Set 抽屉穿透点亮'),
     buildStreakCard('streak_edge_browse', 'Edge 浏览连续打卡', edgeBrowse, 30, '【客户端硬件遥测限制 (跳过)】', false, '依赖 Windows 宿主 Edge 客户端上报浏览时长，容器内无头浏览器无法伪造'),
-    buildStreakCard('streak_bing_app', '必应应用连续打卡', appCheckInCap, 1, '【App签到】', true, '由 DAPI 网关直连签到点亮')
+    buildStreakCard('streak_bing_app', '必应应用连续打卡', appCheckInCap, 1, '【App签到】', true, appCheckInNote)
   ];
 
   // 「将推荐转化为奖励」：官方每日卡片，需真实好友使用邀请链接才计分，脚本不执行但展示状态
@@ -1431,13 +1440,30 @@ export class TaskManager {
         }
       }
 
+      // App 签到以 DAPI promotions 为准（网页 bingapp 连签模型不会因 DAPI 签到而更新）
+      let dapiAppCheckIn = null;
+      try {
+        const session = readBrowserSession(account.id) || {};
+        if (session.tokens && session.tokens.accessToken) {
+          const dapiForCheckIn = new DapiClient(account, session.tokens, (refreshed) => {
+            try {
+              const s = readBrowserSession(account.id) || {};
+              writeBrowserSession(account.id, { ...s, tokens: refreshed });
+            } catch {}
+          });
+          const promotions = await dapiForCheckIn.fetchAppPromotions();
+          dapiAppCheckIn = getDapiCheckInStatus(promotions);
+        }
+      } catch {}
+
       const snapshotResult = buildOfficialTaskSnapshot({
         text: snapshot.text,
         sections: snapshot.sections,
         searchPoints,
         account,
         streaks: liveStreaks,
-        stamps: liveStamps
+        stamps: liveStamps,
+        options: { dapiAppCheckIn }
       });
       log(`实时任务判定: ${JSON.stringify(snapshotResult.details)}`);
       return snapshotResult;

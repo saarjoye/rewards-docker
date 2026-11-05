@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.8.31",
-  "description": "Microsoft Rewards 自动化平台 (v6.8.31 修复 Cookie 注入回归：__Host- 只传 url；丢弃已过期 expires，恢复 _U/.MSA.Auth 登录态)",
+  "version": "6.8.32",
+  "description": "Microsoft Rewards 自动化平台 (v6.8.32 App 签到对齐参考项目：SAAndroid 渠道 + offerid 提交；签到状态改以 DAPI promotions 为准，面板不再误显示 0/1)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {
