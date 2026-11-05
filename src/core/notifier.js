@@ -1,6 +1,7 @@
 import configManager, { SECRET_PLACEHOLDER } from '../config.js';
 import networkClient from '../network.js';
 import logger from '../logger.js';
+import { resolveWeworkMsgType } from '../contracts/notifyMessage.js';
 
 const WEWORK_DEFAULT_BASE_URL = 'https://qyapi.weixin.qq.com';
 const TOKEN_REFRESH_AHEAD_MS = 5 * 60 * 1000;
@@ -147,7 +148,8 @@ export class Notifier {
 
     // 消息类型可配置（notify.weworkApp.msgType）：
     //   textcard（默认，图文卡片，企业微信客户端渲染最好）| text（纯文本，任何客户端/微信插件都能显示）
-    const msgType = String(cfg.msgType || 'text').toLowerCase();
+    // 老配置里可能是 textcard（v6.8.26 写入的），会被自动迁移成 text，避免微信里漏出 HTML 标签
+    const msgType = resolveWeworkMsgType(cfg);
     const cleanTitle = title.replace(/[#*`>]/g, '').trim();
 
     let payload;

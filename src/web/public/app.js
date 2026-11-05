@@ -2393,6 +2393,7 @@ function initApp() {
           })(),
           toUser: document.getElementById("cfg-ww-touser")?.value.trim(),
           msgType: document.getElementById("cfg-ww-msgtype")?.value || "text",
+          msgTypeChosen: document.getElementById("cfg-ww-msgtype")?.value || "text",
           maxRetries: Number(document.getElementById("cfg-ww-retries")?.value) || 5
         }
       }

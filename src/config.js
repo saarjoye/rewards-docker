@@ -331,7 +331,8 @@ class ConfigManager {
       agentId: (weworkCfg.agentId || '').trim(),
       secret: (secret || '').trim(),
       toUser: (weworkCfg.toUser || '@all').trim(),
-      msgType: (weworkCfg.msgType === 'textcard' ? 'textcard' : 'text')
+      msgType: (weworkCfg.msgType === 'textcard' ? 'textcard' : 'text'),
+      msgTypeChosen: (weworkCfg.msgTypeChosen === 'textcard' || weworkCfg.msgTypeChosen === 'text') ? weworkCfg.msgTypeChosen : undefined
     };
     this.save();
     return this.config.notify.weworkApp;
