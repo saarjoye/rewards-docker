@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.8.32",
-  "description": "Microsoft Rewards 自动化平台 (v6.8.32 App 签到对齐参考项目：SAAndroid 渠道 + offerid 提交；签到状态改以 DAPI promotions 为准，面板不再误显示 0/1)",
+  "version": "6.8.33",
+  "description": "Microsoft Rewards 自动化平台 (v6.8.33 企业微信战报纯文本也保留「统计日期 + 平台署名」版式，且不含任何 HTML 标签)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {

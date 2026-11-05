@@ -152,11 +152,24 @@ export class Notifier {
 
     let payload;
     if (msgType === 'text') {
+      // 纯文本也要保留图文卡片那种版式（统计日期 + 平台署名），但不掺任何 HTML 标签，
+      // 这样企业微信、微信插件、转发链路都能正常显示，不会漏出 <div class="highlight">。
+      const dateLabel = new Date().toLocaleDateString('zh-CN');
+      const bodyLines = content
+        .split('\n')
+        .map((l) => l.replace(/\*\*/g, '').replace(/`/g, '').trimEnd())
+        .filter((l) => l.trim());
+      const textContent = [
+        `🎁 ${cleanTitle}`,
+        `统计日期: ${dateLabel}`,
+        ...bodyLines,
+        '🤖 Microsoft Rewards 自动化平台'
+      ].join('\n');
       payload = {
         touser: cfg.toUser || '@all',
         msgtype: 'text',
         agentid: Number(cfg.agentId),
-        text: { content: `🎁 ${cleanTitle}\n${content}` },
+        text: { content: textContent },
         enable_id_trans: 0,
         enable_duplicate_check: 0
       };
