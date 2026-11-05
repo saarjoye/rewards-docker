@@ -1,7 +1,7 @@
 import configManager, { SECRET_PLACEHOLDER } from '../config.js';
 import networkClient from '../network.js';
 import logger from '../logger.js';
-import { resolveWeworkMsgType } from '../contracts/notifyMessage.js';
+import { resolveWeworkMsgType, buildNewsDescription, truncateBytes } from '../contracts/notifyMessage.js';
 
 const WEWORK_DEFAULT_BASE_URL = 'https://qyapi.weixin.qq.com';
 const TOKEN_REFRESH_AHEAD_MS = 5 * 60 * 1000;
@@ -153,7 +153,32 @@ export class Notifier {
     const cleanTitle = title.replace(/[#*`>]/g, '').trim();
 
     let payload;
-    if (msgType === 'text') {
+    if (msgType === 'news') {
+      // news 图文消息：企业微信里是带标题的卡片（有「查看详情」），微信/转发里同样是卡片，
+      // 且不依赖任何 HTML 标签 → 不会漏出 <div class="highlight">。
+      const description = buildNewsDescription({
+        title: '',
+        dateLabel: new Date().toLocaleDateString('zh-CN'),
+        body: content,
+        maxBytes: 480
+      });
+      payload = {
+        touser: cfg.toUser || '@all',
+        msgtype: 'news',
+        agentid: Number(cfg.agentId),
+        news: {
+          articles: [
+            {
+              title: truncateBytes(`🎁 ${cleanTitle}`, 100),
+              description,
+              url: 'https://rewards.bing.com'
+            }
+          ]
+        },
+        enable_id_trans: 0,
+        enable_duplicate_check: 0
+      };
+    } else if (msgType === 'text') {
       // 纯文本也要保留图文卡片那种版式（统计日期 + 平台署名），但不掺任何 HTML 标签，
       // 这样企业微信、微信插件、转发链路都能正常显示，不会漏出 <div class="highlight">。
       const dateLabel = new Date().toLocaleDateString('zh-CN');
