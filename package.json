@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.8.30",
-  "description": "Microsoft Rewards 自动化平台 (v6.8.30 Cookie 注入兼容 __Host-/__Secure- 前缀（失败自动逐个自愈）；新增 24 小时脱敏诊断日志导出)",
+  "version": "6.8.31",
+  "description": "Microsoft Rewards 自动化平台 (v6.8.31 修复 Cookie 注入回归：__Host- 只传 url；丢弃已过期 expires，恢复 _U/.MSA.Auth 登录态)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {
