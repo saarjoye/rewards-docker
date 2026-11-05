@@ -1,14 +1,26 @@
 /**
- * Chromium/Playwright Cookie 注入兼容层。
+ * Chromium/Playwright Cookie 注入兼容层（v2 修复版）。
  *
- * 问题背景（参考项目 fix：兼容 __Host- / __Secure- 前缀 Cookie 注入）：
- *  - `__Host-` 前缀的 Cookie 必须满足：Secure、Path=/、且 **不允许带 Domain**（host-only）。
- *    直接把带 domain 的对象丢给 context.addCookies 会被 Chromium 拒绝（CDP 报错/静默丢弃）。
- *  - `__Secure-` 前缀必须 Secure，否则同样被丢弃。
- * 于是会出现"部分账号登录态注入失败 → 官网读到未登录/别的账号"这类诡异问题。
+ * 实测坑（2026-11-05，真实容器逐个验证）：
+ *  1) `__Host-` 前缀必须是 host-only —— 只能传 `url`。
+ *     **同时传 url 和 path 会被 Playwright 直接拒绝**
+ *     （报 "Cookie should have either url or path"），并导致整批注入失败。
+ *  2) Cookie 的 `expires` 若已过期，Chromium 会**静默丢弃**该 Cookie。
+ *     实测 `_U`、`.MSA.Auth` 就是这样丢的 → 官网变成"未登录空壳"，读不到连签/任务/今日积分。
+ *     因此过期时间要丢掉，按"会话 Cookie"注入。
  */
 
-export function normalizeCookieForInjection(cookie = {}) {
+const VALID_SAME_SITE = new Set(['Strict', 'Lax', 'None']);
+
+function normalizeSameSite(raw) {
+  const s = String(raw || '').toLowerCase();
+  if (s === 'strict') return 'Strict';
+  if (s === 'lax') return 'Lax';
+  if (s === 'none') return 'None';
+  return undefined;
+}
+
+export function normalizeCookieForInjection(cookie = {}, nowMs = Date.now()) {
   if (!cookie || !cookie.name) return null;
   const name = String(cookie.name);
   const value = String(cookie.value ?? '');
@@ -16,36 +28,37 @@ export function normalizeCookieForInjection(cookie = {}) {
   const isSecurePrefixed = name.startsWith('__Secure-');
   const domain = String(cookie.domain || '').trim();
   const path = String(cookie.path || '/') || '/';
-
-  let sameSite;
-  const rawSame = String(cookie.sameSite || '').toLowerCase();
-  if (rawSame === 'strict') sameSite = 'Strict';
-  else if (rawSame === 'lax') sameSite = 'Lax';
-  else if (rawSame === 'none') sameSite = 'None';
+  const sameSite = normalizeSameSite(cookie.sameSite);
 
   if (isHostPrefixed) {
     const host = domain.replace(/^\./, '');
-    if (!host) return null; // 没有域名无法构造 host-only Cookie
-    const out = { name, value, url: `https://${host}/`, path: '/', secure: true };
-    if (sameSite) out.sameSite = sameSite;
+    if (!host) return null;
+    // 只给 url：再给 path/domain 会被 Playwright 拒绝
+    const out = { name, value, url: `https://${host}/`, secure: true };
+    if (sameSite && VALID_SAME_SITE.has(sameSite)) out.sameSite = sameSite;
     return out;
   }
 
-  const out = { name, value, path };
-  if (domain) out.domain = domain;
+  if (!domain) return null; // 没有 domain 也没有 url 的 Cookie 无法注入
+
+  const out = { name, value, domain, path };
   out.secure = isSecurePrefixed ? true : cookie.secure === true;
-  if (sameSite) out.sameSite = sameSite;
+  if (sameSite && VALID_SAME_SITE.has(sameSite)) out.sameSite = sameSite;
+
+  // 只保留未来的过期时间；已过期 → 当作会话 Cookie，避免被静默丢弃
   const expires = Number(cookie.expires);
-  if (Number.isFinite(expires) && expires > 0) out.expires = expires;
+  if (Number.isFinite(expires) && expires > 0 && expires * 1000 > Number(nowMs)) {
+    out.expires = expires;
+  }
   if (cookie.httpOnly === true) out.httpOnly = true;
   return out;
 }
 
-export function normalizeCookiesForInjection(cookies = []) {
+export function normalizeCookiesForInjection(cookies = [], nowMs = Date.now()) {
   const out = [];
   const seen = new Set();
   for (const cookie of Array.isArray(cookies) ? cookies : []) {
-    const normalized = normalizeCookieForInjection(cookie);
+    const normalized = normalizeCookieForInjection(cookie, nowMs);
     if (!normalized) continue;
     const key = `${normalized.name}|${normalized.url || normalized.domain || ''}|${normalized.path || ''}`;
     if (seen.has(key)) continue;

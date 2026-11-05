@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import { normalizeCookieForInjection, normalizeCookiesForInjection } from '../src/contracts/cookieCompat.js';
 import { redactText, readRecentLogLines, buildDiagnosticsReport } from '../src/contracts/diagnostics.js';
 
-test('__Host- 前缀 Cookie 必须转成 host-only（无 domain、secure、path=/）', () => {
+test('__Host- 前缀 Cookie 必须转成 host-only（只给 url，不能再给 path）', () => {
   const out = normalizeCookieForInjection({ name: '__Host-Rewards', value: 'abc', domain: '.bing.com', path: '/x', secure: false });
   assert.equal(out.url, 'https://bing.com/');
   assert.equal(out.domain, undefined, '__Host- 不能带 domain，否则 Chromium 直接丢弃');
-  assert.equal(out.path, '/');
+  assert.equal(out.path, undefined, 'url 与 path 同时存在会被 Playwright 拒绝');
   assert.equal(out.secure, true);
 
   // 没有 domain 的 __Host- Cookie 只能丢弃（无法构造 host-only）
