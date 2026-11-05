@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.8.34",
-  "description": "Microsoft Rewards 自动化平台 (v6.8.34 修复旧配置 msgType=textcard 导致微信露 HTML：历史配置自动迁移为 text，用户显式选择才走 textcard)",
+  "version": "6.8.35",
+  "description": "Microsoft Rewards 自动化平台 (v6.8.35 企业微信战报默认改为 news 图文卡片：企业微信/微信都显示为卡片，不再露出 HTML 标签)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {
