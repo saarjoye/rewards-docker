@@ -92,41 +92,52 @@ export class DapiClient {
       const activityId = generateDapiActivityId();
 
       const payload = {
-        risk_context: {},
-        // 关键修复（对齐参考项目 v1.10.10）：新版 App 的签到按普通领取活动处理。
-        // type=103 仅触发"启动上报"，接口会返回 200，但连签 progress / last_updated 不会推进。
-        type: 101,
-        channel: 'SAIOS',
-        attributes: { offerid: 'Gamification_Sapphire_DailyCheckIn' },
-        id: activityId,
         amount: 1,
-        country: 'CN'
+        // DAPI 的 activity.id 官方客户端是 56 位十六进制（两段 UUID 拼接），
+        // 只给 32 位时接口返回 200，但连签类任务不会真正入账。
+        id: activityId,
+        // 新版 App 的签到按普通领取活动处理。type=103 仅触发启动上报，
+        // 接口会返回 200，但连签 progress / last_updated 不会推进。
+        type: 101,
+        country: 'CN',
+        // 关键：必须用 Android 渠道（SAAndroid）+ App 的 UA/AppId，
+        // 用 iOS 渠道（SAiOS）时接口同样返回 200、也会加通用积分，
+        // 但「必应应用连续打卡」的连签进度不会推进（实测 0/1 不动）。
+        channel: 'SAAndroid',
+        attributes: { offerid: 'Gamification_Sapphire_DailyCheckIn' }
       };
 
       const res = await networkClient.request({
         url: `${DAPI_CONFIG.endpoint}/activities`,
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json',
-          'Accept': '*/*',
-          'User-Agent': 'Mozilla/5.0 (iPad; CPU iPad OS 26_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Mobile/15E148 Safari/605.1.15 BingSapphire/33.4.440603001',
-          'X-Rewards-AppId': 'SAIOS/33.4.440603001',
-          'X-Rewards-PartnerId': 'startapp',
-          'X-Rewards-Country': 'CN',
-          'X-Rewards-Language': 'zh-hans',
-          'X-Rewards-Flights': 'rwgobig',
-          'X-Rewards-IsMobile': 'true'
+          'content-type': 'application/json; charset=UTF-8',
+          'user-agent': USER_AGENTS.app,
+          'authorization': `Bearer ${token}`,
+          'x-rewards-appid': DAPI_CONFIG.rewardsAppId,
+          'x-rewards-ismobile': 'true',
+          'x-rewards-country': 'cn',
+          'x-rewards-language': 'zh',
+          'x-rewards-partnerid': 'startapp',
+          'x-rewards-flights': 'rwgobig'
         },
         data: JSON.stringify(payload),
         proxy: this.account.proxy
       });
 
       if (res && res.code === 0) {
-        const gained = res.response?.activity?.p ?? res.response?.creditedPoints ?? 0;
+        const gained = Number(res.response?.activity?.p ?? res.response?.activity?.points ?? res.response?.creditedPoints ?? 0);
         const newBalance = res.response?.balance ?? null;
-        logger.log('✅', `必应移动端签到成功！本次入账: +${gained} 分${newBalance ? `，最新余额: ${newBalance} 分` : ''}，官网已点亮 [签到: 1/1]！`, '', this.account.name);
-        return { success: true, gained, balance: newBalance };
+        const isDuplicate = !!res.response?.isDuplicate;
+        // 只有"真的加了分"或"服务端明确说不重复"才算签上；不再无脑宣称已点亮
+        if (gained > 0) {
+          logger.log('✅', `必应移动端签到成功！本次入账: +${gained} 分${newBalance ? `，最新余额: ${newBalance} 分` : ''}`, '', this.account.name);
+        } else if (isDuplicate) {
+          logger.log('📱', `必应移动端今日已签到（服务端标记重复，余额 ${newBalance ?? '-'} 分）`, '', this.account.name);
+        } else {
+          logger.log('📱', `必应移动端签到已提交，服务端本次未加分（余额 ${newBalance ?? '-'} 分），留待官网连签核验`, '', this.account.name);
+        }
+        return { success: gained > 0 || isDuplicate, gained, balance: newBalance, isDuplicate };
       }
     } catch (e) {
       logger.log('⚠️', `Sapphire 移动端直连签到异常: ${e.message}，尝试备用候选通道...`, '', this.account.name);
@@ -148,6 +159,36 @@ export class DapiClient {
 
     logger.log('⚠️', '必应移动端签到未能在当前轮次点亮 (可等待稍后重试或确认移动 Token)', '', this.account.name);
     return { success: false };
+  }
+
+  /**
+   * 读取 App 端 promotions（签到 / 阅读 / sapphire 活动的唯一权威来源）。
+   * 注意：官方网页 /earn 的 bingapp 连签模型不会因为 DAPI 签到而更新，
+   * 判断"今天是否已签到"必须以这里的 last_updated / complete 为准。
+   */
+  async fetchAppPromotions() {
+    try {
+      const token = await this.getValidToken();
+      const res = await networkClient.request({
+        url: `${DAPI_CONFIG.endpoint}?channel=SAAndroid&options=613`,
+        method: 'GET',
+        headers: {
+          'content-type': 'application/json; charset=UTF-8',
+          'user-agent': USER_AGENTS.app,
+          'authorization': `Bearer ${token}`,
+          'x-rewards-appid': DAPI_CONFIG.rewardsAppId,
+          'x-rewards-ismobile': 'true',
+          'x-rewards-country': 'cn',
+          'x-rewards-language': 'zh'
+        },
+        proxy: this.account.proxy
+      });
+      const data = typeof res === 'string' ? JSON.parse(res) : res;
+      const promotions = data?.response?.promotions;
+      return Array.isArray(promotions) ? promotions : [];
+    } catch {
+      return [];
+    }
   }
 
   /**
