@@ -1,7 +1,7 @@
 import configManager, { SECRET_PLACEHOLDER } from '../config.js';
 import networkClient from '../network.js';
 import logger from '../logger.js';
-import { resolveWeworkMsgType, buildNewsDescription, truncateBytes } from '../contracts/notifyMessage.js';
+import { resolveWeworkMsgType, buildNewsDescription, buildTextCardDescription, buildTextContent, truncateBytes } from '../contracts/notifyMessage.js';
 
 const WEWORK_DEFAULT_BASE_URL = 'https://qyapi.weixin.qq.com';
 const TOKEN_REFRESH_AHEAD_MS = 5 * 60 * 1000;
@@ -179,19 +179,12 @@ export class Notifier {
         enable_duplicate_check: 0
       };
     } else if (msgType === 'text') {
-      // 纯文本也要保留图文卡片那种版式（统计日期 + 平台署名），但不掺任何 HTML 标签，
-      // 这样企业微信、微信插件、转发链路都能正常显示，不会漏出 <div class="highlight">。
-      const dateLabel = new Date().toLocaleDateString('zh-CN');
-      const bodyLines = content
-        .split('\n')
-        .map((l) => l.replace(/\*\*/g, '').replace(/`/g, '').trimEnd())
-        .filter((l) => l.trim());
-      const textContent = [
-        `🎁 ${cleanTitle}`,
-        `统计日期: ${dateLabel}`,
-        ...bodyLines,
-        '🤖 Microsoft Rewards 自动化平台'
-      ].join('\n');
+      // 纯文本：保留卡片那套版式（统计日期 + 平台署名），但不掺任何 HTML 标签
+      const textContent = buildTextContent({
+        title: cleanTitle,
+        dateLabel: new Date().toLocaleDateString('zh-CN'),
+        body: content
+      });
       payload = {
         touser: cfg.toUser || '@all',
         msgtype: 'text',
@@ -201,20 +194,16 @@ export class Notifier {
         enable_duplicate_check: 0
       };
     } else {
-      // textcard：企业微信要求的 HTML 三段式（gray / normal / highlight）
-      const plainLines = content.split('\n')
-        .map((l) => l.replace(/^[>\s*#]+/, '').replace(/\*\*/g, '').replace(/`/g, '').replace(/>/g, '').trim())
-        .filter(Boolean);
-      const cardDescription = plainLines.map((l) => '<div class="normal">' + l + '</div>').join('');
+      // textcard：企业微信图文卡片（不带头像的灰色卡片，视觉效果最好）。
+      // 只用 gray / normal 两种 class —— `highlight` 在部分客户端会原样漏出标签文字。
+      const dateLabel = new Date().toLocaleDateString('zh-CN');
       payload = {
         touser: cfg.toUser || '@all',
         msgtype: 'textcard',
         agentid: Number(cfg.agentId),
         textcard: {
           title: '🎁 ' + cleanTitle,
-          description: '<div class="gray">统计日期: ' + new Date().toLocaleDateString('zh-CN') + '</div>'
-            + cardDescription
-            + '<div class="highlight">🤖 Microsoft Rewards 自动化平台</div>',
+          description: buildTextCardDescription({ dateLabel, body: content }),
           url: 'https://rewards.bing.com',
           btntxt: '查看详情'
         },
@@ -248,6 +237,35 @@ export class Notifier {
     }
 
     if (!data || Number(data.errcode) !== 0) {
+      // 卡片发不出去时降级成纯文本，保证战报不丢（不同企业/客户端对 textcard 的权限不一致）
+      if (payload.msgtype === 'textcard') {
+        logger.log('⚠️', `图文卡片推送失败(${data?.errmsg || '未知'})，自动降级为纯文本重试...`);
+        const fallback = {
+          touser: cfg.toUser || '@all',
+          msgtype: 'text',
+          agentid: Number(cfg.agentId),
+          text: {
+            content: buildTextContent({
+              title: cleanTitle,
+              dateLabel: new Date().toLocaleDateString('zh-CN'),
+              body: content
+            })
+          },
+          enable_id_trans: 0,
+          enable_duplicate_check: 0
+        };
+        const fbRes = await networkClient.request({
+          url: sendUrl,
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          data: JSON.stringify(fallback)
+        });
+        const fbData = typeof fbRes === 'string' ? JSON.parse(fbRes) : fbRes;
+        if (fbData && Number(fbData.errcode) === 0) {
+          logger.log('📢', `「企业微信应用」消息推送成功（纯文本降级）！(反代: ${baseUrl})`);
+          return true;
+        }
+      }
       throw new Error(`企业微信应用消息发送失败: ${data?.errmsg || '网络或参数异常'}`);
     }
 

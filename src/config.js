@@ -94,7 +94,7 @@ const DEFAULT_CONFIG = {
       agentId: '',
       secret: '',
       toUser: '@all',
-      msgType: 'news' // news(图文消息卡片，默认：企业微信/微信都显示为卡片) | text(纯文本) | textcard(仅原生企业微信客户端正常)
+      msgType: 'textcard' // textcard(图文卡片，默认：不带头像的灰色卡片) | news(图文消息) | text(纯文本)
     }
   },
   dailyCounters: { date: '', values: {} },
@@ -331,7 +331,7 @@ class ConfigManager {
       agentId: (weworkCfg.agentId || '').trim(),
       secret: (secret || '').trim(),
       toUser: (weworkCfg.toUser || '@all').trim(),
-      msgType: (weworkCfg.msgType === 'textcard' ? 'textcard' : (weworkCfg.msgType === 'text' ? 'text' : 'news')),
+      msgType: (['textcard', 'news', 'text'].includes(weworkCfg.msgType) ? weworkCfg.msgType : 'textcard'),
       msgTypeChosen: ['news', 'text', 'textcard'].includes(weworkCfg.msgTypeChosen) ? weworkCfg.msgTypeChosen : undefined
     };
     this.save();
