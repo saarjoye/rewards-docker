@@ -1173,7 +1173,7 @@ export class TaskManager {
                 : (verifiedOfficialTasks.hasUnknown
                   ? '部分官网任务状态未知，未知项未执行'
                   : (verifiedOfficialTasks.hasWork
-                    ? '官网任务仍有未完成项，已执行剩余任务扫描'
+                    ? '官网任务仍有未完成项'
                     : '官网任务已全部完成'));
 
               finalData.officialTasks = verifiedOfficialTasks;
@@ -1272,9 +1272,9 @@ export class TaskManager {
                 claimPoints,
                 runDelta: taskHarvestedPoints || 0
               });
-              const settlementStatusText = harvestReport.claimAmount > 0
-                ? `${remainingText} · 收割 +${harvestReport.claimAmount} 分${harvestReport.runPoints > 0 ? `（其中任务积分 +${harvestReport.runPoints} 分）` : ''}`
-                : remainingText;
+              // 执行状态只描述「任务是否做完」；收割 / 任务积分已由「本次收割」「今日已增」两行体现，
+              // 不再把明细塞进状态行（用户要求：显示「仍有未完成项」即可）
+              const settlementStatusText = remainingText;
 
               log(`🎉 账号 [${account.name}] 任务对账完成：今日积分 ${postToday === null ? '未确认' : postToday + ' 分'}，可用余额 ${postBalance === null ? '未确认' : postBalance + ' 分'}，连签 ${finalData.streakDays || 0} 天`);
               notifier.sendSettlementReport(account, {

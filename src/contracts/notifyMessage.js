@@ -15,6 +15,9 @@
 
 export const WEWORK_MSG_TYPES = ['textcard', 'news', 'text'];
 
+/** 平台署名：统一放在消息标题里（🎁 … · 🤖 自动化平台） */
+export const PLATFORM_SIGNATURE = '🤖 自动化平台';
+
 /** 按字节安全截断（不切断多字节字符）。企业微信 textcard/news 的 description 上限 512 字节 */
 export function truncateBytes(text = '', maxBytes = 480) {
   const str = String(text || '');

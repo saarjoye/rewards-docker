@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.8.38",
-  "description": "Microsoft Rewards 自动化平台 (v6.8.38 企业微信 textcard 卡片优先保留「平台署名」行，正文过长时自动缩短中间行而非丢尾行)",
+  "version": "6.8.39",
+  "description": "Microsoft Rewards 自动化平台 (v6.8.39 战报标题改为「… - 账号 · 🤖 自动化平台」，执行状态只显示任务是否做完)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {
