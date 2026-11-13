@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.8.35",
-  "description": "Microsoft Rewards 自动化平台 (v6.8.35 企业微信战报默认改为 news 图文卡片：企业微信/微信都显示为卡片，不再露出 HTML 标签)",
+  "version": "6.8.36",
+  "description": "Microsoft Rewards 自动化平台 (v6.8.36 企业微信战报默认回到 textcard 图文卡片，且彻底移除 highlight class——不再漏出 HTML 标签；推送失败自动降级纯文本)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {

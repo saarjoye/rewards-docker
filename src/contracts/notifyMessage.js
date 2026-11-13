@@ -1,17 +1,21 @@
 /**
- * 企业微信应用消息类型解析（含历史配置迁移）。
+ * 企业微信应用消息类型解析 + 各类消息体构造。
  *
- * 背景：v6.8.26 的 updateNotifyConfig 会把 `msgType: 'textcard'` 写进 config.json，
- * 之后即使在代码里改了默认值，**已保存的旧配置**依然会让消息走 textcard，
- * 于是在微信/插件里露出 `<div class="highlight">` 这类标签。
+ * 样式约定（2026-11-13 按用户确认定稿）：
+ *   默认用 `textcard`（图文卡片）：在企业微信里是不带头像的灰色卡片，
+ *   标题一行、正文多行，视觉效果最好——这正是用户要求的样式。
  *
- * 现在默认走 `news`（图文消息卡片）：企业微信里是带标题的卡片，微信里也显示为卡片，
- * 且完全不依赖 HTML 标签，不会漏标签。
+ * 但 textcard 的 description 是 HTML，客户端对 class 的支持并不一致：
+ *   实测 `div.gray` / `div.normal` 渲染正常，唯独 `div.highlight`
+ *   在部分客户端（微信插件 / 中转链路）会**原样漏出**
+ *   `<div class="highlight">` 这串标签文字。
+ *   因此这里彻底不用 `highlight`，平台署名改用 `normal`，
+ *   既保留卡片外观，又不会漏标签。
  */
 
-export const WEWORK_MSG_TYPES = ['news', 'text', 'textcard'];
+export const WEWORK_MSG_TYPES = ['textcard', 'news', 'text'];
 
-/** 按字节安全截断（不切断多字节字符）。企业微信 news 的 description 上限 512 字节 */
+/** 按字节安全截断（不切断多字节字符）。企业微信 textcard/news 的 description 上限 512 字节 */
 export function truncateBytes(text = '', maxBytes = 480) {
   const str = String(text || '');
   const buf = Buffer.from(str, 'utf8');
@@ -21,13 +25,26 @@ export function truncateBytes(text = '', maxBytes = 480) {
   return `${buf.subarray(0, end).toString('utf8').replace(/[\s·]+$/, '')}…`;
 }
 
+/** HTML 转义，避免正文里混入的 < > & 破坏卡片结构 */
+export function escapeHtml(text = '') {
+  return String(text || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 export function resolveWeworkMsgType(weworkApp = {}) {
   const chosen = String(weworkApp?.msgTypeChosen || '').toLowerCase().trim();
   if (chosen === 'textcard') return 'textcard';
-  if (chosen === 'text') return 'text';
   if (chosen === 'news') return 'news';
-  // 没有任何显式选择 → 默认用 news 卡片（老配置里的 textcard/text 都会升级到 news）
-  return 'news';
+  if (chosen === 'text') return 'text';
+  const configured = String(weworkApp?.msgType || '').toLowerCase().trim();
+  if (configured === 'news' || configured === 'text' || configured === 'textcard') {
+    // 没有显式选择标记的历史配置：统一回到 textcard 卡片样式
+    return 'textcard';
+  }
+  return 'textcard';
 }
 
 /** 判断配置是否是被历史版本写入的 textcard（用于日志提示） */
@@ -37,7 +54,38 @@ export function isLegacyTextcardConfig(weworkApp = {}) {
   return !chosen && configured === 'textcard';
 }
 
-/** 构造 news 卡片的 description：标题行 + 统计日期 + 正文 + 平台署名，按字节截断 */
+/** 把战报正文拆成干净的单行数组（去掉 Markdown 符号与裸 HTML） */
+export function splitReportLines(body = '') {
+  return String(body || '')
+    .split('\n')
+    .map((line) => line
+      .replace(/<[^>]*>/g, '')
+      .replace(/^[>\s*#]+/, '')
+      .replace(/\*\*/g, '')
+      .replace(/`/g, '')
+      .trim())
+    .filter(Boolean);
+}
+
+/**
+ * 构造 textcard 的 description：只使用 gray / normal 两种 class，绝不使用 highlight。
+ */
+export function buildTextCardDescription({
+  dateLabel = '',
+  body = '',
+  footer = '🤖 Microsoft Rewards 自动化平台',
+  maxBytes = 480
+} = {}) {
+  const parts = [];
+  if (dateLabel) parts.push(`<div class="gray">统计日期: ${escapeHtml(dateLabel)}</div>`);
+  for (const line of splitReportLines(body)) {
+    parts.push(`<div class="normal">${escapeHtml(line)}</div>`);
+  }
+  if (footer) parts.push(`<div class="normal">${escapeHtml(footer)}</div>`);
+  return truncateBytes(parts.join(''), maxBytes);
+}
+
+/** 构造 news 卡片的 description（纯文本版式，无 HTML） */
 export function buildNewsDescription({
   title = '',
   dateLabel = '',
@@ -48,8 +96,18 @@ export function buildNewsDescription({
   const lines = [
     title ? `🎁 ${title}` : '',
     dateLabel ? `统计日期: ${dateLabel}` : '',
-    String(body || '').trimEnd(),
+    ...splitReportLines(body),
     footer
-  ].filter((line) => line && line.trim());
+  ].filter((line) => line && String(line).trim());
   return truncateBytes(lines.join('\n'), maxBytes);
+}
+
+/** 构造纯文本消息正文（保留卡片那套版式） */
+export function buildTextContent({ title = '', dateLabel = '', body = '', footer = '🤖 Microsoft Rewards 自动化平台' } = {}) {
+  return [
+    title ? `🎁 ${title}` : '',
+    dateLabel ? `统计日期: ${dateLabel}` : '',
+    ...splitReportLines(body),
+    footer
+  ].filter((line) => line && String(line).trim()).join('\n');
 }
