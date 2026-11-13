@@ -36,11 +36,11 @@ test('textcard 描述只使用 gray/normal，绝不含 highlight（否则客户�
   assert.ok(!/[<>]/.test(stripped), '除卡片自身标签外不能出现裸 < >');
 });
 
-test('超长正文截断时绝不留未闭合标签（这是漏出 <div class="normal"> 的真凶）', () => {
+test('超长正文截断时绝不留未闭合标签，且平台署名必须保留', () => {
   const longBody = Array.from({ length: 20 }, (_, i) => `第 ${i + 1} 行：这是一段比较长的战报说明文字`).join('\n');
-  const desc = buildTextCardDescription({ dateLabel: '2026/11/13', body: longBody, maxBytes: 480 });
-  assert.ok(Buffer.byteLength(desc, 'utf8') <= 480, '总字节数不能超限');
-  assert.ok(desc.endsWith('</div>'), '必须以完整闭合标签结尾');
+  const desc = buildTextCardDescription({ dateLabel: '2026/11/13', body: longBody, maxBytes: 500 });
+  assert.ok(Buffer.byteLength(desc, 'utf8') <= 500, '总字节数不能超限');
+  assert.ok(desc.endsWith('🤖 Microsoft Rewards 自动化平台</div>'), '平台署名不能被挤掉');
   const opens = (desc.match(/<div class="(?:gray|normal)">/g) || []).length;
   const closes = (desc.match(/<\/div>/g) || []).length;
   assert.equal(opens, closes, 'div 必须成对，不能出现未闭合标签');

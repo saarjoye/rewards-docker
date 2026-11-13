@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.8.37",
-  "description": "Microsoft Rewards 自动化平台 (v6.8.37 修复 textcard 描述被截断导致 div 未闭合、客户端漏出 HTML 标签的问题)",
+  "version": "6.8.38",
+  "description": "Microsoft Rewards 自动化平台 (v6.8.38 企业微信 textcard 卡片优先保留「平台署名」行，正文过长时自动缩短中间行而非丢尾行)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {
