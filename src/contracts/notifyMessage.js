@@ -74,21 +74,26 @@ export function buildTextCardDescription({
   dateLabel = '',
   body = '',
   footer = '🤖 Microsoft Rewards 自动化平台',
-  maxBytes = 480
+  maxBytes = 500
 } = {}) {
+  const wrap = (cls, text) => `<div class="${cls}">${escapeHtml(text)}</div>`;
+  const bytes = (s) => Buffer.byteLength(s, 'utf8');
+
+  // 平台署名（footer）优先保留：先给它留出空间，再用剩余预算装正文，
+  // 否则正文一长，末尾的「🤖 Microsoft Rewards 自动化平台」就会被挤掉。
+  const footerHtml = footer ? wrap('normal', footer) : '';
+  const footerBytes = bytes(footerHtml);
+  const budget = Math.max(0, maxBytes - footerBytes);
+
   const entries = [];
   if (dateLabel) entries.push({ cls: 'gray', text: `统计日期: ${dateLabel}` });
   for (const line of splitReportLines(body)) entries.push({ cls: 'normal', text: line });
-  if (footer) entries.push({ cls: 'normal', text: footer });
-
-  const wrap = (cls, text) => `<div class="${cls}">${escapeHtml(text)}</div>`;
-  const bytes = (s) => Buffer.byteLength(s, 'utf8');
 
   const parts = [];
   let used = 0;
   for (const entry of entries) {
     const full = wrap(entry.cls, entry.text);
-    if (used + bytes(full) <= maxBytes) {
+    if (used + bytes(full) <= budget) {
       parts.push(full);
       used += bytes(full);
       continue;
@@ -97,17 +102,17 @@ export function buildTextCardDescription({
     // 否则 description 末尾会出现未闭合的 <div class="normal">，客户端会把它当文字显示出来。
     const wrapperBytes = bytes(wrap(entry.cls, ''));
     const ellipsisBytes = bytes('…');
-    const budget = maxBytes - used - wrapperBytes - ellipsisBytes;
-    if (budget > 6) {
-      // 逐字回退，确保转义后（& → &amp;）也不超限
+    const textBudget = budget - used - wrapperBytes - ellipsisBytes;
+    if (textBudget > 6) {
       let text = entry.text;
-      while (text.length > 0 && bytes(escapeHtml(text)) > budget) {
+      while (text.length > 0 && bytes(escapeHtml(text)) > textBudget) {
         text = text.slice(0, -1);
       }
       if (text) parts.push(wrap(entry.cls, `${text}…`));
     }
     break;
   }
+  if (footerHtml) parts.push(footerHtml);
   return parts.join('');
 }
 
