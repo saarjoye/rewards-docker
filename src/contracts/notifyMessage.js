@@ -76,13 +76,39 @@ export function buildTextCardDescription({
   footer = '🤖 Microsoft Rewards 自动化平台',
   maxBytes = 480
 } = {}) {
+  const entries = [];
+  if (dateLabel) entries.push({ cls: 'gray', text: `统计日期: ${dateLabel}` });
+  for (const line of splitReportLines(body)) entries.push({ cls: 'normal', text: line });
+  if (footer) entries.push({ cls: 'normal', text: footer });
+
+  const wrap = (cls, text) => `<div class="${cls}">${escapeHtml(text)}</div>`;
+  const bytes = (s) => Buffer.byteLength(s, 'utf8');
+
   const parts = [];
-  if (dateLabel) parts.push(`<div class="gray">统计日期: ${escapeHtml(dateLabel)}</div>`);
-  for (const line of splitReportLines(body)) {
-    parts.push(`<div class="normal">${escapeHtml(line)}</div>`);
+  let used = 0;
+  for (const entry of entries) {
+    const full = wrap(entry.cls, entry.text);
+    if (used + bytes(full) <= maxBytes) {
+      parts.push(full);
+      used += bytes(full);
+      continue;
+    }
+    // 放不下整行：把这一行的文字截短，但**必须保留完整的 </div>**，
+    // 否则 description 末尾会出现未闭合的 <div class="normal">，客户端会把它当文字显示出来。
+    const wrapperBytes = bytes(wrap(entry.cls, ''));
+    const ellipsisBytes = bytes('…');
+    const budget = maxBytes - used - wrapperBytes - ellipsisBytes;
+    if (budget > 6) {
+      // 逐字回退，确保转义后（& → &amp;）也不超限
+      let text = entry.text;
+      while (text.length > 0 && bytes(escapeHtml(text)) > budget) {
+        text = text.slice(0, -1);
+      }
+      if (text) parts.push(wrap(entry.cls, `${text}…`));
+    }
+    break;
   }
-  if (footer) parts.push(`<div class="normal">${escapeHtml(footer)}</div>`);
-  return truncateBytes(parts.join(''), maxBytes);
+  return parts.join('');
 }
 
 /** 构造 news 卡片的 description（纯文本版式，无 HTML） */
