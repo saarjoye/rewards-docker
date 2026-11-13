@@ -1,7 +1,7 @@
 import configManager, { SECRET_PLACEHOLDER } from '../config.js';
 import networkClient from '../network.js';
 import logger from '../logger.js';
-import { resolveWeworkMsgType, buildNewsDescription, buildTextCardDescription, buildTextContent, truncateBytes } from '../contracts/notifyMessage.js';
+import { resolveWeworkMsgType, buildNewsDescription, buildTextCardDescription, buildTextContent, truncateBytes, PLATFORM_SIGNATURE } from '../contracts/notifyMessage.js';
 
 const WEWORK_DEFAULT_BASE_URL = 'https://qyapi.weixin.qq.com';
 const TOKEN_REFRESH_AHEAD_MS = 5 * 60 * 1000;
@@ -147,21 +147,17 @@ export class Notifier {
     let token = await this.getAccessToken(cfg);
 
     // 消息类型可配置（notify.weworkApp.msgType）：
-    //   textcard（默认，图文卡片，企业微信客户端渲染最好）| text（纯文本，任何客户端/微信插件都能显示）
-    // 老配置里可能是 textcard（v6.8.26 写入的），会被自动迁移成 text，避免微信里漏出 HTML 标签
+    //   textcard（默认，图文卡片，企业微信客户端渲染最好）| news（图文消息）| text（纯文本）
     const msgType = resolveWeworkMsgType(cfg);
     const cleanTitle = title.replace(/[#*`>]/g, '').trim();
+    // 平台署名统一放在标题里：`🎁 Rewards 每日对账战报 - 186 · 🤖 自动化平台`
+    // 这样正文可以把空间全部留给战报内容（也避免正文超长时署名被挤掉）。
+    const displayTitle = `🎁 ${cleanTitle} · ${PLATFORM_SIGNATURE}`;
+    const dateLabel = new Date().toLocaleDateString('zh-CN');
 
     let payload;
     if (msgType === 'news') {
-      // news 图文消息：企业微信里是带标题的卡片（有「查看详情」），微信/转发里同样是卡片，
-      // 且不依赖任何 HTML 标签 → 不会漏出 <div class="highlight">。
-      const description = buildNewsDescription({
-        title: '',
-        dateLabel: new Date().toLocaleDateString('zh-CN'),
-        body: content,
-        maxBytes: 480
-      });
+      // news 图文消息：带标题与「查看详情」的卡片，不依赖任何 HTML 标签
       payload = {
         touser: cfg.toUser || '@all',
         msgtype: 'news',
@@ -169,8 +165,8 @@ export class Notifier {
         news: {
           articles: [
             {
-              title: truncateBytes(`🎁 ${cleanTitle}`, 100),
-              description,
+              title: truncateBytes(displayTitle, 120),
+              description: buildNewsDescription({ dateLabel, body: content, footer: '' }),
               url: 'https://rewards.bing.com'
             }
           ]
@@ -179,11 +175,12 @@ export class Notifier {
         enable_duplicate_check: 0
       };
     } else if (msgType === 'text') {
-      // 纯文本：保留卡片那套版式（统计日期 + 平台署名），但不掺任何 HTML 标签
+      // 纯文本：同样版式（标题含署名），但不掺任何 HTML 标签
       const textContent = buildTextContent({
-        title: cleanTitle,
-        dateLabel: new Date().toLocaleDateString('zh-CN'),
-        body: content
+        title: `${cleanTitle} · ${PLATFORM_SIGNATURE}`,
+        dateLabel,
+        body: content,
+        footer: ''
       });
       payload = {
         touser: cfg.toUser || '@all',
@@ -195,15 +192,14 @@ export class Notifier {
       };
     } else {
       // textcard：企业微信图文卡片（不带头像的灰色卡片，视觉效果最好）。
-      // 只用 gray / normal 两种 class —— `highlight` 在部分客户端会原样漏出标签文字。
-      const dateLabel = new Date().toLocaleDateString('zh-CN');
+      // 只用 gray / normal 两种 class；署名已放在标题，正文不再重复。
       payload = {
         touser: cfg.toUser || '@all',
         msgtype: 'textcard',
         agentid: Number(cfg.agentId),
         textcard: {
-          title: '🎁 ' + cleanTitle,
-          description: buildTextCardDescription({ dateLabel, body: content }),
+          title: truncateBytes(displayTitle, 120),
+          description: buildTextCardDescription({ dateLabel, body: content, footer: '' }),
           url: 'https://rewards.bing.com',
           btntxt: '查看详情'
         },
