@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.8.39",
-  "description": "Microsoft Rewards 自动化平台 (v6.8.39 战报标题改为「… - 账号 · 🤖 自动化平台」，执行状态只显示任务是否做完)",
+  "version": "6.8.40",
+  "description": "Microsoft Rewards 自动化平台 (v6.8.40 Token 续期加冷却与单次提示：网络超时时不再连打 4 轮续期，App 签到优雅跳过)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {

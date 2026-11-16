@@ -2,12 +2,31 @@ import crypto from 'crypto';
 import networkClient from '../network.js';
 import { USER_AGENTS, refreshAccessToken } from './auth.js';
 import logger from '../logger.js';
+import {
+  DEFAULT_REFRESH_COOLDOWN_MS,
+  shouldAttemptRefresh,
+  markRefreshFailure,
+  markRefreshNotified,
+  markRefreshSuccess,
+  describeRefreshCooldown
+} from '../contracts/tokenRefreshGuard.js';
 
 export const DAPI_CONFIG = {
   rewardsAppId: 'SAAndroid/32.6.2110003560',
   channel: 'SAAndroid',
   endpoint: 'https://prod.rewardsplatform.microsoft.com/dapi/me'
 };
+
+/** 每个账号的续期状态（冷却 + 是否已提示），避免网络抖动时反复续期刷屏 */
+const tokenRefreshState = new Map();
+
+function refreshStateKey(account) {
+  return String(account?.id || account?.name || 'default');
+}
+
+export function __resetTokenRefreshState() {
+  tokenRefreshState.clear();
+}
 
 export function generateDapiActivityId() {
   const u1 = crypto.randomUUID().replace(/-/g, '').toUpperCase();
@@ -26,19 +45,44 @@ export class DapiClient {
     if (!this.tokens || !this.tokens.accessToken) {
       throw new Error('未配置移动端 Access Token，需先执行自主登录换取');
     }
+    this.refreshBlocked = false;
+    this.refreshBlockReason = '';
 
     // 检查 Token 是否在 5 分钟内过期
     const isExpired = this.tokens.obtainedAt && this.tokens.expiresIn &&
       (Date.now() - this.tokens.obtainedAt > (this.tokens.expiresIn - 300) * 1000);
 
     if (isExpired && this.tokens.refreshToken) {
-      logger.log('🔄', `Access Token 即将过期，使用 Refresh Token 自动续期...`, '', this.account.name);
+      const key = refreshStateKey(this.account);
+      const cooldownMs = Number(this.account?.tokenRefreshCooldownMs) || DEFAULT_REFRESH_COOLDOWN_MS;
+      const guard = shouldAttemptRefresh(tokenRefreshState.get(key), Date.now(), cooldownMs);
+
+      if (!guard.allowed) {
+        // 冷却中：只提示一次，直接拿旧 Token 继续（外层拿到 401 会优雅退出）
+        if (guard.notify) {
+          tokenRefreshState.set(key, markRefreshNotified(tokenRefreshState.get(key)));
+          logger.log('⏭️', describeRefreshCooldown(tokenRefreshState.get(key) || {}, guard.remainingMs), '', this.account.name);
+        }
+        this.refreshBlocked = true;
+        this.refreshBlockReason = guard.kind || 'unknown';
+        return this.tokens.accessToken;
+      }
+
+      logger.log('🔄', 'Access Token 即将过期，使用 Refresh Token 自动续期...', '', this.account.name);
       try {
         const refreshed = await refreshAccessToken(this.tokens.refreshToken, this.account.proxy);
         this.tokens = refreshed;
+        tokenRefreshState.set(key, markRefreshSuccess());
         if (this.onTokenRefresh) this.onTokenRefresh(refreshed);
       } catch (e) {
-        logger.log('⚠️', `Token 续期失败，尝试使用当前 Token 继续: ${e.message}`, '', this.account.name);
+        const failed = markRefreshFailure(tokenRefreshState.get(key), Date.now(), e.message);
+        tokenRefreshState.set(key, markRefreshNotified(failed));
+        this.refreshBlocked = true;
+        this.refreshBlockReason = failed.kind;
+        const hint = failed.kind === 'network'
+          ? '网络超时（检查该设备的代理 / 出网是否可访问令牌接口）'
+          : (failed.kind === 'auth' ? '刷新凭据已失效，需要重新登录账号' : '未知原因');
+        logger.log('⚠️', `Token 续期失败：${hint}；已暂停续期 10 分钟，本轮先跳过 App 相关任务`, '', this.account.name);
       }
     }
 
@@ -140,6 +184,12 @@ export class DapiClient {
         return { success: gained > 0 || isDuplicate, gained, balance: newBalance, isDuplicate };
       }
     } catch (e) {
+      const isAuthError = /HTTP 401|401/.test(String(e.message || ''));
+      if (isAuthError && this.refreshBlocked) {
+        // 续期已被限流/失败：再打备用通道也是同样的 401，直接优雅退出，避免无意义请求与刷屏
+        logger.log('⏭️', '本轮 App 签到跳过：Token 不可用且续期已暂停（等网络/凭据恢复后自动继续）', '', this.account.name);
+        return { success: false, skipped: 'token-unavailable', reason: this.refreshBlockReason || 'unknown' };
+      }
       logger.log('⚠️', `Sapphire 移动端直连签到异常: ${e.message}，尝试备用候选通道...`, '', this.account.name);
     }
 
@@ -154,7 +204,10 @@ export class DapiClient {
         const res = await this.submitActivity(offerId);
         logger.log('✅', `必应移动端签到备用通道成功 (${offerId})！`, '', this.account.name);
         return { success: true };
-      } catch (e) {}
+      } catch (e) {
+        // 401 = Token 问题，换 offerId 也不会成功，直接停
+        if (/401/.test(String(e.message || ''))) break;
+      }
     }
 
     logger.log('⚠️', '必应移动端签到未能在当前轮次点亮 (可等待稍后重试或确认移动 Token)', '', this.account.name);

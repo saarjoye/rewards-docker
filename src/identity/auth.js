@@ -1,4 +1,4 @@
-﻿import networkClient from '../network.js';
+import networkClient from '../network.js';
 import logger from '../logger.js';
 
 export const AUTH_CONFIG = {
@@ -111,9 +111,15 @@ export async function exchangeCodeForToken(codeOrUrl, proxy = '') {
 
 /**
  * 用 refresh_token 刷新访问令牌
+ *
+ * 网络抖动（`timeout of 25000ms exceeded`）在部分网络/代理下很常见，
+ * 这里做 1 次短超时重试；仍然失败则抛错，由调用方（tokenRefreshGuard）进入冷却。
  */
-export async function refreshAccessToken(refreshToken, proxy = '') {
+export async function refreshAccessToken(refreshToken, proxy = '', options = {}) {
   if (!refreshToken) throw new Error('Missing refresh token');
+
+  const attempts = Math.max(1, Number(options.attempts) || 2);
+  const timeoutMs = Number(options.timeoutMs) || 15000;
 
   const params = new URLSearchParams({
     client_id: AUTH_CONFIG.clientId,
@@ -122,24 +128,39 @@ export async function refreshAccessToken(refreshToken, proxy = '') {
     scope: AUTH_CONFIG.scope
   });
 
-  const res = await networkClient.request({
-    url: AUTH_CONFIG.tokenUrl,
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    data: params.toString(),
-    proxy
-  });
+  let lastError = null;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const res = await networkClient.request({
+        url: AUTH_CONFIG.tokenUrl,
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        data: params.toString(),
+        proxy,
+        timeout: timeoutMs
+      });
 
-  const data = typeof res === 'string' ? JSON.parse(res) : res;
-  if (data.error) {
-    throw new Error(`Token refresh failed: ${data.error} - ${data.error_description || ''}`);
+      const data = typeof res === 'string' ? JSON.parse(res) : res;
+      if (data.error) {
+        throw new Error(`Token refresh failed: ${data.error} - ${data.error_description || ''}`);
+      }
+
+      return {
+        accessToken: data.access_token,
+        refreshToken: data.refresh_token || refreshToken,
+        expiresIn: data.expires_in,
+        userId: data.user_id,
+        obtainedAt: Date.now()
+      };
+    } catch (e) {
+      lastError = e;
+      const message = String(e?.message || '');
+      // 凭据类错误重试没意义，直接抛
+      if (/invalid_grant|invalid_client|unauthorized/i.test(message)) break;
+      if (attempt < attempts) {
+        await new Promise((r) => setTimeout(r, 2000 + Math.floor(Math.random() * 2000)));
+      }
+    }
   }
-
-  return {
-    accessToken: data.access_token,
-    refreshToken: data.refresh_token || refreshToken,
-    expiresIn: data.expires_in,
-    userId: data.user_id,
-    obtainedAt: Date.now()
-  };
+  throw lastError || new Error('Token refresh failed');
 }
