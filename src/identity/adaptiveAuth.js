@@ -1,9 +1,10 @@
-﻿import browserManager from '../browser/browser.js';
+import browserManager from '../browser/browser.js';
 import { AUTH_CONFIG, exchangeCodeForToken, parseWlsInfo, verifyIdentityConsistency } from './auth.js';
 import { writeBrowserSession } from './browserSession.js';
 import logger from '../logger.js';
 import path from 'path';
 import { DATA_DIR } from '../fsUtil.js';
+import { classifyLoginChallenge, describeLoginChallenge } from '../contracts/loginChallenge.js';
 
 export async function loginWithAdaptiveStateMachine(page, credentials, options = {}) {
   const { user, pass } = credentials;
@@ -136,20 +137,16 @@ export async function loginWithAdaptiveStateMachine(page, credentials, options =
       }
     }
 
-    // 6. 强制 2FA 阻断检测 (方案 A 决策：安全熔断与预警)
-    if (
-      pageText.includes('在应用中批准') ||
-      pageText.includes('在 Authenticator 应用中') ||
-      pageText.includes('输入代码') ||
-      pageText.includes('检查你的短信') ||
-      pageText.includes('验证你的身份')
-    ) {
-      // 再次确认页面上是否有备用“使用密码”
+    // 6. 登录拦截分类（邮箱验证码 / Authenticator / 短信 / 密码错误）
+    //    之前一律报 needs_2fa，实测有账号并没开 2FA，只是要「邮箱验证码」，容易误判。
+    const challenge = classifyLoginChallenge(pageText);
+    if (challenge) {
+      // 页面上若还有备用“使用密码”，说明可以切密码模式，继续往下走
       const altPwd = await page.$(':text("使用密码"), #idA_PWD_SwitchToPassword');
       if (!altPwd) {
-        log('检测到账号启用强制 2FA 多因子验证，触发快速失败守护熔断...');
-        await page.screenshot({ path: path.join(DATA_DIR, 'needs_2fa.png') }).catch(() => {});
-        return { success: false, status: 'needs_2fa', message: '账号需要手机 Authenticator 批准或双因子验证码' };
+        log(`登录被拦截：${describeLoginChallenge(challenge)} → ${challenge.message}`);
+        await page.screenshot({ path: path.join(DATA_DIR, `${challenge.status}.png`) }).catch(() => {});
+        return { success: false, status: challenge.status, message: challenge.message };
       }
     }
 
