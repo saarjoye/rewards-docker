@@ -1,7 +1,7 @@
 {
   "name": "rewards-automation-v3",
-  "version": "6.8.40",
-  "description": "Microsoft Rewards 自动化平台 (v6.8.40 Token 续期加冷却与单次提示：网络超时时不再连打 4 轮续期，App 签到优雅跳过)",
+  "version": "6.8.41",
+  "description": "Microsoft Rewards 自动化平台 (v6.8.41 登录拦截细分：区分「邮箱验证码 / Authenticator 2FA / 短信」不再一律报 2FA)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {
