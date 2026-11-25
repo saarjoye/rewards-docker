@@ -18,6 +18,18 @@ function expandHome(inputPath) {
   return inputPath.startsWith('~') ? path.join(os.homedir(), inputPath.slice(1)) : inputPath;
 }
 
+function normalizeFingerprint(input) {
+  const value = String(input || '').trim();
+  if (!value) return '';
+  if (value.startsWith('SHA256:')) {
+    return Buffer.from(value.slice(7), 'base64').toString('hex').toLowerCase();
+  }
+  if (value.startsWith('MD5:')) {
+    return value.slice(4).replace(/:/g, '').toLowerCase();
+  }
+  return value.replace(/:/g, '').toLowerCase();
+}
+
 export function getConnectConfig() {
   const host = process.env.DEPLOY_SSH_HOST;
   if (!host) {
@@ -30,7 +42,7 @@ export function getConnectConfig() {
   const keyPath = expandHome(
     process.env.DEPLOY_SSH_KEY || path.join(os.homedir(), '.ssh', 'id_ed25519')
   );
-  const expectedFingerprint = process.env.DEPLOY_SSH_HOST_FINGERPRINT;
+  const expectedFingerprint = normalizeFingerprint(process.env.DEPLOY_SSH_HOST_FINGERPRINT);
 
   const config = {
     host,
@@ -41,7 +53,7 @@ export function getConnectConfig() {
   };
 
   if (expectedFingerprint) {
-    config.hostVerifier = (hash) => hash === expectedFingerprint;
+    config.hostVerifier = (hash) => hash.toLowerCase() === expectedFingerprint;
   } else {
     if (!warnedAboutFingerprint) {
       console.warn('⚠️ 未设置 DEPLOY_SSH_HOST_FINGERPRINT，跳过 SSH 主机指纹校验');
