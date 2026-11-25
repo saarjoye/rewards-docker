@@ -1,4 +1,4 @@
-﻿# Dependencies
+# Dependencies
 node_modules/
 
 # Runtime data & secrets (STRICT PRIVACY PROTECTION)
@@ -35,3 +35,6 @@ Thumbs.db
 
 # 本地密钥（不要提交）
 .secrets/
+
+# 本地备份（不要提交）
+.backup/

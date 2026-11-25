@@ -1,0 +1,13 @@
+# 构建上下文里不要带开发脚本、测试、数据和任何凭据
+.git
+.gitignore
+.codex-notes
+.env
+.env.*
+.secrets
+data
+node_modules
+scripts
+test
+docs
+*.md
